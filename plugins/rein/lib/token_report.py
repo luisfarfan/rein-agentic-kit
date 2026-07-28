@@ -337,6 +337,63 @@ def clear_baseline(baseline_path: str = BASELINE_PATH) -> bool:
     return True
 
 
+def _pct_change(value: float, base: float | None) -> float | None:
+    """Signed % change of `value` relative to `base`. None if `base` is missing/zero."""
+    if base in (None, 0):
+        return None
+    return round(100 * (value - base) / base, 1)
+
+
+def _fmt_delta(pct: float | None) -> str:
+    """Label the direction explicitly -- for these metrics lower is always better,
+    so a bare signed number is not enough to read at a glance."""
+    if pct is None:
+        return "n/a"
+    tag = "better" if pct < 0 else "worse" if pct > 0 else "same"
+    return f"{pct:+.1f}% {tag}"
+
+
+def render_ledger(rows: list[dict], ledger_path: str = LEDGER_PATH, baseline: dict | None = None) -> str:
+    lines: list[str] = [f"{len(rows)} run(s) in {ledger_path}\n"]
+
+    baseline_wf_id = baseline.get("wf_id") if baseline else None
+    baseline_ts = baseline.get("ts") or "" if baseline else ""
+
+    by_project: dict[str, list[dict]] = {}
+    for r in rows:
+        by_project.setdefault(r.get("project") or "(unknown)", []).append(r)
+
+    for project, runs in sorted(by_project.items()):
+        runs = sorted(runs, key=lambda r: r.get("ts", ""))
+        total = sum(r.get("total", 0) for r in runs)
+        opus = sum(r.get("opus_tokens", 0) for r in runs)
+        lines.append(f"{project}   {len(runs)} run(s)   total={total:,}   opus={opus:,} ({100*opus/total if total else 0:.1f}%)")
+        for r in runs[-5:]:
+            line = (
+                f"    {r.get('ts',''):<21} {r.get('wf_id','')[:14]:<14} "
+                f"turns={r.get('turns',0):>4}  turns/agent={r.get('turns_per_agent',0):>5}  "
+                f"ctx_max={r.get('ctx_max',0):>8,}  opus={r.get('opus_share',0):>5}%"
+            )
+            if baseline_wf_id and r.get("wf_id") == baseline_wf_id:
+                line += "  [baseline]"
+            elif baseline and r.get("ts", "") > baseline_ts:
+                # Only runs recorded AFTER the baseline get a delta -- comparing
+                # backwards would misrepresent which direction the change went.
+                d_turns = _fmt_delta(_pct_change(r.get("turns_per_agent", 0), baseline.get("turns_per_agent")))
+                d_ctx = _fmt_delta(_pct_change(r.get("ctx_max", 0), baseline.get("ctx_max")))
+                d_opus = _fmt_delta(_pct_change(r.get("opus_share", 0), baseline.get("opus_share")))
+                line += f"\n        vs baseline: turns/agent {d_turns}  ctx_max {d_ctx}  opus_share {d_opus}"
+            lines.append(line)
+        lines.append("")
+
+    lines.append("The three numbers that predict cost: turns/agent, ctx_max/turn, opus share.")
+    if baseline:
+        lines.append(f"Baseline: {baseline_wf_id} ({baseline_ts}). Deltas above are vs this run -- negative = better.")
+    else:
+        lines.append("Savings require a marked baseline -- without one this is a trend, not a saving.")
+    return "\n".join(lines)
+
+
 def render_baseline(baseline: dict | None) -> str:
     if not baseline:
         return "no baseline marked (run `rein baseline mark` after recording a run)"

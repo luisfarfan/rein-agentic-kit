@@ -139,26 +139,7 @@ def cmd_ledger(argv: list[str]) -> int:
         print(json.dumps(rows, indent=2, ensure_ascii=False))
         return 0
 
-    print(f"{len(rows)} run(s) in {_tr.LEDGER_PATH}\n")
-    by_project: dict[str, list[dict]] = {}
-    for r in rows:
-        by_project.setdefault(r.get("project") or "(unknown)", []).append(r)
-
-    for project, runs in sorted(by_project.items()):
-        runs.sort(key=lambda r: r.get("ts", ""))
-        total = sum(r.get("total", 0) for r in runs)
-        opus = sum(r.get("opus_tokens", 0) for r in runs)
-        print(f"{project}   {len(runs)} run(s)   total={total:,}   opus={opus:,} ({100*opus/total if total else 0:.1f}%)")
-        for r in runs[-5:]:
-            print(
-                f"    {r.get('ts',''):<21} {r.get('wf_id','')[:14]:<14} "
-                f"turns={r.get('turns',0):>4}  turns/agent={r.get('turns_per_agent',0):>5}  "
-                f"ctx_max={r.get('ctx_max',0):>8,}  opus={r.get('opus_share',0):>5}%"
-            )
-        print()
-
-    print("The three numbers that predict cost: turns/agent, ctx_max/turn, opus share.")
-    print("Savings require a marked baseline -- without one this is a trend, not a saving.")
+    print(_tr.render_ledger(rows, _tr.LEDGER_PATH, _tr.read_baseline()))
     return 0
 
 
