@@ -592,15 +592,64 @@ class TestPortHeuristicDoesNotInventPorts(unittest.TestCase):
     """Reading a non-port number as a port is worse than having no port at all:
     both the implementer and the reviewer get pointed at a dead URL."""
 
-    def test_assignment_values_are_never_ports(self):
+    def test_non_port_assignment_values_are_never_ports(self):
         for cmd in ("cross-env NODE_OPTIONS=--max-old-space-size=4096 next dev",
-                    "node --max-old-space-size=4096 server.js",
-                    "PORT_OFFSET=8080 ./run.sh"):
-            self.assertEqual(detect._port_from(cmd), ("", True), cmd)
+                    "node --max-old-space-size=4096 server.js"):
+            self.assertEqual(detect._port_from(cmd), ("", ""), cmd)
 
-    def test_flag_ports_are_certain_bare_ports_are_not(self):
-        self.assertEqual(detect._port_from("vite --port 4000"), ("4000", True))
-        self.assertEqual(detect._port_from("python3 -m http.server 8080"), ("8080", False))
+    def test_PORT_assignment_IS_the_port(self):
+        """The mainstream way a script moves off the default port.
+
+        The previous fixture used PORT_OFFSET= -- a name picked such that the one
+        assignment that IS a port was never exercised, so a blanket "assignments
+        are not ports" rule looked correct while breaking `PORT=4000 next dev`.
+        """
+        for cmd in ("PORT=4000 next dev", "cross-env PORT=4000 react-scripts start",
+                    "PORT=8080 node server.js"):
+            port, prov = detect._port_from(cmd)
+            self.assertEqual(prov, "env", cmd)
+            self.assertIn(port, ("4000", "8080"), cmd)
+
+    def test_provenance_distinguishes_flag_bare_and_compound(self):
+        self.assertEqual(detect._port_from("vite --port 4000"), ("4000", "flag"))
+        self.assertEqual(detect._port_from("python3 -m http.server 8080"), ("8080", "bare"))
+        self.assertEqual(
+            detect._port_from('concurrently "json-server db.json --port 3001" "vite"'),
+            ("3001", "flag-compound"),
+        )
+
+    def test_env_port_reaches_the_url_without_a_warning(self):
+        pkg = json.dumps({"scripts": {"dev": "PORT=4000 next dev"}, "dependencies": {"next": "^14"}})
+        with Project({"package.json": pkg}) as root:
+            r = detect.resolve(root)
+        self.assertEqual(r["serve"]["url"], "http://localhost:4000")
+        self.assertFalse(any("is a guess" in w for w in r.get("verifyWarnings", [])))
+
+    def test_sibling_process_port_does_not_win_over_the_framework(self):
+        """`concurrently` runs a mock API on 3001; Vite is still on 5173.
+
+        Something DOES listen on 3001, so the render check would pass against the
+        wrong process -- the worst kind of false green.
+        """
+        pkg = json.dumps({
+            "scripts": {"dev": 'concurrently "json-server db.json --port 3001" "vite"'},
+            "devDependencies": {"vite": "^5"},
+        })
+        with Project({"package.json": pkg}) as root:
+            self.assertEqual(detect.resolve(root)["serve"]["url"], "http://localhost:5173")
+
+    def test_guess_warning_names_the_command_it_actually_inspected(self):
+        cfg = json.dumps({"commands": {"serve": "python3 -m http.server 8080"}})
+        with Project({"package.json": PKG_VITE, "flow.config.json": cfg}) as root:
+            warnings = detect.resolve(root).get("verifyWarnings", [])
+        guess = [w for w in warnings if "is a guess" in w]
+        self.assertTrue(guess)
+        self.assertIn("http.server 8080", guess[0], "must name the command it read")
+        self.assertNotIn("''", guess[0], "must not report an empty command")
+
+    def test_nuxt3_package_name_is_recognised(self):
+        with Project({"package.json": json.dumps({"dependencies": {"nuxt3": "^3"}})}) as root:
+            self.assertIn("frontend", detect.resolve(root)["subtypes"])
 
     def test_a_guessed_port_is_disclosed(self):
         cfg = json.dumps({"commands": {"serve": "python3 -m http.server 8080"}})

@@ -27,7 +27,7 @@ CONFIG_NAME = "flow.config.json"
 # Frontend frameworks are a SUBTYPE of node, not a stack of their own -- they
 # share node's commands but additionally require real rendered verification
 # ("the tests pass but the UI is broken" is the failure this kit exists to catch).
-FRONTEND_MARKERS = ("next", "vite", "astro", "@sveltejs/kit", "nuxt", "@remix-run", "react-scripts")
+FRONTEND_MARKERS = ("next", "vite", "astro", "@sveltejs/kit", "nuxt", "nuxt3", "@remix-run", "react-scripts")
 INFRA_FILES = ("serverless.yml", "serverless.ts", "sst.config.ts", "template.yaml", "Dockerfile")
 # Terraform is the canonical plan-only case and DESTRUCTIVE_OPS names its verbs,
 # so matching it by extension is not optional: detecting the ops but not the repo
@@ -444,17 +444,30 @@ def _serve(root: str, subtypes: list[str], commands: dict[str, str], cfg: dict) 
     if cfg_url:
         url = cfg_url
     else:
-        port, certain = _port_from(script_body) if script_body else ("", True)
+        inspected = script_body or ""
+        port, provenance = _port_from(inspected) if inspected else ("", "")
         fallback, known_framework = _framework_port(subtypes)
-        url = f"http://localhost:{port or fallback}"
+        # The framework default only applies when the framework's own dev server
+        # is what runs: commands.serve means it deliberately is not.
+        framework_applies = known_framework and not cfg_command
+
+        if provenance in ("env", "flag"):
+            chosen, guessed = port, False
+        elif provenance == "flag-compound" and framework_applies:
+            # A sibling process's port is worse than the framework's own default.
+            chosen, guessed = str(fallback), False
+        elif port:
+            chosen, guessed = port, True
+        else:
+            chosen, guessed = str(fallback), not framework_applies
+        url = f"http://localhost:{chosen}"
         # A port is a GUESS when it came from the bare-number heuristic, or when
         # nothing in the command gave one and no framework default legitimately
         # applies. `npm run dev` on Vite needs no warning -- 5173 IS that
         # framework's default. But a config-supplied `commands.serve` means the
         # server is deliberately NOT the framework's dev server, so the
         # framework's port stops being a safe assumption.
-        framework_applies = known_framework and not cfg_command
-        guessed = (bool(port) and not certain) or (not port and not framework_applies)
+
         # `commands.serve` exists precisely for servers that are NOT npm scripts,
         # so there is no framework default to fall back on and no port to read.
         # Handing the implementer a URL nothing listens on is worse than admitting
@@ -463,8 +476,13 @@ def _serve(root: str, subtypes: list[str], commands: dict[str, str], cfg: dict) 
         # carries a port flag, and a warning on every ordinary frontend project is
         # noise that teaches people to ignore warnings.
         if command and guessed:
+            why = (
+                f"port {chosen} was inferred from a bare number in {inspected!r}"
+                if port
+                else f"no port could be read from {inspected!r}" if inspected else "there is no serve command to read a port from"
+            )
             warnings.append(
-                f"serve.url {url!r} is a guess: no port found in {cfg_command!r}. "
+                f"serve.url {url!r} is a guess: {why}. "
                 f"Set verify.url in flow.config.json if the server does not listen there."
             )
 
@@ -479,6 +497,7 @@ _FRAMEWORK_PORTS = {
     "astro": 4321,
     "next": 3000,
     "nuxt": 3000,
+    "nuxt3": 3000,
     "@remix-run": 3000,
     "react-scripts": 3000,
 }
@@ -496,22 +515,39 @@ def _framework_port(subtypes: list[str]) -> tuple[int, bool]:
     return 3000, False
 
 
-def _port_from(text: str) -> tuple[str, bool]:
-    """(port, certain). `certain` is False when the port was only guessed.
+# `PORT=4000 next dev` / `cross-env PORT=3001 react-scripts start` is the
+# mainstream way a package.json script moves off the default port. It is an
+# assignment, so a blanket "assignment values are never ports" rule silently
+# broke exactly the case that matters -- match it explicitly, first.
+_PORT_ENV_RE = re.compile(r"(?:^|\s)(?:[A-Z0-9_]*_)?PORT=(\d{2,5})(?!\S)")
+# In a compound script the first --port may belong to a SIBLING process: with
+# `concurrently "json-server --port 3001" "vite"` something really does listen
+# on 3001, so a render check there passes against the wrong process.
+_COMPOUND_RE = re.compile(r"&&|\|\||[&|]|concurrently|npm-run-all|run-p|run-s")
 
-    A --port/-p flag is certain. A bare numeric argument is not: it covers the
-    shapes a flag regex cannot see (`python3 -m http.server 8080`), but it cannot
-    tell a port from any other number on the line. Numbers on the right-hand side
-    of an assignment are excluded outright -- `NODE_OPTIONS=--max-old-space-size=4096`
+
+def _port_from(text: str) -> tuple[str, str]:
+    """(port, provenance) -- how much the port can be trusted, not just its value.
+
+    provenance is one of:
+      "env"           PORT=<n> assignment            -- certain
+      "flag"          --port/-p <n>                  -- certain
+      "flag-compound" a flag inside a compound script -- may be a sibling's port
+      "bare"          a lone number on the line      -- a guess
+      ""              nothing found
+    Other assignment values are excluded outright: NODE_OPTIONS=--max-old-space-size=4096
     is never a port, and reading it as one sent both agents to a dead URL.
     """
+    env = _PORT_ENV_RE.search(text)
+    if env:
+        return env.group(1), "env"
     flag = _PORT_FLAG_RE.search(text)
     if flag:
-        return flag.group(1), True
+        return flag.group(1), "flag-compound" if _COMPOUND_RE.search(text) else "flag"
     for candidate in re.findall(r"(?<![\w.:=-])(\d{2,5})(?![\w.=])", text):
         if 1 <= int(candidate) <= 65535:
-            return candidate, False
-    return "", True
+            return candidate, "bare"
+    return "", ""
 
 
 _VALID_VERIFY_MODES = {"rendered", "plan-only", "unit"}

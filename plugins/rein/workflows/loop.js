@@ -290,14 +290,16 @@ const WD = WORKTREE_MODE ? `${PARENT}/${PREFIX}-${LABEL}` : ctx.root
 let tasks = ctx.tasks || []
 if (ONLY.length) tasks = tasks.filter((t) => ONLY.includes(t.id.toUpperCase()))
 
+// Before the no-tasks return: these describe project CONFIGURATION, not task
+// state, and are the only in-run signal that the policy cannot be satisfied.
+for (const w of ctx.verifyWarnings || []) log(`⚠️ ${w}`)
+
 if (!tasks.length) {
   log('nothing to do: no pending tasks in the plan')
   return { ok: true, change: CHANGE, planPath: ctx.planPath, implemented: [], verdict: 'no pending tasks' }
 }
 log(`${tasks.length} pending task(s): ${tasks.map((t) => t.id).join(', ')}`)
 log(`stack ${ctx.stack}${ctx.subtypes.length ? ` (${ctx.subtypes.join(', ')})` : ''} · models ${MODEL_AUX}/${MODEL_IMPL}/${MODEL_REVIEW} · ≤${STEPS} steps/task · ≤${ROUNDS} review rounds`)
-
-for (const w of ctx.verifyWarnings || []) log(`⚠️ ${w}`)
 
 if (DRY_RUN) {
   return {
