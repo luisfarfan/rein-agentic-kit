@@ -672,6 +672,62 @@ class TestPortHeuristicDoesNotInventPorts(unittest.TestCase):
         self.assertEqual(r["serve"]["url"], "http://localhost:8080")
         self.assertTrue(any("is a guess" in w for w in r.get("verifyWarnings", [])))
 
+    def test_redirect_ampersand_is_not_a_background_operator(self):
+        """`2>&1` is fd-duplication, not `cmd1 & cmd2` -- no sibling process is
+
+        started, so the flag before it is still the server's own port, not a
+        possibly-unrelated sibling's. A regression here previously misread
+        the `&` in `2>&1` as the compound-script operator and downgraded a
+        certain "flag" reading to the sibling-guarding "flag-compound" one.
+        """
+        self.assertEqual(
+            detect._port_from("node server.js --port 3000 2>&1"),
+            ("3000", "flag"),
+        )
+        self.assertEqual(
+            detect._port_from("node server.js --port 3000 1>&2"),
+            ("3000", "flag"),
+        )
+        # A real background job must still be caught.
+        self.assertEqual(
+            detect._port_from("json-server --port 3001 & vite"),
+            ("3001", "flag-compound"),
+        )
+
+    def test_out_of_range_env_port_is_rejected(self):
+        """The `env` path must range-check exactly like the bare path does --
+
+        `_PORT_ENV_RE` only bounds the digit COUNT (2-5 digits), not the
+        VALUE, so `PORT=99999` slipped through as a "certain" port despite
+        99999 being outside 1-65535.
+        """
+        self.assertEqual(detect._port_from("PORT=99999 node server.js"), ("", ""))
+        self.assertEqual(detect._port_from("PORT=4000 node server.js"), ("4000", "env"))
+
+    def test_no_serve_command_branch_is_unreachable_and_removed(self):
+        """The dead "there is no serve command to read a port from" branch
+
+        contradicted its own guard: it only ran under `if command`, at which
+        point a serve command demonstrably exists. Forcing frontend subtypes
+        via config (bypassing framework detection, so no default port
+        applies) with an empty `dev` script body reaches the same `guessed`
+        warning path the dead branch used to claim; it must now read the
+        "no port could be read" message, and the removed text must never
+        appear anywhere in the resolved warnings.
+        """
+        pkg = json.dumps({"scripts": {"dev": ""}})
+        cfg = json.dumps({"subtypes": ["frontend"]})
+        with Project({"package.json": pkg, "flow.config.json": cfg}) as root:
+            warnings = detect.resolve(root).get("verifyWarnings", [])
+        guess = [w for w in warnings if "is a guess" in w]
+        self.assertEqual(len(guess), 1)
+        self.assertEqual(
+            guess[0],
+            "serve.url 'http://localhost:3000' is a guess: no port could be read from ''. "
+            "Set verify.url in flow.config.json if the server does not listen there.",
+        )
+        self.assertFalse(any("there is no serve command" in w for w in warnings))
+
 
 class TestInfraLayouts(unittest.TestCase):
     """The layouts the docstring names must actually be covered."""

@@ -83,7 +83,7 @@ per-stack *policy* that says what verification must look like to count at all.
 
 ## Follow-ups (raised by the review gate, judged non-blocking)
 
-- [ ] T006 Tighten two remaining port-heuristic edges
+- [x] T006 Tighten two remaining port-heuristic edges
   - Type: implementation
   - Depends on: none
   - Human review: false
