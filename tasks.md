@@ -5,7 +5,7 @@ ticks the boxes. Format is documented in `/rein:plan`.
 
 ---
 
-- [ ] T001 Add `rein baseline` to mark a reference run
+- [x] T001 Add `rein baseline` to mark a reference run
   - Type: implementation
   - Depends on: none
   - Human review: false
