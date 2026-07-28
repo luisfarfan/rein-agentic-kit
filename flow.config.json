@@ -1,0 +1,16 @@
+{
+  "stack": "python",
+  "commands": {
+    "test": "python3 -m unittest discover -s tests -q",
+    "testOne": "python3 -m unittest {target}"
+  },
+  "plan": {
+    "source": "tasks-md",
+    "path": "tasks.md"
+  },
+  "worktree": {
+    "enabled": true,
+    "prefix": "rein-wt",
+    "baseBranch": "main"
+  }
+}

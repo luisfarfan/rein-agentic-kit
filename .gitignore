@@ -6,9 +6,8 @@ __pycache__/
 dist/
 build/
 
-# Per-project runtime config lives in the CONSUMING repo, never here.
-# The example is tracked; a real one at the root is not.
-/flow.config.json
+# The root flow.config.json IS tracked: this repo is its own consuming project
+# (the kit is developed with the kit), so it doubles as a live example.
 
 # Local scratch from POC runs
 /.scratch/
