@@ -34,7 +34,7 @@ read turns/agent, ctx_max and opus share. The measurement exists and is unusable
     - Python 3 standard library only; no new dependency appears anywhere
     - a new `tests/test_dashboard.py` builds temporary ledgers and asserts each of the above, including the corrupt-line case
 
-- [ ] T002 Render the page
+- [x] T002 Render the page
   - Type: implementation
   - Depends on: T001
   - Human review: false
