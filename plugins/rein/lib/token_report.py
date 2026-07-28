@@ -36,6 +36,7 @@ from collections import defaultdict
 PROJECTS = os.path.expanduser("~/.claude/projects")
 LEDGER_DIR = os.path.expanduser("~/.claude/rein")
 LEDGER_PATH = os.path.join(LEDGER_DIR, "runs.jsonl")
+BASELINE_PATH = os.path.join(LEDGER_DIR, "baseline.json")
 
 # Metrics that actually predict cost. Anything else is decoration.
 # - turns_per_agent : the runaway signal (a 200-turn agent is the whole bill)
@@ -281,6 +282,69 @@ def read_ledger(ledger_path: str = LEDGER_PATH) -> list[dict]:
             except json.JSONDecodeError:
                 continue
     return rows
+
+
+# ------------------------------------------------------------------ baseline --
+
+# The metrics that matter, snapshotted at mark-time so `show` (and later, the
+# delta in `rein ledger`) never has to re-open the ledger.
+BASELINE_FIELDS = ("wf_id", "ts", "turns", "turns_per_agent", "ctx_max", "opus_share")
+
+
+def mark_baseline(wf_id: str | None, ledger_path: str = LEDGER_PATH, baseline_path: str = BASELINE_PATH) -> dict:
+    """Snapshot one ledger row as the baseline. Leaves the ledger itself untouched.
+
+    `wf_id=None` picks the most recent row (by `ts`). Raises `ValueError` naming
+    the id if an explicit `wf_id` is not in the ledger -- never stores a dangling
+    reference.
+    """
+    rows = read_ledger(ledger_path)
+    if not rows:
+        raise ValueError(f"ledger is empty ({ledger_path}) -- nothing to mark as baseline")
+
+    if wf_id:
+        match = next((r for r in rows if r.get("wf_id") == wf_id), None)
+        if match is None:
+            raise ValueError(f"no run {wf_id!r} in the ledger ({ledger_path})")
+    else:
+        match = max(rows, key=lambda r: r.get("ts", ""))
+
+    record = {k: match.get(k) for k in BASELINE_FIELDS}
+
+    os.makedirs(os.path.dirname(baseline_path), exist_ok=True)
+    tmp = baseline_path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(record, fh, indent=2, ensure_ascii=False)
+    os.replace(tmp, baseline_path)
+    return record
+
+
+def read_baseline(baseline_path: str = BASELINE_PATH) -> dict | None:
+    if not os.path.exists(baseline_path):
+        return None
+    with open(baseline_path, encoding="utf-8") as fh:
+        try:
+            return json.load(fh)
+        except json.JSONDecodeError:
+            return None
+
+
+def clear_baseline(baseline_path: str = BASELINE_PATH) -> bool:
+    """Remove the marker. Returns whether anything was actually removed."""
+    if not os.path.exists(baseline_path):
+        return False
+    os.remove(baseline_path)
+    return True
+
+
+def render_baseline(baseline: dict | None) -> str:
+    if not baseline:
+        return "no baseline marked (run `rein baseline mark` after recording a run)"
+    return (
+        f"baseline: {baseline.get('wf_id')}  ({baseline.get('ts', '')})\n"
+        f"  turns={baseline.get('turns')}  turns_per_agent={baseline.get('turns_per_agent')}  "
+        f"ctx_max={baseline.get('ctx_max', 0):,}  opus_share={baseline.get('opus_share')}%"
+    )
 
 
 # ------------------------------------------------------------------ rendering --

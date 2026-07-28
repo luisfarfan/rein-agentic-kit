@@ -9,6 +9,7 @@ Subcommands:
   rein close <id>     tick a task's checkbox in the plan
   rein token-report   real per-model token accounting for the last agent run
   rein ledger         summary of recorded runs (per project / per session)
+  rein baseline       mark/show/clear the reference run compared against
 
 Kept dependency-free on purpose: a plugin that drags a toolchain along at install
 time is a plugin nobody installs. Python 3 stdlib only.
@@ -161,6 +162,34 @@ def cmd_ledger(argv: list[str]) -> int:
     return 0
 
 
+def cmd_baseline(argv: list[str]) -> int:
+    if not argv:
+        print("usage: rein baseline <mark|show|clear> [wf_id]")
+        return 2
+    sub, rest = argv[0], argv[1:]
+
+    if sub == "mark":
+        try:
+            record = _tr.mark_baseline(_positional(rest) or None)
+        except ValueError as exc:
+            print(str(exc))
+            return 1
+        print(f"baseline marked: {record['wf_id']}")
+        return 0
+
+    if sub == "show":
+        print(_tr.render_baseline(_tr.read_baseline()))
+        return 0
+
+    if sub == "clear":
+        print("baseline cleared" if _tr.clear_baseline() else "no baseline marked")
+        return 0
+
+    print(f"unknown baseline subcommand: {sub}\n")
+    print("usage: rein baseline <mark|show|clear> [wf_id]")
+    return 2
+
+
 def cmd_doctor(argv: list[str]) -> int:
     root = argv[0] if argv and not argv[0].startswith("-") else "."
     resolved = _detect.resolve(root)
@@ -218,6 +247,7 @@ COMMANDS = {
     "close": cmd_close,
     "token-report": cmd_token_report,
     "ledger": cmd_ledger,
+    "baseline": cmd_baseline,
 }
 
 
