@@ -66,7 +66,7 @@ per-stack *policy* that says what verification must look like to count at all.
     - non-frontend projects report no `serve` block at all
     - the existing `tests/test_detect.py` continues to pass unchanged, and the new cases live in `tests/test_verify_policy.py`
 
-- [ ] T005 Enforce the policy in the loop's implementer and reviewer prompts
+- [x] T005 Enforce the policy in the loop's implementer and reviewer prompts
   - Type: implementation
   - Depends on: T004
   - Human review: false
