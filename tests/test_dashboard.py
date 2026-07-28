@@ -198,8 +198,12 @@ def _free_port() -> int:
 
 
 class TestRealServer(LedgerFixture):
-    def test_server_binds_127_0_0_1_only_and_serves_the_view_model(self):
-        self._write_ledger([row("wf_1", "2026-01-01T00:00:00Z", project="proj-http")])
+    def test_server_binds_127_0_0_1_only_and_serves_the_rendered_page(self):
+        # Distinctive, ledger-only values -- if these show up in the HTTP
+        # response, the data made it all the way from disk to the markup,
+        # not merely through a template that happens to compile.
+        self._write_ledger([row("wf_http_1", "2026-01-01T00:00:00Z", project="proj-http-9182",
+                                 turns_per_agent=7.25, ctx_max=54321, opus_share=33.3)])
         view = dash.build_view(self.ledger_path, self.baseline_path)
 
         port = _free_port()
@@ -210,14 +214,137 @@ class TestRealServer(LedgerFixture):
         thread.start()
         try:
             with urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=5) as resp:
+                content_type = resp.headers.get("Content-Type", "")
                 body = resp.read().decode("utf-8")
         finally:
             httpd.shutdown()
             httpd.server_close()
             thread.join(timeout=5)
 
-        self.assertIn("proj-http", body)
-        self.assertEqual(json.loads(body)["projects"][0]["project"], "proj-http")
+        self.assertIn("text/html", content_type)
+        self.assertIn("<!doctype html>", body.lower())
+        self.assertIn("proj-http-9182", body)
+        self.assertIn("54,321", body)  # ctx_max, formatted
+        self.assertIn("33.3", body)  # opus_share
+
+
+class TestRenderHtmlSelfContained(unittest.TestCase):
+    def test_no_external_resources_and_no_fetch(self):
+        html_out = dash.render_html({"message": "", "projects": []})
+        lowered = html_out.lower()
+        self.assertNotIn("<link", lowered)
+        self.assertNotIn("<script", lowered)
+        self.assertNotIn("http://", lowered)
+        self.assertNotIn("https://", lowered)
+        self.assertNotIn("fetch(", lowered)
+        self.assertNotIn("xmlhttprequest", lowered)
+        self.assertIn("<style>", lowered)  # CSS is inline, not linked
+
+
+class TestRenderHtmlEmptyStates(unittest.TestCase):
+    def test_zero_runs_renders_a_message_not_a_crash(self):
+        html_out = dash.render_html({"message": "no runs recorded yet", "projects": []})
+        self.assertIn("no runs recorded yet", html_out)
+
+    def test_one_run_renders_its_metrics(self):
+        view = {"message": "", "projects": [{"project": "solo", "runs": [{
+            "wf_id": "wf_solo", "ts": "2026-01-01T00:00:00Z", "turns_per_agent": 4.0,
+            "ctx_max": 800, "opus_share": 25.0, "is_baseline": False, "deltas": None,
+            "agents": [{"file": "a.jsonl", "model": "sonnet-5", "turns": 4, "total": 400, "ctx_max": 800}],
+        }]}]}
+        html_out = dash.render_html(view)
+        self.assertIn("solo", html_out)
+        self.assertIn("wf_solo", html_out)
+        self.assertIn("25.0", html_out)
+
+    def test_run_with_empty_agents_list_still_renders(self):
+        view = {"message": "", "projects": [{"project": "p", "runs": [{
+            "wf_id": "wf_empty", "ts": "2026-01-01T00:00:00Z", "turns_per_agent": 1.0,
+            "ctx_max": 1, "opus_share": 0.0, "is_baseline": False, "deltas": None,
+            "agents": [],
+        }]}]}
+        html_out = dash.render_html(view)  # must not raise
+        self.assertIn("wf_empty", html_out)
+        self.assertIn("0 agents", html_out)
+
+
+class TestRenderHtmlBaselineAndDeltas(unittest.TestCase):
+    def test_baseline_run_is_visibly_marked(self):
+        view = {"message": "", "projects": [{"project": "p", "runs": [{
+            "wf_id": "wf_base", "ts": "2026-01-01T00:00:00Z", "turns_per_agent": 5.0,
+            "ctx_max": 1000, "opus_share": 10.0, "is_baseline": True, "deltas": None,
+            "agents": [],
+        }]}]}
+        html_out = dash.render_html(view)
+        self.assertIn("BASELINE", html_out)
+        self.assertIn('class="baseline"', html_out)
+
+    def test_negative_delta_reads_unambiguously_as_an_improvement(self):
+        view = {"message": "", "projects": [{"project": "p", "runs": [
+            {"wf_id": "wf_base", "ts": "2026-01-01T00:00:00Z", "turns_per_agent": 10.0,
+             "ctx_max": 2000, "opus_share": 20.0, "is_baseline": True, "deltas": None, "agents": []},
+            {"wf_id": "wf_later", "ts": "2026-01-02T00:00:00Z", "turns_per_agent": 5.0,
+             "ctx_max": 1000, "opus_share": 10.0, "is_baseline": False,
+             "deltas": {"turns_per_agent": -50.0, "ctx_max": -50.0, "opus_share": -50.0}, "agents": []},
+        ]}]}
+        html_out = dash.render_html(view)
+        self.assertIn("delta-better", html_out)
+        self.assertIn("better", html_out)  # the word itself, not just the CSS class name
+        self.assertIn("-50.0%", html_out)
+
+    def test_positive_delta_reads_unambiguously_as_a_regression(self):
+        view = {"message": "", "projects": [{"project": "p", "runs": [
+            {"wf_id": "wf_base", "ts": "2026-01-01T00:00:00Z", "turns_per_agent": 5.0,
+             "ctx_max": 1000, "opus_share": 10.0, "is_baseline": True, "deltas": None, "agents": []},
+            {"wf_id": "wf_later", "ts": "2026-01-02T00:00:00Z", "turns_per_agent": 10.0,
+             "ctx_max": 2000, "opus_share": 20.0, "is_baseline": False,
+             "deltas": {"turns_per_agent": 100.0, "ctx_max": 100.0, "opus_share": 100.0}, "agents": []},
+        ]}]}
+        html_out = dash.render_html(view)
+        self.assertIn("delta-worse", html_out)
+        self.assertIn("worse", html_out)
+
+    def test_no_baseline_shows_trend_but_no_savings_figure_anywhere(self):
+        # D4: no baseline marked anywhere in the ledger -> no delta/savings
+        # column or figure at all, not merely "no negative deltas".
+        view = {"message": "", "projects": [{"project": "p", "runs": [
+            {"wf_id": "wf_1", "ts": "2026-01-01T00:00:00Z", "turns_per_agent": 10.0,
+             "ctx_max": 2000, "opus_share": 20.0, "is_baseline": False, "deltas": None, "agents": []},
+            {"wf_id": "wf_2", "ts": "2026-01-02T00:00:00Z", "turns_per_agent": 5.0,
+             "ctx_max": 1000, "opus_share": 10.0, "is_baseline": False, "deltas": None, "agents": []},
+        ]}]}
+        html_out = dash.render_html(view)
+        # the trend (both runs, in order) is still visible
+        self.assertIn("wf_1", html_out)
+        self.assertIn("wf_2", html_out)
+        # Look at the rendered body only -- the stylesheet legitimately
+        # defines .delta-better/.delta-worse rules even when unused (D4 is
+        # about no savings *figure* appearing, not about dead CSS rules).
+        body = html_out.split("<body>", 1)[1]
+        self.assertNotIn("BASELINE", body)
+        self.assertNotIn('class="delta-better"', body)
+        self.assertNotIn('class="delta-worse"', body)
+        self.assertNotIn("Δ", body)  # the Δ column header itself
+        self.assertNotIn('class="delta-na"', body)
+
+
+class TestRenderHtmlAgentsReachable(unittest.TestCase):
+    def test_per_agent_rows_reachable_via_details_without_leaving_the_page(self):
+        view = {"message": "", "projects": [{"project": "p", "runs": [{
+            "wf_id": "wf_1", "ts": "2026-01-01T00:00:00Z", "turns_per_agent": 5.0,
+            "ctx_max": 1000, "opus_share": 10.0, "is_baseline": False, "deltas": None,
+            "agents": [
+                {"file": "a.jsonl", "model": "sonnet-5", "turns": 3, "total": 300, "ctx_max": 900},
+                {"file": "b.jsonl", "model": "opus", "turns": 2, "total": 700, "ctx_max": 1000},
+            ],
+        }]}]}
+        html_out = dash.render_html(view)
+        self.assertIn("<details>", html_out)
+        self.assertIn("<summary>", html_out)
+        self.assertIn("a.jsonl", html_out)
+        self.assertIn("b.jsonl", html_out)
+        # native disclosure widget, not a link to another page or a script
+        self.assertNotIn("<a href", html_out)
 
 
 if __name__ == "__main__":
