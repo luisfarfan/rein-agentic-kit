@@ -373,7 +373,7 @@ def _serve(root: str, subtypes: list[str], commands: dict[str, str], cfg: dict) 
 _VALID_VERIFY_MODES = {"rendered", "plan-only", "unit"}
 
 
-def _verify_policy(root: str, subtypes: list[str], commands: dict[str, str], cfg: dict) -> dict:
+def _verify_policy(root: str, subtypes: list[str], commands: dict[str, str], cfg: dict) -> tuple[dict, list[str]]:
     cfg_verify = cfg.get("verify") or {}
     raw_mode = str(cfg_verify.get("mode") or "").strip()
 
@@ -416,10 +416,14 @@ def _verify_policy(root: str, subtypes: list[str], commands: dict[str, str], cfg
     elif mode == "plan-only":
         forbids = list(DESTRUCTIVE_OPS)
 
+    # warnings are returned as a sibling of the policy dict (see resolve()),
+    # never merged into it: loop.js's CONTEXT_SCHEMA declares verifyPolicy
+    # with additionalProperties: false and exactly {mode, requires, forbids,
+    # tools} because the Prepare agent copies config.verifyPolicy LITERALLY
+    # into ctx.verifyPolicy. A fifth key here would make that literal copy
+    # violate the schema on any project with a typo'd verify.mode.
     result = {"mode": mode, "requires": requires, "forbids": forbids, "tools": tools}
-    if warnings:
-        result["warnings"] = warnings
-    return result
+    return result, warnings
 
 
 def resolve(root: str = ".") -> dict:
@@ -449,6 +453,7 @@ def resolve(root: str = ".") -> dict:
     tracker = {"kind": "none", **(cfg.get("tracker") or {})}
     subtypes = cfg.get("subtypes") or auto.get("subtypes", [])
     serve = _serve(root, subtypes, commands, cfg)
+    verify_policy, verify_warnings = _verify_policy(root, subtypes, commands, cfg)
 
     missing_commands = [s for s in ("test", "testOne", "lint", "typecheck") if s not in commands]
     if serve is not None and not serve["command"]:
@@ -472,10 +477,12 @@ def resolve(root: str = ".") -> dict:
         "limits": limits,
         "worktree": worktree,
         "capabilities": _capabilities(root),
-        "verifyPolicy": _verify_policy(root, subtypes, commands, cfg),
+        "verifyPolicy": verify_policy,
     }
     if serve is not None:
         result["serve"] = serve
+    if verify_warnings:
+        result["verifyWarnings"] = verify_warnings
     return result
 
 

@@ -220,8 +220,8 @@ def cmd_doctor(argv: list[str]) -> int:
     vp = resolved["verifyPolicy"]
     tools_str = ", ".join(vp["tools"]) if vp["tools"] else "(none reachable)"
     print(f"  verify : mode={vp['mode']}  tools={tools_str}")
-    if vp.get("warnings"):
-        for w in vp["warnings"]:
+    if resolved.get("verifyWarnings"):
+        for w in resolved["verifyWarnings"]:
             print(f"    WARNING: {w}")
     serve = resolved.get("serve")
     if serve is not None:

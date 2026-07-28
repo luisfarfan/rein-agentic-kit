@@ -139,6 +139,7 @@ class TestShippedExampleConfig(unittest.TestCase):
         self.assertEqual(r["verifyPolicy"]["mode"], "rendered")
         self.assertTrue(r["verifyPolicy"]["requires"])
         self.assertNotIn("warnings", r["verifyPolicy"])
+        self.assertNotIn("verifyWarnings", r)
 
 
 class TestBadVerifyMode(unittest.TestCase):
@@ -150,8 +151,15 @@ class TestBadVerifyMode(unittest.TestCase):
         # Falls back to detection (frontend -> rendered) instead of failing
         # open with an unknown mode loop.js's policy blocks don't recognize.
         self.assertEqual(policy["mode"], "rendered")
-        self.assertIn("warnings", policy)
-        self.assertIn("yolo", policy["warnings"][0])
+        # The warning must NOT land inside verifyPolicy: loop.js's
+        # CONTEXT_SCHEMA declares that object with additionalProperties:
+        # false and exactly {mode, requires, forbids, tools}, and the
+        # Prepare agent copies config.verifyPolicy into ctx.verifyPolicy
+        # literally. A fifth key there would make a legal CLI response
+        # violate the workflow's own schema.
+        self.assertEqual(set(policy.keys()), {"mode", "requires", "forbids", "tools"})
+        self.assertIn("verifyWarnings", r)
+        self.assertIn("yolo", r["verifyWarnings"][0])
 
     def test_empty_string_mode_is_treated_as_unset(self):
         cfg = json.dumps({"verify": {"mode": ""}})
@@ -159,6 +167,7 @@ class TestBadVerifyMode(unittest.TestCase):
             r = detect.resolve(root)
         self.assertEqual(r["verifyPolicy"]["mode"], "unit")
         self.assertNotIn("warnings", r["verifyPolicy"])
+        self.assertNotIn("verifyWarnings", r)
 
 
 class TestPlanOnlyMode(unittest.TestCase):
@@ -291,6 +300,19 @@ class TestShape(unittest.TestCase):
         self.assertIsInstance(policy["requires"], list)
         self.assertIsInstance(policy["forbids"], list)
         self.assertIsInstance(policy["tools"], list)
+
+    def test_shape_has_all_keys_on_bad_mode_path_too(self):
+        # Regression: the bad-mode path used to add a fifth "warnings" key
+        # directly onto the policy dict, which loop.js's CONTEXT_SCHEMA
+        # (additionalProperties: false) declares illegal. The warning must
+        # travel as a sibling ("verifyWarnings") of the resolve() result,
+        # never inside verifyPolicy itself, regardless of mode validity.
+        cfg = json.dumps({"verify": {"mode": "yolo"}})
+        with Project({"package.json": PKG_VITE, "flow.config.json": cfg}) as root:
+            r = detect.resolve(root)
+        policy = r["verifyPolicy"]
+        self.assertEqual(set(policy.keys()), {"mode", "requires", "forbids", "tools"})
+        self.assertIn("verifyWarnings", r)
 
 
 LOOP_JS = os.path.join(
