@@ -146,9 +146,9 @@ project it was recorded in.
 | Phase | Scope | State |
 |---|---|---|
 | 0 | Scaffold, plugin plumbing, `token-report` + ledger, stack detection | ✅ done — [findings](docs/phase-0-findings.md) |
-| 1 | Config-driven core loop + `tasks.md` adapter — **measured** | in progress |
-| 2 | Stack toolsets; frontend rendered verification | |
-| 3 | Local dashboard: metrics per project/session, per-agent model config | |
+| 1 | Config-driven core loop + `tasks.md` adapter — **measured** | ✅ done |
+| 2 | Stack-aware verification policy; frontend rendered verification | ✅ done |
+| 3 | Local dashboard: metrics per project/session, per-agent model config | next |
 | 4 | Docs, polish, public marketplace | |
 
 ## License

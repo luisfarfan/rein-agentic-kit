@@ -78,3 +78,27 @@ per-stack *policy* that says what verification must look like to count at all.
     - in `plan-only` mode both prompts carry the `forbids` list as a hard prohibition
     - in `unit` mode the prompts are byte-identical to today, so nothing changes for library and CLI projects
     - `node --check plugins/rein/workflows/loop.js` passes, and a test asserts the loop script contains no hard-coded stack name, framework name or port — everything comes from config
+
+---
+
+## Follow-ups (raised by the review gate, judged non-blocking)
+
+- [ ] T006 Tighten two remaining port-heuristic edges
+  - Type: implementation
+  - Depends on: none
+  - Human review: false
+  - Verification: `python3 -m unittest tests.test_verify_policy`
+  - Acceptance:
+    - a shell redirect (`node server.js --port 3000 2>&1`) is not classified `flag-compound`; the `&` in `2>&1` is not a background operator
+    - the `env` port path range-checks its value the way the bare path already does, so `X_PORT=12` cannot become a URL
+    - the unreachable "there is no serve command to read a port from" branch in `_serve`'s warning is removed
+    - each of the three has a test asserting the full `_port_from` tuple, not a partial property
+
+- [ ] T007 Decide whether a nested Dockerfile alone should mean plan-only
+  - Type: implementation
+  - Depends on: none
+  - Human review: true
+  - Verification: `python3 -m unittest tests.test_verify_policy`
+  - Acceptance:
+    - a decision is recorded in `docs/` on whether `apps/*/Dockerfile` in a Node monorepo with no test script should resolve to `plan-only` (a prohibition, so it fails safe) or stay `unit`
+    - detection matches whatever is decided, with a test naming the shape and the reasoning
