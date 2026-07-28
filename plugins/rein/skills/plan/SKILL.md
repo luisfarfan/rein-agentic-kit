@@ -24,7 +24,26 @@ R=$(command -v rein || ls -d ~/.claude/plugins/cache/*/rein/*/bin/rein 2>/dev/nu
 2. Understand the request before decomposing it. Use bounded search and precise reads, not
    whole files. If scope, an interface or a trade-off is genuinely ambiguous, **ask now** — a
    wrong assumption here is paid for by every implementation step after it.
-3. Draft the tasks in this format:
+3. Draft the plan. It opens with a **short header** and then the tasks:
+
+   ```markdown
+   # Change: add-widget
+
+   ## Why
+   One or two sentences: what problem this solves, and what happens if it is not
+   done. This is what the reviewer judges the work against.
+
+   ## Scope
+   - In: the parser and its tests
+   - Out: the CLI surface — that is a separate change
+
+   ## Decisions
+   - D1 Constraints live in tasks.md — a separate file is an artifact nobody reads
+
+   ---
+   ```
+
+   Then each task:
 
    ```markdown
    - [ ] T001 Parse the config file
@@ -36,6 +55,20 @@ R=$(command -v rein || ls -d ~/.claude/plugins/cache/*/rein/*/bin/rein 2>/dev/nu
        - reads flow.config.json when present
        - falls back to autodetect otherwise
    ```
+
+   **Why / Scope / Decisions are short on purpose.** `Out` and the decision titles
+   travel in *every* agent's prompt and are re-read on every turn — with ten agents
+   at fifty turns, a thousand extra tokens there costs half a million per run. Say
+   the constraint, not the essay.
+
+   **Why the header exists at all:** a plan whose criteria have nothing above them
+   gives the reviewer nothing to check intent against. That is measured, not
+   theoretical — it is how a criterion satisfied in letter, by a test whose fixture
+   avoided the real case, survived six review rounds here.
+
+   **Decisions are conditional.** Include the section only when the plan contains a
+   choice an implementer could plausibly reverse without noticing. A two-task change
+   usually has none, and inventing them is ceremony.
 
 4. **Dry run.** Show the user the full draft: tasks in dependency order, each verification
    command, which tasks are gated on human review, and anything the plan assumes.

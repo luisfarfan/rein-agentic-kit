@@ -35,6 +35,15 @@ import json
 import os
 import re
 
+# The header sections above the tasks. They exist because of a measured failure:
+# a plan whose criteria have NOTHING above them gives the reviewer nothing to
+# check intent against, so "satisfied in letter while the guarantee fails" stays
+# invisible. Three short sections fix that -- and only three, because everything
+# here is read by agents and length is paid for on every turn.
+SECTION_RE = re.compile(r"^#{1,3}\s+(Why|Scope|Decisions)\s*$", re.I | re.M)
+DECISION_RE = re.compile(r"^\s*[-*]\s+(D\d+)\b[.:) ]*\s*(.*)$", re.I)
+SCOPE_RE = re.compile(r"^\s*[-*]\s+(in|out)\s*:\s*(.*)$", re.I)
+
 TASK_RE = re.compile(r"^(\s*)[-*]\s+\[([ xX])\]\s+(.*)$")
 FIELD_RE = re.compile(r"^(\s*)[-*]\s+([A-Za-z][A-Za-z ]*?)\s*:\s*(.*)$")
 BULLET_RE = re.compile(r"^(\s*)[-*]\s+(.*)$")
@@ -139,6 +148,61 @@ def parse_tasks_md(text: str) -> list[dict]:
 # ---------------------------------------------------------------- locating --
 
 
+def parse_header(text: str) -> dict:
+    """Why / Scope / Decisions, from above the first task. Never raises.
+
+    All three are optional: a plan that is only a task list still parses, exactly
+    as before. Ceremony that blocks a small change is worse than no ceremony.
+    """
+    header = {"why": "", "scopeIn": [], "scopeOut": [], "decisions": []}
+    current = ""
+    why_lines: list[str] = []
+
+    # Everything before the FIRST checkbox is the header. Scanned line by line
+    # rather than with a regex search: TASK_RE is anchored and not MULTILINE
+    # (it is matched per-line everywhere else), so searching the whole blob finds
+    # nothing and the header would silently swallow the entire task list.
+    for raw in text.splitlines():
+        if TASK_RE.match(raw):
+            break
+        section = SECTION_RE.match(raw)
+        if section:
+            current = section.group(1).lower()
+            continue
+        line = raw.strip()
+        if not line or line.startswith("---"):
+            continue
+        if current == "why":
+            if not line.startswith("#"):
+                why_lines.append(line)
+        elif current == "scope":
+            m = SCOPE_RE.match(raw)
+            if m:
+                key = "scopeIn" if m.group(1).lower() == "in" else "scopeOut"
+                value = _clean(m.group(2))
+                if value:
+                    header[key].append(value)
+            else:
+                bullet = BULLET_RE.match(raw)
+                # A bare bullet under Scope with no in/out prefix is ambiguous;
+                # treat it as in-scope rather than dropping it silently.
+                if bullet:
+                    header["scopeIn"].append(_clean(bullet.group(2)))
+        elif current == "decisions":
+            m = DECISION_RE.match(raw)
+            if m:
+                title, _, rationale = m.group(2).partition("—")
+                if not rationale:
+                    title, _, rationale = m.group(2).partition(" - ")
+                header["decisions"].append({
+                    "id": m.group(1).upper(),
+                    "title": _clean(title) or _clean(m.group(2)),
+                    "rationale": _clean(rationale),
+                })
+    header["why"] = " ".join(why_lines).strip()
+    return header
+
+
 def plan_path(root: str, source: str, change: str = "", configured: str = "") -> str:
     root = os.path.abspath(root)
     if configured:
@@ -168,11 +232,17 @@ def read_plan(root: str = ".", source: str = "", change: str = "", configured: s
             "tasks": [],
             "pending": [],
             "artifacts": [],
+            "why": "",
+            "scopeIn": [],
+            "scopeOut": [],
+            "decisions": [],
             "error": f"no plan at {path}",
         }
 
     with open(path, encoding="utf-8", errors="replace") as fh:
-        tasks = parse_tasks_md(fh.read())
+        raw = fh.read()
+    tasks = parse_tasks_md(raw)
+    header = parse_header(raw)
 
     artifacts = []
     if source == "openspec":
@@ -188,6 +258,7 @@ def read_plan(root: str = ".", source: str = "", change: str = "", configured: s
         "change": change,
         "path": path,
         "exists": True,
+        **header,
         "tasks": tasks,
         "pending": [t for t in tasks if not t["checked"]],
         "artifacts": artifacts,

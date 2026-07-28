@@ -186,5 +186,70 @@ class TestReadAndClose(unittest.TestCase):
         self.assertIn("- [ ] T003 Wire it up", body)
 
 
+HEADER_PLAN = """\
+# Change: add-widget
+
+## Why
+The criteria had nothing above them, so the reviewer had to infer intent.
+
+## Scope
+- In: the parser and its tests
+- Out: the CLI surface — that is a separate change
+- Out: anything touching the loop
+
+## Decisions
+- D1 Header lives in tasks.md — a separate file would be another artifact nobody reads
+- D2 Every section optional - ceremony that blocks a small change is worse than none
+
+---
+
+- [ ] T001 Do the thing
+  - Verification: `pytest x.py`
+"""
+
+
+class TestHeader(unittest.TestCase):
+    def test_why_scope_and_decisions_are_parsed(self):
+        h = plan.parse_header(HEADER_PLAN)
+        self.assertIn("nothing above them", h["why"])
+        self.assertEqual(h["scopeIn"], ["the parser and its tests"])
+        self.assertEqual(len(h["scopeOut"]), 2)
+        self.assertIn("CLI surface", h["scopeOut"][0])
+        self.assertEqual([d["id"] for d in h["decisions"]], ["D1", "D2"])
+
+    def test_decision_splits_title_from_rationale_on_either_dash(self):
+        h = plan.parse_header(HEADER_PLAN)
+        self.assertEqual(h["decisions"][0]["title"], "Header lives in tasks.md")
+        self.assertIn("another artifact", h["decisions"][0]["rationale"])
+        # The second uses an ASCII hyphen rather than an em dash.
+        self.assertEqual(h["decisions"][1]["title"], "Every section optional")
+
+    def test_header_does_not_swallow_task_content(self):
+        """Everything below the first checkbox belongs to tasks, not the header."""
+        h = plan.parse_header(HEADER_PLAN)
+        self.assertNotIn("Do the thing", h["why"])
+        self.assertEqual(len(plan.parse_tasks_md(HEADER_PLAN)), 1)
+
+    def test_a_plan_with_no_header_still_parses_exactly_as_before(self):
+        """The regression that matters: ceremony must not become mandatory."""
+        h = plan.parse_header(FULL)
+        self.assertEqual(h, {"why": "", "scopeIn": [], "scopeOut": [], "decisions": []})
+        self.assertEqual(len(plan.parse_tasks_md(FULL)), 3)
+
+    def test_read_plan_exposes_the_header(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        with open(os.path.join(tmp.name, "tasks.md"), "w", encoding="utf-8") as fh:
+            fh.write(HEADER_PLAN)
+        p = plan.read_plan(tmp.name)
+        self.assertTrue(p["why"])
+        self.assertEqual(len(p["scopeOut"]), 2)
+        self.assertEqual(len(p["decisions"]), 2)
+
+    def test_a_scope_bullet_without_in_or_out_is_kept_not_dropped(self):
+        h = plan.parse_header("## Scope\n- just this module\n\n- [ ] T001 x\n")
+        self.assertEqual(h["scopeIn"], ["just this module"])
+
+
 if __name__ == "__main__":
     unittest.main()

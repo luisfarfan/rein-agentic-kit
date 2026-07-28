@@ -29,15 +29,20 @@ R=$(command -v rein || ls -d ~/.claude/plugins/cache/*/rein/*/bin/rein 2>/dev/nu
    diff: correctness, readability, architecture, security, performance. Do not reimplement
    this inline. Look at the change **as a whole** — coherence defects *between* tasks are the
    ones nobody else will see.
-4. **Coverage, against the guarantee and not the wording.** For each task, check its
+4. **Intent.** If the plan has a `Why`, judge the work against it — not only against
+   the criteria. Criteria can all pass while the change does not solve the stated
+   problem. If it has `Scope: Out`, work that strayed there is a finding **even if it
+   is good work**: it was excluded on purpose.
+
+5. **Coverage, against the guarantee and not the wording.** For each task, check its
    acceptance criteria are genuinely met. Then specifically hunt the failure this flow keeps
    producing: **a criterion satisfied in letter by a test whose fixture avoids the case it
    claims to cover.** Try to construct an input where the stated guarantee still fails. If
    you can, the criterion is not met, whatever the suite says.
-5. **Declare what you reviewed.** List the files actually inspected for this verdict —
+6. **Declare what you reviewed.** List the files actually inspected for this verdict —
    implementation, tests, and relevant docs. This is a deliberate declaration, not an
    automatic inference: it is what the verdict is bound to.
-6. **Record the verdict:**
+7. **Record the verdict:**
 
    ```bash
    "$R" review record --change <name> --verdict APPROVED|CHANGES_REQUESTED \
@@ -46,7 +51,7 @@ R=$(command -v rein || ls -d ~/.claude/plugins/cache/*/rein/*/bin/rein 2>/dev/nu
 
    It refuses an empty file list, a missing reviewer, and `implementer` as the actor. It
    stores a content hash per file plus a state hash over the set.
-7. Report the verdict and, if `CHANGES_REQUESTED`, the findings the implementer needs. Make
+8. Report the verdict and, if `CHANGES_REQUESTED`, the findings the implementer needs. Make
    them precise enough to act on without asking you anything: file, what is wrong, what is
    missing. **Stop.**
 

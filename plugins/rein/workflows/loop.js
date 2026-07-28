@@ -101,6 +101,10 @@ const CONTEXT_SCHEMA = {
     cmdTypecheck: { type: 'string' },
     planPath: { type: 'string' },
     planSource: { type: 'string' },
+    why: { type: 'string' },
+    scopeOut: { type: 'array', items: { type: 'string' } },
+    decisions: { type: 'array', items: { type: 'string' } }, // "D1 — title"
+
     artifacts: { type: 'array', items: { type: 'string' } },
     capabilities: { type: 'array', items: { type: 'string' } },
     tracker: { type: 'string' },
@@ -132,7 +136,7 @@ const CONTEXT_SCHEMA = {
   },
   required: [
     'ok', 'reinPath', 'root', 'stack', 'subtypes', 'verifyPolicy', 'serve', 'cmdTest', 'cmdTestOne', 'cmdLint', 'cmdTypecheck',
-    'planPath', 'planSource', 'artifacts', 'capabilities', 'tracker', 'baseBranch', 'worktreePrefix',
+    'planPath', 'planSource', 'why', 'scopeOut', 'decisions', 'artifacts', 'capabilities', 'tracker', 'baseBranch', 'worktreePrefix',
     'verifyWarnings',
     'maxTaskSteps', 'maxReviewRounds', 'modelAux', 'modelImpl', 'modelReview', 'tasks', 'problem',
   ],
@@ -257,6 +261,9 @@ const ctx = await agentRetry(
     `   · tasks <- plan.pending, ALREADY dependency-ordered. Keep that order. Copy each field\n` +
     `     LITERALLY, especially 'verification' — it is executed verbatim later.\n` +
     `   · planPath/planSource/artifacts <- plan.path, plan.source, plan.artifacts\n` +
+    `   · why <- plan.why (verbatim, may be empty). scopeOut <- plan.scopeOut (each entry a\n` +
+    `     string). decisions <- plan.decisions as "D1 — title" strings, TITLE ONLY, never the\n` +
+    `     rationale: the titles travel in every agent's prompt and length is paid per turn.\n` +
     `4. Set ok=false and explain in 'problem' if: the CLI could not be resolved, the plan does not\n` +
     `   exist, or plan.unresolvableDeps is non-empty (name the ids — a dependency cycle means the\n` +
     `   order is only best-effort).`,
@@ -340,6 +347,17 @@ const CTX =
       `change is approved.\n`
     : ` (branch ${BASE}).\n`) +
   `Plan: ${ctx.planPath}\n` +
+  // Deliberately NOT the "why": that is judgement context the reviewer needs and
+  // an implementer does not, and CTX is re-read on every turn of every agent.
+  // Only what an implementer could actually violate travels here.
+  ((ctx.scopeOut || []).length
+    ? `OUT OF SCOPE for this change — do not touch, even if it looks broken:\n` +
+      ctx.scopeOut.map((s) => `  - ${s}\n`).join('')
+    : '') +
+  ((ctx.decisions || []).length
+    ? `DECISIONS already made — respect them, do NOT re-open what was decided:\n` +
+      ctx.decisions.map((d) => `  - ${d}\n`).join('')
+    : '') +
   artifactList +
   `Conventional Commits.\n` +
   RETRIEVAL
@@ -685,7 +703,13 @@ if (gateContradiction) {
       review = await agent(
         `${CTX}\n\nYou are the REVIEWER and you implemented NONE of this. No agent approves its own work — ` +
           `that rule exists because a flow without an independent gate shipped defects to the user.\n` +
-          `Audit the COMPLETE change (tasks ${implemented.map((r) => r.id).join(', ')}), not one task. Round ${round} of ${ROUNDS}.\n\n` +
+          `Audit the COMPLETE change (tasks ${implemented.map((r) => r.id).join(', ')}), not one task. Round ${round} of ${ROUNDS}.\n` +
+          (ctx.why ? `\nWHY this change exists (judge the work against THIS, not only against the criteria): ${ctx.why}\n` : '\n') +
+          (ctx.scopeOut && ctx.scopeOut.length
+            ? `Explicitly OUT of scope: ${ctx.scopeOut.join('; ')}. Work that strays into it is a finding, ` +
+              `even if it is good work.\n`
+            : '') +
+          `\n` +
           `1. MECHANICAL GATE FIRST. Run ${gateCmds.length ? gateCmds.join(', ') : 'the project verification commands (none are configured — say so)'} ` +
           `and put their LITERAL output (trimmed to what matters) in 'gateOutput', with gateGreen set honestly. ` +
           `If anything is red the verdict CANNOT be APPROVED, however good the code reads.\n` +
