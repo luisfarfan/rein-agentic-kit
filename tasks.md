@@ -47,7 +47,7 @@ read turns/agent, ctx_max and opus share. The measurement exists and is unusable
     - it renders with zero runs, with one run, and with a run whose `agents` list is empty
     - a test starts the real server, fetches the page over HTTP, and asserts that values taken from the temp ledger appear in the returned markup — proving the data reached the page, not that a template rendered
 
-- [ ] T003 Edit per-agent models from the page
+- [x] T003 Edit per-agent models from the page
   - Type: implementation
   - Depends on: T002
   - Human review: false
