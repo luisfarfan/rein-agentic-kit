@@ -1,74 +1,170 @@
-# rein-agentic-kit
+<div align="center">
 
-**Rein — keep your Claude Code agents lean and in control.**
+# 🐎 Rein
 
-A Claude Code plugin + marketplace packaging a token-lean, stack-aware agentic dev
-flow: `/rein:plan`, `/rein:loop`, `/rein:review`, and a `rein token-report` CLI that
-measures what a run actually cost — **per model**.
+**Keep your Claude Code agents lean and in control.**
 
-> **Status: phase 1.** The loop, the plan parser and the measurement tool are
-> real. Stack-specific toolsets and the dashboard are not yet. See
-> [Roadmap](#roadmap).
+A Claude Code plugin that turns agent work into a bounded, measured, independently-reviewed flow —
+and tells you what it actually cost, per model.
 
-## Why
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Tests](https://img.shields.io/badge/tests-208%20passing-brightgreen.svg)](tests)
+[![Dependencies](https://img.shields.io/badge/runtime%20deps-none-success.svg)](#)
+[![Python](https://img.shields.io/badge/python-3.9%2B%20stdlib-blue.svg)](#)
+[![Claude Code](https://img.shields.io/badge/Claude%20Code-plugin-8A2BE2.svg)](https://claude.com/claude-code)
 
-Optimizing agent cost by "making the model write less" does nothing. Measured over
-real Claude Code transcripts:
+</div>
+
+---
+
+## 💸 The problem, measured
+
+Optimizing agent cost by "making the model write less" does nothing. Over real Claude Code
+transcripts:
 
 | Where the tokens go | Share |
+|---|---:|
+| 🔴 `cache_read` — context re-read **every turn** | **~90%** |
+| 🟠 `cache_write` | ~10% |
+| 🟢 **output** — what a compressor would attack | **~0.3%** |
+| ⚪ fresh input | ~0% |
+
+**Cost ≈ turns × context size.** One agent that ran 241 turns, re-reading ~234k of context on
+every single turn, was most of a 112M-token run.
+
+And Claude Code has **no native eviction of stale tool results** — only `/compact`, which is
+lossy and breaks the prompt cache. A long agent's context only grows.
+
+> **Measured effect of this kit: 241 turns → 26 · Opus 100% → 0% · ~7× less context per turn.**
+
+---
+
+## 🔁 The flow
+
+```mermaid
+flowchart TD
+    A["🧭 /rein:plan<br/><i>Why · Scope · Decisions · Tasks</i>"]
+    B{{"rein next<br/><i>deterministic gate</i>"}}
+    C["⚙️ Implement<br/><i>bounded loop of FRESH agents</i><br/><i>context resets each step</i>"]
+    D{{"Verify<br/><i>ask the plan, not the agent</i>"}}
+    E["🔍 /rein:review<br/><i>whole change · 5 axes</i>"]
+    F["✅ merge"]
+    G["✋ escalate to you"]
+    X["🛑 stop"]
+
+    A -->|you confirm| B
+    B -->|ready| C
+    C --> D
+    D -->|contradiction| X
+    D -->|consistent| E
+    E -->|"APPROVED + gate green"| F
+    E -->|"needs your judgement"| G
+    E -->|"CHANGES_REQUESTED · max 3"| C
+
+    style A fill:#1e3a5f,stroke:#4a90d9,color:#fff
+    style C fill:#1e4620,stroke:#4caf50,color:#fff
+    style E fill:#5f1e3a,stroke:#d94a90,color:#fff
+    style F fill:#2d4a1e,stroke:#8bc34a,color:#fff
+    style X fill:#4a1e1e,stroke:#d94a4a,color:#fff
+    style G fill:#4a3a1e,stroke:#d9a94a,color:#fff
+```
+
+Three roles, and **no agent approves its own implementation**. Every run works in its own git
+worktree; unapproved work is never merged.
+
+---
+
+## 🚀 Quickstart
+
+```bash
+claude plugin marketplace add luisfarfan/rein-agentic-kit
+```
+
+```bash
+claude plugin install rein@rein-agentic-kit --scope user
+```
+
+```bash
+rein doctor
+```
+
+`doctor` tells you the detected stack, the resolved commands, and where each one came from.
+**If it got everything right, you configure nothing.**
+
+Then, per change:
+
+```
+/rein:plan   →   you confirm the plan   →   /rein:loop   →   read the verdict
+```
+
+You come back when it finished, not before.
+
+---
+
+## 🧰 What you get
+
+### Skills — the three roles
+
+| | |
 |---|---|
-| `cache_read` (context re-read every turn) | **~90%** |
-| `cache_write` | ~10% |
-| **output** | **~0.3%** |
-| fresh input | ~0% |
+| 🎭 **`/rein:role`** | Assign this session's role: planner · implementer · reviewer |
+| 🧭 **`/rein:plan`** | Plan into verifiable tasks — dry-run and **explicit confirmation** before writing |
+| 🔨 **`/rein:run`** | Exactly **one** task. Max 3 attempts, max 5 failed commands, no self-approval |
+| 🔁 **`/rein:run-auto`** | Bounded loop of `run`, stopping on **verifiable signals** only |
+| 🔍 **`/rein:review`** | The independent gate: mechanical checks first, then five-axis judgement |
+| ♾️ **`/rein:loop`** | Runs all three end-to-end in an isolated worktree |
 
-So **cost ≈ turns × context size**. One agent that ran 241 turns, re-reading ~234k
-of context on every turn, was most of a 112M-token run. And Claude Code has **no
-native eviction of stale tool results** — only `/compact`, which is lossy and
-breaks the prompt cache. A long agent's context only grows.
+### CLI — the deterministic half
 
-Three levers move the needle. Everything in this kit is one of them:
+```bash
+rein detect      # stack + commands, with the source of each
+rein tasks       # the plan, parsed
+rein context     # detect + plan in ONE round-trip — what the loop's first agent runs
+rein next        # ✅ the gate: is there a task to claim, and may it be
+rein close T001  # tick a checkbox deterministically — no agent hand-edits the plan
+rein review      # record / check a verdict bound to a code state
+rein token-report# what a run really cost, per agent and per model
+rein ledger      # history across projects, with deltas vs a marked baseline
+rein baseline    # mark the run everything is compared against
+rein dashboard   # 📊 serve it all as a local page
+```
 
-1. **Bounded loop of fresh agents.** Each task is implemented by at most *N* short,
-   fresh agents handing off a **compact ledger** (`progress` / `remaining` /
-   `filesTouched` / `verification`) — not one agent running 200+ turns. Context
-   resets at every boundary, so spend stops growing without a ceiling.
-2. **Per-agent model routing.** Mechanical work → Haiku, code → Sonnet, review →
-   Opus. On a subscription this does not lower the bill (it is fixed) — it frees
-   the **scarce Opus quota**, which is the limit you actually hit.
-3. **Retrieval discipline + honest measurement.** Graph-first orientation, read
-   symbols not whole files, small command output, few turns — and a token report
-   broken down **per model**, because the total is not what limits you.
+> **The rule that separates them:** if it's a *parse*, a script does it. If it's a *judgement*,
+> an agent does it. Every fact an agent doesn't have to rediscover is turns you don't pay for.
 
-Measured effect of applying these: **241 turns → 26**, **Opus 100% → 0%**, **~7×
-less context per turn**.
+---
 
-### Deliberately not included
+## ⚖️ The three levers
+
+**1️⃣ Bounded loop of fresh agents.** Each task is at most *N* short, fresh agents handing off a
+**compact ledger** (`progress` / `remaining` / `filesTouched` / `verification`) — never one agent
+running 200+ turns. Context **resets at every boundary**, so spend stops growing without a ceiling.
+
+**2️⃣ Per-agent model routing.** Mechanical → Haiku · code → Sonnet · the review gate → Opus. On a
+subscription this doesn't lower the bill — it frees the **scarce Opus quota**, which is the limit
+you actually hit.
+
+**3️⃣ Verifiable signals, not model judgement.** A loop that stops when the model *feels* finished
+has no gate. `rein next` answers "is there work to claim" from the plan; `rein review check`
+answers "does this approval still apply" from content hashes. Neither asks a model anything.
+
+### ❌ Deliberately not included
 
 Tried and discarded **with data**, not taste:
 
-- **Output compressors** — attack the 0.3%.
-- **Multi-provider API swarms** — the saving does not apply on a subscription, and
-  more agents means more contexts re-read.
+- **Output compressors** — they attack the 0.3%.
+- **Multi-provider API swarms** — the saving doesn't apply on a subscription, and more agents means
+  more contexts re-read.
 - **Cross-session memory tools** — orthogonal to the actual cost driver.
 - **Cache-aware proxies** — no-op on already-cached traffic.
+- **Persona prompts** ("you are a hexagonal architecture expert") — the same model with the same
+  weights. Constraints that can be *violated* are useful; job titles are not.
 
-## Install
+---
 
-```bash
-/plugin marketplace add luisfarfan/rein-agentic-kit
-```
+## ⚙️ Configure
 
-```bash
-/plugin install rein@rein-agentic-kit --scope user
-```
-
-Use `--scope project` to enable it for one repository only.
-
-## Configure
-
-Everything is optional — what you omit is autodetected. Drop a `flow.config.json`
-at your project root to override:
+Everything is optional. Drop a `flow.config.json` at your project root to override:
 
 ```json
 {
@@ -83,74 +179,67 @@ at your project root to override:
 }
 ```
 
-Resolution precedence: **`flow.config.json` > task runner (`justfile` /
-`Makefile` / `Taskfile`) > autodetection.** A project that already declares how it
-is built is not second-guessed.
+**Precedence:** `flow.config.json` › task runner (`justfile` / `Makefile` / `Taskfile`) ›
+autodetection. A project that already declares how it is built is never second-guessed.
 
-Check what was resolved:
-
-```bash
-rein doctor
-```
-
-## Supported stacks
+## 🧱 Supported stacks
 
 | Stack | Detected by | Verification |
 |---|---|---|
-| Python | `pyproject.toml`, uv / poetry | pytest, ruff, mypy |
-| Node / JS / TS | `package.json`, pnpm / npm / yarn / bun | vitest or jest, eslint, tsc |
-| Rust | `Cargo.toml` | cargo test / clippy / check |
-| Go | `go.mod` | go test / vet |
-| **Frontend** (subtype of Node: Next, Vite, Astro, SvelteKit, Nuxt, Remix) | dependencies | **real rendered verification** — unit tests alone do not catch "the tests pass but the UI is broken" |
-| Serverless / infra | `serverless.yml`, `sst.config.ts`, `*.tf`, `Dockerfile` | `plan` / `validate` — **never deploy** |
+| 🐍 Python | `pyproject.toml`, uv / poetry | pytest · ruff · mypy |
+| 🟨 Node / TS | `package.json`, pnpm / npm / yarn / bun | vitest or jest · eslint · tsc |
+| 🦀 Rust | `Cargo.toml` | cargo test · clippy · check |
+| 🐹 Go | `go.mod` | go test · vet |
+| 🎨 **Frontend** *(Next, Vite, Astro, SvelteKit, Nuxt, Remix)* | dependencies | **rendered verification** — unit tests alone don't catch "the tests pass but the UI is broken" |
+| ☁️ Serverless / infra | `serverless.yml`, `sst.config.ts`, `*.tf` | `plan` / `validate` — **never deploy** |
 
-Optional tools (`graphify`, `openspec`, `serena`, `bd`) are **probed, never
-required**: if one is absent the flow degrades, it does not break.
+Optional tools (`graphify`, `openspec`, `serena`) are **probed, never required**: if one is
+absent the flow degrades, it does not break.
 
-## Measure
-
-```bash
-rein token-report
-```
-
-Reads Claude Code's own JSONL transcripts (`usage`, including `cache_read`) and
-breaks the run down per agent and **per model**. The workflow runtime's
-`budget.spent()` counts only output and cannot be used for this.
-
-Each run is summarized into a ledger at `~/.claude/rein/runs.jsonl`, so history
-survives transcript rotation:
+## 📊 Measure
 
 ```bash
-rein ledger
+rein token-report && rein dashboard
 ```
 
-**On the word "savings":** this tool measures *consumption*. A saving requires a
-baseline to compare against. Without one, the honest numbers are the three that
-predict cost — **turns/agent**, **ctx_max/turn**, **% of tokens on Opus**.
+Reads Claude Code's own JSONL transcripts (including `cache_read`) and breaks a run down per
+agent and **per model**. Every run is summarized into `~/.claude/rein/runs.jsonl`, so history
+survives transcript rotation.
 
-Mark a run as that baseline and `rein ledger` decorates every later run in the
-*same project* with a signed delta against it (negative = better):
+**On the word "savings":** this measures *consumption*. A saving needs a baseline. Mark one with
+`rein baseline mark` and every later run in that project gets a signed delta. Without one, the
+honest numbers are the three that predict cost — **turns/agent**, **ctx_max/turn**,
+**% of tokens on Opus**.
 
-```bash
-rein baseline mark [wf_id]   # defaults to the most recent run
-rein baseline show
-rein baseline clear
-```
+---
 
-The baseline is scoped to the project it was marked in — the ledger is global
-across all projects, so a delta is only ever shown against a run from the same
-project it was recorded in.
+## 🙃 Honest limitations
 
-## Roadmap
+Things a README usually hides:
 
-| Phase | Scope | State |
+- **The reviewer is calibrated hard.** 4 of 6 runs here exhausted their 3 rounds. A three-task
+  change will often use them all.
+- **Rendered verification declares, it doesn't compose.** In `rendered` mode the prompt demands a
+  real render; the kit doesn't open a browser for you yet.
+- **A stalled agent burns wall-clock.** One run spent 3.4 hours almost entirely in silent API
+  retries.
+- **`discover` was considered and rejected** — a per-run version of it was measured in the origin
+  project and did not move the needle. See [docs/decisions.md](docs/decisions.md).
+
+## 🗺️ Roadmap
+
+| Phase | Scope | |
 |---|---|---|
-| 0 | Scaffold, plugin plumbing, `token-report` + ledger, stack detection | ✅ done — [findings](docs/phase-0-findings.md) |
-| 1 | Config-driven core loop + `tasks.md` adapter — **measured** | ✅ done |
-| 2 | Stack-aware verification policy; frontend rendered verification | ✅ done |
-| 3 | Local dashboard: metrics per project/session, per-agent model config | next |
-| 4 | Docs, polish, public marketplace | |
+| 0 | Plugin plumbing · `token-report` · ledger · stack detection | ✅ [findings](docs/phase-0-findings.md) |
+| 1 | Config-driven core loop · `tasks.md` adapter — **measured** | ✅ |
+| 2 | Stack-aware verification policy | ✅ |
+| 3 | Local dashboard · per-agent model config | ✅ |
+| 4 | Compose real browser verification · docs · polish | ⏳ |
 
-## License
+## 📄 License
 
-MIT
+MIT — see [LICENSE](LICENSE).
+
+<div align="center">
+<sub>Built with Claude Code, reviewed by an agent that wrote none of it.</sub>
+</div>
