@@ -139,7 +139,13 @@ def cmd_ledger(argv: list[str]) -> int:
         print(json.dumps(rows, indent=2, ensure_ascii=False))
         return 0
 
-    print(_tr.render_ledger(rows, _tr.LEDGER_PATH, _tr.read_baseline()))
+    try:
+        baseline = _tr.read_baseline()
+    except _tr.BaselineCorruptError as exc:
+        print(str(exc))
+        return 1
+
+    print(_tr.render_ledger(rows, _tr.LEDGER_PATH, baseline))
     return 0
 
 
@@ -159,7 +165,12 @@ def cmd_baseline(argv: list[str]) -> int:
         return 0
 
     if sub == "show":
-        print(_tr.render_baseline(_tr.read_baseline()))
+        try:
+            baseline = _tr.read_baseline()
+        except _tr.BaselineCorruptError as exc:
+            print(str(exc))
+            return 1
+        print(_tr.render_baseline(baseline))
         return 0
 
     if sub == "clear":

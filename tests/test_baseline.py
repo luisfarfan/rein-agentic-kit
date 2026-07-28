@@ -15,10 +15,18 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
 import token_report as tr  # noqa: E402
 
 
-def row(wf_id: str, ts: str, turns_per_agent: float = 5.0, ctx_max: int = 1000, opus_share: float = 10.0) -> dict:
+def row(
+    wf_id: str,
+    ts: str,
+    turns_per_agent: float = 5.0,
+    ctx_max: int = 1000,
+    opus_share: float = 10.0,
+    project: str = "proj-A",
+) -> dict:
     return {
         "wf_id": wf_id,
         "ts": ts,
+        "project": project,
         "turns": int(turns_per_agent * 2),
         "turns_per_agent": turns_per_agent,
         "ctx_max": ctx_max,
@@ -145,6 +153,77 @@ class TestLedgerDelta(BaselineFixture):
 
         text = tr.render_ledger(rows, self.ledger_path, baseline=baseline)
         self.assertIn("turns/agent +100.0% worse", text)
+
+    def test_baseline_from_one_project_never_decorates_another_project(self):
+        # Reproduction from the review finding: a baseline marked in proj-A must
+        # not fabricate a delta for an unrelated run in proj-B just because it
+        # comes later by timestamp.
+        rows = [
+            row("wfA", "2026-01-01T00:00:00Z", turns_per_agent=10.0, ctx_max=2000, opus_share=20.0, project="proj-A"),
+            row("wfB", "2026-01-02T00:00:00Z", turns_per_agent=40.0, ctx_max=90000, opus_share=99.0, project="proj-B"),
+        ]
+        self._write_ledger(rows)
+        baseline = tr.mark_baseline("wfA", self.ledger_path, self.baseline_path)
+        self.assertEqual(baseline["project"], "proj-A")
+
+        text = tr.render_ledger(rows, self.ledger_path, baseline=baseline)
+        lines = text.splitlines()
+        b_idx = next(i for i, ln in enumerate(lines) if "wfB" in ln)
+        self.assertNotIn("vs baseline", lines[b_idx])
+        # And the fabricated numbers from the finding must not appear anywhere.
+        self.assertNotIn("+300.0%", text)
+        self.assertNotIn("+4400.0%", text)
+        self.assertNotIn("+395.0%", text)
+
+    def test_baseline_missing_project_field_suppresses_all_deltas(self):
+        # A baseline.json written before `project` was tracked. Must not fall
+        # back to comparing across projects.
+        rows = [row("wf_base", "2026-01-01T00:00:00Z"), row("wf_after", "2026-01-02T00:00:00Z")]
+        self._write_ledger(rows)
+        stale_baseline = {"wf_id": "wf_base", "ts": "2026-01-01T00:00:00Z"}  # no "project" key
+
+        text = tr.render_ledger(rows, self.ledger_path, baseline=stale_baseline)
+
+        self.assertNotIn("vs baseline", text)
+        self.assertIn("rein baseline mark", text)
+
+    def test_baseline_older_than_the_displayed_window_still_shows_the_tag(self):
+        rows = [row("wf_base", "2026-01-01T00:00:00Z", turns_per_agent=5.0)]
+        rows += [row(f"wf_{i}", f"2026-01-{i:02d}T00:00:00Z", turns_per_agent=5.0) for i in range(2, 9)]
+        self._write_ledger(rows)
+        baseline = tr.mark_baseline("wf_base", self.ledger_path, self.baseline_path)
+
+        text = tr.render_ledger(rows, self.ledger_path, baseline=baseline)
+
+        self.assertIn("[baseline]", text)
+        self.assertIn("wf_base", text)
+
+
+class TestReadBaselineCorrupt(BaselineFixture):
+    def test_corrupt_file_raises_distinctly_from_missing_file(self):
+        with open(self.baseline_path, "w", encoding="utf-8") as fh:
+            fh.write("{not valid json")
+
+        with self.assertRaises(tr.BaselineCorruptError) as ctx:
+            tr.read_baseline(self.baseline_path)
+        self.assertIn(self.baseline_path, str(ctx.exception))
+
+        # A genuinely absent file must still read as None, not raise.
+        os.remove(self.baseline_path)
+        self.assertIsNone(tr.read_baseline(self.baseline_path))
+
+
+class TestZeroBaselineMetric(BaselineFixture):
+    def test_zero_baseline_metric_explains_itself_instead_of_bare_na(self):
+        rows = [
+            row("wf_base", "2026-01-01T00:00:00Z", opus_share=0.0),
+            row("wf_after", "2026-01-02T00:00:00Z", opus_share=5.0),
+        ]
+        self._write_ledger(rows)
+        baseline = tr.mark_baseline("wf_base", self.ledger_path, self.baseline_path)
+
+        text = tr.render_ledger(rows, self.ledger_path, baseline=baseline)
+        self.assertIn("opus_share n/a (baseline 0)", text)
 
 
 class TestClear(BaselineFixture):
