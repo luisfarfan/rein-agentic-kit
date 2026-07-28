@@ -483,7 +483,7 @@ def _serve(root: str, subtypes: list[str], commands: dict[str, str], cfg: dict) 
             why = (
                 f"port {chosen} was inferred from a bare number in {inspected!r}"
                 if port
-                else f"no port could be read from {inspected!r}" if inspected else "there is no serve command to read a port from"
+                else f"no port could be read from {inspected!r}"
             )
             warnings.append(
                 f"serve.url {url!r} is a guess: {why}. "
@@ -534,7 +534,10 @@ _PORT_ENV_RE = re.compile(r"(?:^|\s)(?:NEXT_PUBLIC_|VITE_)?PORT=(\d{2,5})(?!\S)"
 # Sequential forms (`&&`, `||`, a pipe) have no sibling -- the last command is
 # the only long-running process, so its flag IS the server's own port. Treating
 # them as ambiguous silently discarded `tsc && vite --port 4000`.
-_COMPOUND_RE = re.compile(r"(?<!&)&(?!&)|concurrently|npm-run-all|run-p|run-s")
+# A lone `&` is only a background operator when it is not part of `&&` and not
+# part of a `>&` fd-duplication redirect (`2>&1`, `1>&2`) -- that `&` never
+# starts a sibling process, so `node server.js --port 3000 2>&1` is not compound.
+_COMPOUND_RE = re.compile(r"(?<![&>])&(?!&)|concurrently|npm-run-all|run-p|run-s")
 
 
 def _port_from(text: str) -> tuple[str, str]:
@@ -550,7 +553,7 @@ def _port_from(text: str) -> tuple[str, str]:
     is never a port, and reading it as one sent both agents to a dead URL.
     """
     env = _PORT_ENV_RE.search(text)
-    if env:
+    if env and 1 <= int(env.group(1)) <= 65535:
         return env.group(1), "env"
     flag = _PORT_FLAG_RE.search(text)
     if flag:
