@@ -30,6 +30,10 @@ CONFIG_NAME = "flow.config.json"
 FRONTEND_MARKERS = ("next", "vite", "astro", "@sveltejs/kit", "nuxt", "@remix-run", "react-scripts")
 INFRA_FILES = ("serverless.yml", "serverless.ts", "sst.config.ts", "template.yaml", "Dockerfile")
 
+# An infra task "verified" by actually mutating real infrastructure is not
+# verified, it is an incident. These are always forbidden in plan-only mode.
+DESTRUCTIVE_OPS = ("deploy", "apply", "destroy")
+
 
 def _read_json(path: str) -> dict:
     try:
@@ -239,6 +243,71 @@ def _capabilities(root: str) -> list[str]:
     return caps
 
 
+# ------------------------------------------------------------- verify policy --
+
+
+def _browser_tools(root: str) -> list[str]:
+    """Which rendered-verification tools this PROJECT can actually reach.
+
+    Deliberately project-local only (never the operator's machine or home
+    directory): the same `rein detect` call must give the same answer for
+    everyone who clones the project, and it must be reproducible in a throwaway
+    temp tree for tests. Naming a tool nobody here can use is worse than
+    naming none.
+    """
+    tools: list[str] = []
+
+    pkg = _read_json(os.path.join(root, "package.json"))
+    deps = {**(pkg.get("dependencies") or {}), **(pkg.get("devDependencies") or {})}
+    pyproject = _read_text(os.path.join(root, "pyproject.toml")).lower()
+    requirements = _read_text(os.path.join(root, "requirements.txt")).lower()
+    has_playwright = (
+        "playwright" in deps
+        or "@playwright/test" in deps
+        or "playwright" in pyproject
+        or "playwright" in requirements
+        or os.path.exists(os.path.join(root, "node_modules", ".bin", "playwright"))
+    )
+    if has_playwright:
+        tools.append("playwright")
+
+    mcp_cfg = _read_json(os.path.join(root, ".mcp.json"))
+    servers = mcp_cfg.get("mcpServers") or {}
+    if any("chrome" in k.lower() for k in servers):
+        tools.append("claude-in-chrome")
+
+    skills_dir = os.path.join(root, ".claude", "skills")
+    browser_skill_names = ("browser-testing", "browser-testing-with-devtools")
+    if any(os.path.isdir(os.path.join(skills_dir, n)) for n in browser_skill_names):
+        tools.append("browser-testing")
+
+    return tools
+
+
+def _verify_policy(root: str, subtypes: list[str], commands: dict[str, str], cfg: dict) -> dict:
+    cfg_verify = cfg.get("verify") or {}
+    if "mode" in cfg_verify:
+        mode = cfg_verify["mode"]
+    elif "frontend" in subtypes:
+        mode = "rendered"
+    elif "infra" in subtypes and "test" not in commands:
+        mode = "plan-only"
+    else:
+        mode = "unit"
+
+    requires: list[str] = []
+    forbids: list[str] = []
+    tools: list[str] = []
+
+    if mode == "rendered":
+        requires = ["a real browser render must be observed, not just a passing test suite"]
+        tools = _browser_tools(root)
+    elif mode == "plan-only":
+        forbids = list(DESTRUCTIVE_OPS)
+
+    return {"mode": mode, "requires": requires, "forbids": forbids, "tools": tools}
+
+
 def resolve(root: str = ".") -> dict:
     """Full resolution with precedence applied. Never raises."""
     root = os.path.abspath(root)
@@ -264,6 +333,7 @@ def resolve(root: str = ".") -> dict:
     worktree = {"enabled": True, "prefix": "rein-wt", **(cfg.get("worktree") or {})}
     plan = {"source": _detect_plan_source(root), "path": "", **(cfg.get("plan") or {})}
     tracker = {"kind": "none", **(cfg.get("tracker") or {})}
+    subtypes = cfg.get("subtypes") or auto.get("subtypes", [])
 
     return {
         "schema": 1,
@@ -271,7 +341,7 @@ def resolve(root: str = ".") -> dict:
         "configFound": bool(cfg),
         "configPath": os.path.join(root, CONFIG_NAME) if cfg else "",
         "stack": cfg.get("stack") or auto["stack"],
-        "subtypes": cfg.get("subtypes") or auto.get("subtypes", []),
+        "subtypes": subtypes,
         "packageManager": auto.get("packageManager", ""),
         "taskRunner": runner,
         "commands": commands,
@@ -283,6 +353,7 @@ def resolve(root: str = ".") -> dict:
         "limits": limits,
         "worktree": worktree,
         "capabilities": _capabilities(root),
+        "verifyPolicy": _verify_policy(root, subtypes, commands, cfg),
     }
 
 
