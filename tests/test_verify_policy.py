@@ -610,6 +610,18 @@ class TestPortHeuristicDoesNotInventPorts(unittest.TestCase):
             self.assertEqual(prov, "env", cmd)
             self.assertIn(port, ("4000", "8080"), cmd)
 
+    def test_sequential_compounds_keep_their_own_flag(self):
+        """`&&` has no sibling: the last command is the only long-running one."""
+        for cmd in ("tsc && vite --port 4000", "rimraf dist && vite --port 4000",
+                    "vite --port 4000 | tee dev.log"):
+            self.assertEqual(detect._port_from(cmd), ("4000", "flag"), cmd)
+
+    def test_unrelated_PORT_prefixes_are_not_the_server_port(self):
+        """DB_PORT/REDIS_PORT are the NODE_OPTIONS defect via a prefix wildcard."""
+        for cmd in ("DB_PORT=5432 next dev", "REDIS_PORT=6379 vite", "API_PORT=8081 next dev"):
+            port, prov = detect._port_from(cmd)
+            self.assertNotEqual(prov, "env", cmd)
+
     def test_provenance_distinguishes_flag_bare_and_compound(self):
         self.assertEqual(detect._port_from("vite --port 4000"), ("4000", "flag"))
         self.assertEqual(detect._port_from("python3 -m http.server 8080"), ("8080", "bare"))

@@ -519,11 +519,18 @@ def _framework_port(subtypes: list[str]) -> tuple[int, bool]:
 # mainstream way a package.json script moves off the default port. It is an
 # assignment, so a blanket "assignment values are never ports" rule silently
 # broke exactly the case that matters -- match it explicitly, first.
-_PORT_ENV_RE = re.compile(r"(?:^|\s)(?:[A-Z0-9_]*_)?PORT=(\d{2,5})(?!\S)")
-# In a compound script the first --port may belong to a SIBLING process: with
+# Bare PORT=, or the two framework-public prefixes -- NOT any *_PORT=. A
+# wildcard prefix read DB_PORT=5432 and REDIS_PORT=6379 as the dev server's
+# port: the same "a non-server number became the server port" defect as
+# NODE_OPTIONS=--max-old-space-size=4096, reintroduced through the prefix.
+_PORT_ENV_RE = re.compile(r"(?:^|\s)(?:NEXT_PUBLIC_|VITE_)?PORT=(\d{2,5})(?!\S)")
+# In a PARALLEL script the first --port may belong to a SIBLING process: with
 # `concurrently "json-server --port 3001" "vite"` something really does listen
 # on 3001, so a render check there passes against the wrong process.
-_COMPOUND_RE = re.compile(r"&&|\|\||[&|]|concurrently|npm-run-all|run-p|run-s")
+# Sequential forms (`&&`, `||`, a pipe) have no sibling -- the last command is
+# the only long-running process, so its flag IS the server's own port. Treating
+# them as ambiguous silently discarded `tsc && vite --port 4000`.
+_COMPOUND_RE = re.compile(r"(?<!&)&(?!&)|concurrently|npm-run-all|run-p|run-s")
 
 
 def _port_from(text: str) -> tuple[str, str]:
