@@ -74,14 +74,39 @@ def _is_set(commands: dict, slot: str) -> bool:
     return bool((commands.get(slot) or "").strip())
 
 
+_INFRA_SKIP_DIRS = (".git", "node_modules", "vendor", ".venv", "dist", "build", ".terraform")
+
+
 def _infra_files(root: str) -> list[str]:
-    """Infra markers by exact name and by extension (terraform)."""
+    """Infra markers by exact name and by extension, one directory deep.
+
+    Root-only matching is not enough here: `terraform/`, `infra/` and
+    `envs/prod/` are the ORDINARY layouts, so a root-only probe would leave the
+    plan-only guarantee unreachable for most real infra repos while looking
+    fixed. Depth is bounded at one level on purpose -- a full walk would make
+    every `rein detect` pay for a recursive scan of the whole tree.
+    """
     import glob as _glob
 
     found = [n for n in INFRA_FILES if _exists(root, n)]
     for pattern in INFRA_GLOBS:
         if _glob.glob(os.path.join(root, pattern)):
             found.append(pattern)
+
+    try:
+        subdirs = [e for e in os.listdir(root) if e not in _INFRA_SKIP_DIRS and not e.startswith(".")]
+    except OSError:
+        subdirs = []
+    for sub in sorted(subdirs):
+        path = os.path.join(root, sub)
+        if not os.path.isdir(path):
+            continue
+        for name in INFRA_FILES:
+            if os.path.exists(os.path.join(path, name)):
+                found.append(f"{sub}/{name}")
+        for pattern in INFRA_GLOBS:
+            if _glob.glob(os.path.join(path, pattern)):
+                found.append(f"{sub}/{pattern}")
     return found
 
 
@@ -356,7 +381,7 @@ def _browser_tools(root: str) -> list[str]:
 _PORT_FLAG_RE = re.compile(r"(?:--port|-p)[=\s]+(\d+)")
 
 
-def _serve(root: str, subtypes: list[str], commands: dict[str, str], cfg: dict) -> dict | None:
+def _serve(root: str, subtypes: list[str], commands: dict[str, str], cfg: dict) -> tuple[dict | None, list[str]]:
     """How to run a frontend project so a real page can be rendered and checked.
 
     Returns None for non-frontend projects: there is nothing to serve, so no
@@ -370,7 +395,7 @@ def _serve(root: str, subtypes: list[str], commands: dict[str, str], cfg: dict) 
     `serve` slot would stay in `missingCommands` with no way to satisfy it.
     """
     if "frontend" not in subtypes:
-        return None
+        return None, []
 
     pkg = _read_json(os.path.join(root, "package.json"))
     scripts = pkg.get("scripts") or {}
@@ -392,13 +417,62 @@ def _serve(root: str, subtypes: list[str], commands: dict[str, str], cfg: dict) 
         command = ""
 
     cfg_url = ((cfg.get("verify") or {}).get("url") or "").strip()
+    warnings: list[str] = []
     if cfg_url:
         url = cfg_url
     else:
-        port_match = _PORT_FLAG_RE.search(script_body) if script_body else None
-        url = f"http://localhost:{port_match.group(1) if port_match else 3000}"
+        port = _port_from(script_body) if script_body else ""
+        url = f"http://localhost:{port or _framework_port(subtypes)}"
+        # `commands.serve` exists precisely for servers that are NOT npm scripts,
+        # so there is no framework default to fall back on and no port to read.
+        # Handing the implementer a URL nothing listens on is worse than admitting
+        # the guess: it and the reviewer would both be told to render a dead link.
+        # Deliberately NOT warned for package.json scripts -- `npm run dev` never
+        # carries a port flag, and a warning on every ordinary frontend project is
+        # noise that teaches people to ignore warnings.
+        if cfg_command and not port:
+            warnings.append(
+                f"serve.url {url!r} is a guess: no port found in {cfg_command!r}. "
+                f"Set verify.url in flow.config.json if the server does not listen there."
+            )
 
-    return {"command": command, "url": url}
+    return {"command": command, "url": url}, warnings
+
+
+# Dev-server defaults, so an ordinary frontend project gets the RIGHT url without
+# any configuration. 3000 for everything was simply wrong for half of these.
+_FRAMEWORK_PORTS = {
+    "vite": 5173,
+    "@sveltejs/kit": 5173,
+    "astro": 4321,
+    "next": 3000,
+    "nuxt": 3000,
+    "@remix-run": 3000,
+    "react-scripts": 3000,
+}
+
+
+def _framework_port(subtypes: list[str]) -> int:
+    for marker in subtypes:
+        if marker in _FRAMEWORK_PORTS:
+            return _FRAMEWORK_PORTS[marker]
+    return 3000
+
+
+def _port_from(text: str) -> str:
+    """Port from a serve command: a --port/-p flag, else a bare numeric argument.
+
+    The bare-argument fallback exists for the shapes a flag regex cannot see --
+    `python3 -m http.server 8080`, `serve -s build 4173`.
+    """
+    flag = _PORT_FLAG_RE.search(text)
+    if flag:
+        return flag.group(1)
+    bare = re.findall(r"(?<![\w.:-])(\d{2,5})(?![\w.])", text)
+    for candidate in bare:
+        if 1 <= int(candidate) <= 65535:
+            return candidate
+    return ""
 
 
 _VALID_VERIFY_MODES = {"rendered", "plan-only", "unit"}
@@ -444,6 +518,16 @@ def _verify_policy(root: str, subtypes: list[str], commands: dict[str, str], cfg
     if mode == "rendered":
         requires = ["a real browser render must be observed, not just a passing test suite"]
         tools = _browser_tools(root)
+        if not tools:
+            # Rendered mode with nothing to render WITH is an unsatisfiable
+            # instruction: the implementer burns its step budget, or writes an
+            # unobserved "renders correctly" that the reviewer then accepts as
+            # the very evidence it was told to demand. Say so instead.
+            warnings.append(
+                "verify.mode is 'rendered' but no browser tool was found in this project "
+                "(Playwright dependency, chrome MCP server, or a project-local browser skill). "
+                "Install one, or set verify.mode to 'unit' in flow.config.json to opt out."
+            )
     elif mode == "plan-only":
         forbids = list(DESTRUCTIVE_OPS)
 
@@ -483,8 +567,9 @@ def resolve(root: str = ".") -> dict:
     plan = {"source": _detect_plan_source(root), "path": "", **(cfg.get("plan") or {})}
     tracker = {"kind": "none", **(cfg.get("tracker") or {})}
     subtypes = cfg.get("subtypes") or auto.get("subtypes", [])
-    serve = _serve(root, subtypes, commands, cfg)
+    serve, serve_warnings = _serve(root, subtypes, commands, cfg)
     verify_policy, verify_warnings = _verify_policy(root, subtypes, commands, cfg)
+    verify_warnings = serve_warnings + verify_warnings
 
     missing_commands = [s for s in ("test", "testOne", "lint", "typecheck") if not _is_set(commands, s)]
     if serve is not None and not serve["command"]:

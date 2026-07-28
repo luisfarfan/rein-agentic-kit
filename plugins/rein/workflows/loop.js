@@ -363,8 +363,11 @@ function boundedVerification(task) {
 function implementerPolicyBlock() {
   if (VERIFY_POLICY.mode === 'rendered') {
     return (
-      `RENDERED VERIFICATION REQUIRED (mode: rendered): a green ${ctx.stack} test suite does NOT make this task ` +
-      `done by itself — the page must be served and actually rendered. Serve it — ` +
+      // The requirement text comes from VERIFY_POLICY.requires, not a second
+      // English restatement of it here: two copies of one rule drift apart with
+      // nothing failing, and a future mode would silently get no requirement.
+      `RENDERED VERIFICATION REQUIRED (mode: rendered): ${VERIFY_POLICY.requires.join('; ')}. ` +
+      `A green ${ctx.stack} test suite does NOT make this task done by itself. Serve it — ` +
       `${SERVE.command || '(no serve command is configured; say so rather than inventing one)'}` +
       `${SERVE.url ? ` at ${SERVE.url}` : ''} — and render it` +
       `${VERIFY_POLICY.tools.length ? ` (available: ${VERIFY_POLICY.tools.join(', ')})` : ''}. Record what you ` +

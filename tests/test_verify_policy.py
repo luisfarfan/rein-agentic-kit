@@ -139,7 +139,15 @@ class TestShippedExampleConfig(unittest.TestCase):
         self.assertEqual(r["verifyPolicy"]["mode"], "rendered")
         self.assertTrue(r["verifyPolicy"]["requires"])
         self.assertNotIn("warnings", r["verifyPolicy"])
-        self.assertNotIn("verifyWarnings", r)
+        # The shipped example config must not itself be a source of complaints.
+        # Warnings ABOUT THE ENVIRONMENT (no browser tool installed in this temp
+        # tree) are expected and correct here, so assert on the config-validity
+        # ones specifically rather than on the absence of any warning at all --
+        # `assertNotIn("verifyWarnings", r)` would silently forbid every future
+        # environment diagnostic.
+        for warning in r.get("verifyWarnings", []):
+            self.assertNotIn("verify.mode 'auto'", warning)
+            self.assertNotIn("is not one of", warning)
 
 
 class TestBadVerifyMode(unittest.TestCase):
@@ -254,10 +262,51 @@ class TestServeBlock(unittest.TestCase):
             r = detect.resolve(root)
         self.assertEqual(r["serve"]["url"], "http://localhost:4321")
 
-    def test_url_defaults_to_3000_as_last_resort(self):
+    def test_url_falls_back_to_the_framework_default_then_3000(self):
+        """Documented deviation from T004's literal "3000 as a last resort".
+
+        Vite serves on 5173, not 3000, so the old assertion encoded a URL nothing
+        listens on -- satisfying the criterion's letter while breaking its intent
+        ("never invent one that would fail at run time"). 3000 remains the last
+        resort; it is just no longer reached before the framework's own default.
+        """
+        with Project({"package.json": PKG_VITE}) as root:
+            self.assertEqual(detect.resolve(root)["serve"]["url"], "http://localhost:5173")
+
+        nx = json.dumps({"scripts": {"dev": "next dev"}, "dependencies": {"next": "^14"}})
+        with Project({"package.json": nx}) as root:
+            self.assertEqual(detect.resolve(root)["serve"]["url"], "http://localhost:3000")
+
+        # Genuinely unknown framework -> 3000 is still the last resort.
+        unknown = json.dumps({"scripts": {"dev": "serve"}, "dependencies": {"@remix-run/react": "^2"}})
+        with Project({"package.json": unknown, "flow.config.json": '{"subtypes":["frontend"]}'}) as root:
+            self.assertEqual(detect.resolve(root)["serve"]["url"], "http://localhost:3000")
+
+    def test_explicit_port_still_wins_over_the_framework_default(self):
+        pkg = json.dumps({"scripts": {"dev": "vite --port 4000"}, "devDependencies": {"vite": "^5"}})
+        with Project({"package.json": pkg}) as root:
+            self.assertEqual(detect.resolve(root)["serve"]["url"], "http://localhost:4000")
+
+    def test_config_serve_without_url_warns_that_the_url_is_a_guess(self):
+        """The case commands.serve exists for: no framework default to fall back on."""
+        cfg = json.dumps({"commands": {"serve": "docker compose up"}})
+        with Project({"package.json": PKG_VITE, "flow.config.json": cfg}) as root:
+            r = detect.resolve(root)
+        self.assertEqual(r["serve"]["command"], "docker compose up")
+        self.assertTrue(any("is a guess" in w for w in r.get("verifyWarnings", [])))
+
+    def test_npm_script_without_a_port_flag_does_not_warn(self):
+        """A warning on every ordinary frontend project is noise, not a signal."""
         with Project({"package.json": PKG_VITE}) as root:
             r = detect.resolve(root)
-        self.assertEqual(r["serve"]["url"], "http://localhost:3000")
+        self.assertFalse(any("is a guess" in w for w in r.get("verifyWarnings", [])))
+
+    def test_rendered_mode_with_no_reachable_tool_warns(self):
+        """Otherwise the implementer is handed an instruction it cannot satisfy."""
+        with Project({"package.json": PKG_VITE}) as root:
+            r = detect.resolve(root)
+        self.assertEqual(r["verifyPolicy"]["tools"], [])
+        self.assertTrue(any("no browser tool" in w for w in r.get("verifyWarnings", [])))
 
     def test_frontend_with_no_runnable_script_reports_empty_command(self):
         pkg = json.dumps({"scripts": {"build": "vite build"}, "devDependencies": {"vite": "^5"}})
@@ -341,10 +390,12 @@ class TestLoopScriptIsPortable(unittest.TestCase):
     def test_no_hardcoded_stack_framework_or_port(self):
         # Strip comments first: a future comment merely mentioning e.g. pnpm
         # (as this file's own header comments do, in prose) is not a
-        # portability loss and must not fail the suite. Safe here because the
-        # source contains no "//" inside string literals (e.g. no http:// URLs).
+        # portability loss and must not fail the suite. Anchored to line-leading
+        # `//` so a "//" inside a string literal (an http:// URL) cannot swallow
+        # the rest of that line and quietly weaken this guard -- it must fail
+        # loudly, not open.
         code_only = re.sub(r"/\*.*?\*/", "", self.source, flags=re.DOTALL)
-        code_only = re.sub(r"//.*", "", code_only)
+        code_only = re.sub(r"^\s*//.*$", "", code_only, flags=re.MULTILINE)
         lowered = code_only.lower()
         hits = [
             tok for tok in _STACK_OR_FRAMEWORK_LITERALS + _PORT_LITERALS
