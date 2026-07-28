@@ -12,6 +12,7 @@ Subcommands:
   rein token-report   real per-model token accounting for the last agent run
   rein ledger         summary of recorded runs (per project / per session)
   rein baseline       mark/show/clear the reference run compared against
+  rein dashboard      serve (or --json print) the ledger as a view model
 
 Kept dependency-free on purpose: a plugin that drags a toolchain along at install
 time is a plugin nobody installs. Python 3 stdlib only.
@@ -30,6 +31,7 @@ HERE = os.path.dirname(os.path.abspath(os.path.realpath(__file__)))
 PLUGIN_ROOT = os.path.dirname(HERE)
 sys.path.insert(0, os.path.join(PLUGIN_ROOT, "lib"))
 
+import dashboard as _dash  # noqa: E402
 import detect as _detect  # noqa: E402
 import gate as _gate  # noqa: E402
 import plan as _plan  # noqa: E402
@@ -241,6 +243,10 @@ def cmd_baseline(argv: list[str]) -> int:
     return 2
 
 
+def cmd_dashboard(argv: list[str]) -> int:
+    return _dash.main(argv)
+
+
 def cmd_doctor(argv: list[str]) -> int:
     root = argv[0] if argv and not argv[0].startswith("-") else "."
     resolved = _detect.resolve(root)
@@ -312,6 +318,7 @@ COMMANDS = {
     "token-report": cmd_token_report,
     "ledger": cmd_ledger,
     "baseline": cmd_baseline,
+    "dashboard": cmd_dashboard,
 }
 
 
