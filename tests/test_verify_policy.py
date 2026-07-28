@@ -619,8 +619,10 @@ class TestPortHeuristicDoesNotInventPorts(unittest.TestCase):
     def test_unrelated_PORT_prefixes_are_not_the_server_port(self):
         """DB_PORT/REDIS_PORT are the NODE_OPTIONS defect via a prefix wildcard."""
         for cmd in ("DB_PORT=5432 next dev", "REDIS_PORT=6379 vite", "API_PORT=8081 next dev"):
-            port, prov = detect._port_from(cmd)
-            self.assertNotEqual(prov, "env", cmd)
+            # Assert the FULL tuple: "not an env port" alone would still pass if a
+            # regression returned ("5432", "bare") -- which is exactly the
+            # non-server-number-became-the-server-port defect this guards.
+            self.assertEqual(detect._port_from(cmd), ("", ""), cmd)
 
     def test_provenance_distinguishes_flag_bare_and_compound(self):
         self.assertEqual(detect._port_from("vite --port 4000"), ("4000", "flag"))
