@@ -20,7 +20,7 @@ read turns/agent, ctx_max and opus share. The measurement exists and is unusable
 
 ---
 
-- [ ] T001 Assemble the dashboard view model and serve it
+- [x] T001 Assemble the dashboard view model and serve it
   - Type: implementation
   - Depends on: none
   - Human review: false
@@ -34,7 +34,7 @@ read turns/agent, ctx_max and opus share. The measurement exists and is unusable
     - Python 3 standard library only; no new dependency appears anywhere
     - a new `tests/test_dashboard.py` builds temporary ledgers and asserts each of the above, including the corrupt-line case
 
-- [ ] T002 Render the page
+- [x] T002 Render the page
   - Type: implementation
   - Depends on: T001
   - Human review: false
@@ -47,7 +47,7 @@ read turns/agent, ctx_max and opus share. The measurement exists and is unusable
     - it renders with zero runs, with one run, and with a run whose `agents` list is empty
     - a test starts the real server, fetches the page over HTTP, and asserts that values taken from the temp ledger appear in the returned markup — proving the data reached the page, not that a template rendered
 
-- [ ] T003 Edit per-agent models from the page
+- [x] T003 Edit per-agent models from the page
   - Type: implementation
   - Depends on: T002
   - Human review: false
