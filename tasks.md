@@ -30,3 +30,51 @@ ticks the boxes. Format is documented in `/rein:plan`.
     - a run recorded before the baseline is not given a delta, since comparing backwards would misrepresent the direction of the change
     - the three deltas are labelled so a negative number reads unambiguously as an improvement
     - `tests/test_baseline.py` covers the with-baseline and without-baseline renderings
+
+---
+
+## Phase 2 — stack-aware verification
+
+The failure this phase exists to catch: **"the tests pass but the UI is broken."**
+Unit tests are the right gate for a library and the wrong one for a rendered page.
+The loop already runs whatever `Verification` a task declares; what is missing is a
+per-stack *policy* that says what verification must look like to count at all.
+
+- [ ] T003 Emit a per-stack verification policy from `rein detect`
+  - Type: implementation
+  - Depends on: none
+  - Human review: false
+  - Verification: `python3 -m unittest tests.test_verify_policy`
+  - Acceptance:
+    - `plugins/rein/lib/detect.py` gains a `verifyPolicy` key in the `resolve()` output with the shape `{"mode": str, "requires": [str], "forbids": [str], "tools": [str]}`
+    - mode is `rendered` when `subtypes` contains `frontend`, `plan-only` when `subtypes` contains `infra` and no test command is configured, and `unit` otherwise
+    - `rendered` mode lists in `requires` that a real browser render must be observed, and names the available tools by probing which of Playwright, the Claude-in-Chrome MCP and the `browser-testing` skill this project can actually reach — never naming a tool that is absent
+    - `plan-only` mode lists the destructive operations in `forbids` (at minimum `deploy`, `apply`, `destroy`), so an infra task can never be "verified" by mutating real infrastructure
+    - a project whose `flow.config.json` sets `verify.mode` gets that value verbatim, overriding detection, consistent with the existing precedence rule
+    - `unit` mode is unchanged in behaviour from today: `requires` is empty and nothing new is imposed on library or CLI projects
+    - a new `tests/test_verify_policy.py` covers each mode, the config override, and the "never name an absent tool" rule, using temporary project trees only
+
+- [ ] T004 Detect how to serve a frontend so a render check is possible
+  - Type: implementation
+  - Depends on: T003
+  - Human review: false
+  - Verification: `python3 -m unittest tests.test_verify_policy`
+  - Acceptance:
+    - for `frontend` projects `resolve()` reports a `serve` block `{"command": str, "url": str}` derived from `package.json` scripts, preferring `dev` and falling back to `start`, with the package manager prefix already applied
+    - the URL is taken from `flow.config.json` `verify.url` when set; otherwise it defaults to `http://localhost:<port>` using a port parsed from the script's own flags when present, and 3000 only as a last resort
+    - a frontend project with no runnable script reports an empty `serve.command` and says so in `missingCommands`, rather than inventing one that would fail at run time
+    - non-frontend projects report no `serve` block at all
+    - the existing `tests/test_detect.py` continues to pass unchanged, and the new cases live in `tests/test_verify_policy.py`
+
+- [ ] T005 Enforce the policy in the loop's implementer and reviewer prompts
+  - Type: implementation
+  - Depends on: T004
+  - Human review: false
+  - Verification: `python3 -m unittest tests.test_verify_policy`
+  - Acceptance:
+    - `plugins/rein/workflows/loop.js` carries `verifyPolicy` and `serve` through `CONTEXT_SCHEMA` and the Prepare agent's instructions, in the same "report it literally, do not re-derive it" style as the existing fields
+    - in `rendered` mode the implementer's bounded-step contract states that passing unit tests alone do NOT make a task done: the page must be served and actually rendered, and the observed evidence recorded in `verification`
+    - in `rendered` mode the reviewer is told the mechanical gate is incomplete without that rendered evidence, and that a green test suite with no render is not grounds for approval
+    - in `plan-only` mode both prompts carry the `forbids` list as a hard prohibition
+    - in `unit` mode the prompts are byte-identical to today, so nothing changes for library and CLI projects
+    - `node --check plugins/rein/workflows/loop.js` passes, and a test asserts the loop script contains no hard-coded stack name, framework name or port — everything comes from config
