@@ -8,6 +8,7 @@ export const meta = {
     { title: 'Isolate' },
     { title: 'Map' },
     { title: 'Implement' },
+    { title: 'Verify' },
     { title: 'Review' },
     { title: 'Integrate' },
   ],
@@ -598,6 +599,56 @@ for (const task of tasks) {
   }
 }
 
+// ── Phase 2.5: GATE — verify the claim instead of believing it ──────────────
+// Until here, "this task is done" is a boolean the implementing agent set on
+// ITSELF. That is not a gate, it is a suggestion. One cheap agent asks the plan
+// what is actually still open, and a contradiction stops the run before a
+// reviewer is paid to audit work that was never finished.
+//
+// Deliberately ONE check per pass, not per task: inside the sandbox any
+// verification costs a whole agent, and the per-task claim is already bounded by
+// maxTaskSteps. This catches the failure that matters — a pass reported complete
+// while the plan says otherwise.
+const GATE_SCHEMA = {
+  type: 'object',
+  properties: {
+    ready: { type: 'boolean' },
+    reason: { type: 'string' },
+    remaining: { type: 'number' },
+    stillOpen: { type: 'array', items: { type: 'string' } },
+    raw: { type: 'string' },
+  },
+  required: ['ready', 'reason', 'remaining', 'stillOpen', 'raw'],
+  additionalProperties: false,
+}
+
+let gateContradiction = ''
+if (results.some((r) => r.status === 'implemented' || r.status === 'implemented-proxy')) {
+  phase('Verify')
+  const gate = await agentRetry(
+    `You verify a claim. Implement NOTHING, edit NOTHING, commit NOTHING. ONE bash round-trip.\n` +
+      `Run: 'cd ${WD} && ${REIN} next .' — it prints JSON and exits non-zero when nothing is claimable.\n` +
+      `Report its fields verbatim: ready, reason, remaining. In 'stillOpen' put the ids of tasks the\n` +
+      `plan still shows as PENDING (from '${REIN} tasks .'), and in 'raw' the literal JSON of next.\n` +
+      `Do NOT interpret, do NOT fix anything, do NOT tick any checkbox. Report what the command said.`,
+    { schema: GATE_SCHEMA, label: 'verify-gate', phase: 'Verify', agentType: 'general-purpose', effort: 'low', model: MODEL_AUX }
+  )
+  if (gate) {
+    const claimed = new Set(results.filter((r) => r.status.startsWith('implemented')).map((r) => r.id))
+    const lying = (gate.stillOpen || []).filter((id) => claimed.has(id))
+    if (lying.length) {
+      gateContradiction =
+        `tasks reported implemented but still open in the plan: ${lying.join(', ')} ` +
+        `(gate: ${gate.reason || 'ready=' + gate.ready})`
+      log(`⛔ ${gateContradiction}`)
+    } else {
+      log(`✔ gate: ${gate.remaining} task(s) still pending, none of them claimed as done this run`)
+    }
+  } else {
+    log(`⚠️ gate agent died — proceeding, but the pass-level claim is unverified`)
+  }
+}
+
 // ── Phase 3: REVIEW — the whole change, by someone who wrote none of it ──────
 phase('Review')
 
@@ -612,7 +663,12 @@ let gateOutput = ''
 let needsHumanDecision = false
 let humanDecisionReason = ''
 
-if (incomplete.length) {
+if (gateContradiction) {
+  // A reviewer auditing work the plan says was never finished is a wasted round,
+  // and approving it would launder the false claim.
+  lastVerdict = `review NOT run: ${gateContradiction}`
+  log(`⏭ ${lastVerdict}`)
+} else if (incomplete.length) {
   // Reviewing an incomplete change burns a round on a foregone CHANGES_REQUESTED.
   lastVerdict = `review NOT run: tasks still incomplete (${incomplete.map((r) => `${r.id}:${r.status}`).join(', ')})`
   log(`⏭ ${lastVerdict}`)
@@ -766,6 +822,7 @@ return {
   needsHumanDecision,
   humanDecisionReason: needsHumanDecision ? humanDecisionReason : '',
   gateOutput,
+  gateContradiction,
   implemented: implemented.map((r) => r.id),
   implementedByProxy: results.filter((r) => r.status === 'implemented-proxy').map((r) => r.id),
   needsHuman: results.filter((r) => r.status === 'needs-human').map((r) => r.id),

@@ -7,6 +7,8 @@ Subcommands:
   rein tasks          parsed plan as JSON (tasks.md or openspec)
   rein context        detect + tasks in ONE call -- what the loop's first agent runs
   rein close <id>     tick a task's checkbox in the plan
+  rein next           the DETERMINISTIC gate: is there a task to claim, and may it be
+  rein review         record / check a review episode (approval is state-bound)
   rein token-report   real per-model token accounting for the last agent run
   rein ledger         summary of recorded runs (per project / per session)
   rein baseline       mark/show/clear the reference run compared against
@@ -29,6 +31,7 @@ PLUGIN_ROOT = os.path.dirname(HERE)
 sys.path.insert(0, os.path.join(PLUGIN_ROOT, "lib"))
 
 import detect as _detect  # noqa: E402
+import gate as _gate  # noqa: E402
 import plan as _plan  # noqa: E402
 import token_report as _tr  # noqa: E402
 
@@ -121,6 +124,61 @@ def cmd_close(argv: list[str]) -> int:
         return 0
     print(f"{task_id}: not found or already closed in {plan['path']}")
     return 1
+
+
+def cmd_next(argv: list[str]) -> int:
+    """The signal a bounded loop stops on. JSON by default: it is read by scripts."""
+    root = _positional(argv) or "."
+    cfg = _detect.resolve(root)
+    result = _gate.next_task(
+        root,
+        source=_opt(argv, "source") or cfg["plan"]["source"],
+        change=_opt(argv, "change"),
+        configured=_opt(argv, "path") or cfg["plan"].get("path", ""),
+    )
+    print(json.dumps(result, indent=2))
+    # Exit code carries the same signal, so `rein next && ...` works in a shell
+    # without parsing anything.
+    return 0 if result["ready"] else 1
+
+
+def cmd_review(argv: list[str]) -> int:
+    if not argv:
+        print("usage: rein review <record|check> [...]")
+        return 2
+    sub, rest = argv[0], argv[1:]
+    root = _opt(rest, "root", ".")
+    change = _opt(rest, "change")
+
+    if sub == "record":
+        files = [f for f in _opt(rest, "files").split(",") if f.strip()]
+        findings = [f for f in _opt(rest, "findings").split("|") if f.strip()]
+        try:
+            episode = _gate.record_review(
+                root, change, _opt(rest, "verdict"), files, findings,
+                _opt(rest, "reviewer"), _opt(rest, "agent"),
+            )
+        except (ValueError, OSError) as exc:
+            print(f"refused to record: {exc}")
+            return 1
+        print(f"recorded {episode['verdict']} for {episode['change'] or '(change)'} -> {episode['path']}")
+        print(f"  reviewed {len(episode['reviewed_files'])} file(s), state hash {episode['reviewed_state_hash'][:16]}...")
+        return 0
+
+    if sub == "check":
+        result = _gate.check_review(root, change)
+        if result["ok"]:
+            print(f"APPROVED and current -- reviewed by {result['reviewer']} ({result['episode']})")
+            return 0
+        print(f"gate NOT satisfied: {result['reason']}")
+        if result["changed"]:
+            print("  changed since approval: " + ", ".join(result["changed"][:10]))
+        for f in result.get("findings", [])[:10]:
+            print(f"  finding: {f}")
+        return 1
+
+    print(f"unknown review subcommand: {sub}\n\nusage: rein review <record|check> [...]")
+    return 2
 
 
 def cmd_token_report(argv: list[str]) -> int:
@@ -249,6 +307,8 @@ COMMANDS = {
     "tasks": cmd_tasks,
     "context": cmd_context,
     "close": cmd_close,
+    "next": cmd_next,
+    "review": cmd_review,
     "token-report": cmd_token_report,
     "ledger": cmd_ledger,
     "baseline": cmd_baseline,
