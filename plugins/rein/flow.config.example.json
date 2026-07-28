@@ -1,0 +1,57 @@
+{
+  "$comment": "Copy to your project root as flow.config.json. EVERY key is optional: what you omit is autodetected. This file always wins over autodetection.",
+
+  "stack": "python",
+  "subtypes": [],
+
+  "commands": {
+    "$comment": "{target} is substituted with a single test file or test id. Bounded verification is the point: never the whole suite inside an implementation step.",
+    "test": "uv run pytest -q",
+    "testOne": "uv run pytest -q {target}",
+    "lint": "uv run ruff check .",
+    "typecheck": "uv run mypy .",
+    "build": ""
+  },
+
+  "plan": {
+    "$comment": "openspec = openspec/changes/<change>/{proposal,design,tasks,specs}. tasks-md = a plain tasks.md with checkboxes.",
+    "source": "tasks-md",
+    "path": "tasks.md"
+  },
+
+  "tracker": {
+    "$comment": "none = tasks.md checkboxes are the state. beads = also sync/close Beads issues (requires the bd CLI).",
+    "kind": "none"
+  },
+
+  "models": {
+    "$comment": "Per-agent routing. On a subscription this does not lower the bill -- it frees the scarce Opus quota. Mechanical work does not need Opus; review does.",
+    "aux": "haiku",
+    "impl": "sonnet",
+    "review": "opus"
+  },
+
+  "limits": {
+    "$comment": "maxTaskSteps is the anti-runaway cap: a task is implemented as at most N short, FRESH agents handing off a compact ledger, instead of one agent running 200+ turns and re-reading a bloated context every turn.",
+    "maxTaskSteps": 8,
+    "maxReviewRounds": 3
+  },
+
+  "worktree": {
+    "$comment": "Each run gets its own git worktree + branch, merged to the base branch only on approval. A bad run leaves an ugly branch, not a broken main.",
+    "enabled": true,
+    "prefix": "rein-wt",
+    "baseBranch": "main"
+  },
+
+  "retrieval": {
+    "$comment": "auto = use graphify if an index exists, otherwise plain search. Presence is probed; a missing tool degrades the flow, never breaks it.",
+    "graphify": "auto"
+  },
+
+  "verify": {
+    "$comment": "For frontend subtypes, 'rendered' requires real browser verification (Playwright / Claude-in-Chrome) instead of unit tests alone -- 'the tests pass but the UI is broken' is the failure this catches.",
+    "mode": "auto",
+    "renderedCheck": false
+  }
+}

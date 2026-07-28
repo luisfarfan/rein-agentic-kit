@@ -1,0 +1,19 @@
+{
+  "name": "rein",
+  "description": "Rein — keep your Claude Code agents lean and in control. A config-driven, stack-aware dev flow (plan / loop / review) built on bounded fresh-agent steps, per-agent model routing, and real per-model token measurement.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Luis Farfan"
+  },
+  "homepage": "https://github.com/luisfarfan/rein-agentic-kit",
+  "license": "MIT",
+  "keywords": [
+    "workflow",
+    "tokens",
+    "cost",
+    "agents",
+    "review",
+    "planning",
+    "stack-detection"
+  ]
+}

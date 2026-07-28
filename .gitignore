@@ -1,0 +1,14 @@
+node_modules/
+__pycache__/
+*.pyc
+.DS_Store
+.venv/
+dist/
+build/
+
+# Per-project runtime config lives in the CONSUMING repo, never here.
+# The example is tracked; a real one at the root is not.
+/flow.config.json
+
+# Local scratch from POC runs
+/.scratch/
