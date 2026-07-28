@@ -29,6 +29,10 @@ CONFIG_NAME = "flow.config.json"
 # ("the tests pass but the UI is broken" is the failure this kit exists to catch).
 FRONTEND_MARKERS = ("next", "vite", "astro", "@sveltejs/kit", "nuxt", "@remix-run", "react-scripts")
 INFRA_FILES = ("serverless.yml", "serverless.ts", "sst.config.ts", "template.yaml", "Dockerfile")
+# Terraform is the canonical plan-only case and DESTRUCTIVE_OPS names its verbs,
+# so matching it by extension is not optional: detecting the ops but not the repo
+# would leave the guarantee unreachable exactly where it matters most.
+INFRA_GLOBS = ("*.tf", "*.tfvars")
 
 # An infra task "verified" by actually mutating real infrastructure is not
 # verified, it is an incident. These are always forbidden in plan-only mode.
@@ -57,6 +61,28 @@ def _exists(root: str, *names: str) -> str:
         if os.path.exists(p):
             return n
     return ""
+
+
+def _is_set(commands: dict, slot: str) -> bool:
+    """Whether a command slot is genuinely configured.
+
+    An EMPTY STRING means "not set" everywhere else in this system -- it is the
+    documented idiom in flow.config.example.json, and loop.js treats a falsy
+    command as absent. Key-presence checks disagreed with that and silently
+    dropped the plan-only prohibition for an infra project that had `"test": ""`.
+    """
+    return bool((commands.get(slot) or "").strip())
+
+
+def _infra_files(root: str) -> list[str]:
+    """Infra markers by exact name and by extension (terraform)."""
+    import glob as _glob
+
+    found = [n for n in INFRA_FILES if _exists(root, n)]
+    for pattern in INFRA_GLOBS:
+        if _glob.glob(os.path.join(root, pattern)):
+            found.append(pattern)
+    return found
 
 
 # ------------------------------------------------------------- task runners --
@@ -217,15 +243,20 @@ def _autodetect(root: str) -> dict:
     elif _exists(root, "package.json"):
         base = _detect_node(root)
     else:
-        return {"stack": "unknown", "packageManager": "", "commands": {}, "subtypes": []}
+        # No language manifest is NOT "nothing to detect". A terraform or
+        # serverless repo is exactly this shape, and it is the one that most
+        # needs the plan-only prohibition -- so fall through to the infra probe
+        # instead of returning early. Returning here made auto-detected
+        # plan-only unreachable for the archetypal infra repo.
+        base = {"stack": "unknown", "packageManager": "", "commands": {}, "subtypes": []}
 
     # A python repo can still have a package.json driving a frontend, and vice
     # versa. Detect the secondary stack rather than pretending it is not there.
-    if base["stack"] != "node" and _exists(root, "package.json"):
+    if base["stack"] not in ("node", "unknown") and _exists(root, "package.json"):
         node = _detect_node(root)
         base["subtypes"] = sorted(set(base["subtypes"]) | set(node["subtypes"]) | {"node"})
 
-    infra = [f for f in INFRA_FILES if _exists(root, f)]
+    infra = _infra_files(root)
     if infra:
         base["subtypes"] = sorted(set(base["subtypes"]) | {"infra"})
         base["infraFiles"] = infra
@@ -394,7 +425,7 @@ def _verify_policy(root: str, subtypes: list[str], commands: dict[str, str], cfg
     if not mode:
         if "frontend" in subtypes:
             mode = "rendered"
-        elif "infra" in subtypes and "test" not in commands:
+        elif "infra" in subtypes and not _is_set(commands, "test"):
             mode = "plan-only"
         else:
             mode = "unit"
@@ -455,7 +486,7 @@ def resolve(root: str = ".") -> dict:
     serve = _serve(root, subtypes, commands, cfg)
     verify_policy, verify_warnings = _verify_policy(root, subtypes, commands, cfg)
 
-    missing_commands = [s for s in ("test", "testOne", "lint", "typecheck") if s not in commands]
+    missing_commands = [s for s in ("test", "testOne", "lint", "typecheck") if not _is_set(commands, s)]
     if serve is not None and not serve["command"]:
         missing_commands.append("serve")
 

@@ -453,5 +453,52 @@ class TestPolicyBlockRenderedContent(unittest.TestCase):
             self.assertIn(op, result["reviewer"])
 
 
+class TestPlanOnlyIsReachable(unittest.TestCase):
+    """The plan-only guarantee must hold for the repo shapes that actually need it.
+
+    These exist because the original coverage bolted a package.json onto
+    serverless.yml — the one shape where plan-only was reachable — so the
+    acceptance criterion passed while the guarantee did not hold for any real
+    infra repo. A test that only exercises the path the bug avoids proves nothing.
+    """
+
+    def _assert_plan_only(self, root: str, why: str):
+        policy = detect.resolve(root)["verifyPolicy"]
+        self.assertEqual(policy["mode"], "plan-only", why)
+        for op in detect.DESTRUCTIVE_OPS:
+            self.assertIn(op, policy["forbids"], f"{op} must stay forbidden: {why}")
+
+    def test_serverless_repo_with_no_language_manifest(self):
+        """The archetypal infra repo: no pyproject, no package.json, just config."""
+        with Project({"serverless.yml": "service: x\n"}) as root:
+            self.assertIn("infra", detect.resolve(root)["subtypes"])
+            self._assert_plan_only(root, "a serverless-only repo is infra")
+
+    def test_terraform_repo_is_detected_by_extension(self):
+        """DESTRUCTIVE_OPS names terraform's verbs; the repo must be visible too."""
+        with Project({"main.tf": 'resource "aws_s3_bucket" "b" {}\n'}) as root:
+            self.assertIn("infra", detect.resolve(root)["subtypes"])
+            self._assert_plan_only(root, "a terraform repo is the canonical plan-only case")
+
+    def test_empty_test_command_counts_as_not_set(self):
+        """An empty string means "not set" everywhere else in this system."""
+        cfg = json.dumps({"subtypes": ["infra"], "commands": {"test": ""}})
+        with Project({"serverless.yml": "", "package.json": "{}", "flow.config.json": cfg}) as root:
+            self._assert_plan_only(root, 'commands.test="" must not read as configured')
+
+    def test_a_real_test_command_still_leaves_plan_only(self):
+        """The escape hatch must keep working: a testable infra repo is not plan-only."""
+        cfg = json.dumps({"commands": {"test": "pytest -q"}})
+        with Project({"serverless.yml": "", "flow.config.json": cfg}) as root:
+            self.assertEqual(detect.resolve(root)["verifyPolicy"]["mode"], "unit")
+
+    def test_empty_command_is_reported_as_missing(self):
+        cfg = json.dumps({"commands": {"test": "", "lint": "   "}})
+        with Project({"pyproject.toml": "", "flow.config.json": cfg}) as root:
+            missing = detect.resolve(root)["missingCommands"]
+        self.assertIn("test", missing)
+        self.assertIn("lint", missing)
+
+
 if __name__ == "__main__":
     unittest.main()
