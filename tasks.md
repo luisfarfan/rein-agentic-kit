@@ -54,7 +54,7 @@ per-stack *policy* that says what verification must look like to count at all.
     - `unit` mode is unchanged in behaviour from today: `requires` is empty and nothing new is imposed on library or CLI projects
     - a new `tests/test_verify_policy.py` covers each mode, the config override, and the "never name an absent tool" rule, using temporary project trees only
 
-- [ ] T004 Detect how to serve a frontend so a render check is possible
+- [x] T004 Detect how to serve a frontend so a render check is possible
   - Type: implementation
   - Depends on: T003
   - Human review: false
