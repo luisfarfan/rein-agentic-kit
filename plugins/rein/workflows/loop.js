@@ -143,6 +143,24 @@ const CONTEXT_SCHEMA = {
   additionalProperties: false,
 }
 
+const ISOLATE_SCHEMA = {
+  type: 'object',
+  properties: {
+    done: { type: 'boolean' },
+    summary: { type: 'string' },
+    // Progress lives in the WORKTREE and only reaches the base branch on merge,
+    // because unapproved work is never merged. So on a RESUMED run the base
+    // branch still shows every task open while the worktree knows better.
+    // Reading it here costs nothing: this agent is already in the worktree.
+    pendingIds: { type: 'array', items: { type: 'string' } },
+    commits: { type: 'array', items: { type: 'string' } },
+    blocked: { type: 'boolean' },
+    blockedReason: { type: 'string' },
+  },
+  required: ['done', 'summary', 'pendingIds', 'commits', 'blocked', 'blockedReason'],
+  additionalProperties: false,
+}
+
 const TASK_SCHEMA = {
   type: 'object',
   properties: {
@@ -446,8 +464,13 @@ if (WORKTREE_MODE) {
       `2. Create it: 'git -C ${ctx.root} worktree add ${WD} -b ${BRANCH} 2>/dev/null || ` +
       `   git -C ${ctx.root} worktree add ${WD} ${BRANCH}' (reuse the branch if it exists). If ${WD} already ` +
       `   exists and belongs to this change, reuse it — do not fail.\n` +
-      `3. Verify: 'git -C ${WD} rev-parse --abbrev-ref HEAD' reports ${BRANCH}. Set done=true only then.`,
-    { schema: TASK_SCHEMA, label: 'isolate', phase: 'Isolate', agentType: 'general-purpose', effort: 'low', model: MODEL_AUX }
+      `3. Verify: 'git -C ${WD} rev-parse --abbrev-ref HEAD' reports ${BRANCH}.\n` +
+      `4. Report the plan's state INSIDE the worktree: run '${REIN} tasks ${WD}' and put in\n` +
+      `   'pendingIds' the ids of tasks whose checkbox is still unticked THERE. On a resumed run\n` +
+      `   the worktree knows what already landed and the base branch does not. Copy the ids\n` +
+      `   literally; do not judge whether the work looks done.\n` +
+      `Set done=true only when steps 2-4 all succeeded.`,
+    { schema: ISOLATE_SCHEMA, label: 'isolate', phase: 'Isolate', agentType: 'general-purpose', effort: 'low', model: MODEL_AUX }
   )
   if (!setup || setup.blocked || !setup.done) {
     const why = setup ? setup.blockedReason || setup.summary : 'the agent died'
@@ -455,6 +478,21 @@ if (WORKTREE_MODE) {
     return { ok: false, phase: 'Isolate', problem: why, worktree: WD, branch: BRANCH }
   }
   log(`🌿 isolated in ${WD} (branch ${BRANCH})`)
+
+  // Drop tasks the worktree already closed. Without this a resumed run re-does
+  // finished work: the plan is read from the base branch, where nothing is ticked
+  // until the merge.
+  const stillOpen = setup.pendingIds || []
+  if (stillOpen.length) {
+    const before = tasks.length
+    tasks = tasks.filter((t) => stillOpen.includes(t.id))
+    if (tasks.length !== before) {
+      log(`↩︎ ${before - tasks.length} task(s) already closed in the worktree — skipping them`)
+    }
+  }
+  if (!tasks.length) {
+    log('every task is already closed in the worktree — nothing to implement')
+  }
 }
 
 // ── Phase 1.7: MAP — one cheap scout, so N implementers do not each explore ──
