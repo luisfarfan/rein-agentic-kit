@@ -18,6 +18,7 @@ moment this reads from.
 from __future__ import annotations
 
 import argparse
+import difflib
 import html
 import http.server
 import json
@@ -133,14 +134,161 @@ def build_view(ledger_path: str = LEDGER_PATH, baseline_path: str = BASELINE_PAT
     projects = []
     for project, project_rows in sorted(by_project.items()):
         ordered = sorted(project_rows, key=lambda r: r.get("ts", ""))
+        root = _unmangle_project(project)
         projects.append(
             {
                 "project": project,
+                "root": root,
+                "models": _resolve_models(root),
                 "runs": [_run_view(r, project, baseline) for r in ordered],
             }
         )
 
     return {"message": "", "projects": projects}
+
+
+# ---------------------------------------------------------- per-agent models --
+
+# T003: each project's `models.aux/impl/review` are shown resolved (config or
+# default) and can be edited from the page. Two problems this section solves:
+#
+# 1. The ledger only ever records the OS-mangled project directory name (the
+#    same `~/.claude/projects/<mangled>` scheme Claude Code itself uses --
+#    every `os.sep` folded into `-`). That mangling is ambiguous to reverse
+#    naively (folder names routinely contain `-` themselves, this repo's own
+#    checkout included), so `_unmangle_project` walks the real filesystem tree
+#    and only ever returns a path that is confirmed to exist and to mangle
+#    back to exactly the string it was given -- never a guess.
+# 2. A write must never land outside a root the ledger already vouches for
+#    (see `_validate_root`): the known-roots set is derived from the current
+#    view, not trusted from the request.
+
+CONFIG_NAME = "flow.config.json"
+DEFAULT_MODELS = {"aux": "haiku", "impl": "sonnet", "review": "opus"}
+
+
+def _mangle_path(path: str) -> str:
+    """Forward direction of Claude Code's `~/.claude/projects/<name>` naming:
+    the real absolute path with the OS separator folded into `-`."""
+    return os.path.realpath(path).replace(os.sep, "-")
+
+
+def _walk_for_dir(current: str, tokens: list[str]) -> str | None:
+    """Consume `tokens` (dash-split remainder of a mangled name) against real
+    directory entries under `current`, longest match first. Every step is
+    confirmed with `os.listdir`/`os.path.isdir`, so this can never return a
+    path that does not exist -- only fail to find one (`None`)."""
+    if not tokens:
+        return current
+    try:
+        entries = set(os.listdir(current))
+    except OSError:
+        return None
+    for n in range(len(tokens), 0, -1):
+        name = "-".join(tokens[:n])
+        if name in entries and os.path.isdir(os.path.join(current, name)):
+            found = _walk_for_dir(os.path.join(current, name), tokens[n:])
+            if found is not None:
+                return found
+    return None
+
+
+def _unmangle_project(project: str) -> str | None:
+    """Best-effort, filesystem-verified reversal of `_mangle_path`. `None` if
+    nothing on disk actually mangles back to this exact string (the project
+    moved, the disk isn't the one that recorded it, etc.) -- callers must
+    treat that as "no root to resolve config from", never guess one."""
+    if not project.startswith("-"):
+        return None
+    return _walk_for_dir(os.sep, project[1:].split("-"))
+
+
+def _read_existing_text(root: str) -> str:
+    path = os.path.join(root, CONFIG_NAME)
+    if not os.path.isfile(path):
+        return ""
+    with open(path, encoding="utf-8") as fh:
+        return fh.read()
+
+
+def _resolve_models(root: str | None) -> dict[str, dict[str, str]]:
+    """`{"aux"/"impl"/"review": {"value": ..., "source": "config"|"default"}}`.
+    A missing or corrupt config -- or no resolvable root at all -- degrades to
+    every slot reading as default, never a crash."""
+    cfg_models: dict = {}
+    if root:
+        try:
+            parsed = json.loads(_read_existing_text(root) or "{}")
+        except json.JSONDecodeError:
+            parsed = {}
+        if isinstance(parsed, dict) and isinstance(parsed.get("models"), dict):
+            cfg_models = parsed["models"]
+    return {
+        key: {
+            "value": cfg_models.get(key, DEFAULT_MODELS[key]),
+            "source": "config" if key in cfg_models else "default",
+        }
+        for key in ("aux", "impl", "review")
+    }
+
+
+def _apply_models(existing_text: str, models: dict[str, str]) -> str:
+    """The new raw text of the config with only `models.aux/impl/review` set
+    from `models` -- every other key, and every unknown key already inside
+    `models` (an existing `$comment` included), is carried through untouched."""
+    cfg = json.loads(existing_text) if existing_text.strip() else {}
+    if not isinstance(cfg, dict):
+        raise ValueError("flow.config.json does not contain a JSON object")
+    old_models = cfg.get("models")
+    new_models = dict(old_models) if isinstance(old_models, dict) else {}
+    new_models.update({k: models[k] for k in ("aux", "impl", "review") if k in models})
+    cfg = {**cfg, "models": new_models}
+    return json.dumps(cfg, indent=2, ensure_ascii=False) + "\n"
+
+
+class ModelsWriteError(Exception):
+    """Refused before touching disk -- callers map this to a non-2xx response."""
+
+
+def _validate_root(root: str, known_roots: set[str]) -> str:
+    if not root:
+        raise ModelsWriteError("no project root given")
+    real = os.path.realpath(root)
+    if real not in known_roots:
+        raise ModelsWriteError(f"{root!r} is not a project root already present in the ledger")
+    return real
+
+
+def write_models(root: str, models: dict[str, str], known_roots: set[str], confirmed: bool = False) -> str:
+    """Compute the unified diff of writing `models` into `root`'s
+    `flow.config.json` (creating it if absent). Only writes to disk when
+    `confirmed` is True -- a first call always just previews (D3): nothing
+    changes on disk until a second, confirming call arrives.
+
+    Raises `ModelsWriteError` -- before any read or write -- if `root` is not
+    one of `known_roots` (a path a run in the ledger actually resolved to).
+    Raises `ValueError` if `models` does not carry all three slots -- the page
+    always edits the resolved triple as one unit, never a partial slice of it.
+    """
+    real_root = _validate_root(root, known_roots)
+    missing = [k for k in ("aux", "impl", "review") if k not in models]
+    if missing:
+        raise ValueError(f"models.{'/'.join(missing)} missing -- all three of aux/impl/review are required")
+    path = os.path.join(real_root, CONFIG_NAME)
+    old_text = _read_existing_text(real_root)
+    new_text = _apply_models(old_text, models)
+    diff = "".join(
+        difflib.unified_diff(
+            old_text.splitlines(keepends=True),
+            new_text.splitlines(keepends=True),
+            fromfile=path,
+            tofile=path,
+        )
+    )
+    if confirmed:
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(new_text)
+    return diff
 
 
 # -------------------------------------------------------------------- html --
@@ -239,6 +387,18 @@ def _run_row(run: dict, show_deltas: bool) -> str:
     return f"<tr{row_class}>{cells}</tr>"
 
 
+def _models_summary(models: dict) -> str:
+    """Read-only per-agent models line: value and source (config or default)
+    for each of aux/impl/review, so editing them can start from what's true."""
+    parts = []
+    for key in ("aux", "impl", "review"):
+        info = models.get(key) or {}
+        value = html.escape(str(info.get("value", "")))
+        source = html.escape(str(info.get("source", "")))
+        parts.append(f"{key}=<b>{value}</b> <small>({source})</small>")
+    return '<p class="models">' + " &middot; ".join(parts) + "</p>"
+
+
 def _project_section(project: dict) -> str:
     runs = project["runs"]
     # Deltas (and therefore the whole "savings" column group) only appear for a
@@ -252,8 +412,10 @@ def _project_section(project: dict) -> str:
     header += "<th>agents</th></tr>"
 
     body = "".join(_run_row(r, show_deltas) for r in runs)
+    models_html = _models_summary(project.get("models") or {})
     return (
         f"<section><h2>{html.escape(project['project'])}</h2>"
+        f"{models_html}"
         f"<table><thead>{header}</thead><tbody>{body}</tbody></table></section>"
     )
 
@@ -281,6 +443,9 @@ def render_html(view: dict) -> str:
 
 def _make_handler(view: dict) -> type[http.server.BaseHTTPRequestHandler]:
     body = render_html(view).encode("utf-8")
+    # Derived from the view actually built from the ledger -- never from the
+    # request -- so a write can only ever target a root a real run resolved to.
+    known_roots = {p["root"] for p in view.get("projects", []) if p.get("root")}
 
     class Handler(http.server.BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802 (stdlib method name)
@@ -289,6 +454,44 @@ def _make_handler(view: dict) -> type[http.server.BaseHTTPRequestHandler]:
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+
+        def do_POST(self) -> None:  # noqa: N802 (stdlib method name)
+            """POST /models {"root", "models": {aux/impl/review}, "confirm"}
+            -- first call (no/false `confirm`) only returns the diff, second
+            call with `confirm: true` performs the write (D3)."""
+            if self.path != "/models":
+                self._json(404, {"error": "not found"})
+                return
+            length = int(self.headers.get("Content-Length") or 0)
+            raw = self.rfile.read(length) if length else b""
+            try:
+                payload = json.loads(raw.decode("utf-8")) if raw else {}
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                self._json(400, {"error": "invalid JSON body"})
+                return
+            if not isinstance(payload, dict):
+                self._json(400, {"error": "JSON body must be an object"})
+                return
+            root = payload.get("root") or ""
+            models = payload.get("models") or {}
+            confirmed = bool(payload.get("confirm"))
+            try:
+                diff = write_models(root, models, known_roots, confirmed=confirmed)
+            except ModelsWriteError as exc:
+                self._json(403, {"error": str(exc)})
+                return
+            except ValueError as exc:
+                self._json(400, {"error": str(exc)})
+                return
+            self._json(200, {"diff": diff, "written": confirmed})
+
+        def _json(self, status: int, payload: dict) -> None:
+            data = json.dumps(payload).encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
 
         def log_message(self, format: str, *args) -> None:  # noqa: A002
             pass  # keep test/CLI output quiet -- this is not an access log

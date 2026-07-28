@@ -4,12 +4,14 @@ and the local-only server that can serve it.
 
 import json
 import os
+import shutil
 import socket
 import subprocess
 import sys
 import tempfile
 import threading
 import unittest
+import urllib.error
 import urllib.request
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "plugins", "rein", "lib"))
@@ -345,6 +347,185 @@ class TestRenderHtmlAgentsReachable(unittest.TestCase):
         self.assertIn("b.jsonl", html_out)
         # native disclosure widget, not a link to another page or a script
         self.assertNotIn("<a href", html_out)
+
+
+class TestModelsResolutionInViewModel(LedgerFixture):
+    def test_project_shows_resolved_models_and_source(self):
+        proj_dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, proj_dir, ignore_errors=True)
+        with open(os.path.join(proj_dir, "flow.config.json"), "w", encoding="utf-8") as fh:
+            json.dump({"models": {"impl": "opus"}}, fh)
+        project_key = dash._mangle_path(proj_dir)
+        self._write_ledger([row("wf_1", "2026-01-01T00:00:00Z", project=project_key)])
+
+        view = dash.build_view(self.ledger_path, self.baseline_path)
+        proj = view["projects"][0]
+
+        self.assertEqual(proj["root"], os.path.realpath(proj_dir))
+        self.assertEqual(proj["models"]["impl"], {"value": "opus", "source": "config"})
+        self.assertEqual(proj["models"]["aux"], {"value": "haiku", "source": "default"})
+        self.assertEqual(proj["models"]["review"], {"value": "opus", "source": "default"})
+
+    def test_project_with_no_config_reads_as_all_defaults(self):
+        proj_dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, proj_dir, ignore_errors=True)
+        project_key = dash._mangle_path(proj_dir)
+        self._write_ledger([row("wf_1", "2026-01-01T00:00:00Z", project=project_key)])
+
+        view = dash.build_view(self.ledger_path, self.baseline_path)
+        proj = view["projects"][0]
+
+        self.assertEqual(proj["root"], os.path.realpath(proj_dir))
+        for key, value in dash.DEFAULT_MODELS.items():
+            self.assertEqual(proj["models"][key], {"value": value, "source": "default"})
+
+    def test_unresolvable_project_has_no_root_and_still_reads_as_defaults(self):
+        self._write_ledger([row("wf_1", "2026-01-01T00:00:00Z", project="-nonexistent-path-does-not-exist-xyz")])
+
+        view = dash.build_view(self.ledger_path, self.baseline_path)
+        proj = view["projects"][0]
+
+        self.assertIsNone(proj["root"])
+        for key, value in dash.DEFAULT_MODELS.items():
+            self.assertEqual(proj["models"][key], {"value": value, "source": "default"})
+
+
+class TestModelsWriteDiffThenConfirm(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = os.path.realpath(self.tmp.name)
+        self.known_roots = {self.root}
+
+    def _config_path(self):
+        return os.path.join(self.root, "flow.config.json")
+
+    def test_first_call_never_writes_second_confirms(self):
+        models = {"aux": "haiku", "impl": "opus", "review": "opus"}
+        diff1 = dash.write_models(self.root, models, self.known_roots, confirmed=False)
+        self.assertIn("impl", diff1)
+        self.assertIn("opus", diff1)
+        self.assertFalse(os.path.exists(self._config_path()), "a first request must never write")
+
+        diff2 = dash.write_models(self.root, models, self.known_roots, confirmed=True)
+        self.assertEqual(diff1, diff2)
+        self.assertTrue(os.path.exists(self._config_path()))
+        with open(self._config_path(), encoding="utf-8") as fh:
+            cfg = json.load(fh)
+        self.assertEqual(cfg, {"models": models})
+        # creating from absent must contain ONLY the models block
+        self.assertEqual(set(cfg.keys()), {"models"})
+
+    def test_unknown_keys_and_comments_preserved_byte_for_byte(self):
+        example_path = os.path.join(REPO_ROOT, "plugins", "rein", "flow.config.example.json")
+        with open(example_path, encoding="utf-8") as fh:
+            original_text = fh.read()
+        original = json.loads(original_text)
+        with open(self._config_path(), "w", encoding="utf-8") as fh:
+            fh.write(original_text)
+
+        dash.write_models(
+            self.root, {"aux": "opus", "impl": "opus", "review": "haiku"}, self.known_roots, confirmed=True
+        )
+
+        with open(self._config_path(), encoding="utf-8") as fh:
+            updated = json.load(fh)
+
+        for key in original:
+            if key == "models":
+                continue
+            self.assertEqual(updated[key], original[key], f"key {key!r} must be preserved byte-for-byte")
+        self.assertEqual(set(updated.keys()), set(original.keys()))
+
+        # the $comment entries the example config ships -- top-level model
+        # comment plus every other section's -- must survive untouched.
+        self.assertEqual(updated["models"]["$comment"], original["models"]["$comment"])
+        self.assertEqual(updated["commands"]["$comment"], original["commands"]["$comment"])
+        self.assertEqual(updated["models"]["aux"], "opus")
+        self.assertEqual(updated["models"]["impl"], "opus")
+        self.assertEqual(updated["models"]["review"], "haiku")
+
+    def test_refusal_outside_known_roots_traversal_attempt(self):
+        secret = tempfile.TemporaryDirectory()
+        self.addCleanup(secret.cleanup)
+        secret_root = os.path.realpath(secret.name)
+        secret_config = os.path.join(secret_root, "flow.config.json")
+        with open(secret_config, "w", encoding="utf-8") as fh:
+            fh.write('{"models": {"aux": "haiku", "impl": "sonnet", "review": "opus"}}')
+        with open(secret_config, encoding="utf-8") as fh:
+            before = fh.read()
+
+        traversal = os.path.join(self.root, "..", os.path.basename(secret_root))
+        self.assertEqual(os.path.realpath(traversal), secret_root, "sanity: the traversal really escapes self.root")
+
+        with self.assertRaises(dash.ModelsWriteError):
+            dash.write_models(
+                traversal, {"aux": "opus", "impl": "opus", "review": "opus"}, self.known_roots, confirmed=True
+            )
+
+        with open(secret_config, encoding="utf-8") as fh:
+            after = fh.read()
+        self.assertEqual(before, after, "a refused write must leave the filesystem untouched")
+        self.assertFalse(os.path.exists(self._config_path()), "the refused root itself must gain nothing either")
+
+    def test_missing_model_slot_is_rejected(self):
+        with self.assertRaises(ValueError):
+            dash.write_models(self.root, {"aux": "haiku", "impl": "sonnet"}, self.known_roots, confirmed=True)
+        self.assertFalse(os.path.exists(self._config_path()))
+
+
+class TestModelsHttpEndpoint(LedgerFixture):
+    def test_post_diff_then_confirm_and_unknown_root_is_non_2xx(self):
+        proj_dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, proj_dir, ignore_errors=True)
+        project_key = dash._mangle_path(proj_dir)
+        self._write_ledger([row("wf_1", "2026-01-01T00:00:00Z", project=project_key)])
+        view = dash.build_view(self.ledger_path, self.baseline_path)
+        root = os.path.realpath(proj_dir)
+
+        port = _free_port()
+        httpd = dash.make_server(view, port)
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        try:
+            url = f"http://127.0.0.1:{port}/models"
+            models = {"aux": "haiku", "impl": "opus", "review": "opus"}
+
+            first = urllib.request.Request(
+                url, data=json.dumps({"root": root, "models": models}).encode("utf-8"),
+                method="POST", headers={"Content-Type": "application/json"},
+            )
+            with urllib.request.urlopen(first, timeout=5) as resp:
+                self.assertEqual(resp.status, 200)
+                payload = json.loads(resp.read())
+            self.assertFalse(payload["written"])
+            self.assertIn("diff", payload)
+            self.assertFalse(os.path.exists(os.path.join(root, "flow.config.json")))
+
+            second = urllib.request.Request(
+                url, data=json.dumps({"root": root, "models": models, "confirm": True}).encode("utf-8"),
+                method="POST", headers={"Content-Type": "application/json"},
+            )
+            with urllib.request.urlopen(second, timeout=5) as resp2:
+                self.assertEqual(resp2.status, 200)
+                payload2 = json.loads(resp2.read())
+            self.assertTrue(payload2["written"])
+            self.assertTrue(os.path.exists(os.path.join(root, "flow.config.json")))
+
+            bad = urllib.request.Request(
+                url,
+                data=json.dumps(
+                    {"root": "/definitely/not/a/known/project/root", "models": models, "confirm": True}
+                ).encode("utf-8"),
+                method="POST", headers={"Content-Type": "application/json"},
+            )
+            with self.assertRaises(urllib.error.HTTPError) as ctx:
+                urllib.request.urlopen(bad, timeout=5)
+            self.assertGreaterEqual(ctx.exception.code, 400)
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+            thread.join(timeout=5)
 
 
 if __name__ == "__main__":
