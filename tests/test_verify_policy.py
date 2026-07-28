@@ -7,6 +7,7 @@ reproducible for anyone who clones the project.
 
 import json
 import os
+import re
 import sys
 import tempfile
 import unittest
@@ -190,6 +191,49 @@ class TestShape(unittest.TestCase):
         self.assertIsInstance(policy["requires"], list)
         self.assertIsInstance(policy["forbids"], list)
         self.assertIsInstance(policy["tools"], list)
+
+
+LOOP_JS = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "plugins", "rein", "workflows", "loop.js"
+)
+
+# Stack/framework/port literals this project's detect.py can report. If any of
+# these shows up hard-coded in loop.js, the workflow stopped being portable —
+# it should always be threaded through from `ctx` (as reported by Prepare),
+# never assumed. "go" is deliberately excluded: it is also a common English
+# word ("go test" isn't, but plain "go" appears in ordinary prose in loop.js).
+_STACK_OR_FRAMEWORK_LITERALS = (
+    "python", "rust", "golang", "cargo", "pytest", "rustc",
+    "react", "vue", "angular", "svelte", "next.js", "nextjs", "astro", "nuxt",
+    "django", "flask", "express", "typescript", "javascript",
+    "npm ", "yarn ", "pnpm ",
+)
+_PORT_LITERALS = ("3000", "5173", "8080", "4000", "8000", "9000", "localhost")
+
+
+class TestLoopScriptIsPortable(unittest.TestCase):
+    def setUp(self):
+        with open(LOOP_JS, encoding="utf-8") as f:
+            self.source = f.read()
+
+    def test_no_hardcoded_stack_framework_or_port(self):
+        lowered = self.source.lower()
+        hits = [
+            tok for tok in _STACK_OR_FRAMEWORK_LITERALS + _PORT_LITERALS
+            if re.search(r"\b" + re.escape(tok.strip()) + r"\b", lowered)
+        ]
+        self.assertEqual(hits, [], f"loop.js hard-codes: {hits} — thread these through ctx/config instead")
+
+    def test_context_schema_carries_verify_policy_and_serve(self):
+        self.assertIn("verifyPolicy", self.source)
+        self.assertIn("'serve'", self.source)
+
+    def test_prompts_derive_policy_text_from_verify_policy_mode(self):
+        # Both prompts key off VERIFY_POLICY.mode — never a literal stack/framework name.
+        self.assertIn("implementerPolicyBlock()", self.source)
+        self.assertIn("reviewerPolicyBlock()", self.source)
+        self.assertIn("VERIFY_POLICY.mode === 'rendered'", self.source)
+        self.assertIn("VERIFY_POLICY.mode === 'plan-only'", self.source)
 
 
 if __name__ == "__main__":
