@@ -40,7 +40,7 @@ Unit tests are the right gate for a library and the wrong one for a rendered pag
 The loop already runs whatever `Verification` a task declares; what is missing is a
 per-stack *policy* that says what verification must look like to count at all.
 
-- [ ] T003 Emit a per-stack verification policy from `rein detect`
+- [x] T003 Emit a per-stack verification policy from `rein detect`
   - Type: implementation
   - Depends on: none
   - Human review: false
