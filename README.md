@@ -6,8 +6,9 @@ A Claude Code plugin + marketplace packaging a token-lean, stack-aware agentic d
 flow: `/rein:plan`, `/rein:loop`, `/rein:review`, and a `rein token-report` CLI that
 measures what a run actually cost — **per model**.
 
-> **Status: phase 0 (scaffold).** The plumbing and the measurement tool are real.
-> The loop itself is a stub. See [Roadmap](#roadmap).
+> **Status: phase 1.** The loop, the plan parser and the measurement tool are
+> real. Stack-specific toolsets and the dashboard are not yet. See
+> [Roadmap](#roadmap).
 
 ## Why
 
@@ -131,8 +132,8 @@ predict cost — **turns/agent**, **ctx_max/turn**, **% of tokens on Opus**.
 
 | Phase | Scope | State |
 |---|---|---|
-| 0 | Scaffold, plugin plumbing, `token-report` + ledger, stack detection | in progress |
-| 1 | Config-driven core loop + `tasks.md` adapter — **measured against baseline** | |
+| 0 | Scaffold, plugin plumbing, `token-report` + ledger, stack detection | ✅ done — [findings](docs/phase-0-findings.md) |
+| 1 | Config-driven core loop + `tasks.md` adapter — **measured** | in progress |
 | 2 | Stack toolsets; frontend rendered verification | |
 | 3 | Local dashboard: metrics per project/session, per-agent model config | |
 | 4 | Docs, polish, public marketplace | |
