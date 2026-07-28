@@ -431,7 +431,10 @@ class TestModelsResolutionInViewModel(LedgerFixture):
         for key, value in dash.DEFAULT_MODELS.items():
             self.assertEqual(proj["models"][key], {"value": value, "source": "default"})
 
-    def test_unresolvable_project_has_no_root_and_still_reads_as_defaults(self):
+    def test_unresolvable_project_has_no_root_and_reads_as_unknown_not_default(self):
+        # Finding 6: when the root can't be resolved at all there is no
+        # config to have read a default *from* -- reporting "default" here
+        # would contradict the page's own notice that the root is unresolved.
         self._write_ledger([row("wf_1", "2026-01-01T00:00:00Z", project="-nonexistent-path-does-not-exist-xyz")])
 
         view = dash.build_view(self.ledger_path, self.baseline_path)
@@ -439,7 +442,7 @@ class TestModelsResolutionInViewModel(LedgerFixture):
 
         self.assertIsNone(proj["root"])
         for key, value in dash.DEFAULT_MODELS.items():
-            self.assertEqual(proj["models"][key], {"value": value, "source": "default"})
+            self.assertEqual(proj["models"][key], {"value": value, "source": "unknown"})
 
 
 class TestModelsWriteDiffThenConfirm(unittest.TestCase):
@@ -499,7 +502,13 @@ class TestModelsWriteDiffThenConfirm(unittest.TestCase):
         with open(self._config_path(), encoding="utf-8") as fh:
             self.assertIn("sonnet", fh.read(), "the refused confirm must not have clobbered the newer content")
 
-    def test_unknown_keys_and_comments_preserved_byte_for_byte(self):
+    def test_unknown_keys_and_comments_preserved(self):
+        # NOT byte-for-byte: `_apply_models` re-serializes the whole file with
+        # `json.dumps(indent=2)`, so parsed keys/values survive but formatting
+        # does not. Pinned below via the exact known reformat (the example
+        # config's 9 blank separator lines are dropped by the re-serialize) so
+        # that churn is an explicit, asserted decision, not an accident a
+        # sloppier future reformat could hide behind.
         example_path = os.path.join(REPO_ROOT, "plugins", "rein", "flow.config.example.json")
         with open(example_path, encoding="utf-8") as fh:
             original_text = fh.read()
@@ -509,6 +518,17 @@ class TestModelsWriteDiffThenConfirm(unittest.TestCase):
 
         new_models = {"aux": "opus", "impl": "opus", "review": "haiku"}
         preview = dash.write_models(self.root, new_models, self.known_roots, confirmed=False)
+
+        removed = [line for line in preview["diff"].splitlines() if line.startswith("-") and not line.startswith("---")]
+        added = [line for line in preview["diff"].splitlines() if line.startswith("+") and not line.startswith("+++")]
+        self.assertEqual(len(removed), 12, "known accepted churn: 9 dropped blank separator lines + 3 changed values")
+        self.assertEqual(removed.count("-"), 9, "the example config's 9 blank separator lines are all dropped")
+        self.assertEqual(
+            [line for line in removed if line != "-"],
+            ['-    "aux": "haiku",', '-    "impl": "sonnet",', '-    "review": "opus"'],
+        )
+        self.assertEqual(added, ['+    "aux": "opus",', '+    "impl": "opus",', '+    "review": "haiku"'])
+
         dash.write_models(self.root, new_models, self.known_roots, confirmed=True, token=preview["token"])
 
         with open(self._config_path(), encoding="utf-8") as fh:
@@ -555,6 +575,27 @@ class TestModelsWriteDiffThenConfirm(unittest.TestCase):
         with self.assertRaises(ValueError):
             dash.write_models(self.root, {"aux": "haiku", "impl": "sonnet"}, self.known_roots, confirmed=True)
         self.assertFalse(os.path.exists(self._config_path()))
+
+    def test_non_dict_models_is_rejected(self):
+        # Finding 1: `models` as a string passes a bare `k not in models`
+        # membership check (substring test) instead of failing it -- must be
+        # refused before that check ever runs.
+        with self.assertRaises(ValueError):
+            dash.write_models(self.root, "aux-impl-review", self.known_roots, confirmed=True)
+        self.assertFalse(os.path.exists(self._config_path()))
+
+    def test_non_string_model_values_are_rejected(self):
+        # Finding 2: a nested object, an int, or null must never reach
+        # flow.config.json in place of a plain model-name string.
+        for bad_models in (
+            {"aux": {"nested": 1}, "impl": "sonnet", "review": "opus"},
+            {"aux": "haiku", "impl": 5, "review": "opus"},
+            {"aux": "haiku", "impl": "sonnet", "review": None},
+            {"aux": "", "impl": "sonnet", "review": "opus"},
+        ):
+            with self.assertRaises(ValueError):
+                dash.write_models(self.root, bad_models, self.known_roots, confirmed=True)
+            self.assertFalse(os.path.exists(self._config_path()))
 
 
 class TestModelsHttpEndpoint(LedgerFixture):
@@ -618,6 +659,46 @@ class TestModelsHttpEndpoint(LedgerFixture):
         with self.assertRaises(urllib.error.HTTPError) as ctx:
             urllib.request.urlopen(bad, timeout=5)
         self.assertGreaterEqual(ctx.exception.code, 400)
+
+    def test_string_models_body_is_a_400_with_json_error_not_a_dropped_connection(self):
+        # Finding 1, reproduced over real HTTP exactly as described: a JSON
+        # body whose "models" is a string used to pass the `missing` guard's
+        # `in` check (a substring test on str) and then blow up inside
+        # `_apply_models` with an uncaught TypeError -- socketserver printed a
+        # traceback and closed the socket with no response at all.
+        root, port = self._serve()
+        url = f"http://127.0.0.1:{port}/models"
+        req = urllib.request.Request(
+            url,
+            data=json.dumps({"root": root, "models": "aux-impl-review"}).encode("utf-8"),
+            method="POST", headers={"Content-Type": "application/json"},
+        )
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            urllib.request.urlopen(req, timeout=5)
+        self.assertEqual(ctx.exception.code, 400)
+        payload = json.loads(ctx.exception.read())
+        self.assertIn("error", payload)
+        self.assertFalse(os.path.exists(os.path.join(root, "flow.config.json")))
+
+    def test_non_string_model_value_over_http_is_a_400_and_writes_nothing(self):
+        # Finding 2, reproduced over real HTTP: a nested object as a model
+        # value must never be accepted, let alone written to the user's
+        # flow.config.json.
+        root, port = self._serve()
+        url = f"http://127.0.0.1:{port}/models"
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(
+                {"root": root, "models": {"aux": {"nested": 1}, "impl": 5, "review": None}}
+            ).encode("utf-8"),
+            method="POST", headers={"Content-Type": "application/json"},
+        )
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            urllib.request.urlopen(req, timeout=5)
+        self.assertEqual(ctx.exception.code, 400)
+        payload = json.loads(ctx.exception.read())
+        self.assertIn("error", payload)
+        self.assertFalse(os.path.exists(os.path.join(root, "flow.config.json")))
 
     def test_first_and_only_confirm_request_is_refused_and_writes_nothing(self):
         # Reproduces the CRITICAL finding directly: a single POST carrying

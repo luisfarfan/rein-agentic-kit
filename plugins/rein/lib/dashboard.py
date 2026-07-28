@@ -187,7 +187,11 @@ def _walk_for_dir(current: str, tokens: list[str]) -> str | None:
     """Consume `tokens` (dash-split remainder of a mangled name) against real
     directory entries under `current`, longest match first. Every step is
     confirmed with `os.listdir`/`os.path.isdir`, so this can never return a
-    path that does not exist -- only fail to find one (`None`)."""
+    path that does not exist -- but the mangling is genuinely ambiguous (a
+    directory name can itself contain `-`), so on a name that mangles more
+    than one way this returns the first filesystem-verified candidate,
+    longest-segment-first -- not necessarily the one that actually produced
+    the mangled name. Only fails to find any match at all returns `None`."""
     if not tokens:
         return current
     try:
@@ -207,7 +211,9 @@ def _unmangle_project(project: str) -> str | None:
     """Best-effort, filesystem-verified reversal of `_mangle_path`. `None` if
     nothing on disk actually mangles back to this exact string (the project
     moved, the disk isn't the one that recorded it, etc.) -- callers must
-    treat that as "no root to resolve config from", never guess one."""
+    treat that as "no root to resolve config from", never guess one. Note
+    this is still a guess among filesystem-verified candidates when the
+    mangled name is itself ambiguous -- see `_walk_for_dir`."""
     if not project.startswith("-"):
         return None
     return _walk_for_dir(os.sep, project[1:].split("-"))
@@ -222,9 +228,12 @@ def _read_existing_text(root: str) -> str:
 
 
 def _resolve_models(root: str | None) -> dict[str, dict[str, str]]:
-    """`{"aux"/"impl"/"review": {"value": ..., "source": "config"|"default"}}`.
-    A missing or corrupt config -- or no resolvable root at all -- degrades to
-    every slot reading as default, never a crash."""
+    """`{"aux"/"impl"/"review": {"value": ..., "source": "config"|"default"|"unknown"}}`.
+    A missing or corrupt config degrades to every slot reading as default,
+    never a crash. No resolvable root at all degrades to "unknown" instead --
+    the built-in default value is shown, but it must not be reported with the
+    same authority as a value actually read from (or absent from) a real
+    config file, since there is no config file this session can even name."""
     cfg_models: dict = {}
     if root:
         try:
@@ -233,6 +242,11 @@ def _resolve_models(root: str | None) -> dict[str, dict[str, str]]:
             parsed = {}
         if isinstance(parsed, dict) and isinstance(parsed.get("models"), dict):
             cfg_models = parsed["models"]
+    if root is None:
+        # No root was resolved at all -- these values are not "the config's
+        # default", they are simply unverifiable, so say so rather than
+        # implying the same authority a resolved default would have.
+        return {key: {"value": DEFAULT_MODELS[key], "source": "unknown"} for key in ("aux", "impl", "review")}
     return {
         key: {
             "value": cfg_models.get(key, DEFAULT_MODELS[key]),
@@ -347,13 +361,20 @@ def write_models(
     one of `known_roots` (a path a run in the ledger actually resolved to),
     or if `confirmed` is True but `token` is absent, unknown, forged, expired,
     or stale because the file changed since the preview it was minted for.
-    Raises `ValueError` if `models` does not carry all three slots -- the page
-    always edits the resolved triple as one unit, never a partial slice of it.
+    Raises `ValueError` if `models` is not an object, does not carry all three
+    slots, or any slot is not a non-empty string -- the page always edits the
+    resolved triple as one unit, never a partial slice of it, and never writes
+    a value that isn't the plain model name the CLI expects to dispatch on.
     """
     real_root = _validate_root(root, known_roots)
+    if not isinstance(models, dict):
+        raise ValueError("models must be an object with aux/impl/review")
     missing = [k for k in ("aux", "impl", "review") if k not in models]
     if missing:
         raise ValueError(f"models.{'/'.join(missing)} missing -- all three of aux/impl/review are required")
+    bad = [k for k in ("aux", "impl", "review") if not isinstance(models[k], str) or not models[k]]
+    if bad:
+        raise ValueError(f"models.{'/'.join(bad)} must be a non-empty string")
     path = os.path.join(real_root, CONFIG_NAME)
     old_text = _read_existing_text(real_root)
     new_text = _apply_models(old_text, models)
@@ -547,13 +568,7 @@ def render_html(view: dict) -> str:
     else:
         body = "".join(_project_section(p) for p in view["projects"])
 
-    return (
-        "<!doctype html>\n"
-        '<html lang="en"><head><meta charset="utf-8">'
-        "<title>rein dashboard</title>"
-        f"<style>{_PAGE_CSS}</style></head>"
-        f"<body><h1>rein dashboard</h1>{body}</body></html>"
-    )
+    return _page(body)
 
 
 # ---------------------------------------------------------------------- serve --
@@ -607,6 +622,15 @@ def _render_models_result_page(root: str, models: dict[str, str], result: dict, 
 
 
 def _make_handler(view: dict, port: int) -> type[http.server.BaseHTTPRequestHandler]:
+    # Deliberately built once, here, from the ledger snapshot `main()` read at
+    # startup -- not re-read per GET. A run that finishes while the page is
+    # open (or is open in another tab) will not appear until the process is
+    # restarted; only a write this same server performs patches `state["body"]`
+    # in place (`_refresh_after_write`, below). Out of scope per the plan: the
+    # ledger itself is written once, at run end, so this is a "restart to see
+    # a new run" gap, not the live-streaming-during-a-run the plan excludes --
+    # narrowing that gap would mean re-reading the ledger/baseline files (and
+    # recomputing `known_roots`) on every GET instead of caching `view` here.
     state: dict[str, bytes] = {"body": render_html(view).encode("utf-8")}
     # Derived from the view actually built from the ledger -- never from the
     # request -- so a write can only ever target a root a real run resolved to.
