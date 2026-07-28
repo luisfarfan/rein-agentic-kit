@@ -94,7 +94,7 @@ per-stack *policy* that says what verification must look like to count at all.
     - the unreachable "there is no serve command to read a port from" branch in `_serve`'s warning is removed
     - each of the three has a test asserting the full `_port_from` tuple, not a partial property
 
-- [ ] T007 Decide whether a nested Dockerfile alone should mean plan-only
+- [x] T007 Decide whether a nested Dockerfile alone should mean plan-only
   - Type: implementation
   - Depends on: none
   - Human review: true

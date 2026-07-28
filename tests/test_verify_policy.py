@@ -685,6 +685,24 @@ class TestInfraLayouts(unittest.TestCase):
                      "envs/prod/main.tf", "deploy/terraform/main.tf"):
             self.assertEqual(self._mode(path), "plan-only", path)
 
+    def test_a_dockerfile_alone_is_not_infrastructure(self):
+        """A Dockerfile is a build artifact, not infrastructure-as-code.
+
+        It was in INFRA_FILES and, once subtypes became a policy, classified every
+        containerised app as infrastructure -- forbidding deploy/apply/destroy on
+        ordinary services.
+        """
+        for path in ("Dockerfile", "backend/Dockerfile", "apps/api/Dockerfile"):
+            with Project({path: "FROM alpine\n", "package.json": '{"scripts":{"test":"jest"}}'}) as root:
+                r = detect.resolve(root)
+            self.assertNotIn("infra", r["subtypes"], path)
+            self.assertEqual(r["verifyPolicy"]["mode"], "unit", path)
+
+    def test_real_iac_markers_still_classify(self):
+        for path in ("serverless.yml", "infra/sst.config.ts", "envs/prod/main.tf"):
+            with Project({path: ""}) as root:
+                self.assertEqual(detect.resolve(root)["verifyPolicy"]["mode"], "plan-only", path)
+
     def test_scan_does_not_descend_into_dependency_directories(self):
         with Project({"node_modules/some-pkg/Dockerfile": "", "package.json": "{}"}) as root:
             self.assertNotIn("infra", detect.resolve(root)["subtypes"])

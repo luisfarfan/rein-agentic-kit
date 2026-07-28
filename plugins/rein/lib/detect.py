@@ -28,7 +28,11 @@ CONFIG_NAME = "flow.config.json"
 # share node's commands but additionally require real rendered verification
 # ("the tests pass but the UI is broken" is the failure this kit exists to catch).
 FRONTEND_MARKERS = ("next", "vite", "astro", "@sveltejs/kit", "nuxt", "nuxt3", "@remix-run", "react-scripts")
-INFRA_FILES = ("serverless.yml", "serverless.ts", "sst.config.ts", "template.yaml", "Dockerfile")
+# Infrastructure-AS-CODE only. A Dockerfile was here and did not belong: it is a
+# BUILD artifact that any ordinary app has, so once phase 2 turned subtypes into
+# a policy, every containerised app was told it was infrastructure and forbidden
+# from running deploy/apply/destroy. These four declare infrastructure itself.
+INFRA_FILES = ("serverless.yml", "serverless.ts", "sst.config.ts", "template.yaml")
 # Terraform is the canonical plan-only case and DESTRUCTIVE_OPS names its verbs,
 # so matching it by extension is not optional: detecting the ops but not the repo
 # would leave the guarantee unreachable exactly where it matters most.
