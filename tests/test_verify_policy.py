@@ -8,6 +8,8 @@ reproducible for anyone who clones the project.
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -68,6 +70,44 @@ class TestRenderedMode(unittest.TestCase):
         tools = r["verifyPolicy"]["tools"]
         self.assertEqual(sorted(tools), ["browser-testing", "claude-in-chrome", "playwright"])
 
+    def test_chrome_mcp_in_claude_settings_json_is_reachable(self):
+        settings = json.dumps({"mcpServers": {"claude-in-chrome": {"type": "stdio"}}})
+        files = {
+            "package.json": PKG_VITE,
+            ".claude/settings.json": settings,
+        }
+        with Project(files) as root:
+            r = detect.resolve(root)
+        self.assertIn("claude-in-chrome", r["verifyPolicy"]["tools"])
+
+    def test_chrome_mcp_in_claude_settings_local_json_is_reachable(self):
+        settings = json.dumps({"mcpServers": {"claude-in-chrome": {"type": "stdio"}}})
+        files = {
+            "package.json": PKG_VITE,
+            ".claude/settings.local.json": settings,
+        }
+        with Project(files) as root:
+            r = detect.resolve(root)
+        self.assertIn("claude-in-chrome", r["verifyPolicy"]["tools"])
+
+    def test_playwright_mentioned_only_in_comment_is_not_reachable(self):
+        files = {
+            "package.json": json.dumps({"scripts": {"dev": "vite"}, "devDependencies": {"vite": "^5"}}),
+            "requirements.txt": "# consider adding playwright later\nrequests==2.31\n",
+        }
+        with Project(files) as root:
+            r = detect.resolve(root)
+        self.assertNotIn("playwright", r["verifyPolicy"]["tools"])
+
+    def test_playwright_in_requirements_dependency_line_is_reachable(self):
+        files = {
+            "package.json": json.dumps({"scripts": {"dev": "vite"}, "devDependencies": {"vite": "^5"}}),
+            "requirements.txt": "playwright==1.40\n",
+        }
+        with Project(files) as root:
+            r = detect.resolve(root)
+        self.assertIn("playwright", r["verifyPolicy"]["tools"])
+
     def test_absent_tools_never_named_individually(self):
         # Only playwright is reachable -- the other two must not appear.
         files = {
@@ -78,6 +118,47 @@ class TestRenderedMode(unittest.TestCase):
         with Project(files) as root:
             r = detect.resolve(root)
         self.assertEqual(r["verifyPolicy"]["tools"], ["playwright"])
+
+
+EXAMPLE_CONFIG_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "plugins", "rein", "flow.config.example.json"
+)
+
+
+class TestShippedExampleConfig(unittest.TestCase):
+    """The example config that ships in the repo and that users copy verbatim
+    must never silently disable Phase 2 for a frontend project. Regression
+    test for the 'mode: auto' sentinel being treated as an explicit override.
+    """
+
+    def test_example_config_on_frontend_project_is_rendered(self):
+        with open(EXAMPLE_CONFIG_PATH, encoding="utf-8") as f:
+            example_cfg = f.read()
+        with Project({"package.json": PKG_VITE, "flow.config.json": example_cfg}) as root:
+            r = detect.resolve(root)
+        self.assertEqual(r["verifyPolicy"]["mode"], "rendered")
+        self.assertTrue(r["verifyPolicy"]["requires"])
+        self.assertNotIn("warnings", r["verifyPolicy"])
+
+
+class TestBadVerifyMode(unittest.TestCase):
+    def test_unknown_mode_falls_back_to_detection_and_warns(self):
+        cfg = json.dumps({"verify": {"mode": "yolo"}})
+        with Project({"package.json": PKG_VITE, "flow.config.json": cfg}) as root:
+            r = detect.resolve(root)
+        policy = r["verifyPolicy"]
+        # Falls back to detection (frontend -> rendered) instead of failing
+        # open with an unknown mode loop.js's policy blocks don't recognize.
+        self.assertEqual(policy["mode"], "rendered")
+        self.assertIn("warnings", policy)
+        self.assertIn("yolo", policy["warnings"][0])
+
+    def test_empty_string_mode_is_treated_as_unset(self):
+        cfg = json.dumps({"verify": {"mode": ""}})
+        with Project({"pyproject.toml": "", "flow.config.json": cfg}) as root:
+            r = detect.resolve(root)
+        self.assertEqual(r["verifyPolicy"]["mode"], "unit")
+        self.assertNotIn("warnings", r["verifyPolicy"])
 
 
 class TestPlanOnlyMode(unittest.TestCase):
@@ -181,6 +262,25 @@ class TestServeBlock(unittest.TestCase):
             r = detect.resolve(root)
         self.assertNotIn("serve", r)
 
+    def test_config_serve_command_wins_over_dev_script(self):
+        # A frontend dev server that isn't an npm script (static site,
+        # Django/Rails-served front end, docker compose) must be
+        # configurable -- flow.config.json's commands.serve is the highest
+        # precedence source, same rule as every other command slot.
+        pkg = json.dumps({"scripts": {"dev": "vite"}, "devDependencies": {"vite": "^5"}})
+        cfg = json.dumps({"commands": {"serve": "python3 -m http.server 8080"}})
+        with Project({"package.json": pkg, "flow.config.json": cfg}) as root:
+            r = detect.resolve(root)
+        self.assertEqual(r["serve"]["command"], "python3 -m http.server 8080")
+        self.assertNotIn("serve", r["missingCommands"])
+
+    def test_config_serve_command_satisfies_static_site_with_no_package_json(self):
+        cfg = json.dumps({"subtypes": ["frontend"], "commands": {"serve": "python3 -m http.server 8080"}})
+        with Project({"flow.config.json": cfg, "index.html": "<html></html>"}) as root:
+            r = detect.resolve(root)
+        self.assertEqual(r["serve"]["command"], "python3 -m http.server 8080")
+        self.assertNotIn("serve", r["missingCommands"])
+
 
 class TestShape(unittest.TestCase):
     def test_shape_has_all_keys(self):
@@ -217,7 +317,13 @@ class TestLoopScriptIsPortable(unittest.TestCase):
             self.source = f.read()
 
     def test_no_hardcoded_stack_framework_or_port(self):
-        lowered = self.source.lower()
+        # Strip comments first: a future comment merely mentioning e.g. pnpm
+        # (as this file's own header comments do, in prose) is not a
+        # portability loss and must not fail the suite. Safe here because the
+        # source contains no "//" inside string literals (e.g. no http:// URLs).
+        code_only = re.sub(r"/\*.*?\*/", "", self.source, flags=re.DOTALL)
+        code_only = re.sub(r"//.*", "", code_only)
+        lowered = code_only.lower()
         hits = [
             tok for tok in _STACK_OR_FRAMEWORK_LITERALS + _PORT_LITERALS
             if re.search(r"\b" + re.escape(tok.strip()) + r"\b", lowered)
@@ -234,6 +340,95 @@ class TestLoopScriptIsPortable(unittest.TestCase):
         self.assertIn("reviewerPolicyBlock()", self.source)
         self.assertIn("VERIFY_POLICY.mode === 'rendered'", self.source)
         self.assertIn("VERIFY_POLICY.mode === 'plan-only'", self.source)
+
+
+_NODE = shutil.which("node")
+
+# Extracts implementerPolicyBlock()/reviewerPolicyBlock()'s bodies straight out
+# of loop.js's source (regex-bounded by the 0-indent closing brace) and runs
+# them with VERIFY_POLICY/SERVE/ctx turned into ordinary Function parameters
+# instead of the harness-injected globals loop.js normally reads them from.
+# This is what makes the "byte-identical in unit mode" / "names the serve
+# command in rendered mode" / "lists every forbidden op in plan-only mode"
+# claims actually checked, not just asserted by comment.
+_EXTRACT_AND_RUN_JS = r"""
+const fs = require('fs');
+const [, , loopPath, scenariosJson] = process.argv;
+const src = fs.readFileSync(loopPath, 'utf8');
+function extract(name) {
+  const re = new RegExp(`function ${name}\\(\\) \\{\\n([\\s\\S]*?)\\n\\}\\n`);
+  const m = src.match(re);
+  if (!m) throw new Error('not found in loop.js: ' + name);
+  return m[1];
+}
+const implFn = new Function('VERIFY_POLICY', 'SERVE', 'ctx', extract('implementerPolicyBlock'));
+const revFn = new Function('VERIFY_POLICY', 'SERVE', extract('reviewerPolicyBlock'));
+const scenarios = JSON.parse(scenariosJson);
+const out = scenarios.map((s) => ({
+  implementer: implFn(s.verifyPolicy, s.serve, { stack: s.stack }),
+  reviewer: revFn(s.verifyPolicy, s.serve),
+}));
+process.stdout.write(JSON.stringify(out));
+"""
+
+
+@unittest.skipUnless(_NODE, "node not on PATH -- loop.js is a node workflow script")
+class TestPolicyBlockRenderedContent(unittest.TestCase):
+    """Runs the actual prompt-building functions instead of grepping loop.js
+    source, so a regression to empty/wrong prompt bodies fails loudly.
+    """
+
+    def _run(self, scenarios: list[dict]) -> list[dict]:
+        with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False, encoding="utf-8") as f:
+            f.write(_EXTRACT_AND_RUN_JS)
+            script_path = f.name
+        try:
+            proc = subprocess.run(
+                [_NODE, script_path, LOOP_JS, json.dumps(scenarios)],
+                capture_output=True, text=True, check=True,
+            )
+        finally:
+            os.unlink(script_path)
+        return json.loads(proc.stdout)
+
+    def test_unit_mode_prompts_are_byte_identical_to_today(self):
+        [result] = self._run([{
+            "verifyPolicy": {"mode": "unit", "requires": [], "forbids": [], "tools": []},
+            "serve": {"command": "", "url": ""},
+            "stack": "python",
+        }])
+        self.assertEqual(result["implementer"], "")
+        self.assertEqual(result["reviewer"], "")
+
+    def test_rendered_mode_prompt_names_serve_command_url_and_tools(self):
+        [result] = self._run([{
+            "verifyPolicy": {"mode": "rendered", "requires": ["x"], "forbids": [], "tools": ["playwright"]},
+            "serve": {"command": "npm run dev", "url": "http://localhost:5173"},
+            "stack": "node",
+        }])
+        self.assertIn("npm run dev", result["implementer"])
+        self.assertIn("http://localhost:5173", result["implementer"])
+        self.assertIn("playwright", result["implementer"])
+        self.assertIn("http://localhost:5173", result["reviewer"])
+
+    def test_rendered_mode_with_no_serve_command_says_so_rather_than_inventing(self):
+        [result] = self._run([{
+            "verifyPolicy": {"mode": "rendered", "requires": ["x"], "forbids": [], "tools": []},
+            "serve": {"command": "", "url": ""},
+            "stack": "node",
+        }])
+        self.assertIn("no serve command is configured", result["implementer"])
+
+    def test_plan_only_prompt_lists_every_forbidden_op(self):
+        forbids = ["deploy", "apply", "destroy"]
+        [result] = self._run([{
+            "verifyPolicy": {"mode": "plan-only", "requires": [], "forbids": forbids, "tools": []},
+            "serve": {"command": "", "url": ""},
+            "stack": "terraform",
+        }])
+        for op in forbids:
+            self.assertIn(op, result["implementer"])
+            self.assertIn(op, result["reviewer"])
 
 
 if __name__ == "__main__":

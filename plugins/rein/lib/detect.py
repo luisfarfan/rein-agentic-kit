@@ -255,6 +255,31 @@ def _capabilities(root: str) -> list[str]:
 # ------------------------------------------------------------- verify policy --
 
 
+def _has_playwright_dependency(text: str) -> bool:
+    """Line-based dependency match: a `#` comment mentioning playwright (in a
+    pyproject.toml or requirements.txt) must not name a tool nobody installed.
+    """
+    for line in text.splitlines():
+        code = line.split("#", 1)[0]
+        if re.search(r"\bplaywright\b", code, re.IGNORECASE):
+            return True
+    return False
+
+
+def _mcp_chrome_configured(root: str) -> bool:
+    # `.mcp.json` is the project-committed MCP config; `.claude/settings.json`
+    # and `.claude/settings.local.json` are the more common real-world places
+    # a project configures the claude-in-chrome MCP (settings.local.json is
+    # typically gitignored, but still project-local and reproducible for
+    # whoever generated it, unlike the operator's home-directory `~/.claude.json`).
+    for rel in (".mcp.json", os.path.join(".claude", "settings.json"), os.path.join(".claude", "settings.local.json")):
+        cfg = _read_json(os.path.join(root, rel))
+        servers = cfg.get("mcpServers") or {}
+        if any("chrome" in k.lower() for k in servers):
+            return True
+    return False
+
+
 def _browser_tools(root: str) -> list[str]:
     """Which rendered-verification tools this PROJECT can actually reach.
 
@@ -263,26 +288,30 @@ def _browser_tools(root: str) -> list[str]:
     everyone who clones the project, and it must be reproducible in a throwaway
     temp tree for tests. Naming a tool nobody here can use is worse than
     naming none.
+
+    Plugin-provided skills (e.g. this kit's own `browser-testing-with-devtools`,
+    shipped from a plugin rather than `.claude/skills/`) are deliberately NOT
+    probed here: plugin installation state lives outside the repo (typically
+    `~/.claude/plugins`), so checking for it would break the "same answer for
+    everyone who clones the project" invariant this function exists to uphold.
     """
     tools: list[str] = []
 
     pkg = _read_json(os.path.join(root, "package.json"))
     deps = {**(pkg.get("dependencies") or {}), **(pkg.get("devDependencies") or {})}
-    pyproject = _read_text(os.path.join(root, "pyproject.toml")).lower()
-    requirements = _read_text(os.path.join(root, "requirements.txt")).lower()
+    pyproject = _read_text(os.path.join(root, "pyproject.toml"))
+    requirements = _read_text(os.path.join(root, "requirements.txt"))
     has_playwright = (
         "playwright" in deps
         or "@playwright/test" in deps
-        or "playwright" in pyproject
-        or "playwright" in requirements
+        or _has_playwright_dependency(pyproject)
+        or _has_playwright_dependency(requirements)
         or os.path.exists(os.path.join(root, "node_modules", ".bin", "playwright"))
     )
     if has_playwright:
         tools.append("playwright")
 
-    mcp_cfg = _read_json(os.path.join(root, ".mcp.json"))
-    servers = mcp_cfg.get("mcpServers") or {}
-    if any("chrome" in k.lower() for k in servers):
+    if _mcp_chrome_configured(root):
         tools.append("claude-in-chrome")
 
     skills_dir = os.path.join(root, ".claude", "skills")
@@ -296,11 +325,18 @@ def _browser_tools(root: str) -> list[str]:
 _PORT_FLAG_RE = re.compile(r"(?:--port|-p)[=\s]+(\d+)")
 
 
-def _serve(root: str, subtypes: list[str], cfg: dict) -> dict | None:
+def _serve(root: str, subtypes: list[str], commands: dict[str, str], cfg: dict) -> dict | None:
     """How to run a frontend project so a real page can be rendered and checked.
 
     Returns None for non-frontend projects: there is nothing to serve, so no
     `serve` block should appear at all rather than an empty placeholder.
+
+    `commands["serve"]` (set via flow.config.json's `commands.serve`) is the
+    highest-precedence source -- same precedence rule as every other command
+    slot ("flow.config.json -- explicit intent, always wins"). Without this,
+    a frontend whose dev server is not an npm script (static site, a Django/
+    Rails-served front end, docker compose) could never be configured: the
+    `serve` slot would stay in `missingCommands` with no way to satisfy it.
     """
     if "frontend" not in subtypes:
         return None
@@ -309,8 +345,13 @@ def _serve(root: str, subtypes: list[str], cfg: dict) -> dict | None:
     scripts = pkg.get("scripts") or {}
     runner = _pm_runner(_package_manager(root))
 
+    cfg_command = (commands.get("serve") or "").strip()
+
     script_body = ""
-    if "dev" in scripts:
+    if cfg_command:
+        script_body = cfg_command
+        command = cfg_command
+    elif "dev" in scripts:
         script_body = scripts["dev"]
         command = f"{runner} dev"
     elif "start" in scripts:
@@ -329,20 +370,45 @@ def _serve(root: str, subtypes: list[str], cfg: dict) -> dict | None:
     return {"command": command, "url": url}
 
 
+_VALID_VERIFY_MODES = {"rendered", "plan-only", "unit"}
+
+
 def _verify_policy(root: str, subtypes: list[str], commands: dict[str, str], cfg: dict) -> dict:
     cfg_verify = cfg.get("verify") or {}
-    if "mode" in cfg_verify:
-        mode = cfg_verify["mode"]
-    elif "frontend" in subtypes:
-        mode = "rendered"
-    elif "infra" in subtypes and "test" not in commands:
-        mode = "plan-only"
-    else:
-        mode = "unit"
+    raw_mode = str(cfg_verify.get("mode") or "").strip()
+
+    # Absent, empty, or the documented sentinel "auto" all mean "not set --
+    # fall through to detection". This is what flow.config.example.json
+    # ships (`"mode": "auto"`), and treating any-truthy-value-in-cfg as an
+    # override previously made that shipped example silently resolve to an
+    # empty verifyPolicy for frontend projects (loop.js's policy blocks only
+    # branch on 'rendered'/'plan-only', so 'auto' produced neither).
+    bad_mode = ""
+    mode = ""
+    if raw_mode and raw_mode != "auto":
+        if raw_mode in _VALID_VERIFY_MODES:
+            mode = raw_mode
+        else:
+            bad_mode = raw_mode  # surfaced below instead of failing open
+
+    if not mode:
+        if "frontend" in subtypes:
+            mode = "rendered"
+        elif "infra" in subtypes and "test" not in commands:
+            mode = "plan-only"
+        else:
+            mode = "unit"
 
     requires: list[str] = []
     forbids: list[str] = []
     tools: list[str] = []
+    warnings: list[str] = []
+
+    if bad_mode:
+        warnings.append(
+            f"verify.mode {bad_mode!r} is not one of {sorted(_VALID_VERIFY_MODES)} "
+            f"(or 'auto') -- falling back to detected mode {mode!r}"
+        )
 
     if mode == "rendered":
         requires = ["a real browser render must be observed, not just a passing test suite"]
@@ -350,7 +416,10 @@ def _verify_policy(root: str, subtypes: list[str], commands: dict[str, str], cfg
     elif mode == "plan-only":
         forbids = list(DESTRUCTIVE_OPS)
 
-    return {"mode": mode, "requires": requires, "forbids": forbids, "tools": tools}
+    result = {"mode": mode, "requires": requires, "forbids": forbids, "tools": tools}
+    if warnings:
+        result["warnings"] = warnings
+    return result
 
 
 def resolve(root: str = ".") -> dict:
@@ -379,7 +448,7 @@ def resolve(root: str = ".") -> dict:
     plan = {"source": _detect_plan_source(root), "path": "", **(cfg.get("plan") or {})}
     tracker = {"kind": "none", **(cfg.get("tracker") or {})}
     subtypes = cfg.get("subtypes") or auto.get("subtypes", [])
-    serve = _serve(root, subtypes, cfg)
+    serve = _serve(root, subtypes, commands, cfg)
 
     missing_commands = [s for s in ("test", "testOne", "lint", "typecheck") if s not in commands]
     if serve is not None and not serve["command"]:

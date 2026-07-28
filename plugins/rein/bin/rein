@@ -217,6 +217,17 @@ def cmd_doctor(argv: list[str]) -> int:
     if resolved["missingCommands"]:
         print(f"    {miss}: {', '.join(resolved['missingCommands'])} -- set them in flow.config.json")
     print()
+    vp = resolved["verifyPolicy"]
+    tools_str = ", ".join(vp["tools"]) if vp["tools"] else "(none reachable)"
+    print(f"  verify : mode={vp['mode']}  tools={tools_str}")
+    if vp.get("warnings"):
+        for w in vp["warnings"]:
+            print(f"    WARNING: {w}")
+    serve = resolved.get("serve")
+    if serve is not None:
+        serve_cmd = serve["command"] or miss
+        print(f"  serve  : {serve_cmd} @ {serve['url']}")
+    print()
     print(f"  models : aux={resolved['models']['aux']}  impl={resolved['models']['impl']}  review={resolved['models']['review']}")
     print(f"  limits : maxTaskSteps={resolved['limits']['maxTaskSteps']}  maxReviewRounds={resolved['limits']['maxReviewRounds']}")
     print()
