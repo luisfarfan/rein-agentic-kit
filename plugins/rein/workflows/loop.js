@@ -85,9 +85,13 @@ const resolved = await agent(
     `Your entire job is ONE bash round-trip plus reporting. Do not explore the repo.\n\n` +
     `1. Print the working directory: 'pwd'.\n` +
     `2. Resolve the project's stack and commands. Try these IN ORDER and stop at the first that works:\n` +
-    `   a) 'rein detect'                      (tells us the plugin's bin/ is on PATH)\n` +
-    `   b) '"$CLAUDE_PLUGIN_ROOT"/bin/rein detect'\n` +
-    `   c) 'python3 "$CLAUDE_PLUGIN_ROOT"/lib/detect.py'\n` +
+    `   a) 'rein detect'\n` +
+    `      (works once the plugin's bin/ is on PATH -- Claude Code builds that PATH at SESSION START,\n` +
+    `       so it is absent in the session where the plugin was installed)\n` +
+    `   b) 'R=$(ls -d ~/.claude/plugins/cache/*/rein/*/bin/rein 2>/dev/null | tail -1); "$R" detect'\n` +
+    `      (deterministic fallback: the install path is versioned but its shape is fixed)\n` +
+    `   c) '"$CLAUDE_PLUGIN_ROOT"/bin/rein detect'\n` +
+    `      (last resort: CLAUDE_PLUGIN_ROOT is NOT exported to workflow subagents, so this usually fails)\n` +
     `   Report in 'invokedAs' the EXACT command that worked, and set reinOnPath=true only if (a) worked.\n` +
     `   The output is JSON -- read it, do not re-derive any of it yourself.\n` +
     `3. Report its fields back: configFound, stack, subtypes, taskRunner, planSource ('plan.source'),\n` +

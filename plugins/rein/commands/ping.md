@@ -8,12 +8,15 @@ allowed-tools: Bash
 Phase-0 plumbing probe. Confirms the plugin is wired correctly in **this** project
 before anything is asked of it.
 
-Run the environment probe. Try these in order and stop at the first that works —
-which one succeeds is itself the answer to "is the plugin's `bin/` on PATH?":
+Run the environment probe. Which spelling succeeds is itself a diagnostic:
 
 ```bash
-rein doctor 2>/dev/null || "$CLAUDE_PLUGIN_ROOT"/bin/rein doctor
+rein doctor 2>/dev/null || "$(ls -d ~/.claude/plugins/cache/*/rein/*/bin/rein 2>/dev/null | tail -1)" doctor
 ```
+
+The bare `rein` only works once Claude Code has put the plugin's `bin/` on
+`$PATH`, which it does **at session start** — so it is expected to fail in the
+session where the plugin was installed, and to work in the next one.
 
 Then report, briefly:
 

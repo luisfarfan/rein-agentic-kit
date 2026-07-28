@@ -33,24 +33,29 @@ and that it reads the *consuming* project's config.
 
 ## Steps
 
-1. Resolve this project's setup and show it to the user:
+1. Resolve the plugin's install path and this project's setup in one step:
 
    ```bash
-   rein detect 2>/dev/null || "$CLAUDE_PLUGIN_ROOT"/bin/rein detect
+   R=$(command -v rein || ls -d ~/.claude/plugins/cache/*/rein/*/bin/rein 2>/dev/null | tail -1); echo "$R"; "$R" detect
    ```
 
-2. Run the workflow. Try resolution by name first; fall back to path:
+   Keep `$R` — every later `rein` call uses it. The bare `rein` only exists once
+   Claude Code has added the plugin's `bin/` to `$PATH`, which happens at session
+   start, so the fallback is the reliable path.
 
-   - `Workflow({ name: 'rein-loop', args: { ... } })`
-   - if that fails: `Workflow({ scriptPath: '${CLAUDE_PLUGIN_ROOT}/workflows/loop.js', args: { ... } })`
+2. Run the workflow **by absolute path**. Workflows are not a plugin component
+   type, so `Workflow({name: ...})` cannot see it, and `${CLAUDE_PLUGIN_ROOT}` is
+   not interpolated by the Workflow tool. Derive the script path from `$R`
+   (`<plugin root>/workflows/loop.js`) and pass it literally:
 
-   Report **which one worked** — that is an open phase-0 question, and the answer
-   decides how the other commands are written.
+   ```
+   Workflow({ scriptPath: '<plugin root>/workflows/loop.js', args: { ... } })
+   ```
 
 3. After the run, record and show the real cost:
 
    ```bash
-   rein token-report 2>/dev/null || "$CLAUDE_PLUGIN_ROOT"/bin/rein token-report
+   "$R" token-report
    ```
 
    Call out the three numbers that predict cost: **turns/agent**, **ctx_max/turn**,
