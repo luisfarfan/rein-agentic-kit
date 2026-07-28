@@ -20,7 +20,7 @@ read turns/agent, ctx_max and opus share. The measurement exists and is unusable
 
 ---
 
-- [ ] T001 Assemble the dashboard view model and serve it
+- [x] T001 Assemble the dashboard view model and serve it
   - Type: implementation
   - Depends on: none
   - Human review: false
