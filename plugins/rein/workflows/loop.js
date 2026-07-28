@@ -73,6 +73,27 @@ const CONTEXT_SCHEMA = {
     root: { type: 'string' },
     stack: { type: 'string' },
     subtypes: { type: 'array', items: { type: 'string' } },
+    verifyWarnings: { type: 'array', items: { type: 'string' } },
+    verifyPolicy: {
+      type: 'object',
+      properties: {
+        mode: { type: 'string' },
+        requires: { type: 'array', items: { type: 'string' } },
+        forbids: { type: 'array', items: { type: 'string' } },
+        tools: { type: 'array', items: { type: 'string' } },
+      },
+      required: ['mode', 'requires', 'forbids', 'tools'],
+      additionalProperties: false,
+    },
+    serve: {
+      type: 'object',
+      properties: {
+        command: { type: 'string' },
+        url: { type: 'string' },
+      },
+      required: ['command', 'url'],
+      additionalProperties: false,
+    },
     cmdTest: { type: 'string' },
     cmdTestOne: { type: 'string' }, // contains {target}
     cmdLint: { type: 'string' },
@@ -109,8 +130,9 @@ const CONTEXT_SCHEMA = {
     problem: { type: 'string' },
   },
   required: [
-    'ok', 'reinPath', 'root', 'stack', 'subtypes', 'cmdTest', 'cmdTestOne', 'cmdLint', 'cmdTypecheck',
+    'ok', 'reinPath', 'root', 'stack', 'subtypes', 'verifyPolicy', 'serve', 'cmdTest', 'cmdTestOne', 'cmdLint', 'cmdTypecheck',
     'planPath', 'planSource', 'artifacts', 'capabilities', 'tracker', 'baseBranch', 'worktreePrefix',
+    'verifyWarnings',
     'maxTaskSteps', 'maxReviewRounds', 'modelAux', 'modelImpl', 'modelReview', 'tasks', 'problem',
   ],
   additionalProperties: false,
@@ -224,6 +246,11 @@ const ctx = await agentRetry(
     `3. Report it back, mapping fields exactly:\n` +
     `   · cmdTest/cmdTestOne/cmdLint/cmdTypecheck  <- config.commands.{test,testOne,lint,typecheck}\n` +
     `     (empty string when a slot is absent — say so rather than inventing a command)\n` +
+    `   · verifyPolicy <- config.verifyPolicy, serve <- config.serve when present, else {command:"",url:""}\n` +
+    `     (non-frontend projects have none). Copy both LITERALLY, do not re-derive them.\n` +
+    `   · verifyWarnings <- config.verifyWarnings, or [] when the key is absent. These say the policy\n` +
+    `     cannot be satisfied as detected (no browser tool reachable, a guessed URL); the run surfaces\n` +
+    `     them so a wrong instruction is visible instead of silently followed.\n` +
     `   · baseBranch <- config.worktree.baseBranch, worktreePrefix <- config.worktree.prefix\n` +
     `   · maxTaskSteps/maxReviewRounds <- config.limits, model* <- config.models\n` +
     `   · tasks <- plan.pending, ALREADY dependency-ordered. Keep that order. Copy each field\n` +
@@ -249,6 +276,11 @@ const MODEL_IMPL = ARGS.modelImpl || ctx.modelImpl || 'sonnet'
 const MODEL_REVIEW = ARGS.modelReview || ctx.modelReview || 'opus'
 const BASE = ctx.baseBranch || 'main'
 const LABEL = CHANGE || 'change'
+// Reported literally by Prepare, never re-derived here. Defaulted only so a
+// prepare agent talking to an older CLI (no verifyPolicy/serve yet) degrades
+// to 'unit' — today's behaviour — instead of throwing.
+const VERIFY_POLICY = ctx.verifyPolicy || { mode: 'unit', requires: [], forbids: [], tools: [] }
+const SERVE = ctx.serve || { command: '', url: '' }
 const PREFIX = ctx.worktreePrefix || 'rein-wt'
 const BRANCH = WORKTREE_MODE ? `${PREFIX}/${LABEL}` : BASE
 // A worktree must live beside the repo: git refuses one inside the main tree.
@@ -257,6 +289,10 @@ const WD = WORKTREE_MODE ? `${PARENT}/${PREFIX}-${LABEL}` : ctx.root
 
 let tasks = ctx.tasks || []
 if (ONLY.length) tasks = tasks.filter((t) => ONLY.includes(t.id.toUpperCase()))
+
+// Before the no-tasks return: these describe project CONFIGURATION, not task
+// state, and are the only in-run signal that the policy cannot be satisfied.
+for (const w of ctx.verifyWarnings || []) log(`⚠️ ${w}`)
 
 if (!tasks.length) {
   log('nothing to do: no pending tasks in the plan')
@@ -327,6 +363,51 @@ function boundedVerification(task) {
   if (ctx.cmdTestOne) return `the narrowest form of '${ctx.cmdTestOne}' (substitute {target} with the one test file or id covering your change)`
   if (ctx.cmdTest) return `'${ctx.cmdTest}'`
   return `(no verification command is configured — say so in 'verification' rather than pretending you ran one)`
+}
+
+// Additive per-mode guidance, from verifyPolicy only — nothing here names a
+// stack, a framework or a port; those come from ctx/SERVE. Empty string in
+// 'unit' mode keeps every prompt byte-identical to before this policy existed,
+// so library and CLI projects see no change.
+function implementerPolicyBlock() {
+  if (VERIFY_POLICY.mode === 'rendered') {
+    return (
+      // The requirement text comes from VERIFY_POLICY.requires, not a second
+      // English restatement of it here: two copies of one rule drift apart with
+      // nothing failing, and a future mode would silently get no requirement.
+      `RENDERED VERIFICATION REQUIRED (mode: rendered): ${VERIFY_POLICY.requires.join('; ')}. ` +
+      `A green ${ctx.stack} test suite does NOT make this task done by itself. Serve it — ` +
+      `${SERVE.command || '(no serve command is configured; say so rather than inventing one)'}` +
+      `${SERVE.url ? ` at ${SERVE.url}` : ''} — and render it` +
+      `${VERIFY_POLICY.tools.length ? ` (available: ${VERIFY_POLICY.tools.join(', ')})` : ''}. Record what you ` +
+      `OBSERVED — not just that the test suite passed — in 'verification'.\n`
+    )
+  }
+  if (VERIFY_POLICY.mode === 'plan-only' && VERIFY_POLICY.forbids.length) {
+    return (
+      `HARD PROHIBITION (mode: plan-only): never run ${VERIFY_POLICY.forbids.join(', ')} against real infrastructure ` +
+      `as verification for this task — a plan-only task is verified by inspection, never by mutating anything real.\n`
+    )
+  }
+  return ''
+}
+
+function reviewerPolicyBlock() {
+  if (VERIFY_POLICY.mode === 'rendered') {
+    return (
+      `This project's policy is 'rendered': the mechanical gate is INCOMPLETE without observed render evidence — ` +
+      `a green test suite with no actual page render is NOT grounds for approval. Confirm the implementer recorded ` +
+      `what was served${SERVE.url ? ` (${SERVE.url})` : ''} and rendered, not just that tests passed; if it did not, ` +
+      `that alone is a CHANGES_REQUESTED finding.\n`
+    )
+  }
+  if (VERIFY_POLICY.mode === 'plan-only' && VERIFY_POLICY.forbids.length) {
+    return (
+      `HARD PROHIBITION (mode: plan-only): ${VERIFY_POLICY.forbids.join(', ')} must never have run against real ` +
+      `infrastructure as part of this change's verification — if they did, the gate is not actually green.\n`
+    )
+  }
+  return ''
 }
 
 const closeCmd =
@@ -415,6 +496,7 @@ function stepPrompt(task, proxied, ledger, step) {
     `every single turn and costs a fortune): do ONE FOCUSED STRETCH, not the whole task at once. Run the ` +
     `NARROWEST verification that covers your change — ${boundedVerification(task)} — NEVER the full suite, ` +
     `and do not dump its whole output. Commit whatever is green.\n` +
+    implementerPolicyBlock() +
     `If the task is NOT 100% complete after that, STOP and return done=false with a COMPACT ledger ` +
     `(progress/remaining/filesTouched/verification, a few lines) so another FRESH agent continues. Do NOT ` +
     `keep accumulating context to "just finish it": cutting and handing off is CHEAP, running 200 turns is ` +
@@ -551,6 +633,7 @@ if (incomplete.length) {
           `1. MECHANICAL GATE FIRST. Run ${gateCmds.length ? gateCmds.join(', ') : 'the project verification commands (none are configured — say so)'} ` +
           `and put their LITERAL output (trimmed to what matters) in 'gateOutput', with gateGreen set honestly. ` +
           `If anything is red the verdict CANNOT be APPROVED, however good the code reads.\n` +
+          reviewerPolicyBlock() +
           `2. JUDGEMENT over the full diff ('git -C ${WD} diff ${BASE}...${BRANCH}' or the run's commits), on five ` +
           `axes: correctness, readability, architecture, security, performance. Look at the change AS A WHOLE — ` +
           `coherence defects BETWEEN tasks are the ones nobody else will ever see.\n` +

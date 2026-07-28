@@ -40,7 +40,7 @@ Unit tests are the right gate for a library and the wrong one for a rendered pag
 The loop already runs whatever `Verification` a task declares; what is missing is a
 per-stack *policy* that says what verification must look like to count at all.
 
-- [ ] T003 Emit a per-stack verification policy from `rein detect`
+- [x] T003 Emit a per-stack verification policy from `rein detect`
   - Type: implementation
   - Depends on: none
   - Human review: false
@@ -54,7 +54,7 @@ per-stack *policy* that says what verification must look like to count at all.
     - `unit` mode is unchanged in behaviour from today: `requires` is empty and nothing new is imposed on library or CLI projects
     - a new `tests/test_verify_policy.py` covers each mode, the config override, and the "never name an absent tool" rule, using temporary project trees only
 
-- [ ] T004 Detect how to serve a frontend so a render check is possible
+- [x] T004 Detect how to serve a frontend so a render check is possible
   - Type: implementation
   - Depends on: T003
   - Human review: false
@@ -66,7 +66,7 @@ per-stack *policy* that says what verification must look like to count at all.
     - non-frontend projects report no `serve` block at all
     - the existing `tests/test_detect.py` continues to pass unchanged, and the new cases live in `tests/test_verify_policy.py`
 
-- [ ] T005 Enforce the policy in the loop's implementer and reviewer prompts
+- [x] T005 Enforce the policy in the loop's implementer and reviewer prompts
   - Type: implementation
   - Depends on: T004
   - Human review: false
