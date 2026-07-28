@@ -128,6 +128,19 @@ rein ledger
 baseline to compare against. Without one, the honest numbers are the three that
 predict cost — **turns/agent**, **ctx_max/turn**, **% of tokens on Opus**.
 
+Mark a run as that baseline and `rein ledger` decorates every later run in the
+*same project* with a signed delta against it (negative = better):
+
+```bash
+rein baseline mark [wf_id]   # defaults to the most recent run
+rein baseline show
+rein baseline clear
+```
+
+The baseline is scoped to the project it was marked in — the ledger is global
+across all projects, so a delta is only ever shown against a run from the same
+project it was recorded in.
+
 ## Roadmap
 
 | Phase | Scope | State |

@@ -5,7 +5,7 @@ ticks the boxes. Format is documented in `/rein:plan`.
 
 ---
 
-- [ ] T001 Add `rein baseline` to mark a reference run
+- [x] T001 Add `rein baseline` to mark a reference run
   - Type: implementation
   - Depends on: none
   - Human review: false
@@ -19,7 +19,7 @@ ticks the boxes. Format is documented in `/rein:plan`.
     - a new file `tests/test_baseline.py` covers each of the above against a temporary ledger, with no writes to the real `~/.claude/rein/`
     - the logic lives in `plugins/rein/lib/token_report.py` and uses only the Python 3 standard library
 
-- [ ] T002 Show the delta against the baseline in `rein ledger`
+- [x] T002 Show the delta against the baseline in `rein ledger`
   - Type: implementation
   - Depends on: T001
   - Human review: false

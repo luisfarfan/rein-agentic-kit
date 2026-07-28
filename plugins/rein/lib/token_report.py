@@ -36,6 +36,7 @@ from collections import defaultdict
 PROJECTS = os.path.expanduser("~/.claude/projects")
 LEDGER_DIR = os.path.expanduser("~/.claude/rein")
 LEDGER_PATH = os.path.join(LEDGER_DIR, "runs.jsonl")
+BASELINE_PATH = os.path.join(LEDGER_DIR, "baseline.json")
 
 # Metrics that actually predict cost. Anything else is decoration.
 # - turns_per_agent : the runaway signal (a 200-turn agent is the whole bill)
@@ -281,6 +282,202 @@ def read_ledger(ledger_path: str = LEDGER_PATH) -> list[dict]:
             except json.JSONDecodeError:
                 continue
     return rows
+
+
+# ------------------------------------------------------------------ baseline --
+
+# The metrics that matter, snapshotted at mark-time so `show` (and later, the
+# delta in `rein ledger`) never has to re-open the ledger.
+BASELINE_FIELDS = ("wf_id", "ts", "project", "turns", "turns_per_agent", "ctx_max", "opus_share")
+
+
+def mark_baseline(wf_id: str | None, ledger_path: str = LEDGER_PATH, baseline_path: str = BASELINE_PATH) -> dict:
+    """Snapshot one ledger row as the baseline. Leaves the ledger itself untouched.
+
+    `wf_id=None` picks the most recent row (by `ts`). Raises `ValueError` naming
+    the id if an explicit `wf_id` is not in the ledger -- never stores a dangling
+    reference.
+    """
+    rows = read_ledger(ledger_path)
+    if not rows:
+        raise ValueError(f"ledger is empty ({ledger_path}) -- nothing to mark as baseline")
+
+    if wf_id:
+        match = next((r for r in rows if r.get("wf_id") == wf_id), None)
+        if match is None:
+            raise ValueError(f"no run {wf_id!r} in the ledger ({ledger_path})")
+    else:
+        match = max(rows, key=lambda r: r.get("ts", ""))
+
+    record = {k: match.get(k) for k in BASELINE_FIELDS}
+
+    os.makedirs(os.path.dirname(baseline_path), exist_ok=True)
+    tmp = baseline_path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(record, fh, indent=2, ensure_ascii=False)
+    os.replace(tmp, baseline_path)
+    return record
+
+
+class BaselineCorruptError(Exception):
+    """The baseline file exists but is not valid JSON.
+
+    Deliberately distinct from "no baseline marked" (a missing file, returned as
+    `None`) -- a user who did mark a baseline should be told their file is
+    broken, not that nothing was ever marked.
+    """
+
+
+def read_baseline(baseline_path: str = BASELINE_PATH) -> dict | None:
+    """Return the baseline record, `None` if none was ever marked.
+
+    Raises `BaselineCorruptError` if the file exists but cannot be parsed --
+    callers must not treat that the same as "no baseline".
+    """
+    if not os.path.exists(baseline_path):
+        return None
+    with open(baseline_path, encoding="utf-8") as fh:
+        try:
+            data = json.load(fh)
+        except json.JSONDecodeError as exc:
+            raise BaselineCorruptError(f"baseline file unreadable: {baseline_path} -- re-run `rein baseline mark`") from exc
+    if data is None:
+        return None
+    if not isinstance(data, dict):
+        raise BaselineCorruptError(
+            f"baseline file has an unexpected shape ({type(data).__name__}): {baseline_path} -- re-run `rein baseline mark`"
+        )
+    return data
+
+
+def clear_baseline(baseline_path: str = BASELINE_PATH) -> bool:
+    """Remove the marker. Returns whether anything was actually removed."""
+    if not os.path.exists(baseline_path):
+        return False
+    os.remove(baseline_path)
+    return True
+
+
+def _pct_change(value: float | None, base: float | None) -> float | None:
+    """Signed % change of `value` relative to `base`. None if `base` or `value` is missing, or `base` is zero."""
+    if base in (None, 0) or value is None:
+        return None
+    return round(100 * (value - base) / base, 1)
+
+
+def _fmt_delta(pct: float | None, base: float | None = None, value: float | None = 0) -> str:
+    """Label the direction explicitly -- for these metrics lower is always better,
+    so a bare signed number is not enough to read at a glance.
+
+    `base` is only used to explain a `None` pct: missing baseline data reads
+    differently from a baseline metric that was legitimately zero. `value` is
+    the row's own metric -- if the row never recorded it (schema drift), there
+    is no real number to compare and reporting one would be fabricated.
+    """
+    if value is None:
+        return "n/a (row missing metric)"
+    if pct is None:
+        if base == 0:
+            return "n/a (baseline 0)"
+        return "n/a"
+    tag = "better" if pct < 0 else "worse" if pct > 0 else "same"
+    return f"{pct:+.1f}% {tag}"
+
+
+def render_ledger(rows: list[dict], ledger_path: str = LEDGER_PATH, baseline: dict | None = None) -> str:
+    lines: list[str] = [f"{len(rows)} run(s) in {ledger_path}\n"]
+
+    baseline_wf_id = baseline.get("wf_id") if baseline else None
+    baseline_ts = baseline.get("ts") or "" if baseline else ""
+    baseline_project = baseline.get("project") if baseline else None
+    # A baseline snapshotted before `project` was tracked has no way to say which
+    # project it belongs to. The ledger is GLOBAL (all projects in one file), so
+    # without a project to key on we cannot tell whether a delta is a real
+    # improvement or a comparison against a completely unrelated project's run --
+    # suppress deltas entirely rather than guess.
+    baseline_stale = bool(baseline) and not baseline_project
+
+    by_project: dict[str, list[dict]] = {}
+    for r in rows:
+        by_project.setdefault(r.get("project") or "(unknown)", []).append(r)
+
+    for project, runs in sorted(by_project.items()):
+        runs = sorted(runs, key=lambda r: r.get("ts", ""))
+        total = sum(r.get("total", 0) for r in runs)
+        opus = sum(r.get("opus_tokens", 0) for r in runs)
+        lines.append(f"{project}   {len(runs)} run(s)   total={total:,}   opus={opus:,} ({100*opus/total if total else 0:.1f}%)")
+
+        window = runs[-5:]
+        # The baseline row must stay visible even if it has aged out of the last
+        # 5 -- otherwise every later row gets a "vs baseline" delta while the
+        # `[baseline]` tag itself is nowhere on screen.
+        baseline_in_window = any(r.get("wf_id") == baseline_wf_id for r in window)
+        show_baseline_here = (
+            baseline_wf_id and project == baseline_project and not baseline_in_window
+            and any(r.get("wf_id") == baseline_wf_id for r in runs)
+        )
+        if show_baseline_here:
+            baseline_row = next(r for r in runs if r.get("wf_id") == baseline_wf_id)
+            window = sorted([baseline_row, *window], key=lambda r: r.get("ts", ""))
+
+        for r in window:
+            line = (
+                f"    {r.get('ts',''):<21} {r.get('wf_id','')[:14]:<14} "
+                f"turns={r.get('turns',0):>4}  turns/agent={r.get('turns_per_agent',0):>5}  "
+                f"ctx_max={r.get('ctx_max',0):>8,}  opus={r.get('opus_share',0):>5}%"
+            )
+            is_baseline_row = bool(baseline_wf_id) and r.get("wf_id") == baseline_wf_id and project == baseline_project
+            if is_baseline_row:
+                line += "  [baseline]"
+            elif (
+                baseline
+                and not baseline_stale
+                and project == baseline_project
+                and r.get("ts", "") > baseline_ts
+            ):
+                # Only runs recorded AFTER the baseline, in the SAME project, get a
+                # delta -- comparing across projects or backwards in time would
+                # fabricate a number that means nothing.
+                d_turns = _fmt_delta(_pct_change(r.get("turns_per_agent"), baseline.get("turns_per_agent")), baseline.get("turns_per_agent"), r.get("turns_per_agent"))
+                d_ctx = _fmt_delta(_pct_change(r.get("ctx_max"), baseline.get("ctx_max")), baseline.get("ctx_max"), r.get("ctx_max"))
+                d_opus = _fmt_delta(_pct_change(r.get("opus_share"), baseline.get("opus_share")), baseline.get("opus_share"), r.get("opus_share"))
+                line += f"\n        vs baseline: turns/agent {d_turns}  ctx_max {d_ctx}  opus_share {d_opus}"
+            lines.append(line)
+        if show_baseline_here:
+            lines.append("        (baseline older than the runs shown above)")
+        lines.append("")
+
+    lines.append("The three numbers that predict cost: turns/agent, ctx_max/turn, opus share.")
+    if baseline_stale:
+        lines.append(
+            f"Baseline: {baseline_wf_id} ({baseline_ts}, project unknown -- marked before project tracking was added). "
+            "Deltas suppressed -- re-run `rein baseline mark` to fix."
+        )
+    elif baseline:
+        lines.append(f"Baseline: {baseline_wf_id} ({baseline_project}, {baseline_ts}). Deltas above are vs this run -- negative = better.")
+    else:
+        lines.append("Savings require a marked baseline -- without one this is a trend, not a saving.")
+    return "\n".join(lines)
+
+
+def _fmt_metric(value, fmt: str = "") -> str:
+    """Render a baseline metric, or `n/a` when the marked row never had it
+    (schema drift -- `mark_baseline` snapshots the key with value `None` rather
+    than omitting it, so a plain `.get(k, default)` would never catch this)."""
+    if value is None:
+        return "n/a"
+    return format(value, fmt) if fmt else str(value)
+
+
+def render_baseline(baseline: dict | None) -> str:
+    if not baseline:
+        return "no baseline marked (run `rein baseline mark` after recording a run)"
+    project = baseline.get("project") or "unknown project"
+    return (
+        f"baseline: {baseline.get('wf_id')}  ({project}, {baseline.get('ts', '')})\n"
+        f"  turns={_fmt_metric(baseline.get('turns'))}  turns_per_agent={_fmt_metric(baseline.get('turns_per_agent'))}  "
+        f"ctx_max={_fmt_metric(baseline.get('ctx_max'), ',')}  opus_share={_fmt_metric(baseline.get('opus_share'))}%"
+    )
 
 
 # ------------------------------------------------------------------ rendering --
