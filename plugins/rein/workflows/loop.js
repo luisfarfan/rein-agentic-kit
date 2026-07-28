@@ -187,13 +187,32 @@ const CODEMAP_SCHEMA = {
   additionalProperties: false,
 }
 
+// A transient API failure ("connection closed mid-response") must not kill a run:
+// it killed one at step 1 before this existed. Only used for agents whose work is
+// safe to repeat — reads, or steps whose committed work is already in git and
+// whose instructions are unchanged.
+async function agentRetry(prompt, opts, attempts = 2) {
+  for (let i = 1; i <= attempts; i++) {
+    try {
+      const r = await agent(prompt, opts)
+      if (r) return r
+    } catch (e) {
+      if (i === attempts) throw e
+      log(`  ⟳ ${opts.label} threw (${e && e.message ? e.message : e}) — attempt ${i + 1}/${attempts}`)
+      continue
+    }
+    if (i < attempts) log(`  ⟳ ${opts.label} died — attempt ${i + 1}/${attempts}`)
+  }
+  return null
+}
+
 // ── Phase 1: PREPARE — one bash round-trip resolves config AND plan ──────────
 // `rein context` returns both. Parsing a task list is a parse, not a judgement:
 // an agent doing it by hand spends turns re-deriving what a regex settles.
 phase('Prepare')
 
 const changeArg = CHANGE ? ` --change ${CHANGE}` : ''
-const ctx = await agent(
+const ctx = await agentRetry(
   `You are the PREPARE agent for the "rein" loop. Implement NOTHING, edit NOTHING, commit NOTHING.\n` +
     `Your job is ONE bash round-trip plus faithful reporting. Do NOT explore the repository.\n\n` +
     `1. Resolve the rein CLI. Try in order, stop at the first that works:\n` +
@@ -320,7 +339,7 @@ const closeCmd =
 // unapproved run leaves an ugly branch rather than a broken base branch.
 if (WORKTREE_MODE) {
   phase('Isolate')
-  const setup = await agent(
+  const setup = await agentRetry(
     `You work in ${ctx.root} (the ${BASE} tree). Prepare ISOLATION for this run. Implement NOTHING.\n` +
       `1. If ${ctx.root} has UNCOMMITTED work ('git status --porcelain'), mention it in the summary ` +
       `   (another loop may be active) — but continue: the worktree is cut from the committed HEAD.\n` +
@@ -421,7 +440,10 @@ async function implementTaskBounded(task, proxied) {
   for (let step = 1; step <= STEPS; step++) {
     let res
     try {
-      res = await agent(stepPrompt(task, proxied, ledger, step), {
+      // Retried: a step that dies transiently would otherwise block the task
+      // permanently. Repeating it is safe — whatever it already committed is in
+      // git, and the replacement agent is fresh with the same instructions.
+      res = await agentRetry(stepPrompt(task, proxied, ledger, step), {
         schema: STEP_SCHEMA,
         label: `impl:${task.id}#${step}`,
         phase: 'Implement',
@@ -431,7 +453,7 @@ async function implementTaskBounded(task, proxied) {
     } catch (e) {
       return { id: task.id, status: 'error', detail: `step ${step}: ${e && e.message ? e.message : e}`, commits: allCommits }
     }
-    if (!res) return { id: task.id, status: 'blocked', detail: `the agent of step ${step} died`, commits: allCommits }
+    if (!res) return { id: task.id, status: 'blocked', detail: `the agent of step ${step} died twice`, commits: allCommits }
 
     for (const c of res.commits || []) allCommits.push(c)
     for (const f of res.filesTouched || []) touched.add(f)
