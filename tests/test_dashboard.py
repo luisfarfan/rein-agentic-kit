@@ -2,8 +2,10 @@
 and the local-only server that can serve it.
 """
 
+import http.client
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -12,6 +14,7 @@ import tempfile
 import threading
 import unittest
 import urllib.error
+import urllib.parse
 import urllib.request
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "plugins", "rein", "lib"))
@@ -164,6 +167,22 @@ class TestEmptyAndCorruptLedger(LedgerFixture):
         wf_ids = {r["wf_id"] for r in view["projects"][0]["runs"]}
         self.assertEqual(wf_ids, {"wf_1", "wf_2"}, "a corrupt line must not silently drop the valid rows around it")
 
+    def test_non_object_json_line_does_not_crash_or_drop_valid_rows(self):
+        # A line that is valid JSON but not an object (e.g. a truncated
+        # write) parses fine in `read_ledger` -- only the type check in
+        # `_read_ledger_safe` catches it. Must degrade like any other corrupt
+        # line, never raise `AttributeError` from a bare `.get()` downstream.
+        with open(self.ledger_path, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(row("wf_1", "2026-01-01T00:00:00Z")) + "\n")
+            fh.write('"truncated-but-valid-json"\n')
+            fh.write(json.dumps(row("wf_2", "2026-01-02T00:00:00Z")) + "\n")
+
+        view = dash.build_view(self.ledger_path, self.baseline_path)  # must not raise
+
+        self.assertEqual(view["message"], "")
+        wf_ids = {r["wf_id"] for r in view["projects"][0]["runs"]}
+        self.assertEqual(wf_ids, {"wf_1", "wf_2"}, "a non-object JSON line must not drop the valid rows around it")
+
     def test_ledger_path_that_is_a_directory_does_not_raise(self):
         os.makedirs(self.ledger_path)  # a directory where a file was expected
         view = dash.build_view(self.ledger_path, self.baseline_path)
@@ -234,6 +253,39 @@ class TestRenderHtmlSelfContained(unittest.TestCase):
     def test_no_external_resources_and_no_fetch(self):
         html_out = dash.render_html({"message": "", "projects": []})
         lowered = html_out.lower()
+        self.assertNotIn("<link", lowered)
+        self.assertNotIn("<script", lowered)
+        self.assertNotIn("http://", lowered)
+        self.assertNotIn("https://", lowered)
+        self.assertNotIn("fetch(", lowered)
+        self.assertNotIn("xmlhttprequest", lowered)
+
+    def test_no_external_resources_and_no_fetch_on_a_fully_populated_page(self):
+        # The empty page (`{"projects": []}`) can never contain a script, a
+        # link, or a URL -- it is the one render guaranteed clean by
+        # construction. Run the same assertions over a populated project
+        # section (runs, agents, baseline, deltas, models, and the models
+        # edit form) -- that is the markup D2 is actually about.
+        view = {"message": "", "projects": [{
+            "project": "proj-full", "root": "/tmp/does-not-matter-for-this-test",
+            "models": {
+                "aux": {"value": "haiku", "source": "default"},
+                "impl": {"value": "opus", "source": "config"},
+                "review": {"value": "opus", "source": "default"},
+            },
+            "runs": [
+                {"wf_id": "wf_base", "ts": "2026-01-01T00:00:00Z", "turns_per_agent": 10.0,
+                 "ctx_max": 2000, "opus_share": 20.0, "is_baseline": True, "deltas": None,
+                 "agents": [{"file": "a.jsonl", "model": "sonnet-5", "turns": 5, "total": 500, "ctx_max": 2000}]},
+                {"wf_id": "wf_later", "ts": "2026-01-02T00:00:00Z", "turns_per_agent": 5.0,
+                 "ctx_max": 1000, "opus_share": 10.0, "is_baseline": False,
+                 "deltas": {"turns_per_agent": -50.0, "ctx_max": -50.0, "opus_share": -50.0}, "agents": []},
+            ],
+        }]}
+        html_out = dash.render_html(view)
+        lowered = html_out.lower()
+        self.assertIn("proj-full", html_out)  # sanity: this really is the populated render
+        self.assertIn("<form", lowered)  # the editing form (T003) really renders here
         self.assertNotIn("<link", lowered)
         self.assertNotIn("<script", lowered)
         self.assertNotIn("http://", lowered)
@@ -402,19 +454,50 @@ class TestModelsWriteDiffThenConfirm(unittest.TestCase):
 
     def test_first_call_never_writes_second_confirms(self):
         models = {"aux": "haiku", "impl": "opus", "review": "opus"}
-        diff1 = dash.write_models(self.root, models, self.known_roots, confirmed=False)
-        self.assertIn("impl", diff1)
-        self.assertIn("opus", diff1)
+        result1 = dash.write_models(self.root, models, self.known_roots, confirmed=False)
+        self.assertIn("impl", result1["diff"])
+        self.assertIn("opus", result1["diff"])
+        self.assertTrue(result1["token"], "a preview must mint a token for the confirm to present back")
         self.assertFalse(os.path.exists(self._config_path()), "a first request must never write")
 
-        diff2 = dash.write_models(self.root, models, self.known_roots, confirmed=True)
-        self.assertEqual(diff1, diff2)
+        result2 = dash.write_models(self.root, models, self.known_roots, confirmed=True, token=result1["token"])
+        self.assertEqual(result1["diff"], result2["diff"])
         self.assertTrue(os.path.exists(self._config_path()))
         with open(self._config_path(), encoding="utf-8") as fh:
             cfg = json.load(fh)
         self.assertEqual(cfg, {"models": models})
         # creating from absent must contain ONLY the models block
         self.assertEqual(set(cfg.keys()), {"models"})
+
+    def test_confirm_without_prior_preview_is_refused(self):
+        # The CRITICAL case: a single, first-and-only request carrying
+        # `confirm: true` and no token at all must never write -- `confirmed`
+        # supplied by the caller is not evidence a preview ever happened.
+        models = {"aux": "haiku", "impl": "opus", "review": "opus"}
+        with self.assertRaises(dash.ModelsWriteError):
+            dash.write_models(self.root, models, self.known_roots, confirmed=True)
+        self.assertFalse(
+            os.path.exists(self._config_path()),
+            "a first-and-only confirmed request must never write to disk",
+        )
+
+    def test_confirm_with_forged_or_unknown_token_is_refused(self):
+        models = {"aux": "haiku", "impl": "opus", "review": "opus"}
+        dash.write_models(self.root, models, self.known_roots, confirmed=False)  # mints a real token, unused
+        with self.assertRaises(dash.ModelsWriteError):
+            dash.write_models(self.root, models, self.known_roots, confirmed=True, token="not-a-real-token")
+        self.assertFalse(os.path.exists(self._config_path()))
+
+    def test_confirm_is_refused_as_stale_once_the_file_changed_underneath(self):
+        models = {"aux": "haiku", "impl": "opus", "review": "opus"}
+        result = dash.write_models(self.root, models, self.known_roots, confirmed=False)
+        # someone/something else writes to the file after the preview was shown
+        with open(self._config_path(), "w", encoding="utf-8") as fh:
+            fh.write('{"models": {"aux": "sonnet", "impl": "sonnet", "review": "sonnet"}}')
+        with self.assertRaises(dash.ModelsWriteError):
+            dash.write_models(self.root, models, self.known_roots, confirmed=True, token=result["token"])
+        with open(self._config_path(), encoding="utf-8") as fh:
+            self.assertIn("sonnet", fh.read(), "the refused confirm must not have clobbered the newer content")
 
     def test_unknown_keys_and_comments_preserved_byte_for_byte(self):
         example_path = os.path.join(REPO_ROOT, "plugins", "rein", "flow.config.example.json")
@@ -424,9 +507,9 @@ class TestModelsWriteDiffThenConfirm(unittest.TestCase):
         with open(self._config_path(), "w", encoding="utf-8") as fh:
             fh.write(original_text)
 
-        dash.write_models(
-            self.root, {"aux": "opus", "impl": "opus", "review": "haiku"}, self.known_roots, confirmed=True
-        )
+        new_models = {"aux": "opus", "impl": "opus", "review": "haiku"}
+        preview = dash.write_models(self.root, new_models, self.known_roots, confirmed=False)
+        dash.write_models(self.root, new_models, self.known_roots, confirmed=True, token=preview["token"])
 
         with open(self._config_path(), encoding="utf-8") as fh:
             updated = json.load(fh)
@@ -475,7 +558,7 @@ class TestModelsWriteDiffThenConfirm(unittest.TestCase):
 
 
 class TestModelsHttpEndpoint(LedgerFixture):
-    def test_post_diff_then_confirm_and_unknown_root_is_non_2xx(self):
+    def _serve(self) -> tuple[str, int]:
         proj_dir = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, proj_dir, ignore_errors=True)
         project_key = dash._mangle_path(proj_dir)
@@ -487,45 +570,173 @@ class TestModelsHttpEndpoint(LedgerFixture):
         httpd = dash.make_server(view, port)
         thread = threading.Thread(target=httpd.serve_forever, daemon=True)
         thread.start()
-        try:
-            url = f"http://127.0.0.1:{port}/models"
-            models = {"aux": "haiku", "impl": "opus", "review": "opus"}
 
-            first = urllib.request.Request(
-                url, data=json.dumps({"root": root, "models": models}).encode("utf-8"),
-                method="POST", headers={"Content-Type": "application/json"},
-            )
-            with urllib.request.urlopen(first, timeout=5) as resp:
-                self.assertEqual(resp.status, 200)
-                payload = json.loads(resp.read())
-            self.assertFalse(payload["written"])
-            self.assertIn("diff", payload)
-            self.assertFalse(os.path.exists(os.path.join(root, "flow.config.json")))
-
-            second = urllib.request.Request(
-                url, data=json.dumps({"root": root, "models": models, "confirm": True}).encode("utf-8"),
-                method="POST", headers={"Content-Type": "application/json"},
-            )
-            with urllib.request.urlopen(second, timeout=5) as resp2:
-                self.assertEqual(resp2.status, 200)
-                payload2 = json.loads(resp2.read())
-            self.assertTrue(payload2["written"])
-            self.assertTrue(os.path.exists(os.path.join(root, "flow.config.json")))
-
-            bad = urllib.request.Request(
-                url,
-                data=json.dumps(
-                    {"root": "/definitely/not/a/known/project/root", "models": models, "confirm": True}
-                ).encode("utf-8"),
-                method="POST", headers={"Content-Type": "application/json"},
-            )
-            with self.assertRaises(urllib.error.HTTPError) as ctx:
-                urllib.request.urlopen(bad, timeout=5)
-            self.assertGreaterEqual(ctx.exception.code, 400)
-        finally:
+        def _stop():
             httpd.shutdown()
             httpd.server_close()
             thread.join(timeout=5)
+
+        self.addCleanup(_stop)
+        return root, port
+
+    def test_post_diff_then_confirm_and_unknown_root_is_non_2xx(self):
+        root, port = self._serve()
+        url = f"http://127.0.0.1:{port}/models"
+        models = {"aux": "haiku", "impl": "opus", "review": "opus"}
+
+        first = urllib.request.Request(
+            url, data=json.dumps({"root": root, "models": models}).encode("utf-8"),
+            method="POST", headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(first, timeout=5) as resp:
+            self.assertEqual(resp.status, 200)
+            payload = json.loads(resp.read())
+        self.assertFalse(payload["written"])
+        self.assertIn("diff", payload)
+        self.assertTrue(payload["token"], "a preview response must carry a server-minted token")
+        self.assertFalse(os.path.exists(os.path.join(root, "flow.config.json")))
+
+        second = urllib.request.Request(
+            url, data=json.dumps(
+                {"root": root, "models": models, "confirm": True, "token": payload["token"]}
+            ).encode("utf-8"),
+            method="POST", headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(second, timeout=5) as resp2:
+            self.assertEqual(resp2.status, 200)
+            payload2 = json.loads(resp2.read())
+        self.assertTrue(payload2["written"])
+        self.assertTrue(os.path.exists(os.path.join(root, "flow.config.json")))
+
+        bad = urllib.request.Request(
+            url,
+            data=json.dumps(
+                {"root": "/definitely/not/a/known/project/root", "models": models, "confirm": True}
+            ).encode("utf-8"),
+            method="POST", headers={"Content-Type": "application/json"},
+        )
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            urllib.request.urlopen(bad, timeout=5)
+        self.assertGreaterEqual(ctx.exception.code, 400)
+
+    def test_first_and_only_confirm_request_is_refused_and_writes_nothing(self):
+        # Reproduces the CRITICAL finding directly: a single POST carrying
+        # `confirm: true`, with no preceding preview, must be refused
+        # (non-2xx) and must never create/modify the config file.
+        root, port = self._serve()
+        url = f"http://127.0.0.1:{port}/models"
+        models = {"aux": "haiku", "impl": "opus", "review": "opus"}
+        req = urllib.request.Request(
+            url, data=json.dumps({"root": root, "models": models, "confirm": True}).encode("utf-8"),
+            method="POST", headers={"Content-Type": "application/json"},
+        )
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            urllib.request.urlopen(req, timeout=5)
+        self.assertGreaterEqual(ctx.exception.code, 400)
+        self.assertFalse(os.path.exists(os.path.join(root, "flow.config.json")))
+
+    def test_foreign_origin_post_is_refused_and_writes_nothing(self):
+        # Reproduces the CRITICAL finding directly: any website open in the
+        # user's browser while `rein dashboard` runs must not be able to
+        # write, even with a well-formed JSON body and content type.
+        root, port = self._serve()
+        url = f"http://127.0.0.1:{port}/models"
+        models = {"aux": "haiku", "impl": "opus", "review": "opus"}
+        req = urllib.request.Request(
+            url, data=json.dumps({"root": root, "models": models, "confirm": True}).encode("utf-8"),
+            method="POST",
+            headers={"Content-Type": "application/json", "Origin": "https://evil.example"},
+        )
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            urllib.request.urlopen(req, timeout=5)
+        self.assertGreaterEqual(ctx.exception.code, 400)
+        self.assertFalse(os.path.exists(os.path.join(root, "flow.config.json")))
+
+    def test_invalid_content_length_header_is_a_400_not_a_traceback(self):
+        _root, port = self._serve()
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        self.addCleanup(conn.close)
+        conn.putrequest("POST", "/models")
+        conn.putheader("Content-Type", "application/json")
+        conn.putheader("Content-Length", "abc")
+        conn.endheaders()
+        resp = conn.getresponse()
+        self.assertGreaterEqual(resp.status, 400)
+        resp.read()
+
+    def test_get_after_confirmed_write_reflects_the_new_value(self):
+        # Coherence finding: the page must never contradict a write this same
+        # server just performed -- rendering once at construction time can't
+        # do that.
+        root, port = self._serve()
+        url = f"http://127.0.0.1:{port}/models"
+        models = {"aux": "haiku", "impl": "opus", "review": "opus"}
+
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=5) as resp:
+            before = resp.read().decode("utf-8")
+        self.assertIn("impl=<b>sonnet</b> <small>(default)</small>", before)
+
+        preview_req = urllib.request.Request(
+            url, data=json.dumps({"root": root, "models": models}).encode("utf-8"),
+            method="POST", headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(preview_req, timeout=5) as resp:
+            token = json.loads(resp.read())["token"]
+
+        confirm_req = urllib.request.Request(
+            url, data=json.dumps(
+                {"root": root, "models": models, "confirm": True, "token": token}
+            ).encode("utf-8"),
+            method="POST", headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(confirm_req, timeout=5) as resp:
+            self.assertEqual(resp.status, 200)
+
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=5) as resp:
+            after = resp.read().decode("utf-8")
+        self.assertIn("impl=<b>opus</b> <small>(config)</small>", after)
+
+    def test_unknown_path_get_is_404(self):
+        _root, port = self._serve()
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            urllib.request.urlopen(f"http://127.0.0.1:{port}/favicon.ico", timeout=5)
+        self.assertEqual(ctx.exception.code, 404)
+
+    def test_form_post_previews_then_its_own_confirm_form_completes_the_write(self):
+        # T003's actual editing affordance: a plain <form> post, zero
+        # JavaScript -- the response is HTML, not JSON, and the second
+        # (confirm) form carries the server-minted token.
+        root, port = self._serve()
+        url = f"http://127.0.0.1:{port}/models"
+        preview_body = urllib.parse.urlencode(
+            {"root": root, "aux": "haiku", "impl": "opus", "review": "opus"}
+        ).encode("utf-8")
+        req = urllib.request.Request(
+            url, data=preview_body, method="POST",
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            self.assertEqual(resp.status, 200)
+            self.assertIn("text/html", resp.headers.get("Content-Type", ""))
+            page = resp.read().decode("utf-8")
+        self.assertIn("Confirm write", page)
+        self.assertIn('name="token"', page)
+        self.assertFalse(os.path.exists(os.path.join(root, "flow.config.json")))
+
+        token = re.search(r'name="token" value="([^"]+)"', page).group(1)
+        confirm_body = urllib.parse.urlencode(
+            {"root": root, "aux": "haiku", "impl": "opus", "review": "opus",
+             "confirm": "true", "token": token}
+        ).encode("utf-8")
+        confirm_req = urllib.request.Request(
+            url, data=confirm_body, method="POST",
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        with urllib.request.urlopen(confirm_req, timeout=5) as resp2:
+            self.assertEqual(resp2.status, 200)
+            page2 = resp2.read().decode("utf-8")
+        self.assertIn("written", page2)
+        self.assertTrue(os.path.exists(os.path.join(root, "flow.config.json")))
 
 
 if __name__ == "__main__":

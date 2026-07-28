@@ -19,11 +19,14 @@ from __future__ import annotations
 
 import argparse
 import difflib
+import hashlib
 import html
 import http.server
 import json
 import os
 import sys
+import time
+import urllib.parse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -46,15 +49,22 @@ def _read_ledger_safe(ledger_path: str) -> tuple[list[dict], str]:
     """Rows plus an error message, never an exception.
 
     `read_ledger` already skips individual corrupt JSON lines while keeping the
-    rest (that is the "partly corrupt" case -- valid rows must survive it). This
-    only guards the outer failure modes a corrupt *file* can still cause (not a
-    directory, not readable, not UTF-8) so those degrade to an empty ledger with
-    a message instead of a traceback.
+    rest (that is the "partly corrupt" case -- valid rows must survive it), but
+    it only checks that each line parses as JSON, not that it parses as an
+    *object* -- a line like `"truncated-but-valid-json"` parses fine and comes
+    back as a `str`, which every row-consumer here promptly `.get()`s. Filter
+    those out here too, so a merely-truncated line degrades like any other
+    corrupt one instead of crashing `build_view` downstream.
+
+    This also guards the outer failure modes a corrupt *file* can still cause
+    (not a directory, not readable, not UTF-8) so those degrade to an empty
+    ledger with a message instead of a traceback.
     """
     if not os.path.exists(ledger_path):
         return [], ""
     try:
-        return read_ledger(ledger_path), ""
+        rows = [r for r in read_ledger(ledger_path) if isinstance(r, dict)]
+        return rows, ""
     except OSError as exc:
         return [], f"ledger unreadable at {ledger_path}: {exc}"
     except UnicodeDecodeError as exc:
@@ -235,7 +245,13 @@ def _resolve_models(root: str | None) -> dict[str, dict[str, str]]:
 def _apply_models(existing_text: str, models: dict[str, str]) -> str:
     """The new raw text of the config with only `models.aux/impl/review` set
     from `models` -- every other key, and every unknown key already inside
-    `models` (an existing `$comment` included), is carried through untouched."""
+    `models` (an existing `$comment` included), is carried through untouched.
+
+    Note: every key/value survives byte-for-byte, but the *serialization* is
+    always re-emitted with `indent=2` -- a config authored with different
+    indentation (or key order Python's dict doesn't preserve from disk in
+    some other way) will show a whole-file reformat in the diff, not just the
+    `models` hunk. Content is preserved; formatting is not."""
     cfg = json.loads(existing_text) if existing_text.strip() else {}
     if not isinstance(cfg, dict):
         raise ValueError("flow.config.json does not contain a JSON object")
@@ -259,14 +275,78 @@ def _validate_root(root: str, known_roots: set[str]) -> str:
     return real
 
 
-def write_models(root: str, models: dict[str, str], known_roots: set[str], confirmed: bool = False) -> str:
+# A `confirmed=True` flag supplied by the *caller* is not evidence that a
+# preview ever happened -- the server kept no state linking the two, so one
+# request with `confirm: true` could write with nothing ever having been
+# shown. `_PreviewTokens` is that missing state: a token is
+# `sha256(real_root + normalized models + the file's current text)`, minted
+# the moment a preview is computed and required -- present, unexpired, and
+# still matching the file's *current* text -- before any confirmed write is
+# allowed. Recomputing the hash from the live file at confirm time is what
+# catches "the file changed underneath": if it did, the recomputed value
+# differs from the token that was actually minted, so the confirm is refused
+# as stale rather than trusted.
+_PREVIEW_TTL_SECONDS = 300  # a preview is only good for 5 minutes
+
+
+class _PreviewTokens:
+    def __init__(self) -> None:
+        self._minted_at: dict[str, float] = {}
+
+    @staticmethod
+    def _compute(real_root: str, models: dict[str, str], old_text: str) -> str:
+        normalized = json.dumps({k: models.get(k, "") for k in ("aux", "impl", "review")}, sort_keys=True)
+        digest_input = "\x1f".join([real_root, normalized, old_text]).encode("utf-8")
+        return hashlib.sha256(digest_input).hexdigest()
+
+    def _prune(self) -> None:
+        now = time.monotonic()
+        stale = [t for t, minted in self._minted_at.items() if now - minted > _PREVIEW_TTL_SECONDS]
+        for t in stale:
+            del self._minted_at[t]
+
+    def mint(self, real_root: str, models: dict[str, str], old_text: str) -> str:
+        self._prune()
+        token = self._compute(real_root, models, old_text)
+        self._minted_at[token] = time.monotonic()
+        return token
+
+    def consume(self, token: str | None, real_root: str, models: dict[str, str], old_text_now: str) -> bool:
+        """Single-use: true only for a token that is present, unexpired, and
+        whose hash still matches the file's current text -- false (and left
+        alone, so a mere typo doesn't burn a good preview) for anything
+        absent, unknown, forged, expired, or stale."""
+        self._prune()
+        if not token or token not in self._minted_at:
+            return False
+        if token != self._compute(real_root, models, old_text_now):
+            return False
+        del self._minted_at[token]
+        return True
+
+
+_preview_tokens = _PreviewTokens()
+
+
+def write_models(
+    root: str,
+    models: dict[str, str],
+    known_roots: set[str],
+    confirmed: bool = False,
+    token: str | None = None,
+) -> dict:
     """Compute the unified diff of writing `models` into `root`'s
-    `flow.config.json` (creating it if absent). Only writes to disk when
-    `confirmed` is True -- a first call always just previews (D3): nothing
-    changes on disk until a second, confirming call arrives.
+    `flow.config.json` (creating it if absent), returned as
+    `{"diff": str, "token": str | None, "root": str}`. Only writes to disk
+    when `confirmed` is True *and* `token` is exactly what an immediately
+    preceding `confirmed=False` call for this same root/models/file-state
+    minted (D3): a first call always just previews and mints a fresh token;
+    nothing changes on disk until a second, confirming call presents it back.
 
     Raises `ModelsWriteError` -- before any read or write -- if `root` is not
-    one of `known_roots` (a path a run in the ledger actually resolved to).
+    one of `known_roots` (a path a run in the ledger actually resolved to),
+    or if `confirmed` is True but `token` is absent, unknown, forged, expired,
+    or stale because the file changed since the preview it was minted for.
     Raises `ValueError` if `models` does not carry all three slots -- the page
     always edits the resolved triple as one unit, never a partial slice of it.
     """
@@ -286,9 +366,15 @@ def write_models(root: str, models: dict[str, str], known_roots: set[str], confi
         )
     )
     if confirmed:
+        if not _preview_tokens.consume(token, real_root, models, old_text):
+            raise ModelsWriteError(
+                "no matching preview found for this write -- preview it again before confirming"
+            )
         with open(path, "w", encoding="utf-8") as fh:
             fh.write(new_text)
-    return diff
+        return {"diff": diff, "token": None, "root": real_root}
+    new_token = _preview_tokens.mint(real_root, models, old_text)
+    return {"diff": diff, "token": new_token, "root": real_root}
 
 
 # -------------------------------------------------------------------- html --
@@ -314,6 +400,14 @@ details{text-align:left}
 summary{cursor:pointer;color:#555}
 table.agents{margin:.4rem 0 0;font-size:.85em}
 .empty{color:#666;font-style:italic;padding:1rem 0}
+form.models{display:flex;gap:.6rem;align-items:flex-end;margin:.5rem 0 1rem;flex-wrap:wrap}
+form.models label{display:flex;flex-direction:column;font-size:.75rem;color:#555;gap:.15rem}
+form.models input[type=text]{font:inherit;padding:.2rem .4rem;border:1px solid #ccc;border-radius:.2rem;width:8rem}
+form.models button{font:inherit;padding:.3rem .7rem;border:1px solid #888;border-radius:.25rem;background:#f5f5f5;cursor:pointer}
+pre.diff{background:#f7f7f7;border:1px solid #ddd;border-radius:.3rem;padding:.75rem;overflow-x:auto;white-space:pre-wrap}
+.notice{padding:.5rem;border-radius:.3rem;margin:.5rem 0}
+.notice.error{background:#fdecea;color:#611a15}
+.notice.ok{background:#e9f7ee;color:#0a4a20}
 """
 
 
@@ -399,6 +493,29 @@ def _models_summary(models: dict) -> str:
     return '<p class="models">' + " &middot; ".join(parts) + "</p>"
 
 
+def _models_form(root: str | None, models: dict) -> str:
+    """A plain `<form method="post" action="/models">` per project (T003):
+    zero JavaScript, so D2 is untouched -- a form POST is a navigation, not a
+    fetch. Submitting it always previews first (D3): the response is an HTML
+    page with the diff and a second form carrying the server-minted token
+    that alone can confirm the write. `root` is `None` when the project could
+    not be resolved to a real directory on this disk -- there is nothing to
+    write to, so no form is offered."""
+    if not root:
+        return '<p class="notice error">no resolvable project root -- editing is unavailable here</p>'
+    fields = "".join(
+        f'<label>{key}<input type="text" name="{key}" value="{html.escape(str((models.get(key) or {}).get("value", "")))}"></label>'
+        for key in ("aux", "impl", "review")
+    )
+    return (
+        f'<form class="models" method="post" action="/models">'
+        f'<input type="hidden" name="root" value="{html.escape(root)}">'
+        f"{fields}"
+        '<button type="submit">Preview change</button>'
+        "</form>"
+    )
+
+
 def _project_section(project: dict) -> str:
     runs = project["runs"]
     # Deltas (and therefore the whole "savings" column group) only appear for a
@@ -412,7 +529,8 @@ def _project_section(project: dict) -> str:
     header += "<th>agents</th></tr>"
 
     body = "".join(_run_row(r, show_deltas) for r in runs)
-    models_html = _models_summary(project.get("models") or {})
+    models = project.get("models") or {}
+    models_html = _models_summary(models) + _models_form(project.get("root"), models)
     return (
         f"<section><h2>{html.escape(project['project'])}</h2>"
         f"{models_html}"
@@ -440,55 +558,194 @@ def render_html(view: dict) -> str:
 
 # ---------------------------------------------------------------------- serve --
 
+_MAX_BODY_BYTES = 65536  # 64 KiB -- generous for a models POST, not an
+# invitation to buffer an arbitrary-length body into memory.
 
-def _make_handler(view: dict) -> type[http.server.BaseHTTPRequestHandler]:
-    body = render_html(view).encode("utf-8")
+
+def _page(body: str) -> str:
+    return (
+        "<!doctype html>\n"
+        '<html lang="en"><head><meta charset="utf-8">'
+        "<title>rein dashboard</title>"
+        f"<style>{_PAGE_CSS}</style></head>"
+        f"<body><h1>rein dashboard</h1>{body}</body></html>"
+    )
+
+
+def _render_models_error_page(message: str) -> str:
+    return _page(
+        f'<p class="notice error">{html.escape(message)}</p>'
+        '<p><a href="/">back to dashboard</a></p>'
+    )
+
+
+def _render_models_result_page(root: str, models: dict[str, str], result: dict, confirmed: bool) -> str:
+    """The HTML response to a form POST (finding 5): the diff, plus -- when
+    still unconfirmed -- a second form carrying the server-minted token that
+    alone can confirm the write (no JavaScript involved; the browser's own
+    navigation *is* the second request)."""
+    diff_html = f'<pre class="diff">{html.escape(result["diff"]) or "(no change)"}</pre>'
+    if confirmed:
+        body = f'<p class="notice ok">written to {html.escape(root)}/flow.config.json</p>{diff_html}<p><a href="/">back to dashboard</a></p>'
+        return _page(body)
+    hidden_models = "".join(
+        f'<input type="hidden" name="{key}" value="{html.escape(str(models.get(key, "")))}">'
+        for key in ("aux", "impl", "review")
+    )
+    body = (
+        diff_html
+        + '<form class="models" method="post" action="/models">'
+        + f'<input type="hidden" name="root" value="{html.escape(root)}">'
+        + hidden_models
+        + '<input type="hidden" name="confirm" value="true">'
+        + f'<input type="hidden" name="token" value="{html.escape(result["token"] or "")}">'
+        + '<button type="submit">Confirm write</button>'
+        + "</form>"
+        + '<p><a href="/">cancel, back to dashboard</a></p>'
+    )
+    return _page(body)
+
+
+def _make_handler(view: dict, port: int) -> type[http.server.BaseHTTPRequestHandler]:
+    state: dict[str, bytes] = {"body": render_html(view).encode("utf-8")}
     # Derived from the view actually built from the ledger -- never from the
     # request -- so a write can only ever target a root a real run resolved to.
     known_roots = {p["root"] for p in view.get("projects", []) if p.get("root")}
+    allowed_hosts = {f"127.0.0.1:{port}", f"localhost:{port}"}
+    allowed_origins = {f"http://127.0.0.1:{port}", f"http://localhost:{port}"}
+
+    def _refresh_after_write(real_root: str) -> None:
+        # T003/T002 coherence: a write this server just performed must show up
+        # on the very next GET, not only after a restart -- re-resolve just
+        # the affected project's models and re-render (still fully embedded
+        # server-side, D2 -- the page still never fetches).
+        for p in view.get("projects", []):
+            if p.get("root") == real_root:
+                p["models"] = _resolve_models(real_root)
+        state["body"] = render_html(view).encode("utf-8")
 
     class Handler(http.server.BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802 (stdlib method name)
+            if self.path != "/":
+                self._json(404, {"error": "not found"})
+                return
+            body = state["body"]
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
 
+        def _is_cross_origin(self) -> bool:
+            """True if this request did not plausibly come from this
+            server's own page -- refused before any filesystem access.
+            Binding to 127.0.0.1 keeps a remote attacker out, but not a
+            foreign page already open in the user's own browser: that page
+            can still aim a POST at this origin, so the state-changing
+            request itself must check where it came from."""
+            host = self.headers.get("Host", "")
+            if host not in allowed_hosts:
+                return True
+            origin = self.headers.get("Origin")
+            if origin is not None and origin not in allowed_origins:
+                return True
+            sec_fetch_site = self.headers.get("Sec-Fetch-Site")
+            if sec_fetch_site is not None and sec_fetch_site != "same-origin":
+                return True
+            return False
+
         def do_POST(self) -> None:  # noqa: N802 (stdlib method name)
-            """POST /models {"root", "models": {aux/impl/review}, "confirm"}
-            -- first call (no/false `confirm`) only returns the diff, second
-            call with `confirm: true` performs the write (D3)."""
+            """POST /models -- JSON body: {"root", "models": {aux/impl/review},
+            "confirm", "token"}, or a form body (the page's own <form>, same
+            fields flat). A first call (no/false `confirm`) only returns the
+            diff plus a freshly minted token (D3); a second call must present
+            that exact token together with `confirm: true` to perform the
+            write -- see `write_models` for what makes a token valid."""
             if self.path != "/models":
                 self._json(404, {"error": "not found"})
                 return
-            length = int(self.headers.get("Content-Length") or 0)
+            if self._is_cross_origin():
+                self._json(403, {"error": "cross-origin or foreign-host request refused"})
+                return
+
+            content_type = self.headers.get("Content-Type", "")
+            mime = content_type.split(";", 1)[0].strip().lower()
+            is_form = mime == "application/x-www-form-urlencoded"
+            if mime not in ("application/json", "application/x-www-form-urlencoded"):
+                self._json(415, {"error": f"unsupported Content-Type {content_type!r}"})
+                return
+
+            length_header = self.headers.get("Content-Length")
+            try:
+                length = int(length_header) if length_header else 0
+            except ValueError:
+                self._json(400, {"error": "invalid Content-Length"})
+                return
+            if length < 0 or length > _MAX_BODY_BYTES:
+                self._json(400, {"error": "request body missing or too large"})
+                return
             raw = self.rfile.read(length) if length else b""
+
+            if is_form:
+                try:
+                    text = raw.decode("utf-8")
+                except UnicodeDecodeError:
+                    self._json(400, {"error": "invalid form body"})
+                    return
+                flat = {k: v[0] for k, v in urllib.parse.parse_qs(text).items()}
+                root = flat.get("root") or ""
+                models = {k: flat[k] for k in ("aux", "impl", "review") if k in flat}
+                confirmed = flat.get("confirm") in ("1", "true", "True")
+                token = flat.get("token")
+            else:
+                try:
+                    payload = json.loads(raw.decode("utf-8")) if raw else {}
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    self._json(400, {"error": "invalid JSON body"})
+                    return
+                if not isinstance(payload, dict):
+                    self._json(400, {"error": "JSON body must be an object"})
+                    return
+                root = payload.get("root") or ""
+                models = payload.get("models") or {}
+                confirmed = bool(payload.get("confirm"))
+                token = payload.get("token")
+
             try:
-                payload = json.loads(raw.decode("utf-8")) if raw else {}
-            except (json.JSONDecodeError, UnicodeDecodeError):
-                self._json(400, {"error": "invalid JSON body"})
-                return
-            if not isinstance(payload, dict):
-                self._json(400, {"error": "JSON body must be an object"})
-                return
-            root = payload.get("root") or ""
-            models = payload.get("models") or {}
-            confirmed = bool(payload.get("confirm"))
-            try:
-                diff = write_models(root, models, known_roots, confirmed=confirmed)
+                result = write_models(root, models, known_roots, confirmed=confirmed, token=token)
             except ModelsWriteError as exc:
-                self._json(403, {"error": str(exc)})
+                self._fail(is_form, 403, str(exc))
                 return
             except ValueError as exc:
-                self._json(400, {"error": str(exc)})
+                self._fail(is_form, 400, str(exc))
                 return
-            self._json(200, {"diff": diff, "written": confirmed})
+
+            if confirmed:
+                _refresh_after_write(result["root"])
+
+            if is_form:
+                self._html(200, _render_models_result_page(root, models, result, confirmed))
+            else:
+                self._json(200, {"diff": result["diff"], "token": result["token"], "written": confirmed})
+
+        def _fail(self, is_form: bool, status: int, message: str) -> None:
+            if is_form:
+                self._html(status, _render_models_error_page(message))
+            else:
+                self._json(status, {"error": message})
 
         def _json(self, status: int, payload: dict) -> None:
             data = json.dumps(payload).encode("utf-8")
             self.send_response(status)
             self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def _html(self, status: int, page: str) -> None:
+            data = page.encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
             self.wfile.write(data)
@@ -501,7 +758,7 @@ def _make_handler(view: dict) -> type[http.server.BaseHTTPRequestHandler]:
 
 def make_server(view: dict, port: int) -> http.server.HTTPServer:
     """Bound to 127.0.0.1 only -- never 0.0.0.0. This is local-only by design."""
-    return http.server.HTTPServer(("127.0.0.1", port), _make_handler(view))
+    return http.server.HTTPServer(("127.0.0.1", port), _make_handler(view, port))
 
 
 def serve(view: dict, port: int) -> None:
