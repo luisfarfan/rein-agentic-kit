@@ -112,19 +112,28 @@ def _from_task_runner(runner: str, targets: list[str]) -> dict[str, str]:
 # --------------------------------------------------------------- autodetect --
 
 
+def _package_manager(root: str) -> str:
+    if _exists(root, "pnpm-lock.yaml"):
+        return "pnpm"
+    if _exists(root, "yarn.lock"):
+        return "yarn"
+    if _exists(root, "bun.lockb", "bun.lock"):
+        return "bun"
+    return "npm"
+
+
+def _pm_runner(pm: str) -> str:
+    """The CLI prefix used to invoke a package.json script for this package manager."""
+    return {"pnpm": "pnpm", "yarn": "yarn", "bun": "bun run"}.get(pm, "npm run")
+
+
 def _detect_node(root: str) -> dict:
     pkg = _read_json(os.path.join(root, "package.json"))
     scripts = pkg.get("scripts") or {}
     deps = {**(pkg.get("dependencies") or {}), **(pkg.get("devDependencies") or {})}
 
-    if _exists(root, "pnpm-lock.yaml"):
-        pm, runner = "pnpm", "pnpm"
-    elif _exists(root, "yarn.lock"):
-        pm, runner = "yarn", "yarn"
-    elif _exists(root, "bun.lockb", "bun.lock"):
-        pm, runner = "bun", "bun run"
-    else:
-        pm, runner = "npm", "npm run"
+    pm = _package_manager(root)
+    runner = _pm_runner(pm)
 
     commands: dict[str, str] = {}
     for slot in ("test", "lint", "typecheck", "build"):
@@ -284,6 +293,42 @@ def _browser_tools(root: str) -> list[str]:
     return tools
 
 
+_PORT_FLAG_RE = re.compile(r"(?:--port|-p)[=\s]+(\d+)")
+
+
+def _serve(root: str, subtypes: list[str], cfg: dict) -> dict | None:
+    """How to run a frontend project so a real page can be rendered and checked.
+
+    Returns None for non-frontend projects: there is nothing to serve, so no
+    `serve` block should appear at all rather than an empty placeholder.
+    """
+    if "frontend" not in subtypes:
+        return None
+
+    pkg = _read_json(os.path.join(root, "package.json"))
+    scripts = pkg.get("scripts") or {}
+    runner = _pm_runner(_package_manager(root))
+
+    script_body = ""
+    if "dev" in scripts:
+        script_body = scripts["dev"]
+        command = f"{runner} dev"
+    elif "start" in scripts:
+        script_body = scripts["start"]
+        command = f"{runner} start"
+    else:
+        command = ""
+
+    cfg_url = ((cfg.get("verify") or {}).get("url") or "").strip()
+    if cfg_url:
+        url = cfg_url
+    else:
+        port_match = _PORT_FLAG_RE.search(script_body) if script_body else None
+        url = f"http://localhost:{port_match.group(1) if port_match else 3000}"
+
+    return {"command": command, "url": url}
+
+
 def _verify_policy(root: str, subtypes: list[str], commands: dict[str, str], cfg: dict) -> dict:
     cfg_verify = cfg.get("verify") or {}
     if "mode" in cfg_verify:
@@ -334,8 +379,13 @@ def resolve(root: str = ".") -> dict:
     plan = {"source": _detect_plan_source(root), "path": "", **(cfg.get("plan") or {})}
     tracker = {"kind": "none", **(cfg.get("tracker") or {})}
     subtypes = cfg.get("subtypes") or auto.get("subtypes", [])
+    serve = _serve(root, subtypes, cfg)
 
-    return {
+    missing_commands = [s for s in ("test", "testOne", "lint", "typecheck") if s not in commands]
+    if serve is not None and not serve["command"]:
+        missing_commands.append("serve")
+
+    result = {
         "schema": 1,
         "root": root,
         "configFound": bool(cfg),
@@ -346,7 +396,7 @@ def resolve(root: str = ".") -> dict:
         "taskRunner": runner,
         "commands": commands,
         "commandSources": sources,
-        "missingCommands": [s for s in ("test", "testOne", "lint", "typecheck") if s not in commands],
+        "missingCommands": missing_commands,
         "plan": plan,
         "tracker": tracker,
         "models": models,
@@ -355,6 +405,9 @@ def resolve(root: str = ".") -> dict:
         "capabilities": _capabilities(root),
         "verifyPolicy": _verify_policy(root, subtypes, commands, cfg),
     }
+    if serve is not None:
+        result["serve"] = serve
+    return result
 
 
 if __name__ == "__main__":

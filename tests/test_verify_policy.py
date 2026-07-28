@@ -138,6 +138,49 @@ class TestConfigOverride(unittest.TestCase):
         self.assertEqual(r["verifyPolicy"]["forbids"], [])
 
 
+class TestServeBlock(unittest.TestCase):
+    def test_frontend_serve_prefers_dev_with_pm_prefix(self):
+        pkg = json.dumps({"scripts": {"dev": "vite", "start": "vite preview"}, "devDependencies": {"vite": "^5"}})
+        with Project({"package.json": pkg, "pnpm-lock.yaml": ""}) as root:
+            r = detect.resolve(root)
+        self.assertEqual(r["serve"]["command"], "pnpm dev")
+
+    def test_frontend_serve_falls_back_to_start(self):
+        pkg = json.dumps({"scripts": {"start": "next start"}, "dependencies": {"next": "^14"}})
+        with Project({"package.json": pkg}) as root:
+            r = detect.resolve(root)
+        self.assertEqual(r["serve"]["command"], "npm run start")
+
+    def test_url_from_config_wins(self):
+        cfg = json.dumps({"verify": {"url": "http://localhost:5173/app"}})
+        with Project({"package.json": PKG_VITE, "flow.config.json": cfg}) as root:
+            r = detect.resolve(root)
+        self.assertEqual(r["serve"]["url"], "http://localhost:5173/app")
+
+    def test_url_parsed_from_script_port_flag(self):
+        pkg = json.dumps({"scripts": {"dev": "vite --port 4321"}, "devDependencies": {"vite": "^5"}})
+        with Project({"package.json": pkg}) as root:
+            r = detect.resolve(root)
+        self.assertEqual(r["serve"]["url"], "http://localhost:4321")
+
+    def test_url_defaults_to_3000_as_last_resort(self):
+        with Project({"package.json": PKG_VITE}) as root:
+            r = detect.resolve(root)
+        self.assertEqual(r["serve"]["url"], "http://localhost:3000")
+
+    def test_frontend_with_no_runnable_script_reports_empty_command(self):
+        pkg = json.dumps({"scripts": {"build": "vite build"}, "devDependencies": {"vite": "^5"}})
+        with Project({"package.json": pkg}) as root:
+            r = detect.resolve(root)
+        self.assertEqual(r["serve"]["command"], "")
+        self.assertIn("serve", r["missingCommands"])
+
+    def test_non_frontend_project_has_no_serve_block(self):
+        with Project({"pyproject.toml": ""}) as root:
+            r = detect.resolve(root)
+        self.assertNotIn("serve", r)
+
+
 class TestShape(unittest.TestCase):
     def test_shape_has_all_keys(self):
         with Project({"pyproject.toml": ""}) as root:
