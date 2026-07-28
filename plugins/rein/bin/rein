@@ -4,6 +4,9 @@
 Subcommands:
   rein doctor         environment probe (plugin wiring, CLIs, config, stack)
   rein detect         resolved stack + commands as JSON (config > runner > auto)
+  rein tasks          parsed plan as JSON (tasks.md or openspec)
+  rein context        detect + tasks in ONE call -- what the loop's first agent runs
+  rein close <id>     tick a task's checkbox in the plan
   rein token-report   real per-model token accounting for the last agent run
   rein ledger         summary of recorded runs (per project / per session)
 
@@ -25,15 +28,98 @@ PLUGIN_ROOT = os.path.dirname(HERE)
 sys.path.insert(0, os.path.join(PLUGIN_ROOT, "lib"))
 
 import detect as _detect  # noqa: E402
+import plan as _plan  # noqa: E402
 import token_report as _tr  # noqa: E402
 
 USAGE = __doc__
 
 
+def _opt(argv: list[str], name: str, default: str = "") -> str:
+    """Read `--name value` or `--name=value` without pulling in argparse."""
+    for i, a in enumerate(argv):
+        if a == f"--{name}" and i + 1 < len(argv):
+            return argv[i + 1]
+        if a.startswith(f"--{name}="):
+            return a.split("=", 1)[1]
+    return default
+
+
+def _positional(argv: list[str]) -> str:
+    for i, a in enumerate(argv):
+        if a.startswith("-"):
+            continue
+        if i > 0 and argv[i - 1].startswith("--") and "=" not in argv[i - 1]:
+            continue  # value of a preceding flag
+        return a
+    return ""
+
+
 def cmd_detect(argv: list[str]) -> int:
-    root = argv[0] if argv and not argv[0].startswith("-") else "."
-    print(json.dumps(_detect.resolve(root), indent=2))
+    print(json.dumps(_detect.resolve(_positional(argv) or "."), indent=2))
     return 0
+
+
+def cmd_tasks(argv: list[str]) -> int:
+    root = _positional(argv) or "."
+    cfg = _detect.resolve(root)
+    print(
+        json.dumps(
+            _plan.read_plan(
+                root,
+                source=_opt(argv, "source") or cfg["plan"]["source"],
+                change=_opt(argv, "change"),
+                configured=_opt(argv, "path") or cfg["plan"].get("path", ""),
+            ),
+            indent=2,
+        )
+    )
+    return 0
+
+
+def cmd_context(argv: list[str]) -> int:
+    """Everything the loop needs to start, in one bash round-trip.
+
+    The whole thesis is that turns cost context re-reads. Two commands is two
+    round-trips; one is one.
+    """
+    root = _positional(argv) or "."
+    cfg = _detect.resolve(root)
+    plan = _plan.read_plan(
+        root,
+        source=_opt(argv, "source") or cfg["plan"]["source"],
+        change=_opt(argv, "change"),
+        configured=_opt(argv, "path") or cfg["plan"].get("path", ""),
+    )
+    ordered, stuck = _plan.order_by_dependencies(plan["pending"])
+    print(
+        json.dumps(
+            {
+                "config": cfg,
+                "plan": {**plan, "tasks": plan["tasks"], "pending": ordered, "unresolvableDeps": stuck},
+            },
+            indent=2,
+        )
+    )
+    return 0
+
+
+def cmd_close(argv: list[str]) -> int:
+    task_id = _positional(argv)
+    if not task_id:
+        print("usage: rein close <task-id> [root] [--change X]")
+        return 2
+    root = _opt(argv, "root", ".")
+    cfg = _detect.resolve(root)
+    plan = _plan.read_plan(root, source=cfg["plan"]["source"], change=_opt(argv, "change"),
+                           configured=cfg["plan"].get("path", ""))
+    if not plan["exists"]:
+        print(f"no plan at {plan['path']}")
+        return 1
+    if _plan.close_task(plan["path"], task_id):
+        print(f"closed {task_id} in {plan['path']}")
+        return 0
+    print(f"{task_id}: not found or already closed in {plan['path']}")
+    return 1
 
 
 def cmd_token_report(argv: list[str]) -> int:
@@ -91,7 +177,14 @@ def cmd_doctor(argv: list[str]) -> int:
     print(f"  stack : {resolved['stack']}" + (f"  subtypes: {', '.join(resolved['subtypes'])}" if resolved["subtypes"] else ""))
     print(f"  package manager : {resolved['packageManager'] or '-'}")
     print(f"  task runner : {resolved['taskRunner'] or '-'}")
+    plan = _plan.read_plan(root, source=resolved["plan"]["source"], configured=resolved["plan"].get("path", ""))
+    plan_state = (
+        f"{len(plan['pending'])} pending / {len(plan['tasks'])} tasks"
+        if plan["exists"]
+        else f"NOT FOUND at {plan['path']}"
+    )
     print(f"  plan source : {resolved['plan']['source']}   tracker: {resolved['tracker']['kind']}")
+    print(f"  plan        : {plan_state}")
     print()
     print("  resolved commands:")
     if resolved["commands"]:
@@ -120,6 +213,9 @@ def cmd_doctor(argv: list[str]) -> int:
 COMMANDS = {
     "doctor": cmd_doctor,
     "detect": cmd_detect,
+    "tasks": cmd_tasks,
+    "context": cmd_context,
+    "close": cmd_close,
     "token-report": cmd_token_report,
     "ledger": cmd_ledger,
 }

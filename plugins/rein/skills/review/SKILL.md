@@ -1,54 +1,57 @@
 ---
 name: review
-description: "Independently review a completed change as a whole across correctness, readability, architecture, security and performance, with a mechanical gate first. PHASE 0 STUB. Use when the user asks for a review gate with /rein:review."
+description: "Independently review a completed change as a whole — mechanical gate first, then correctness, readability, architecture, security and performance. Use when the user asks to review a change, audit a branch before merge, or invokes /rein:review."
 license: MIT
 ---
 
 # /rein:review
 
-The independent gate. Reviews the **complete change**, never a single task.
+The independent gate. Reviews a **complete change**, never a single task.
+`/rein:loop` runs this automatically; invoke it directly to review work done by
+hand or by another tool.
 
 ## Two rules that come from real failures
 
 **No agent approves its own implementation.** A flow where the planner implemented
-and verified its own work shipped defects to the user. The reviewer must not have
-written the code it is judging.
+and verified its own work shipped defects to the user. If you wrote the code under
+review, say so and stop.
 
-**Review the change as a whole, not task by task.** Per-task review was tried and
-was wrong: it multiplies rounds (3 rounds × 8 tasks = 24 reviewer invocations),
-and no reviewer ever sees the change as a unit — which is exactly where
-cross-task coherence defects live.
+**Review the change as a whole.** Per-task review was tried and was wrong: it
+multiplies rounds (3 rounds × 8 tasks = 24 reviewer invocations) and no reviewer
+ever sees the change as a unit — which is exactly where cross-task coherence
+defects live.
 
-## Status: PHASE 0 STUB
+## Steps
 
-Not implemented yet. Lands in phase 1 as part of the loop's review rounds.
+1. **Resolve the project's real commands** — do not guess them:
 
-## Contract (what phase 1 will do)
+   ```bash
+   R=$(command -v rein || ls -d ~/.claude/plugins/cache/*/rein/*/bin/rein 2>/dev/null | tail -1); "$R" detect .
+   ```
 
-1. **Mechanical part first.** Run the project's resolved `test` / `lint` /
-   `typecheck` from `flow.config.json`. Anything red means the verdict **cannot**
-   be `APPROVED`, no matter how good the code reads.
-2. **Judgement, five axes** over the full diff: correctness, readability,
-   architecture, security, performance — plus coherence between tasks.
-3. **Coverage check**: every acceptance criterion actually met; no checkbox marked
-   without its criteria satisfied.
-4. **Verdict**: `APPROVED` or `CHANGES_REQUESTED` with findings that are precise
-   and actionable (file, what is wrong, what is missing) — the implementer fixes
-   them without talking to you.
-5. **Escalation.** If the *only* thing blocking approval is a judgement that only
-   the human can make, return `needsHumanDecision` instead of
-   `CHANGES_REQUESTED`. Another implementer round cannot resolve it, so spending
-   one is waste.
+2. **Mechanical gate first.** Run the resolved `test`, `lint` and `typecheck`.
+   Report their literal output. **Anything red means the verdict cannot be
+   APPROVED**, however good the code reads. If a slot is not configured, say it is
+   absent rather than substituting one.
 
-Bounded at **3 rounds per change**. A reviewer that dies is retried once without
-consuming a round.
+3. **Judgement over the full diff** (`git diff <base>...<branch>`), on five axes:
+   correctness, readability, architecture, security, performance. Look at the
+   change as a unit — coherence defects *between* tasks are the ones nobody else
+   will see.
 
-## Integrity (non-negotiable, inherited from the origin project)
+4. **Coverage.** Check each task in the plan genuinely meets its acceptance
+   criteria, and that no checkbox was ticked without them being met.
 
-Real logic and real tests. Never weaken or skip a verification, never fake
-success, never stub a real product step to force green, never commit failing
-tests, never let a failure pass silently. An honest blocker is worth more than a
-false green.
+5. **Verdict.** `APPROVED`, or `CHANGES_REQUESTED` with findings precise enough to
+   act on without asking you anything: file, what is wrong, what is missing.
 
-The lesson behind this: tests with fakes passed while the real output was broken.
-If a task has a verification against reality, perform it — do not substitute a mock.
+6. **Escalate instead of looping** when the *only* thing blocking approval is a
+   judgement solely the user can give — a supervised task whose acceptance is "the
+   owner confirms". An implementer cannot resolve that, so another round is wasted
+   time. Name which task and what must be judged.
+
+## Guardrails
+
+- Do not modify product code. Doing so makes your own review stale.
+- Be demanding. Approving something broken is worse than asking for another round.
+- Never report a green gate you did not actually run.
