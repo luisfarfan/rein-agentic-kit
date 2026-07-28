@@ -145,8 +145,11 @@ class TestShippedExampleConfig(unittest.TestCase):
         # ones specifically rather than on the absence of any warning at all --
         # `assertNotIn("verifyWarnings", r)` would silently forbid every future
         # environment diagnostic.
+        # Only assert on warnings that would mean the CONFIG is wrong. The
+        # bad-mode warning renders as "verify.mode '<x>' is not one of [...]",
+        # so that substring is the load-bearing check; an 'auto' variant of the
+        # string is never emitted, and asserting it would be vacuous.
         for warning in r.get("verifyWarnings", []):
-            self.assertNotIn("verify.mode 'auto'", warning)
             self.assertNotIn("is not one of", warning)
 
 
@@ -549,6 +552,79 @@ class TestPlanOnlyIsReachable(unittest.TestCase):
             missing = detect.resolve(root)["missingCommands"]
         self.assertIn("test", missing)
         self.assertIn("lint", missing)
+
+
+class TestMarkerMatchingIsNotSubstring(unittest.TestCase):
+    """A substring test made "vite" match "vitest".
+
+    Inert while subtypes were only informational; once phase 2 turned them into a
+    POLICY it meant every Node project using the most popular test runner got an
+    unsatisfiable rendered contract and a phantom serve URL. T003 promises unit
+    mode is "unchanged ... nothing new is imposed on library or CLI projects" --
+    these are the shapes that promise is about.
+    """
+
+    def _mode(self, pkg: dict) -> dict:
+        with Project({"package.json": json.dumps(pkg)}) as root:
+            return detect.resolve(root)
+
+    def test_vitest_is_not_a_frontend_framework(self):
+        r = self._mode({"scripts": {"test": "vitest run"}, "devDependencies": {"vitest": "^1"}})
+        self.assertNotIn("frontend", r["subtypes"])
+        self.assertEqual(r["verifyPolicy"]["mode"], "unit")
+        self.assertIsNone(r.get("serve"))
+
+    def test_next_lookalikes_are_not_next(self):
+        for dep in ("next-auth", "nextra", "@next/bundle-analyzer"):
+            r = self._mode({"dependencies": {dep: "^1"}})
+            self.assertNotIn("frontend", r["subtypes"], dep)
+
+    def test_real_frameworks_still_match(self):
+        self.assertIn("vite", self._mode({"devDependencies": {"vite": "^5"}})["subtypes"])
+        self.assertIn("next", self._mode({"dependencies": {"next": "^14"}})["subtypes"])
+
+    def test_scoped_family_matches_by_prefix(self):
+        r = self._mode({"dependencies": {"@remix-run/react": "^2"}})
+        self.assertIn("frontend", r["subtypes"])
+
+
+class TestPortHeuristicDoesNotInventPorts(unittest.TestCase):
+    """Reading a non-port number as a port is worse than having no port at all:
+    both the implementer and the reviewer get pointed at a dead URL."""
+
+    def test_assignment_values_are_never_ports(self):
+        for cmd in ("cross-env NODE_OPTIONS=--max-old-space-size=4096 next dev",
+                    "node --max-old-space-size=4096 server.js",
+                    "PORT_OFFSET=8080 ./run.sh"):
+            self.assertEqual(detect._port_from(cmd), ("", True), cmd)
+
+    def test_flag_ports_are_certain_bare_ports_are_not(self):
+        self.assertEqual(detect._port_from("vite --port 4000"), ("4000", True))
+        self.assertEqual(detect._port_from("python3 -m http.server 8080"), ("8080", False))
+
+    def test_a_guessed_port_is_disclosed(self):
+        cfg = json.dumps({"commands": {"serve": "python3 -m http.server 8080"}})
+        with Project({"package.json": PKG_VITE, "flow.config.json": cfg}) as root:
+            r = detect.resolve(root)
+        self.assertEqual(r["serve"]["url"], "http://localhost:8080")
+        self.assertTrue(any("is a guess" in w for w in r.get("verifyWarnings", [])))
+
+
+class TestInfraLayouts(unittest.TestCase):
+    """The layouts the docstring names must actually be covered."""
+
+    def _mode(self, path: str) -> str:
+        with Project({path: ""}) as root:
+            return detect.resolve(root)["verifyPolicy"]["mode"]
+
+    def test_nested_layouts_reach_plan_only(self):
+        for path in ("main.tf", "terraform/main.tf", "infra/serverless.yml",
+                     "envs/prod/main.tf", "deploy/terraform/main.tf"):
+            self.assertEqual(self._mode(path), "plan-only", path)
+
+    def test_scan_does_not_descend_into_dependency_directories(self):
+        with Project({"node_modules/some-pkg/Dockerfile": "", "package.json": "{}"}) as root:
+            self.assertNotIn("infra", detect.resolve(root)["subtypes"])
 
 
 if __name__ == "__main__":

@@ -74,17 +74,20 @@ def _is_set(commands: dict, slot: str) -> bool:
     return bool((commands.get(slot) or "").strip())
 
 
+_INFRA_MAX_DEPTH = 2
 _INFRA_SKIP_DIRS = (".git", "node_modules", "vendor", ".venv", "dist", "build", ".terraform")
 
 
 def _infra_files(root: str) -> list[str]:
-    """Infra markers by exact name and by extension, one directory deep.
+    """Infra markers by exact name and by extension, a bounded depth down.
 
     Root-only matching is not enough here: `terraform/`, `infra/` and
     `envs/prod/` are the ORDINARY layouts, so a root-only probe would leave the
     plan-only guarantee unreachable for most real infra repos while looking
-    fixed. Depth is bounded at one level on purpose -- a full walk would make
-    every `rein detect` pay for a recursive scan of the whole tree.
+    fixed. Depth is bounded at two levels on purpose: it reaches `envs/prod/` and
+    `deploy/terraform/` -- the layouts named above -- while a full walk would make
+    every `rein detect` pay for a recursive scan of the whole tree. Deeper than
+    that, set `subtypes` in flow.config.json.
     """
     import glob as _glob
 
@@ -93,20 +96,28 @@ def _infra_files(root: str) -> list[str]:
         if _glob.glob(os.path.join(root, pattern)):
             found.append(pattern)
 
-    try:
-        subdirs = [e for e in os.listdir(root) if e not in _INFRA_SKIP_DIRS and not e.startswith(".")]
-    except OSError:
-        subdirs = []
-    for sub in sorted(subdirs):
-        path = os.path.join(root, sub)
-        if not os.path.isdir(path):
-            continue
+    def scan(rel: str, depth: int):
+        path = os.path.join(root, rel) if rel else root
         for name in INFRA_FILES:
-            if os.path.exists(os.path.join(path, name)):
-                found.append(f"{sub}/{name}")
+            if rel and os.path.exists(os.path.join(path, name)):
+                found.append(f"{rel}/{name}")
         for pattern in INFRA_GLOBS:
-            if _glob.glob(os.path.join(path, pattern)):
-                found.append(f"{sub}/{pattern}")
+            if rel and _glob.glob(os.path.join(path, pattern)):
+                found.append(f"{rel}/{pattern}")
+        if depth <= 0:
+            return
+        try:
+            entries = sorted(os.listdir(path))
+        except OSError:
+            return
+        for entry in entries:
+            if entry in _INFRA_SKIP_DIRS or entry.startswith("."):
+                continue
+            child = os.path.join(path, entry)
+            if os.path.isdir(child):
+                scan(f"{rel}/{entry}" if rel else entry, depth - 1)
+
+    scan("", _INFRA_MAX_DEPTH)
     return found
 
 
@@ -178,6 +189,18 @@ def _pm_runner(pm: str) -> str:
     return {"pnpm": "pnpm", "yarn": "yarn", "bun": "bun run"}.get(pm, "npm run")
 
 
+def _dep_matches(dep: str, marker: str) -> bool:
+    """Exact dependency match, or a scoped package under it.
+
+    NOT a substring test: "vite" is a substring of "vitest", so every Node
+    project using the most popular test runner was classified frontend, and once
+    phase 2 turned subtypes into a POLICY that meant a CLI library got an
+    unsatisfiable rendered contract. "next" likewise matches next-auth and
+    nextra. The prefix form is only for scoped families like @remix-run/react.
+    """
+    return dep == marker or dep.startswith(marker + "/")
+
+
 def _detect_node(root: str) -> dict:
     pkg = _read_json(os.path.join(root, "package.json"))
     scripts = pkg.get("scripts") or {}
@@ -201,7 +224,7 @@ def _detect_node(root: str) -> dict:
     elif "test" in commands:
         commands.setdefault("testOne", commands["test"] + " {target}")
 
-    subtypes = sorted({m for m in FRONTEND_MARKERS if any(m in d for d in deps)})
+    subtypes = sorted({m for m in FRONTEND_MARKERS if any(_dep_matches(d, m) for d in deps)})
     return {
         "stack": "node",
         "packageManager": pm,
@@ -421,8 +444,17 @@ def _serve(root: str, subtypes: list[str], commands: dict[str, str], cfg: dict) 
     if cfg_url:
         url = cfg_url
     else:
-        port = _port_from(script_body) if script_body else ""
-        url = f"http://localhost:{port or _framework_port(subtypes)}"
+        port, certain = _port_from(script_body) if script_body else ("", True)
+        fallback, known_framework = _framework_port(subtypes)
+        url = f"http://localhost:{port or fallback}"
+        # A port is a GUESS when it came from the bare-number heuristic, or when
+        # nothing in the command gave one and no framework default legitimately
+        # applies. `npm run dev` on Vite needs no warning -- 5173 IS that
+        # framework's default. But a config-supplied `commands.serve` means the
+        # server is deliberately NOT the framework's dev server, so the
+        # framework's port stops being a safe assumption.
+        framework_applies = known_framework and not cfg_command
+        guessed = (bool(port) and not certain) or (not port and not framework_applies)
         # `commands.serve` exists precisely for servers that are NOT npm scripts,
         # so there is no framework default to fall back on and no port to read.
         # Handing the implementer a URL nothing listens on is worse than admitting
@@ -430,7 +462,7 @@ def _serve(root: str, subtypes: list[str], commands: dict[str, str], cfg: dict) 
         # Deliberately NOT warned for package.json scripts -- `npm run dev` never
         # carries a port flag, and a warning on every ordinary frontend project is
         # noise that teaches people to ignore warnings.
-        if cfg_command and not port:
+        if command and guessed:
             warnings.append(
                 f"serve.url {url!r} is a guess: no port found in {cfg_command!r}. "
                 f"Set verify.url in flow.config.json if the server does not listen there."
@@ -452,27 +484,34 @@ _FRAMEWORK_PORTS = {
 }
 
 
-def _framework_port(subtypes: list[str]) -> int:
+def _framework_port(subtypes: list[str]) -> tuple[int, bool]:
+    """(port, known). `known` is False when 3000 is a bare last resort.
+
+    Reachable via config-supplied `subtypes: ["frontend"]`, which names no
+    framework -- detection alone always yields a marker we have a default for.
+    """
     for marker in subtypes:
         if marker in _FRAMEWORK_PORTS:
-            return _FRAMEWORK_PORTS[marker]
-    return 3000
+            return _FRAMEWORK_PORTS[marker], True
+    return 3000, False
 
 
-def _port_from(text: str) -> str:
-    """Port from a serve command: a --port/-p flag, else a bare numeric argument.
+def _port_from(text: str) -> tuple[str, bool]:
+    """(port, certain). `certain` is False when the port was only guessed.
 
-    The bare-argument fallback exists for the shapes a flag regex cannot see --
-    `python3 -m http.server 8080`, `serve -s build 4173`.
+    A --port/-p flag is certain. A bare numeric argument is not: it covers the
+    shapes a flag regex cannot see (`python3 -m http.server 8080`), but it cannot
+    tell a port from any other number on the line. Numbers on the right-hand side
+    of an assignment are excluded outright -- `NODE_OPTIONS=--max-old-space-size=4096`
+    is never a port, and reading it as one sent both agents to a dead URL.
     """
     flag = _PORT_FLAG_RE.search(text)
     if flag:
-        return flag.group(1)
-    bare = re.findall(r"(?<![\w.:-])(\d{2,5})(?![\w.])", text)
-    for candidate in bare:
+        return flag.group(1), True
+    for candidate in re.findall(r"(?<![\w.:=-])(\d{2,5})(?![\w.=])", text):
         if 1 <= int(candidate) <= 65535:
-            return candidate
-    return ""
+            return candidate, False
+    return "", True
 
 
 _VALID_VERIFY_MODES = {"rendered", "plan-only", "unit"}

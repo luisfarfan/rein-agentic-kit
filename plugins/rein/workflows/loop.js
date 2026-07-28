@@ -73,6 +73,7 @@ const CONTEXT_SCHEMA = {
     root: { type: 'string' },
     stack: { type: 'string' },
     subtypes: { type: 'array', items: { type: 'string' } },
+    verifyWarnings: { type: 'array', items: { type: 'string' } },
     verifyPolicy: {
       type: 'object',
       properties: {
@@ -131,6 +132,7 @@ const CONTEXT_SCHEMA = {
   required: [
     'ok', 'reinPath', 'root', 'stack', 'subtypes', 'verifyPolicy', 'serve', 'cmdTest', 'cmdTestOne', 'cmdLint', 'cmdTypecheck',
     'planPath', 'planSource', 'artifacts', 'capabilities', 'tracker', 'baseBranch', 'worktreePrefix',
+    'verifyWarnings',
     'maxTaskSteps', 'maxReviewRounds', 'modelAux', 'modelImpl', 'modelReview', 'tasks', 'problem',
   ],
   additionalProperties: false,
@@ -246,6 +248,9 @@ const ctx = await agentRetry(
     `     (empty string when a slot is absent — say so rather than inventing a command)\n` +
     `   · verifyPolicy <- config.verifyPolicy, serve <- config.serve when present, else {command:"",url:""}\n` +
     `     (non-frontend projects have none). Copy both LITERALLY, do not re-derive them.\n` +
+    `   · verifyWarnings <- config.verifyWarnings, or [] when the key is absent. These say the policy\n` +
+    `     cannot be satisfied as detected (no browser tool reachable, a guessed URL); the run surfaces\n` +
+    `     them so a wrong instruction is visible instead of silently followed.\n` +
     `   · baseBranch <- config.worktree.baseBranch, worktreePrefix <- config.worktree.prefix\n` +
     `   · maxTaskSteps/maxReviewRounds <- config.limits, model* <- config.models\n` +
     `   · tasks <- plan.pending, ALREADY dependency-ordered. Keep that order. Copy each field\n` +
@@ -291,6 +296,8 @@ if (!tasks.length) {
 }
 log(`${tasks.length} pending task(s): ${tasks.map((t) => t.id).join(', ')}`)
 log(`stack ${ctx.stack}${ctx.subtypes.length ? ` (${ctx.subtypes.join(', ')})` : ''} · models ${MODEL_AUX}/${MODEL_IMPL}/${MODEL_REVIEW} · ≤${STEPS} steps/task · ≤${ROUNDS} review rounds`)
+
+for (const w of ctx.verifyWarnings || []) log(`⚠️ ${w}`)
 
 if (DRY_RUN) {
   return {
