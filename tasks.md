@@ -1,104 +1,61 @@
-# Plan
+# Change: dashboard
 
-Live plan for `rein-agentic-kit`. `/rein:loop` reads this file; `rein close <id>`
-ticks the boxes. Format is documented in `/rein:plan`.
+## Why
+The ledger already holds real runs and nobody can see them without reading JSON
+by hand. `rein ledger` prints them, but only to someone who already knows how to
+read turns/agent, ctx_max and opus share. The measurement exists and is unusable.
+
+## Scope
+- In: `rein dashboard` — a local server, a self-contained page, metrics per
+  project / session / run, deltas against a marked baseline, per-agent model config
+- Out: hosting, auth, or sharing — this is local and stays local
+- Out: live streaming during a run; the ledger is written when a run ends
+- Out: charts over data the ledger does not already store
+
+## Decisions
+- D1 Zero toolchain — a plugin that drags npm along at install time is a plugin nobody installs
+- D2 Data is embedded server-side, the page never fetches — that is what makes it verifiable without a browser
+- D3 Writing config shows a diff and asks first — a server that edits N repos silently produces surprise diffs
+- D4 No baseline, no savings figure — only a trend
 
 ---
 
-- [x] T001 Add `rein baseline` to mark a reference run
+- [ ] T001 Assemble the dashboard view model and serve it
   - Type: implementation
   - Depends on: none
   - Human review: false
-  - Verification: `python3 -m unittest tests.test_baseline`
+  - Verification: `python3 -m unittest tests.test_dashboard`
   - Acceptance:
-    - `rein baseline mark <wf_id>` records that run id as the baseline, stored in `~/.claude/rein/baseline.json` next to the ledger, with the ledger itself left untouched
-    - `rein baseline mark` with no argument marks the most recent run present in the ledger
-    - `rein baseline show` prints the marked run's turns, turns_per_agent, ctx_max and opus_share, or a clear "no baseline marked" message when none is set
-    - marking an id that is not in the ledger fails with a non-zero exit and a message naming the id, rather than storing a dangling reference
-    - `rein baseline clear` removes the marker and is a no-op when none is set
-    - a new file `tests/test_baseline.py` covers each of the above against a temporary ledger, with no writes to the real `~/.claude/rein/`
-    - the logic lives in `plugins/rein/lib/token_report.py` and uses only the Python 3 standard library
+    - a new `plugins/rein/lib/dashboard.py` builds a view model from the ledger: runs grouped by project, each with turns_per_agent, ctx_max, opus_share, totals and its per-agent rows
+    - the baseline (from `~/.claude/rein/baseline.json`) is marked on its run, and every run recorded later in the same project carries signed deltas for those three metrics; runs in other projects and runs recorded before it carry none
+    - `rein dashboard --json` prints that view model and exits without opening a socket, so the whole data path is testable without a network
+    - `rein dashboard` serves it over `http.server` bound to 127.0.0.1 only, never `0.0.0.0`, with the port configurable via `--port`
+    - a missing, empty or partly corrupt ledger yields an empty view carrying a plain message — never a traceback and never a partial read that silently drops valid rows
+    - Python 3 standard library only; no new dependency appears anywhere
+    - a new `tests/test_dashboard.py` builds temporary ledgers and asserts each of the above, including the corrupt-line case
 
-- [x] T002 Show the delta against the baseline in `rein ledger`
+- [ ] T002 Render the page
   - Type: implementation
   - Depends on: T001
   - Human review: false
-  - Verification: `python3 -m unittest tests.test_baseline`
+  - Verification: `python3 -m unittest tests.test_dashboard`
   - Acceptance:
-    - when a baseline is marked, `rein ledger` marks that run and shows, for every later run, the signed percentage change in turns_per_agent, ctx_max and opus_share against it
-    - when no baseline is marked, output is exactly what it is today plus the existing line explaining that a saving requires a marked baseline — no invented savings figure
-    - a run recorded before the baseline is not given a delta, since comparing backwards would misrepresent the direction of the change
-    - the three deltas are labelled so a negative number reads unambiguously as an improvement
-    - `tests/test_baseline.py` covers the with-baseline and without-baseline renderings
+    - one self-contained HTML response: no external stylesheet, script, font or image, and no `fetch`/`XMLHttpRequest` — the numbers are already in the markup (D2)
+    - for every run it shows turns/agent, ctx_max/turn and opus share, grouped by project, with the per-agent rows reachable without leaving the page
+    - the baseline run is visibly marked and its deltas are labelled so that a negative number reads unambiguously as an improvement
+    - with no baseline marked, the page shows the trend and no savings figure anywhere — D4 is the thing being protected, so a test must assert that absence, not merely the presence of the trend
+    - it renders with zero runs, with one run, and with a run whose `agents` list is empty
+    - a test starts the real server, fetches the page over HTTP, and asserts that values taken from the temp ledger appear in the returned markup — proving the data reached the page, not that a template rendered
 
----
-
-## Phase 2 — stack-aware verification
-
-The failure this phase exists to catch: **"the tests pass but the UI is broken."**
-Unit tests are the right gate for a library and the wrong one for a rendered page.
-The loop already runs whatever `Verification` a task declares; what is missing is a
-per-stack *policy* that says what verification must look like to count at all.
-
-- [x] T003 Emit a per-stack verification policy from `rein detect`
+- [ ] T003 Edit per-agent models from the page
   - Type: implementation
-  - Depends on: none
+  - Depends on: T002
   - Human review: false
-  - Verification: `python3 -m unittest tests.test_verify_policy`
+  - Verification: `python3 -m unittest tests.test_dashboard`
   - Acceptance:
-    - `plugins/rein/lib/detect.py` gains a `verifyPolicy` key in the `resolve()` output with the shape `{"mode": str, "requires": [str], "forbids": [str], "tools": [str]}`
-    - mode is `rendered` when `subtypes` contains `frontend`, `plan-only` when `subtypes` contains `infra` and no test command is configured, and `unit` otherwise
-    - `rendered` mode lists in `requires` that a real browser render must be observed, and names the available tools by probing which of Playwright, the Claude-in-Chrome MCP and the `browser-testing` skill this project can actually reach — never naming a tool that is absent
-    - `plan-only` mode lists the destructive operations in `forbids` (at minimum `deploy`, `apply`, `destroy`), so an infra task can never be "verified" by mutating real infrastructure
-    - a project whose `flow.config.json` sets `verify.mode` gets that value verbatim, overriding detection, consistent with the existing precedence rule
-    - `unit` mode is unchanged in behaviour from today: `requires` is empty and nothing new is imposed on library or CLI projects
-    - a new `tests/test_verify_policy.py` covers each mode, the config override, and the "never name an absent tool" rule, using temporary project trees only
-
-- [x] T004 Detect how to serve a frontend so a render check is possible
-  - Type: implementation
-  - Depends on: T003
-  - Human review: false
-  - Verification: `python3 -m unittest tests.test_verify_policy`
-  - Acceptance:
-    - for `frontend` projects `resolve()` reports a `serve` block `{"command": str, "url": str}` derived from `package.json` scripts, preferring `dev` and falling back to `start`, with the package manager prefix already applied
-    - the URL is taken from `flow.config.json` `verify.url` when set; otherwise it defaults to `http://localhost:<port>` using a port parsed from the script's own flags when present, and 3000 only as a last resort
-    - a frontend project with no runnable script reports an empty `serve.command` and says so in `missingCommands`, rather than inventing one that would fail at run time
-    - non-frontend projects report no `serve` block at all
-    - the existing `tests/test_detect.py` continues to pass unchanged, and the new cases live in `tests/test_verify_policy.py`
-
-- [x] T005 Enforce the policy in the loop's implementer and reviewer prompts
-  - Type: implementation
-  - Depends on: T004
-  - Human review: false
-  - Verification: `python3 -m unittest tests.test_verify_policy`
-  - Acceptance:
-    - `plugins/rein/workflows/loop.js` carries `verifyPolicy` and `serve` through `CONTEXT_SCHEMA` and the Prepare agent's instructions, in the same "report it literally, do not re-derive it" style as the existing fields
-    - in `rendered` mode the implementer's bounded-step contract states that passing unit tests alone do NOT make a task done: the page must be served and actually rendered, and the observed evidence recorded in `verification`
-    - in `rendered` mode the reviewer is told the mechanical gate is incomplete without that rendered evidence, and that a green test suite with no render is not grounds for approval
-    - in `plan-only` mode both prompts carry the `forbids` list as a hard prohibition
-    - in `unit` mode the prompts are byte-identical to today, so nothing changes for library and CLI projects
-    - `node --check plugins/rein/workflows/loop.js` passes, and a test asserts the loop script contains no hard-coded stack name, framework name or port — everything comes from config
-
----
-
-## Follow-ups (raised by the review gate, judged non-blocking)
-
-- [x] T006 Tighten two remaining port-heuristic edges
-  - Type: implementation
-  - Depends on: none
-  - Human review: false
-  - Verification: `python3 -m unittest tests.test_verify_policy`
-  - Acceptance:
-    - a shell redirect (`node server.js --port 3000 2>&1`) is not classified `flag-compound`; the `&` in `2>&1` is not a background operator
-    - the `env` port path range-checks its value the way the bare path already does, so `X_PORT=12` cannot become a URL
-    - the unreachable "there is no serve command to read a port from" branch in `_serve`'s warning is removed
-    - each of the three has a test asserting the full `_port_from` tuple, not a partial property
-
-- [x] T007 Decide whether a nested Dockerfile alone should mean plan-only
-  - Type: implementation
-  - Depends on: none
-  - Human review: true
-  - Verification: `python3 -m unittest tests.test_verify_policy`
-  - Acceptance:
-    - a decision is recorded in `docs/` on whether `apps/*/Dockerfile` in a Node monorepo with no test script should resolve to `plan-only` (a prohibition, so it fails safe) or stay `unit`
-    - detection matches whatever is decided, with a test naming the shape and the reasoning
+    - each project in the view model shows its resolved `models.aux/impl/review` and the source of each (config or default)
+    - a POST endpoint writes only `models.*` into that project's `flow.config.json`, preserving every other key byte-for-byte, including unknown keys and the `$comment` entries the example config ships
+    - the response returns a unified diff of what would change, and nothing is written until a second confirming request arrives — a first request must never write
+    - a write targeting a path that is not a project root already present in the ledger is refused with a non-2xx and no filesystem change; a test asserts this with a traversal attempt
+    - writing to a project that has no `flow.config.json` creates one containing only the models block
+    - tests cover: unknown keys preserved, diff-then-confirm ordering, refusal outside known roots, and creation from absent
