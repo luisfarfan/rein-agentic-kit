@@ -87,6 +87,9 @@ class TestExitCodes(BaselineCliFixture):
 
         self.assertEqual(result.returncode, 0)
         self.assertIn("wf_1", result.stdout)
+        # The project must be visible in the mark confirmation -- it is the
+        # field that decides whether `rein ledger` will ever show a delta.
+        self.assertIn("proj-cli", result.stdout)
         self.assertTrue(os.path.exists(self.baseline_path), "baseline.json must be created next to the ledger")
         with open(self.baseline_path, encoding="utf-8") as fh:
             stored = json.load(fh)
@@ -98,6 +101,7 @@ class TestExitCodes(BaselineCliFixture):
         result = self._run("show")
         self.assertEqual(result.returncode, 0)
         self.assertIn("wf_1", result.stdout)
+        self.assertIn("proj-cli", result.stdout)
 
     def test_clear_exits_0(self):
         self._write_ledger([row("wf_1", "2026-01-01T00:00:00Z")])

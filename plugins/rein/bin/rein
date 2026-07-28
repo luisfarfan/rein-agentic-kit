@@ -158,10 +158,11 @@ def cmd_baseline(argv: list[str]) -> int:
     if sub == "mark":
         try:
             record = _tr.mark_baseline(_positional(rest) or None)
-        except ValueError as exc:
+        except (ValueError, OSError) as exc:
             print(str(exc))
             return 1
-        print(f"baseline marked: {record['wf_id']}")
+        project = record.get("project") or "unknown project"
+        print(f"baseline marked: {record['wf_id']} ({project})")
         return 0
 
     if sub == "show":

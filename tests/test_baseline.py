@@ -213,6 +213,55 @@ class TestReadBaselineCorrupt(BaselineFixture):
         self.assertIsNone(tr.read_baseline(self.baseline_path))
 
 
+class TestMissingMetric(BaselineFixture):
+    def test_render_baseline_with_missing_ctx_max_does_not_crash(self):
+        # Reproduction from the review finding: mark_baseline snapshots a KEY
+        # with value None for any BASELINE_FIELDS the ledger row lacks -- must
+        # not raise TypeError when formatting.
+        baseline = {"wf_id": "wf_1", "ts": "2026-01-01T00:00:00Z", "project": "p", "turns": 10, "turns_per_agent": 5.0, "ctx_max": None, "opus_share": None}
+        text = tr.render_baseline(baseline)
+        self.assertIsInstance(text, str)
+        self.assertIn("wf_1", text)
+        self.assertIn("n/a", text)
+
+    def test_row_missing_metric_reports_na_not_fabricated_delta(self):
+        # A later row missing ctx_max must not render as "-100.0% better".
+        rows = [
+            {"wf_id": "wf_base", "ts": "2026-01-01T00:00:00Z", "project": "proj-A", "turns": 10, "turns_per_agent": 5.0, "ctx_max": 1000, "opus_share": 10.0},
+            {"wf_id": "wf_after", "ts": "2026-01-02T00:00:00Z", "project": "proj-A", "turns": 10, "turns_per_agent": 5.0, "opus_share": 10.0},  # no ctx_max
+        ]
+        self._write_ledger(rows)
+        baseline = tr.mark_baseline("wf_base", self.ledger_path, self.baseline_path)
+
+        text = tr.render_ledger(rows, self.ledger_path, baseline=baseline)
+
+        self.assertNotIn("-100.0%", text)
+        self.assertIn("ctx_max n/a (row missing metric)", text)
+
+
+class TestBaselineShowsProject(BaselineFixture):
+    def test_render_baseline_includes_the_project(self):
+        rows = [row("wf_1", "2026-01-01T00:00:00Z", project="proj-A")]
+        self._write_ledger(rows)
+        baseline = tr.mark_baseline("wf_1", self.ledger_path, self.baseline_path)
+
+        text = tr.render_baseline(baseline)
+        self.assertIn("proj-A", text)
+
+
+class TestReadBaselineWrongShape(BaselineFixture):
+    def test_wrong_shape_raises_corrupt_error(self):
+        with open(self.baseline_path, "w", encoding="utf-8") as fh:
+            fh.write("[]")
+        with self.assertRaises(tr.BaselineCorruptError):
+            tr.read_baseline(self.baseline_path)
+
+    def test_json_null_still_reads_as_no_baseline(self):
+        with open(self.baseline_path, "w", encoding="utf-8") as fh:
+            fh.write("null")
+        self.assertIsNone(tr.read_baseline(self.baseline_path))
+
+
 class TestZeroBaselineMetric(BaselineFixture):
     def test_zero_baseline_metric_explains_itself_instead_of_bare_na(self):
         rows = [

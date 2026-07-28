@@ -338,9 +338,16 @@ def read_baseline(baseline_path: str = BASELINE_PATH) -> dict | None:
         return None
     with open(baseline_path, encoding="utf-8") as fh:
         try:
-            return json.load(fh)
+            data = json.load(fh)
         except json.JSONDecodeError as exc:
             raise BaselineCorruptError(f"baseline file unreadable: {baseline_path} -- re-run `rein baseline mark`") from exc
+    if data is None:
+        return None
+    if not isinstance(data, dict):
+        raise BaselineCorruptError(
+            f"baseline file has an unexpected shape ({type(data).__name__}): {baseline_path} -- re-run `rein baseline mark`"
+        )
+    return data
 
 
 def clear_baseline(baseline_path: str = BASELINE_PATH) -> bool:
@@ -351,20 +358,24 @@ def clear_baseline(baseline_path: str = BASELINE_PATH) -> bool:
     return True
 
 
-def _pct_change(value: float, base: float | None) -> float | None:
-    """Signed % change of `value` relative to `base`. None if `base` is missing/zero."""
-    if base in (None, 0):
+def _pct_change(value: float | None, base: float | None) -> float | None:
+    """Signed % change of `value` relative to `base`. None if `base` or `value` is missing, or `base` is zero."""
+    if base in (None, 0) or value is None:
         return None
     return round(100 * (value - base) / base, 1)
 
 
-def _fmt_delta(pct: float | None, base: float | None = None) -> str:
+def _fmt_delta(pct: float | None, base: float | None = None, value: float | None = 0) -> str:
     """Label the direction explicitly -- for these metrics lower is always better,
     so a bare signed number is not enough to read at a glance.
 
     `base` is only used to explain a `None` pct: missing baseline data reads
-    differently from a baseline metric that was legitimately zero.
+    differently from a baseline metric that was legitimately zero. `value` is
+    the row's own metric -- if the row never recorded it (schema drift), there
+    is no real number to compare and reporting one would be fabricated.
     """
+    if value is None:
+        return "n/a (row missing metric)"
     if pct is None:
         if base == 0:
             return "n/a (baseline 0)"
@@ -427,9 +438,9 @@ def render_ledger(rows: list[dict], ledger_path: str = LEDGER_PATH, baseline: di
                 # Only runs recorded AFTER the baseline, in the SAME project, get a
                 # delta -- comparing across projects or backwards in time would
                 # fabricate a number that means nothing.
-                d_turns = _fmt_delta(_pct_change(r.get("turns_per_agent", 0), baseline.get("turns_per_agent")), baseline.get("turns_per_agent"))
-                d_ctx = _fmt_delta(_pct_change(r.get("ctx_max", 0), baseline.get("ctx_max")), baseline.get("ctx_max"))
-                d_opus = _fmt_delta(_pct_change(r.get("opus_share", 0), baseline.get("opus_share")), baseline.get("opus_share"))
+                d_turns = _fmt_delta(_pct_change(r.get("turns_per_agent"), baseline.get("turns_per_agent")), baseline.get("turns_per_agent"), r.get("turns_per_agent"))
+                d_ctx = _fmt_delta(_pct_change(r.get("ctx_max"), baseline.get("ctx_max")), baseline.get("ctx_max"), r.get("ctx_max"))
+                d_opus = _fmt_delta(_pct_change(r.get("opus_share"), baseline.get("opus_share")), baseline.get("opus_share"), r.get("opus_share"))
                 line += f"\n        vs baseline: turns/agent {d_turns}  ctx_max {d_ctx}  opus_share {d_opus}"
             lines.append(line)
         if show_baseline_here:
@@ -449,13 +460,23 @@ def render_ledger(rows: list[dict], ledger_path: str = LEDGER_PATH, baseline: di
     return "\n".join(lines)
 
 
+def _fmt_metric(value, fmt: str = "") -> str:
+    """Render a baseline metric, or `n/a` when the marked row never had it
+    (schema drift -- `mark_baseline` snapshots the key with value `None` rather
+    than omitting it, so a plain `.get(k, default)` would never catch this)."""
+    if value is None:
+        return "n/a"
+    return format(value, fmt) if fmt else str(value)
+
+
 def render_baseline(baseline: dict | None) -> str:
     if not baseline:
         return "no baseline marked (run `rein baseline mark` after recording a run)"
+    project = baseline.get("project") or "unknown project"
     return (
-        f"baseline: {baseline.get('wf_id')}  ({baseline.get('ts', '')})\n"
-        f"  turns={baseline.get('turns')}  turns_per_agent={baseline.get('turns_per_agent')}  "
-        f"ctx_max={baseline.get('ctx_max', 0):,}  opus_share={baseline.get('opus_share')}%"
+        f"baseline: {baseline.get('wf_id')}  ({project}, {baseline.get('ts', '')})\n"
+        f"  turns={_fmt_metric(baseline.get('turns'))}  turns_per_agent={_fmt_metric(baseline.get('turns_per_agent'))}  "
+        f"ctx_max={_fmt_metric(baseline.get('ctx_max'), ',')}  opus_share={_fmt_metric(baseline.get('opus_share'))}%"
     )
 
 
