@@ -193,6 +193,21 @@ class TestDecideRoundPolicy(unittest.TestCase):
             [result] = self._run([{"review": review, "round": 1, "maxRounds": 3}])
             self.assertEqual(result["decision"], "fix", f"findings={findings!r}")
 
+    def test_vocabulary_less_changes_requested_at_the_cap_rejects_not_fixes(self):
+        """Round-5 finding, and this repo's recurring pattern caught in its own
+        new test: the guard branch returned 'fix' unconditionally, escaping the
+        round cap — on round 3/3 a fix agent would be paid whose commits no
+        reviewer will ever see. The original fixture sat at round 1 and never
+        met the interaction."""
+        for findings in ([], ["untagged text"]):
+            [result] = self._run([{
+                "review": {"approved": False, "verdict": "CHANGES_REQUESTED",
+                           "findings": findings, "gateGreen": True,
+                           "needsHumanDecision": False},
+                "round": 3, "maxRounds": 3,
+            }])
+            self.assertEqual(result["decision"], "reject", f"findings={findings!r}")
+
 
 # ── buildFixFindings: the red-gate reason must reach the fix agent ──────────
 # Regression coverage: an APPROVED verdict with a red gate produces a 'fix'

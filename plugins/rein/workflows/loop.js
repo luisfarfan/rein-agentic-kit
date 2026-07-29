@@ -533,6 +533,16 @@ function decideRound(review, round, maxRounds) {
       // reviewer asked to change — the precise false green this loop exists
       // to prevent. Spend a round instead of trusting a vocabulary the
       // reviewer never actually spoke.
+      // ...but never past the cap: on the final round a fix agent's commits
+      // can no longer be re-reviewed, so dispatching one is pure unreviewed
+      // spend — the exact cost this change exists to remove (round-5 finding).
+      if (round >= maxRounds) {
+        return {
+          decision: 'reject',
+          findings: fixWorthy,
+          reason: 'round cap reached with a vocabulary-less CHANGES_REQUESTED — not approved, not worth an unreviewable fix round',
+        }
+      }
       return {
         decision: 'fix',
         findings: fixWorthy,
