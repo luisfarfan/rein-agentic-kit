@@ -176,6 +176,23 @@ class TestDecideRoundPolicy(unittest.TestCase):
         }])
         self.assertEqual(result["decision"], "fix")
 
+    def test_empty_findings_with_changes_requested_do_not_unlock_the_override(self):
+        """The louder half of the same violation: a reviewer that said
+        CHANGES_REQUESTED and returned ZERO findings spoke the vocabulary
+        less, not more, than one that returned untagged strings. The gate CLI
+        refuses to record that episode; the loop must not merge on it."""
+        for findings in ([], None):
+            review = {
+                "approved": False,
+                "verdict": "CHANGES_REQUESTED",
+                "gateGreen": True,
+                "needsHumanDecision": False,
+            }
+            if findings is not None:
+                review["findings"] = findings
+            [result] = self._run([{"review": review, "round": 1, "maxRounds": 3}])
+            self.assertEqual(result["decision"], "fix", f"findings={findings!r}")
+
 
 # ── buildFixFindings: the red-gate reason must reach the fix agent ──────────
 # Regression coverage: an APPROVED verdict with a red gate produces a 'fix'
@@ -273,12 +290,14 @@ function extract(name, params) {
   if (!m) throw new Error('not found in loop.js: ' + name);
   return m[1];
 }
-const buildPlanCheckPrompt = new Function('planPath', extract('buildPlanCheckPrompt', 'planPath'));
-const decidePlanCheck = new Function('findings', extract('decidePlanCheck', 'findings'));
-const findings = JSON.parse(findingsJson);
+const buildPlanCheckPrompt = new Function('planPath', 'taskIds', extract('buildPlanCheckPrompt', 'planPath, taskIds'));
+const decidePlanCheck = new Function('findings', 'runIds', extract('decidePlanCheck', 'findings, runIds'));
+const shouldRunPlanCheck = new Function('args', extract('shouldRunPlanCheck', 'args'));
+const payload = JSON.parse(findingsJson);
 process.stdout.write(JSON.stringify({
-  prompt: buildPlanCheckPrompt(planPath),
-  verdict: decidePlanCheck(findings),
+  prompt: buildPlanCheckPrompt(planPath, payload.taskIds || []),
+  verdict: decidePlanCheck(payload.findings || [], payload.runIds || []),
+  shouldRun: shouldRunPlanCheck(payload.args === undefined ? {} : payload.args),
 }));
 """
 
@@ -288,25 +307,33 @@ class TestPlanCheckExtractable(unittest.TestCase):
     def test_functions_exist_with_expected_signatures(self):
         with open(LOOP_JS, encoding="utf-8") as f:
             src = f.read()
-        self.assertIn("function buildPlanCheckPrompt(planPath) {", src)
-        self.assertIn("function decidePlanCheck(findings) {", src)
+        self.assertIn("function buildPlanCheckPrompt(planPath, taskIds) {", src)
+        self.assertIn("function decidePlanCheck(findings, runIds) {", src)
+        self.assertIn("function shouldRunPlanCheck(args) {", src)
 
 
 @unittest.skipUnless(_NODE, "node not on PATH -- loop.js is a node workflow script")
-class TestPlanCheckPolicy(unittest.TestCase):
-    def _run(self, plan_path: str, findings: list[dict]) -> dict:
+class _PlanCheckHarness(unittest.TestCase):
+    """Shared extraction runner. Not a test class itself — subclassing a class
+    that HAS tests re-runs them once per subclass, padding the count."""
+
+    def _run(self, plan_path: str, findings: list[dict], run_ids=None, task_ids=None, args=None) -> dict:
+        payload = {"findings": findings, "runIds": run_ids, "taskIds": task_ids, "args": args}
         with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False, encoding="utf-8") as f:
             f.write(_EXTRACT_PLANCHECK_JS)
             script_path = f.name
         try:
             proc = subprocess.run(
-                [_NODE, script_path, LOOP_JS, plan_path, json.dumps(findings)],
+                [_NODE, script_path, LOOP_JS, plan_path, json.dumps(payload)],
                 capture_output=True, text=True, check=True,
             )
         finally:
             os.unlink(script_path)
         return json.loads(proc.stdout)
 
+
+@unittest.skipUnless(_NODE, "node not on PATH -- loop.js is a node workflow script")
+class TestPlanCheckPolicy(_PlanCheckHarness):
     def test_prompt_names_all_four_lenses_and_forbids_reading_the_codebase(self):
         out = self._run("tasks.md", [])
         prompt = out["prompt"]
@@ -351,14 +378,54 @@ class TestPlanCheckPolicy(unittest.TestCase):
         self.assertEqual(out["verdict"]["findings"], [])
 
 
-class TestPlanCheckSkippable(unittest.TestCase):
-    def test_loop_js_gates_the_phase_on_args_plan_check_false(self):
-        # args.planCheck: false must skip the phase entirely (acceptance #4).
-        # This does not require node/extraction -- it is a static guarantee
-        # about how the phase is gated in the shipped source.
+class TestPlanCheckScopedToTheRun(_PlanCheckHarness):
+    """A BLOCKING finding on a task this run will not execute must not stop the
+    run (round-4 IMPORTANT): the defect cannot waste this run's implementers,
+    and the only escape was planCheck: false — which throws the check away for
+    the tasks that ARE running."""
+
+    BLOCKER = {"taskId": "T009", "severity": "BLOCKING", "text": "vague criterion"}
+
+    def test_blocking_on_an_out_of_run_task_does_not_stop(self):
+        out = self._run("tasks.md", [self.BLOCKER], run_ids=["T001", "T002"])
+        self.assertEqual(out["verdict"]["decision"], "continue")
+        # ...but the finding is still carried, not dropped.
+        self.assertEqual(len(out["verdict"]["findings"]), 1)
+
+    def test_blocking_on_an_in_run_task_still_stops(self):
+        out = self._run("tasks.md", [dict(self.BLOCKER, taskId="T001")], run_ids=["T001", "T002"])
+        self.assertEqual(out["verdict"]["decision"], "stop")
+
+    def test_plan_level_finding_without_task_id_stops(self):
+        """A Scope contradiction has no single task id — it concerns the run."""
+        out = self._run("tasks.md", [{"taskId": "", "severity": "BLOCKING", "text": "Scope contradicts itself"}],
+                        run_ids=["T001"])
+        self.assertEqual(out["verdict"]["decision"], "stop")
+
+    def test_task_id_comparison_is_case_insensitive(self):
+        out = self._run("tasks.md", [dict(self.BLOCKER, taskId="t001")], run_ids=["T001"])
+        self.assertEqual(out["verdict"]["decision"], "stop")
+
+    def test_prompt_names_the_run_scope_when_ids_are_given(self):
+        out = self._run("tasks.md", [], task_ids=["T001", "T002"])
+        self.assertIn("Judge ONLY these tasks", out["prompt"])
+        self.assertIn("[T001, T002]", out["prompt"])
+
+
+class TestPlanCheckSkippable(_PlanCheckHarness):
+    def test_skip_gate_is_executed_not_grepped(self):
+        """args.planCheck: false skips; everything else runs. Executed via the
+        extracted shouldRunPlanCheck — a source substring can be satisfied by a
+        comment, which is the fixture-avoids-the-case failure in test form."""
+        for args, expect in (({}, True), ({"planCheck": False}, False),
+                             ({"planCheck": True}, True), (None, True)):
+            out = self._run("tasks.md", [], args=args)
+            self.assertEqual(out["shouldRun"], expect, f"args={args!r}")
+
+    def test_phase_call_site_uses_the_gate(self):
         with open(LOOP_JS, encoding="utf-8") as f:
             src = f.read()
-        self.assertIn("ARGS.planCheck !== false", src)
+        self.assertIn("if (shouldRunPlanCheck(ARGS)) {", src)
         self.assertIn("plan check skipped (planCheck: false)", src)
 
     def test_dead_plan_check_agent_degrades_to_a_warning_not_an_abort(self):

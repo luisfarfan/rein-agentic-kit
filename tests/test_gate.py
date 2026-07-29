@@ -200,6 +200,28 @@ class TestSeverityFindings(unittest.TestCase):
             {"severity": "SUGGESTION", "text": "polish"},
         ])
 
+    def test_leading_whitespace_does_not_defeat_the_prefix(self):
+        """Round-4 BLOCKING: the CLI splits --findings on '|', so the natural
+        spelling "IMPORTANT: a | BLOCKING: b" hands every finding after the
+        first a leading space. Matching the raw string read ' BLOCKING: x' as
+        IMPORTANT — and D2's APPROVED-with-blocker refusal failed OPEN on
+        exactly the documented input shape."""
+        parsed = gate._parse_finding(" BLOCKING: x")
+        self.assertEqual(parsed["severity"], "BLOCKING")
+        self.assertEqual(parsed["text"], "x")
+        # And the whole CLI shape, end to end through record_review:
+        pieces = [f for f in "IMPORTANT: a | BLOCKING: b".split("|") if f.strip()]
+        with Tree({"a.py": "x=1\n"}) as root:
+            with self.assertRaises(ValueError) as ctx:
+                gate.record_review(root, "demo", "APPROVED", ["a.py"], pieces, "rev")
+            self.assertIn("BLOCKING", str(ctx.exception))
+
+    def test_dict_finding_with_non_string_text_does_not_crash_mid_record(self):
+        """A machine-written episode with numeric text must fail (or pass) as
+        validation, never as an AttributeError halfway through recording."""
+        parsed = gate._parse_finding({"severity": "SUGGESTION", "text": 42})
+        self.assertEqual(parsed["text"], "42")
+
     def test_untagged_finding_defaults_to_important_not_the_mildest(self):
         """D1: an untagged finding must never silently become SUGGESTION."""
         with Tree(self.FILES) as root:

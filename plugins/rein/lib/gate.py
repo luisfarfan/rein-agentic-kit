@@ -48,13 +48,20 @@ def _parse_finding(raw) -> dict:
         severity = str(raw.get("severity", DEFAULT_SEVERITY)).strip().upper()
         if severity not in SEVERITIES:
             severity = DEFAULT_SEVERITY
-        return {"severity": severity, "text": raw.get("text", "")}
-    text = str(raw)
+        # str() so a machine-written episode with a numeric text fails later as
+        # a validation error, not as an AttributeError mid-record.
+        return {"severity": severity, "text": str(raw.get("text", ""))}
+    # Strip FIRST: the CLI splits --findings on '|', which leaves the natural
+    # spelling "IMPORTANT: a | BLOCKING: b" with a leading space on every
+    # finding after the first. Matching the prefix against the raw string made
+    # " BLOCKING: x" read as IMPORTANT — and D2's APPROVED-with-blocker
+    # refusal silently failed open on exactly the documented input shape.
+    text = str(raw).strip()
     for severity in SEVERITIES:
         prefix = f"{severity}:"
         if text[: len(prefix)].upper() == prefix:
             return {"severity": severity, "text": text[len(prefix):].strip()}
-    return {"severity": DEFAULT_SEVERITY, "text": text.strip()}
+    return {"severity": DEFAULT_SEVERITY, "text": text}
 
 
 def _normalize_findings(raw_findings) -> list[dict]:

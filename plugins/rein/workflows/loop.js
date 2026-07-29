@@ -505,9 +505,14 @@ function decideRound(review, round, maxRounds) {
   // normalized to IMPORTANT above for display, but that normalization must
   // not silently unlock D2's override below — the reviewer never spoke the
   // vocabulary D2 is judging against.
-  const hasUntagged = rawFindings.some(
-    (f) => typeof f === 'string' || !RECOGNIZED_SEVERITIES.includes(sev(f))
-  )
+  // Zero findings with a CHANGES_REQUESTED verdict is the same violation as
+  // untagged ones, only worse: the reviewer spoke the vocabulary LESS. The
+  // gate CLI refuses to record that episode; the loop must not quietly merge
+  // on it either.
+  const spokeNoVocabulary =
+    rawFindings.length === 0 ||
+    rawFindings.some((f) => typeof f === 'string' || !RECOGNIZED_SEVERITIES.includes(sev(f)))
+  const hasUntagged = spokeNoVocabulary
   const blocking = findings.filter((f) => sev(f) === 'BLOCKING')
   const fixWorthy = findings.filter((f) => sev(f) === 'BLOCKING' || sev(f) === 'IMPORTANT')
   const gateGreen = !!review.gateGreen
@@ -566,8 +571,13 @@ function decideRound(review, round, maxRounds) {
 // fix agent is always told what actually forces the round.
 function buildFixFindings(review, decision) {
   const base = decision.findings || []
-  if (!review.gateGreen) {
-    return [{ severity: 'BLOCKING', text: decision.reason }, ...base]
+  // A fix round needs at least one concrete instruction. Two ways to arrive
+  // with none: a red gate (the failure IS the finding), or a reviewer that
+  // requested changes while speaking no vocabulary at all — empty findings.
+  // In both, the synthesized reason becomes the brief; an empty numbered list
+  // would send an agent to fix nothing.
+  if (!review.gateGreen || base.length === 0) {
+    return [{ severity: 'BLOCKING', text: decision.reason || 'the review gate did not pass' }, ...base]
   }
   return base
 }
@@ -577,8 +587,14 @@ function buildFixFindings(review, decision) {
 // proving the actual shipped prompt rather than a restatement of it.
 // Exactly four lenses (no more, no fewer) — each one a failure mode this repo
 // hit for real, not a generic "review the plan" ask.
-function buildPlanCheckPrompt(planPath) {
+function buildPlanCheckPrompt(planPath, taskIds) {
+  const scope = (taskIds || []).length
+    ? `Judge ONLY these tasks — the ones THIS run will execute: [${taskIds.join(', ')}]. Completed ` +
+      `tasks and tasks excluded from this run are not yours to judge: a defect there cannot waste ` +
+      `this run's implementers, and stopping for it would be a false stop.\n\n`
+    : ''
   return (
+    scope +
     `You are the PLAN-CHECK agent. Your ONLY job is to critique the plan's own text before any ` +
     `implementer is paid to build it. Read ONLY ${planPath}. Do NOT read, grep, open, or explore ` +
     `any other file in the repository — the codebase does not exist yet as far as you are concerned; ` +
@@ -603,12 +619,27 @@ function buildPlanCheckPrompt(planPath) {
 // Pure: findings in, one decision out. D4 — a BLOCKING plan finding stops the
 // run before any implementer is paid; anything else is carried in the return
 // value without stopping anything.
-function decidePlanCheck(findings) {
+// Pure so tests can execute it rather than grep for its call site.
+function shouldRunPlanCheck(args) {
+  return !args || args.planCheck !== false
+}
+
+function decidePlanCheck(findings, runIds) {
   const list = (findings || []).map((f) =>
     typeof f === 'string' ? { taskId: '', severity: 'IMPORTANT', text: f } : f
   )
   const sev = (f) => String(f.severity || '').toUpperCase()
-  const blocking = list.filter((f) => sev(f) === 'BLOCKING')
+  const inRun = (f) => {
+    // A finding with no taskId is plan-LEVEL (a Scope contradiction, a broken
+    // dependency order) — it concerns the whole run, so it may stop it. A
+    // finding pinned to a task this run will not execute cannot waste this
+    // run's implementers, and stopping for it would be the false stop the
+    // scoping exists to prevent.
+    if (!f.taskId) return true
+    if (!runIds || !runIds.length) return true
+    return runIds.includes(String(f.taskId).toUpperCase())
+  }
+  const blocking = list.filter((f) => sev(f) === 'BLOCKING' && inRun(f))
   if (blocking.length) {
     return {
       decision: 'stop',
@@ -631,17 +662,17 @@ const closeCmd =
 // A dead checker degrades to a logged warning: a run must never be lost to
 // the thing meant to protect it.
 let planFindings = []
-if (ARGS.planCheck !== false) {
+if (shouldRunPlanCheck(ARGS)) {
   phase('PlanCheck')
   const planCheck = await agentRetry(
-    buildPlanCheckPrompt(ctx.planPath),
+    buildPlanCheckPrompt(ctx.planPath, tasks.map((t) => t.id)),
     { schema: PLANCHECK_SCHEMA, label: 'plan-check', phase: 'PlanCheck', agentType: 'general-purpose', effort: 'low', model: MODEL_IMPL }
   )
   if (!planCheck || planCheck.blocked) {
     const why = planCheck ? planCheck.blockedReason || 'could not read the plan' : 'the plan-check agent died'
     log(`⚠️ plan check unavailable (${why}) — continuing without it`)
   } else {
-    const verdict = decidePlanCheck(planCheck.findings)
+    const verdict = decidePlanCheck(planCheck.findings, tasks.map((t) => t.id))
     for (const f of verdict.findings) {
       const marker = f.severity === 'BLOCKING' ? '⛔' : f.severity === 'IMPORTANT' ? '⚠️' : 'ℹ️'
       log(`  ${marker} plan-check [${f.taskId || '?'}] ${f.severity}: ${f.text}`)
