@@ -48,7 +48,7 @@ criteria (T006, port-edges) approved in a single round.
     - an approved run still carries its non-blocking observations into the final return value, so nothing the reviewer noticed is silently dropped
     - `node --check plugins/rein/workflows/loop.js` passes, and a new `tests/test_loop_policy.py` executes the extracted decision function across: blockers present, only suggestions, only importants, gate red with no blockers, and needsHumanDecision
 
-- [ ] T003 Check the plan before paying implementers
+- [x] T003 Check the plan before paying implementers
   - Type: implementation
   - Depends on: T002
   - Human review: false
