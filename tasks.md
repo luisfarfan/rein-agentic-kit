@@ -35,7 +35,7 @@ criteria (T006, port-edges) approved in a single round.
     - `rein review record --findings "BLOCKING: x|SUGGESTION: y"` round-trips through the CLI, and `rein review check` prints each finding with its severity
     - new tests in `tests/test_gate.py` cover the prefix parsing, both D2 refusals, the untagged default, and the old-episode compatibility case — with at least one fixture whose finding text itself contains a colon, so the prefix split cannot be naive
 
-- [ ] T002 Only a blocker buys another round
+- [x] T002 Only a blocker buys another round
   - Type: implementation
   - Depends on: T001
   - Human review: false
