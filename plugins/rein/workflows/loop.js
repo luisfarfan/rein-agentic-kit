@@ -1088,8 +1088,15 @@ const RENDER_SCHEMA = {
 // never wrote — stopped=false, nothing alarming logged, server orphaned.
 // Outside the worktree on purpose: a pidfile left inside the tree under review
 // is an untracked file a later fix agent's `git add -A` would commit.
-function renderPidfile(wd) {
-  return `/tmp/rein-render-${String(wd).replace(/[^A-Za-z0-9]/g, '-')}.pid`
+function renderPidfile(wd, tmpdir) {
+  // A short hash of the FULL path, not just the sanitized name: sanitizing
+  // every non-alphanumeric to '-' makes `wt-x` and `wt_x` collide, and two
+  // concurrent loops on sibling worktrees would tear down each other's server.
+  const path = String(wd)
+  let h = 0
+  for (let i = 0; i < path.length; i++) h = (h * 31 + path.charCodeAt(i)) | 0
+  const tag = Math.abs(h).toString(36)
+  return `${tmpdir || '/tmp'}/rein-render-${path.replace(/[^A-Za-z0-9]/g, '-').slice(-40)}-${tag}.pid`
 }
 
 async function stopRenderServer(pidfile) {
@@ -1122,7 +1129,7 @@ async function runRender() {
     log(`⚠️ rendered-unverified: ${dispatch.reason} — Verify continues, nothing stops`)
     return { status: 'rendered-unverified', reason: dispatch.reason, ...empty }
   }
-  const pidfile = renderPidfile(WD)
+  const pidfile = renderPidfile(WD, ARGS.tmpdir)
   // agentRetry RETHROWS on its final attempt — it returns null only when the
   // agent dies without throwing. Without this try/finally a thrown render agent
   // skipped teardown entirely, orphaning a server that `serve-probe --start`

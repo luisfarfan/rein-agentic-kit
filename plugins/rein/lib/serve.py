@@ -373,7 +373,17 @@ def stop(pidfile: str) -> tuple[bool, str]:
             pgid = int(raw)
         except ValueError as e:
             return False, f"could not read pidfile {pidfile!r}: {e}"
+    # The pidfile lives in a shared temp dir under a predictable name, so its
+    # contents are not fully trusted: pgid 0 signals the CALLER's own group
+    # (the agent's bash, and the loop with it), and an arbitrary stderrPath
+    # would make stop() a deletion primitive. Neither is reachable from a file
+    # start() wrote — which is exactly why the guards are cheap to keep.
+    if pgid <= 1:
+        return False, f"refusing to signal process group {pgid} from {pidfile!r}"
     _kill_pgid(pgid)
+    prefix = os.path.join(tempfile.gettempdir(), "rein-serve-stderr-")
+    if stderr_path and not stderr_path.startswith(prefix):
+        stderr_path = ""
     for path in (stderr_path, pidfile):
         if path:
             with contextlib.suppress(OSError):

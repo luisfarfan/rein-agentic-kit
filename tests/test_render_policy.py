@@ -37,6 +37,7 @@ const decideRenderDispatch = new Function(
   extract('decideRenderDispatch', 'verifyPolicy, serve')
 );
 const decideRenderOutcome = new Function('render', extract('decideRenderOutcome', 'render'));
+const renderPidfile = new Function('wd', 'tmpdir', extract('renderPidfile', 'wd, tmpdir'));
 const buildRenderPrompt = new Function(
   'rein', 'command', 'url', 'tools', 'wd', 'pidfile',
   extract('buildRenderPrompt', 'rein, command, url, tools, wd, pidfile')
@@ -50,7 +51,8 @@ const scenarios = JSON.parse(scenariosJson);
 const out = scenarios.map((s) => {
   if (s.kind === 'dispatch') return decideRenderDispatch(s.verifyPolicy, s.serve);
   if (s.kind === 'outcome') return decideRenderOutcome(s.render);
-  if (s.kind === 'prompt') return buildRenderPrompt(s.rein, s.command, s.url, s.tools, s.wd, s.pidfile || '/tmp/r.pid');
+  if (s.kind === 'pidfile') return renderPidfile(s.wd);
+  if (s.kind === 'prompt') return buildRenderPrompt(s.rein, s.command, s.url, s.tools, s.wd, s.pidfile || renderPidfile(s.wd));
   if (s.kind === 'round') return decideRound(s.review, s.round, s.maxRounds, s.render);
   if (s.kind === 'fixfindings') return buildFixFindings(s.review, s.decision);
   throw new Error('unknown scenario kind: ' + s.kind);
@@ -83,7 +85,7 @@ class TestFunctionsAreExtractable(unittest.TestCase):
         self.assertIn("function decideRenderOutcome(render)", src)
         self.assertIn("function buildRenderPrompt(rein, command, url, tools, wd, pidfile)", src)
         # The pidfile is a PARAMETER, not derived twice (round-4 IMPORTANT).
-        self.assertIn("function renderPidfile(wd)", src)
+        self.assertIn("function renderPidfile(wd, tmpdir)", src)
         self.assertNotIn("`${wd}/.rein-render-serve.pid`", src)
 
 
@@ -516,12 +518,12 @@ const deps = {
   VERIFY_POLICY: { mode: 'rendered', tools: ['playwright'], requires: [], forbids: [] },
   SERVE: { command: 'npm run dev', url: 'http://localhost:5173' },
   WD: '/tmp/wt', REIN: 'rein', MODEL_AUX: 'haiku',
-  RENDER_SCHEMA: {}, TASK_SCHEMA: {},
+  RENDER_SCHEMA: {}, TASK_SCHEMA: {}, ARGS: {},
   log: () => {},
   decideRenderDispatch: () => ({ dispatch: true, reason: '' }),
   decideRenderOutcome: () => ({ status: 'passed', reason: '' }),
   buildRenderPrompt: () => 'prompt',
-  renderPidfile: (wd) => '/tmp/pid-' + wd.replace(/[^a-z]/g, ''),
+  renderPidfile: (wd, tmpdir) => (tmpdir || '/tmp') + '/pid-' + wd.replace(/[^a-z]/g, ''),
   stopRenderServer: async (p) => { calls.push('teardown:' + p); },
   agentRetry: async () => {
     calls.push('render');
@@ -584,6 +586,44 @@ class TestRenderEvidenceReachesTheReviewer(unittest.TestCase):
             src = f.read()
         failed = src[src.index("renderEvidence.status === 'failed'"):][:700]
         self.assertIn("consoleErrors", failed)
+
+
+@unittest.skipUnless(_NODE, "node not on PATH")
+class TestRenderPidfileIsExecutedNotGrepped(TestBuildRenderPrompt):
+    """Round-4 IMPORTANT, and this repo's recurring failure inside the change
+    that exists to remove it: the placement assertion was made about
+    '/tmp/r.pid' — a constant the FIXTURE supplied — so renderPidfile could
+    have returned `${wd}/x.pid` and the suite would still have passed."""
+
+    def _pidfile(self, wd: str) -> str:
+        [out] = self._run([{"kind": "pidfile", "wd": wd}])
+        return out
+
+    def test_the_shipped_derivation_lands_outside_the_worktree(self):
+        wd = "/Users/x/projects/rein-wt-alpha"
+        pid = self._pidfile(wd)
+        self.assertTrue(pid.startswith("/"), pid)
+        self.assertFalse(pid.startswith(wd + "/"),
+                         f"renderPidfile must not put it inside the reviewed tree: {pid}")
+
+    def test_distinct_worktrees_get_distinct_pidfiles(self):
+        a = self._pidfile("/Users/x/rein-wt-alpha")
+        b = self._pidfile("/Users/x/rein-wt-beta")
+        self.assertNotEqual(a, b, "two concurrent runs would tear down each other's server")
+
+    def test_paths_differing_only_in_punctuation_do_not_collide(self):
+        """Sanitizing every non-alphanumeric to '-' maps wt-x and wt_x onto the
+        same file; the hash of the full path is what keeps them apart."""
+        self.assertNotEqual(self._pidfile("/Users/x/wt-x"), self._pidfile("/Users/x/wt_x"))
+
+    def test_the_prompt_and_the_teardown_agree_on_the_derivation(self):
+        """'One derivation, two callers' — asserted by executing both, not by
+        grepping for the absence of one old spelling."""
+        wd = "/Users/x/rein-wt-gamma"
+        [prompt] = self._run([self._scenario(wd=wd)])
+        derived = self._pidfile(wd)
+        self.assertIn(f"--start --pidfile {derived}", prompt)
+        self.assertIn(f"--stop --pidfile {derived}", prompt)
 
 
 if __name__ == "__main__":
