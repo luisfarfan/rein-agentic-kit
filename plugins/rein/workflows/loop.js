@@ -472,9 +472,10 @@ function reviewerPolicyBlock() {
   if (VERIFY_POLICY.mode === 'rendered') {
     return (
       `This project's policy is 'rendered': the mechanical gate is INCOMPLETE without observed render evidence — ` +
-      `a green test suite with no actual page render is NOT grounds for approval. Confirm the implementer recorded ` +
-      `what was served${SERVE.url ? ` (${SERVE.url})` : ''} and rendered, not just that tests passed; if it did not, ` +
-      `that alone is a CHANGES_REQUESTED finding.\n`
+      `a green test suite with a FAILED or ABSENT render is NOT grounds for APPROVED. Confirm the implementer recorded ` +
+      `what was served${SERVE.url ? ` (${SERVE.url})` : ''} and rendered, not just that tests passed; if the render ` +
+      `failed, that alone is a CHANGES_REQUESTED finding. If no render was possible at all (no browser tool reachable), ` +
+      `that is a DIFFERENT fact — 'rendered-unverified' — state it plainly but it does not by itself block APPROVED.\n`
     )
   }
   if (VERIFY_POLICY.mode === 'plan-only' && VERIFY_POLICY.forbids.length) {
@@ -493,7 +494,7 @@ function reviewerPolicyBlock() {
 //   fix       — a round is spent; the fix agent gets BLOCKING+IMPORTANT only (D1: SUGGESTION never costs a round)
 //   escalate  — the reviewer flagged a judgement only the human can make
 //   reject    — not approvable and no rounds remain
-function decideRound(review, round, maxRounds) {
+function decideRound(review, round, maxRounds, render) {
   const RECOGNIZED_SEVERITIES = ['BLOCKING', 'IMPORTANT', 'SUGGESTION']
   const rawFindings = review.findings || []
   const findings = rawFindings.map((f) =>
@@ -515,13 +516,24 @@ function decideRound(review, round, maxRounds) {
   const hasUntagged = spokeNoVocabulary
   const blocking = findings.filter((f) => sev(f) === 'BLOCKING')
   const fixWorthy = findings.filter((f) => sev(f) === 'BLOCKING' || sev(f) === 'IMPORTANT')
-  const gateGreen = !!review.gateGreen
+  const mechanicalGateGreen = !!review.gateGreen
+  // T003 (symmetric to the red-gate override): mode 'rendered' with a FAILED
+  // render is exactly as disqualifying as a red mechanical gate — a green test
+  // suite never substitutes for a render nobody watched succeed. D4:
+  // 'rendered-unverified' is a DIFFERENT fact (no tool was reachable, not that
+  // the render broke) and must never force a round by itself — it is only
+  // carried through on the returned decision so it can reach the operator.
+  const renderStatus = (render && render.status) || ''
+  const renderFailed = renderStatus === 'failed'
+  const renderUnverified = renderStatus === 'rendered-unverified'
+  const gateGreen = mechanicalGateGreen && !renderFailed
 
   if (review.needsHumanDecision) {
     return {
       decision: 'escalate',
       findings,
       humanDecisionReason: review.humanDecisionReason || 'a supervised task needs your verdict',
+      renderUnverified,
     }
   }
 
@@ -541,6 +553,7 @@ function decideRound(review, round, maxRounds) {
           decision: 'reject',
           findings: fixWorthy,
           reason: 'round cap reached with a vocabulary-less CHANGES_REQUESTED — not approved, not worth an unreviewable fix round',
+          renderUnverified,
         }
       }
       return {
@@ -548,6 +561,7 @@ function decideRound(review, round, maxRounds) {
         findings: fixWorthy,
         reason:
           "the reviewer requested changes with untagged findings — D2's override cannot be applied to a vocabulary the reviewer did not speak",
+        renderUnverified,
       }
     }
     // Symmetric to the red-gate override below: D2 says CHANGES_REQUESTED
@@ -561,17 +575,24 @@ function decideRound(review, round, maxRounds) {
       overrideReason: overridden
         ? 'gate green and no BLOCKING findings, but the reviewer said CHANGES_REQUESTED — D2 requires a BLOCKING finding for that verdict'
         : '',
+      renderUnverified,
     }
   }
 
-  const reason = !gateGreen
+  // T003: a render failure is reported distinctly from a red mechanical gate
+  // (even though both flow through the same `gateGreen` AND above) so the fix
+  // agent and the operator are told WHICH thing broke, not just that "something"
+  // did.
+  const reason = !mechanicalGateGreen
     ? 'the mechanical gate is red; it must be green before approval'
+    : renderFailed
+    ? `mode 'rendered': the render failed${render && render.reason ? ` (${render.reason})` : ''} — a green test suite does not substitute for it`
     : `${blocking.length} BLOCKING finding(s)`
 
   if (round >= maxRounds) {
-    return { decision: 'reject', findings, reason }
+    return { decision: 'reject', findings, reason, renderUnverified }
   }
-  return { decision: 'fix', findings: fixWorthy, reason }
+  return { decision: 'fix', findings: fixWorthy, reason, renderUnverified }
 }
 
 // A red gate can produce a 'fix' decision with zero fixWorthy findings (an
@@ -1099,6 +1120,12 @@ if (gateContradiction) {
             ? `RENDER EVIDENCE (already gathered this Verify phase, do not re-run): rendered=${renderEvidence.rendered}, ` +
               `httpStatus=${renderEvidence.httpStatus}, evidence=${JSON.stringify(renderEvidence.evidence)} — failed: ` +
               `${renderEvidence.reason}. Treat this as a finding: this change's render is FAILED, not passed.\n`
+            : renderEvidence && renderEvidence.status === 'rendered-unverified'
+            ? `RENDER EVIDENCE: no render tool was reachable this Verify phase (${renderEvidence.reason}). This is an ` +
+              `INCOMPLETE gate, not a failed one — 'we could not look' is a different fact from 'we looked and it broke'. ` +
+              `State it as 'rendered-unverified' rather than a defect; it does not by itself block APPROVED (D4).\n`
+            : renderEvidence && renderEvidence.status === 'passed'
+            ? `RENDER EVIDENCE: rendered and observed OK (HTTP ${renderEvidence.httpStatus}, ${(renderEvidence.evidence || []).length} fact(s)) — the render requirement is satisfied.\n`
             : '') +
           `2. JUDGEMENT over the full diff ('git -C ${WD} diff ${BASE}...${BRANCH}' or the run's commits), on five ` +
           `axes: correctness, readability, architecture, security, performance. Look at the change AS A WHOLE — ` +
@@ -1141,13 +1168,19 @@ if (gateContradiction) {
     lastVerdict = review.verdict || ''
     gateOutput = review.gateOutput || gateOutput
 
-    const decision = decideRound(review, round, ROUNDS)
+    const decision = decideRound(review, round, ROUNDS, renderEvidence)
     lastFindings = decision.findings || []
+    // D4: 'rendered-unverified' never overrides anything decideRound did above
+    // — it is carried through untouched so the operator sees "we could not
+    // look" and not a silent pass dressed up as a normal approval/fix.
+    const renderNote = decision.renderUnverified
+      ? ` [render: unverified — ${renderEvidence && renderEvidence.reason ? renderEvidence.reason : 'no browser tool reachable'}]`
+      : ''
 
     if (decision.decision === 'escalate') {
       needsHumanDecision = true
       humanDecisionReason = decision.humanDecisionReason
-      lastVerdict = `escalated to the owner: ${humanDecisionReason}`
+      lastVerdict = `escalated to the owner: ${humanDecisionReason}${renderNote}`
       log(`✋ the reviewer ESCALATES (the implementer cannot resolve it) — ${humanDecisionReason}`)
       break
     }
@@ -1158,16 +1191,18 @@ if (gateContradiction) {
         // Symmetric to the red-gate override below: D2 says CHANGES_REQUESTED
         // needs a BLOCKING finding, so a bare CHANGES_REQUESTED with none is
         // overridden rather than trusted at face value.
-        lastVerdict = 'APPROVED (loop override: gate green, zero BLOCKING findings)'
+        lastVerdict = `APPROVED (loop override: gate green, zero BLOCKING findings)${renderNote}`
         log(`⚠️ reviewer said CHANGES_REQUESTED but gate is green with zero BLOCKING findings — overriding to APPROVED`)
       } else {
+        lastVerdict = `${lastVerdict}${renderNote}`
         log(`✅ APPROVED in round ${round}`)
       }
+      if (renderNote) log(`⚠️ rendered-unverified carried to the operator: approval stands, but the render gate was incomplete`)
       break
     }
 
     if (decision.decision === 'reject') {
-      lastVerdict = `CHANGES_REQUESTED (${decision.reason}) — no review rounds remain`
+      lastVerdict = `CHANGES_REQUESTED (${decision.reason}) — no review rounds remain${renderNote}`
       log(`⛔ round ${round}: ${decision.reason}, and no rounds remain`)
       break
     }
@@ -1178,6 +1213,11 @@ if (gateContradiction) {
       // prevent, so the loop overrides the reviewer rather than trusting it.
       log(`⚠️ reviewer said APPROVED with a RED gate — overriding to CHANGES_REQUESTED`)
       lastVerdict = 'CHANGES_REQUESTED (loop override: approved with a red gate)'
+    } else if (review.approved && renderEvidence && renderEvidence.status === 'failed') {
+      // T003: symmetric override — a green gate does not save an APPROVED
+      // verdict from a render that was actually observed to fail.
+      log(`⚠️ reviewer said APPROVED but the render failed — overriding to CHANGES_REQUESTED`)
+      lastVerdict = 'CHANGES_REQUESTED (loop override: approved but the render failed)'
     }
     lastFindings = buildFixFindings(review, decision)
     log(`↻ round ${round}: CHANGES_REQUESTED with ${lastFindings.length} BLOCKING/IMPORTANT finding(s) (SUGGESTIONs excluded) -> back to the implementer`)

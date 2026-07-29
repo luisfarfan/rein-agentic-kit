@@ -79,6 +79,11 @@ agent a **compact ledger** (`progress` / `remaining` / `filesTouched` /
 - Never report success from the workflow's return value alone. `approved: true`
   with a red gate is the exact false green this loop exists to prevent — check
   `gateOutput`.
+- In `verifyPolicy.mode: 'rendered'` projects, `approved: true` with a **failed**
+  render is the same false green and is overridden by the loop the same way a red
+  gate is — check `renderEvidence`. A `rendered-unverified` render (no browser
+  tool reachable) does **not** override approval — say so plainly (it means
+  nobody looked, not that the render broke) but do not treat it as a defect.
 - Unapproved work is never merged. If the run ends without approval, say where the
   branch is; do not merge it to be helpful.
 - If the reviewer returns `needsHumanDecision`, surface it as a question for the

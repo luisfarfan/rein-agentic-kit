@@ -25,7 +25,12 @@ R=$(command -v rein || ls -d ~/.claude/plugins/cache/*/rein/*/bin/rein 2>/dev/nu
    code reads — record `CHANGES_REQUESTED` with the failing commands as `BLOCKING` findings
    (a red gate is by definition a blocker; see the severity vocabulary in step 7). If a slot
    is not configured, say it is absent rather than substituting one. If `verifyPolicy.mode`
-   is `rendered`, a green suite with no observed render is **not** a complete gate.
+   is `rendered`, a green suite alone is **not** a complete gate — a dedicated Verify-phase
+   agent has already served and rendered the page and reports one of two outcomes: **failed**
+   (it looked and the render broke — treat this as a `BLOCKING` finding; `APPROVED` cannot
+   stand on top of it) or **rendered-unverified** (no browser tool was reachable, so nobody
+   looked at all — state this plainly but it does not by itself block `APPROVED`). These are
+   different facts and must not be collapsed into each other in the verdict.
 3. **Judgement — five axes.** Delegate to the `agent-skills:code-reviewer` agent over the
    diff: correctness, readability, architecture, security, performance. Do not reimplement
    this inline. Look at the change **as a whole** — coherence defects *between* tasks are the

@@ -34,11 +34,16 @@ function extract(name, params) {
 const decideRenderDispatch = new Function('verifyPolicy', extract('decideRenderDispatch', 'verifyPolicy'));
 const decideRenderOutcome = new Function('render', extract('decideRenderOutcome', 'render'));
 const buildRenderPrompt = new Function('command', 'url', 'tools', extract('buildRenderPrompt', 'command, url, tools'));
+const decideRound = new Function(
+  'review', 'round', 'maxRounds', 'render',
+  extract('decideRound', 'review, round, maxRounds, render')
+);
 const scenarios = JSON.parse(scenariosJson);
 const out = scenarios.map((s) => {
   if (s.kind === 'dispatch') return decideRenderDispatch(s.verifyPolicy);
   if (s.kind === 'outcome') return decideRenderOutcome(s.render);
   if (s.kind === 'prompt') return buildRenderPrompt(s.command, s.url, s.tools);
+  if (s.kind === 'round') return decideRound(s.review, s.round, s.maxRounds, s.render);
   throw new Error('unknown scenario kind: ' + s.kind);
 });
 process.stdout.write(JSON.stringify(out));
@@ -191,6 +196,65 @@ class TestBuildRenderPrompt(RenderPolicyTestCase):
         self.assertIn("no browser tool is reachable", prompt)
         for unreachable in ("playwright", "chrome-devtools", "puppeteer", "cypress", "selenium"):
             self.assertNotIn(unreachable, prompt)
+
+
+class TestDecideRoundRenderOverride(RenderPolicyTestCase):
+    """T003 AC2/AC3: the render outcome is folded into `decideRound` -- the
+    same pure function the red-gate override already goes through -- so the
+    override is executed by tests, not asserted by comment."""
+
+    def _approved_review(self):
+        return {"verdict": "APPROVED", "approved": True, "gateGreen": True, "findings": []}
+
+    def test_render_failed_overrides_approved_to_fix(self):
+        [out] = self._run([{
+            "kind": "round",
+            "review": self._approved_review(), "round": 1, "maxRounds": 5,
+            "render": {"status": "failed", "reason": "HTTP 500"},
+        }])
+        self.assertEqual(out["decision"], "fix")
+        self.assertIn("render", out["reason"])
+        self.assertFalse(out.get("renderUnverified"))
+
+    def test_render_failed_at_round_cap_rejects_not_approves(self):
+        # Symmetric to the red-gate override never dispatching an unreviewable
+        # fix round past the cap.
+        [out] = self._run([{
+            "kind": "round",
+            "review": self._approved_review(), "round": 5, "maxRounds": 5,
+            "render": {"status": "failed", "reason": "HTTP 500"},
+        }])
+        self.assertEqual(out["decision"], "reject")
+
+    def test_render_passed_does_not_block_approval(self):
+        [out] = self._run([{
+            "kind": "round",
+            "review": self._approved_review(), "round": 1, "maxRounds": 5,
+            "render": {"status": "passed", "reason": ""},
+        }])
+        self.assertEqual(out["decision"], "approve")
+        self.assertFalse(out.get("renderUnverified"))
+
+    def test_render_unverified_does_not_block_approval_but_is_carried(self):
+        # D4: 'we could not look' must never override approval, but must
+        # survive on the returned decision so it can reach the operator.
+        [out] = self._run([{
+            "kind": "round",
+            "review": self._approved_review(), "round": 1, "maxRounds": 5,
+            "render": {"status": "rendered-unverified", "reason": "no browser tool reachable"},
+        }])
+        self.assertEqual(out["decision"], "approve")
+        self.assertTrue(out.get("renderUnverified"))
+
+    def test_non_rendered_mode_never_blocks_approval(self):
+        # No `render` argument at all -- exactly what a non-'rendered' mode
+        # passes (renderEvidence stays null in loop.js).
+        [out] = self._run([{
+            "kind": "round",
+            "review": self._approved_review(), "round": 1, "maxRounds": 5,
+        }])
+        self.assertEqual(out["decision"], "approve")
+        self.assertFalse(out.get("renderUnverified"))
 
 
 if __name__ == "__main__":
