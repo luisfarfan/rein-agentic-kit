@@ -451,12 +451,19 @@ function implementerPolicyBlock() {
       // The requirement text comes from VERIFY_POLICY.requires, not a second
       // English restatement of it here: two copies of one rule drift apart with
       // nothing failing, and a future mode would silently get no requirement.
-      `RENDERED VERIFICATION REQUIRED (mode: rendered): ${VERIFY_POLICY.requires.join('; ')}. ` +
-      `A green ${ctx.stack} test suite does NOT make this task done by itself. Serve it — ` +
+      // D1: the render happens in Verify, by an agent that implemented nothing
+      // — NOT here. Telling the implementer to "serve and render" is the exact
+      // unsatisfiable instruction this policy exists to remove: only ask for
+      // what the implementer can honestly state (does it boot cleanly with the
+      // serve command), never for an observation only the render agent makes.
+      `RENDERED VERIFICATION (mode: rendered): ${VERIFY_POLICY.requires.join('; ')}. A green ${ctx.stack} test ` +
+      `suite does NOT make this task done by itself, but rendering it is NOT your job — a separate agent that ` +
+      `implemented nothing renders and observes it independently in the Verify phase after this run (D1), using ` +
       `${SERVE.command || '(no serve command is configured; say so rather than inventing one)'}` +
-      `${SERVE.url ? ` at ${SERVE.url}` : ''} — and render it` +
-      `${VERIFY_POLICY.tools.length ? ` (available: ${VERIFY_POLICY.tools.join(', ')})` : ''}. Record what you ` +
-      `OBSERVED — not just that the test suite passed — in 'verification'.\n`
+      `${SERVE.url ? ` at ${SERVE.url}` : ''}` +
+      `${VERIFY_POLICY.tools.length ? ` and ${VERIFY_POLICY.tools.join(', ')}` : ''}. Leave the app able to boot ` +
+      `cleanly with that command — that you CAN honestly verify, so do it — and do NOT serve it, render it, or ` +
+      `write a render claim into 'verification' yourself; that claim would be unfalsifiable coming from you.\n`
     )
   }
   if (VERIFY_POLICY.mode === 'plan-only' && VERIFY_POLICY.forbids.length) {
@@ -471,10 +478,17 @@ function implementerPolicyBlock() {
 function reviewerPolicyBlock() {
   if (VERIFY_POLICY.mode === 'rendered') {
     return (
+      // D1: the implementer never rendered anything to self-report, so this
+      // must not send the reviewer looking for a note the implementer had no
+      // honest way to write. The render outcome comes from the loop's own
+      // Verify phase (the RENDER EVIDENCE block appended below), not from the
+      // implementer's 'verification' text.
       `This project's policy is 'rendered': the mechanical gate is INCOMPLETE without observed render evidence — ` +
-      `a green test suite with no actual page render is NOT grounds for approval. Confirm the implementer recorded ` +
-      `what was served${SERVE.url ? ` (${SERVE.url})` : ''} and rendered, not just that tests passed; if it did not, ` +
-      `that alone is a CHANGES_REQUESTED finding.\n`
+      `a green test suite with a FAILED or ABSENT render is NOT grounds for APPROVED. The render was gathered ` +
+      `independently this Verify phase against ${SERVE.url || 'the served app'} (D1) — judge the RENDER EVIDENCE ` +
+      `block below, NOT any claim in the implementer's own notes about serving or rendering. If it says FAILED, ` +
+      `that alone is a CHANGES_REQUESTED finding. If it says 'rendered-unverified' (no browser tool reachable), ` +
+      `that is a DIFFERENT fact — 'we could not look' — state it plainly but it does not by itself block APPROVED.\n`
     )
   }
   if (VERIFY_POLICY.mode === 'plan-only' && VERIFY_POLICY.forbids.length) {
@@ -493,7 +507,7 @@ function reviewerPolicyBlock() {
 //   fix       — a round is spent; the fix agent gets BLOCKING+IMPORTANT only (D1: SUGGESTION never costs a round)
 //   escalate  — the reviewer flagged a judgement only the human can make
 //   reject    — not approvable and no rounds remain
-function decideRound(review, round, maxRounds) {
+function decideRound(review, round, maxRounds, render) {
   const RECOGNIZED_SEVERITIES = ['BLOCKING', 'IMPORTANT', 'SUGGESTION']
   const rawFindings = review.findings || []
   const findings = rawFindings.map((f) =>
@@ -515,13 +529,25 @@ function decideRound(review, round, maxRounds) {
   const hasUntagged = spokeNoVocabulary
   const blocking = findings.filter((f) => sev(f) === 'BLOCKING')
   const fixWorthy = findings.filter((f) => sev(f) === 'BLOCKING' || sev(f) === 'IMPORTANT')
-  const gateGreen = !!review.gateGreen
+  const mechanicalGateGreen = !!review.gateGreen
+  // T003 (symmetric to the red-gate override): mode 'rendered' with a FAILED
+  // render is exactly as disqualifying as a red mechanical gate — a green test
+  // suite never substitutes for a render nobody watched succeed. D4:
+  // 'rendered-unverified' is a DIFFERENT fact (no tool was reachable, not that
+  // the render broke) and must never force a round by itself — it is only
+  // carried through on the returned decision so it can reach the operator.
+  const renderStatus = (render && render.status) || ''
+  const renderFailed = renderStatus === 'failed'
+  const renderUnverified = renderStatus === 'rendered-unverified'
+  const gateGreen = mechanicalGateGreen && !renderFailed
 
   if (review.needsHumanDecision) {
     return {
       decision: 'escalate',
       findings,
       humanDecisionReason: review.humanDecisionReason || 'a supervised task needs your verdict',
+      renderUnverified,
+      renderFailed,
     }
   }
 
@@ -541,6 +567,8 @@ function decideRound(review, round, maxRounds) {
           decision: 'reject',
           findings: fixWorthy,
           reason: 'round cap reached with a vocabulary-less CHANGES_REQUESTED — not approved, not worth an unreviewable fix round',
+          renderUnverified,
+          renderFailed,
         }
       }
       return {
@@ -548,6 +576,8 @@ function decideRound(review, round, maxRounds) {
         findings: fixWorthy,
         reason:
           "the reviewer requested changes with untagged findings — D2's override cannot be applied to a vocabulary the reviewer did not speak",
+        renderUnverified,
+        renderFailed,
       }
     }
     // Symmetric to the red-gate override below: D2 says CHANGES_REQUESTED
@@ -561,17 +591,25 @@ function decideRound(review, round, maxRounds) {
       overrideReason: overridden
         ? 'gate green and no BLOCKING findings, but the reviewer said CHANGES_REQUESTED — D2 requires a BLOCKING finding for that verdict'
         : '',
+      renderUnverified,
+      renderFailed,
     }
   }
 
-  const reason = !gateGreen
+  // T003: a render failure is reported distinctly from a red mechanical gate
+  // (even though both flow through the same `gateGreen` AND above) so the fix
+  // agent and the operator are told WHICH thing broke, not just that "something"
+  // did.
+  const reason = !mechanicalGateGreen
     ? 'the mechanical gate is red; it must be green before approval'
+    : renderFailed
+    ? `mode 'rendered': the render failed${render && render.reason ? ` (${render.reason})` : ''} — a green test suite does not substitute for it`
     : `${blocking.length} BLOCKING finding(s)`
 
   if (round >= maxRounds) {
-    return { decision: 'reject', findings, reason }
+    return { decision: 'reject', findings, reason, renderUnverified, renderFailed }
   }
-  return { decision: 'fix', findings: fixWorthy, reason }
+  return { decision: 'fix', findings: fixWorthy, reason, renderUnverified, renderFailed }
 }
 
 // A red gate can produce a 'fix' decision with zero fixWorthy findings (an
@@ -581,12 +619,16 @@ function decideRound(review, round, maxRounds) {
 // fix agent is always told what actually forces the round.
 function buildFixFindings(review, decision) {
   const base = decision.findings || []
-  // A fix round needs at least one concrete instruction. Two ways to arrive
-  // with none: a red gate (the failure IS the finding), or a reviewer that
-  // requested changes while speaking no vocabulary at all — empty findings.
-  // In both, the synthesized reason becomes the brief; an empty numbered list
-  // would send an agent to fix nothing.
-  if (!review.gateGreen || base.length === 0) {
+  // A fix round needs at least one concrete instruction. Three ways to arrive
+  // with none: a red MECHANICAL gate (the failure IS the finding), a FAILED
+  // render (decision.renderFailed — the mechanical gate can be green while the
+  // render is not, per T003's decideRound, and that fact must not be silently
+  // dropped just because the reviewer also returned unrelated findings), or a
+  // reviewer that requested changes while speaking no vocabulary at all — empty
+  // findings. In all three, the synthesized reason becomes the brief; an empty
+  // numbered list would send an agent to fix nothing, and a findings list with
+  // no mention of the render would send it to fix the WRONG thing.
+  if (!review.gateGreen || decision.renderFailed || base.length === 0) {
     return [{ severity: 'BLOCKING', text: decision.reason || 'the review gate did not pass' }, ...base]
   }
   return base
@@ -658,6 +700,99 @@ function decidePlanCheck(findings, runIds) {
     }
   }
   return { decision: 'continue', findings: list }
+}
+
+// D4: no reachable browser tool is an explicit, carried outcome — never a
+// silent pass, never a hard stop. Pure so it is executed by tests instead of
+// asserted by comment; also what the Verify phase itself calls, so the
+// dispatch decision under test IS the one that runs.
+// `serve` is checked too (finding 4): SERVE defaults to {command:'',url:''}
+// (a REACHABLE state — detect.py ships an empty serve command rather than an
+// absent one, and flow.config.json can set mode:'rendered' with no `_serve()`
+// at all) and an empty command/url renders as a bare, unusable serve-probe
+// invocation. That is "we could not look", not "we looked and it broke" —
+// D4 says it must degrade to unverified, never dispatch into a guaranteed
+// CLI usage failure the fix agent cannot resolve by writing code.
+function decideRenderDispatch(verifyPolicy, serve) {
+  const vp = verifyPolicy || { mode: '', tools: [] }
+  if (vp.mode !== 'rendered') return { dispatch: false, unverified: false, reason: '' }
+  if (!(vp.tools || []).length) return { dispatch: false, unverified: true, reason: 'no browser tool reachable' }
+  const sv = serve || { command: '', url: '' }
+  if (!sv.command || !sv.url) {
+    return { dispatch: false, unverified: true, reason: 'no serve command/url is configured' }
+  }
+  return { dispatch: true, unverified: false, reason: '' }
+}
+
+// D3 as executable policy: 'rendered: true' with no facts alongside it is a
+// failed render, whatever the agent claims. Pure so it is executed by tests.
+function decideRenderOutcome(render) {
+  const r = render || {}
+  const status = r.httpStatus
+  const statusOk = typeof status === 'number' && status >= 200 && status < 300
+  const evidence = Array.isArray(r.evidence) ? r.evidence : []
+  if (!r.rendered) return { failed: true, reason: 'rendered=false' }
+  if (!statusOk) {
+    return {
+      failed: true,
+      reason: `httpStatus ${status === undefined || status === null ? 'is absent' : `${status} is not 2xx`}`,
+    }
+  }
+  if (evidence.length === 0) return { failed: true, reason: 'rendered=true but evidence is empty' }
+  return { failed: false, reason: '' }
+}
+
+// The ONE additional Verify-phase agent for mode:'rendered' (D1: it implements
+// nothing, only observes). Built ONLY from its own arguments so it can never
+// name a tool the caller did not pass — the caller passes ONLY
+// verifyPolicy.tools, already filtered to what is actually reachable.
+//
+// D2 as it actually applies to a render: '${rein} serve-probe' is the ONE
+// deterministic CLI that owns the whole server lifecycle, but a render needs
+// the server held up WHILE a separate browser tool navigates — the reachable
+// tools (claude-in-chrome, browser-testing, ...) only navigate, they cannot
+// start a dev server themselves. So the single-shot `--command/--url` form
+// (start, poll, tear down, return) cannot host a render: by the time it
+// returns, the server is already gone. `--start --pidfile` keeps the SAME
+// CLI owning the process group but leaves it running past the call, and
+// `--stop --pidfile` is the matching teardown — two invocations of one
+// deterministic CLI, not two different mechanisms.
+//
+// `rein` is ALWAYS the caller's resolved REIN (never the bare literal 'rein'
+// — finding 2): the binary may not be on PATH, or a stale 'rein' already on
+// PATH may resolve to an older installed plugin copy with no `serve-probe`
+// subcommand at all, in which case a hardcoded 'rein serve-probe' fails in a
+// way no fix agent can repair by writing code.
+// `wd` is ALWAYS the tree containing the change under review (finding 3): in
+// WORKTREE_MODE that is a sibling directory of the loop's own cwd, so both
+// invocations get an explicit `--cwd`/`cd` into it and an ABSOLUTE pidfile —
+// a relative pidfile would be written in one bash round-trip's cwd and read
+// in another's, silently orphaning the server across a cwd difference.
+function buildRenderPrompt(rein, command, url, tools, wd, pidfile) {
+  const toolList = (tools || []).join(', ')
+  return (
+    `You are the RENDER agent for the Verify phase. You implement NOTHING, edit NOTHING, commit NOTHING — ` +
+    `you only observe and report facts. Run EVERYTHING from ${wd} — that is the tree containing the change; ` +
+    `never render against any other checkout.\n` +
+    `1. Start the app and keep it running for the render: run ` +
+    `'cd ${wd} && ${rein} serve-probe --command "${command}" --url ${url} --cwd ${wd} --start --pidfile ${pidfile}'. ` +
+    `It starts the process group, polls ${url} for a real TCP accept, and — because of --start — leaves the group ` +
+    `running (already its own session) instead of tearing it down immediately, so step 2 has a live server to ` +
+    `render against; do NOT background the server yourself (no '&', no nohup, no manual kill) at any point (D2) — ` +
+    `this CLI owns the whole lifecycle, start through stop. If its JSON says ready=false, stop here: there is ` +
+    `nothing to render — report rendered=false with the reported error in 'notes' and skip step 3 (a failed ` +
+    `--start already tore itself down, nothing is left running).\n` +
+    `2. Render ${url} using ${toolList || '(no browser tool is reachable — do not invent one)'}. OBSERVE the HTTP ` +
+    `status of the initial load, the page <title>, and any uncaught console errors.\n` +
+    `3. Tear the app down: run 'cd ${wd} && ${rein} serve-probe --stop --pidfile ${pidfile}'. Do this even if ` +
+    `step 2 failed — an orphaned server must never outlive this agent.\n` +
+    `4. Report exactly these fields: rendered (boolean — did a page genuinely load), httpStatus (number, 0 if ` +
+    `unknown), title (string), consoleErrors (array of strings, [] if none), evidence (array of concrete facts ` +
+    `you observed, e.g. ["HTTP 200", "title: Dashboard", "0 console errors"] — NEVER a summary sentence), and ` +
+    `notes (free text for anything else).\n` +
+    `'rendered: true' with an empty 'evidence' array is not a passed render (D3) — it is a claim with nothing ` +
+    `behind it.`
+  )
 }
 
 const closeCmd =
@@ -925,7 +1060,113 @@ const GATE_SCHEMA = {
   additionalProperties: false,
 }
 
+const RENDER_SCHEMA = {
+  type: 'object',
+  properties: {
+    rendered: { type: 'boolean' },
+    httpStatus: { type: 'number' },
+    title: { type: 'string' },
+    consoleErrors: { type: 'array', items: { type: 'string' } },
+    evidence: { type: 'array', items: { type: 'string' } },
+    notes: { type: 'string' },
+  },
+  required: ['rendered', 'httpStatus', 'title', 'consoleErrors', 'evidence', 'notes'],
+  additionalProperties: false,
+}
+
+// Finding 5: teardown is the LOOP's job, never left to an agent's memory. A
+// render agent that dies mid-step, or simply stops after starting the server,
+// leaves a process group holding the port for the rest of this run and every
+// later one — the exact "agents cannot be trusted with background server
+// lifecycles" reasoning D2 is built on. `stop()` is idempotent (a missing
+// pidfile reports stopped=false, never raises), so calling it unconditionally
+// after the render agent returns — success, failure, or death — is always
+// safe, including on the paths where the agent already stopped it itself.
+// One derivation, two callers. The path was a magic string computed
+// independently in buildRenderPrompt and runRender; they agreed only by
+// coincidence, and a divergence would make teardown target a pidfile the agent
+// never wrote — stopped=false, nothing alarming logged, server orphaned.
+// Outside the worktree on purpose: a pidfile left inside the tree under review
+// is an untracked file a later fix agent's `git add -A` would commit.
+function renderPidfile(wd, tmpdir) {
+  // A short hash of the FULL path, not just the sanitized name: sanitizing
+  // every non-alphanumeric to '-' makes `wt-x` and `wt_x` collide, and two
+  // concurrent loops on sibling worktrees would tear down each other's server.
+  const path = String(wd)
+  let h = 0
+  for (let i = 0; i < path.length; i++) h = (h * 31 + path.charCodeAt(i)) | 0
+  const tag = Math.abs(h).toString(36)
+  return `${tmpdir || '/tmp'}/rein-render-${path.replace(/[^A-Za-z0-9]/g, '-').slice(-40)}-${tag}.pid`
+}
+
+async function stopRenderServer(pidfile) {
+  try {
+    await agentRetry(
+      `Run EXACTLY this one command and report its JSON output; do NOT interpret, fix, retry, or run anything ` +
+        `else: 'cd ${WD} && ${REIN} serve-probe --stop --pidfile ${pidfile}'. It is idempotent — if nothing is ` +
+        `running it reports stopped=false, which is a normal, expected result, not a failure to fix.`,
+      { schema: TASK_SCHEMA, label: 'render-stop', phase: 'Verify', agentType: 'general-purpose', effort: 'low', model: MODEL_AUX }
+    )
+  } catch (e) {
+    log(`⚠️ render teardown agent failed (${e && e.message ? e.message : e}) — a server may still be holding the port`)
+  }
+}
+
+// Finding 1: extracted so the SAME render step can be re-run after EVERY fix
+// round, not only once in the Verify phase before the review loop starts. A
+// render observed to fail is exactly as disqualifying as a red mechanical
+// gate (T003), but unlike the gate — which the reviewer re-observes every
+// round — a renderEvidence computed once and handed unchanged to every
+// decideRound call would outlive its own round: a round-1 failure the fix
+// agent genuinely repairs could never be approved, no matter how many rounds
+// remained. Calling this again after each fix commits is what keeps
+// renderEvidence bound to the round it describes.
+async function runRender() {
+  if (VERIFY_POLICY.mode !== 'rendered') return null
+  const dispatch = decideRenderDispatch(VERIFY_POLICY, SERVE)
+  const empty = { rendered: false, httpStatus: 0, title: '', consoleErrors: [], evidence: [], notes: '' }
+  if (!dispatch.dispatch) {
+    log(`⚠️ rendered-unverified: ${dispatch.reason} — Verify continues, nothing stops`)
+    return { status: 'rendered-unverified', reason: dispatch.reason, ...empty }
+  }
+  const pidfile = renderPidfile(WD, ARGS.tmpdir)
+  // agentRetry RETHROWS on its final attempt — it returns null only when the
+  // agent dies without throwing. Without this try/finally a thrown render agent
+  // skipped teardown entirely, orphaning a server that `serve-probe --start`
+  // deliberately puts in its own session (immune to the CLI's own exit): the
+  // port stays held for this run and every later one, which is precisely what
+  // D2 exists to prevent. It also aborted the whole loop mid-Verify — no
+  // review, no verdict, no Integrate — against D4's "never a hard stop".
+  let render = null
+  let threw = ''
+  try {
+    render = await agentRetry(
+      buildRenderPrompt(REIN, SERVE.command, SERVE.url, VERIFY_POLICY.tools, WD, pidfile),
+      { schema: RENDER_SCHEMA, label: 'render', phase: 'Verify', agentType: 'general-purpose', effort: 'low', model: MODEL_AUX }
+    )
+  } catch (e) {
+    threw = e && e.message ? e.message : String(e)
+  } finally {
+    await stopRenderServer(pidfile)
+  }
+  if (threw) {
+    log(`⚠️ rendered-unverified: the render agent threw (${threw})`)
+    return { status: 'rendered-unverified', reason: `the render agent threw: ${threw}`, ...empty }
+  }
+  if (!render) {
+    log(`⚠️ rendered-unverified: the render agent died`)
+    return { status: 'rendered-unverified', reason: 'the render agent died', ...empty }
+  }
+  const outcome = decideRenderOutcome(render)
+  if (outcome.failed) log(`⛔ render failed: ${outcome.reason}`)
+  else log(`✔ render observed: HTTP ${render.httpStatus}, ${render.evidence.length} fact(s)`)
+  return { status: outcome.failed ? 'failed' : 'passed', reason: outcome.reason, ...render }
+}
+
 let gateContradiction = ''
+// D3: facts the loop can check, never a sentence. null in every mode other
+// than 'rendered' (AC5: nothing changes for library, CLI or backend projects).
+let renderEvidence = null
 if (results.some((r) => r.status === 'implemented' || r.status === 'implemented-proxy')) {
   phase('Verify')
   const gate = await agentRetry(
@@ -949,6 +1190,14 @@ if (results.some((r) => r.status === 'implemented' || r.status === 'implemented-
     }
   } else {
     log(`⚠️ gate agent died — proceeding, but the pass-level claim is unverified`)
+  }
+
+  // ── Render (mode: 'rendered' only, additive) — the ONE extra agent D1 asks
+  // for, dispatched with the SAME phase('Verify') as the gate above. Re-run
+  // (not just read) inside the review round loop below after every fix round
+  // — see runRender's own comment (finding 1).
+  if (VERIFY_POLICY.mode === 'rendered') {
+    renderEvidence = await runRender()
   }
 }
 
@@ -999,6 +1248,24 @@ if (gateContradiction) {
           `and put their LITERAL output (trimmed to what matters) in 'gateOutput', with gateGreen set honestly. ` +
           `If anything is red the verdict CANNOT be APPROVED, however good the code reads.\n` +
           reviewerPolicyBlock() +
+          (renderEvidence && renderEvidence.status === 'failed'
+            ? `RENDER EVIDENCE (already gathered this Verify phase, do not re-run): rendered=${renderEvidence.rendered}, ` +
+              `httpStatus=${renderEvidence.httpStatus}, title=${JSON.stringify(renderEvidence.title || '')}, ` +
+              `evidence=${JSON.stringify(renderEvidence.evidence)}, ` +
+              `consoleErrors=${JSON.stringify(renderEvidence.consoleErrors || [])} — failed: ` +
+              `${renderEvidence.reason}. Treat this as a finding: this change's render is FAILED, not passed.\n`
+            : renderEvidence && renderEvidence.status === 'rendered-unverified'
+            ? `RENDER EVIDENCE: no render tool was reachable this Verify phase (${renderEvidence.reason}). This is an ` +
+              `INCOMPLETE gate, not a failed one — 'we could not look' is a different fact from 'we looked and it broke'. ` +
+              `State it as 'rendered-unverified' rather than a defect; it does not by itself block APPROVED (D4).\n`
+            : renderEvidence && renderEvidence.status === 'passed'
+            ? `RENDER EVIDENCE (already gathered this Verify phase, do not re-run): rendered=true, ` +
+              `httpStatus=${renderEvidence.httpStatus}, title=${JSON.stringify(renderEvidence.title || '')}, ` +
+              `evidence=${JSON.stringify(renderEvidence.evidence || [])}, ` +
+              `consoleErrors=${JSON.stringify(renderEvidence.consoleErrors || [])}. The render requirement is ` +
+              `satisfied, but JUDGE THESE FACTS — a page can serve 200 with a title and still throw uncaught ` +
+              `errors and paint blank. Non-empty consoleErrors is a finding even though the render passed.\n`
+            : '') +
           `2. JUDGEMENT over the full diff ('git -C ${WD} diff ${BASE}...${BRANCH}' or the run's commits), on five ` +
           `axes: correctness, readability, architecture, security, performance. Look at the change AS A WHOLE — ` +
           `coherence defects BETWEEN tasks are the ones nobody else will ever see.\n` +
@@ -1040,13 +1307,19 @@ if (gateContradiction) {
     lastVerdict = review.verdict || ''
     gateOutput = review.gateOutput || gateOutput
 
-    const decision = decideRound(review, round, ROUNDS)
+    const decision = decideRound(review, round, ROUNDS, renderEvidence)
     lastFindings = decision.findings || []
+    // D4: 'rendered-unverified' never overrides anything decideRound did above
+    // — it is carried through untouched so the operator sees "we could not
+    // look" and not a silent pass dressed up as a normal approval/fix.
+    const renderNote = decision.renderUnverified
+      ? ` [render: unverified — ${renderEvidence && renderEvidence.reason ? renderEvidence.reason : 'no browser tool reachable'}]`
+      : ''
 
     if (decision.decision === 'escalate') {
       needsHumanDecision = true
       humanDecisionReason = decision.humanDecisionReason
-      lastVerdict = `escalated to the owner: ${humanDecisionReason}`
+      lastVerdict = `escalated to the owner: ${humanDecisionReason}${renderNote}`
       log(`✋ the reviewer ESCALATES (the implementer cannot resolve it) — ${humanDecisionReason}`)
       break
     }
@@ -1057,16 +1330,18 @@ if (gateContradiction) {
         // Symmetric to the red-gate override below: D2 says CHANGES_REQUESTED
         // needs a BLOCKING finding, so a bare CHANGES_REQUESTED with none is
         // overridden rather than trusted at face value.
-        lastVerdict = 'APPROVED (loop override: gate green, zero BLOCKING findings)'
+        lastVerdict = `APPROVED (loop override: gate green, zero BLOCKING findings)${renderNote}`
         log(`⚠️ reviewer said CHANGES_REQUESTED but gate is green with zero BLOCKING findings — overriding to APPROVED`)
       } else {
+        lastVerdict = `${lastVerdict}${renderNote}`
         log(`✅ APPROVED in round ${round}`)
       }
+      if (renderNote) log(`⚠️ rendered-unverified carried to the operator: approval stands, but the render gate was incomplete`)
       break
     }
 
     if (decision.decision === 'reject') {
-      lastVerdict = `CHANGES_REQUESTED (${decision.reason}) — no review rounds remain`
+      lastVerdict = `CHANGES_REQUESTED (${decision.reason}) — no review rounds remain${renderNote}`
       log(`⛔ round ${round}: ${decision.reason}, and no rounds remain`)
       break
     }
@@ -1077,6 +1352,11 @@ if (gateContradiction) {
       // prevent, so the loop overrides the reviewer rather than trusting it.
       log(`⚠️ reviewer said APPROVED with a RED gate — overriding to CHANGES_REQUESTED`)
       lastVerdict = 'CHANGES_REQUESTED (loop override: approved with a red gate)'
+    } else if (review.approved && renderEvidence && renderEvidence.status === 'failed') {
+      // T003: symmetric override — a green gate does not save an APPROVED
+      // verdict from a render that was actually observed to fail.
+      log(`⚠️ reviewer said APPROVED but the render failed — overriding to CHANGES_REQUESTED`)
+      lastVerdict = 'CHANGES_REQUESTED (loop override: approved but the render failed)'
     }
     lastFindings = buildFixFindings(review, decision)
     log(`↻ round ${round}: CHANGES_REQUESTED with ${lastFindings.length} BLOCKING/IMPORTANT finding(s) (SUGGESTIONs excluded) -> back to the implementer`)
@@ -1103,6 +1383,13 @@ if (gateContradiction) {
     if (!fix || fix.blocked) {
       log(`⛔ fix blocked: ${fix ? fix.blockedReason : 'the agent died'}`)
       break
+    }
+    // Finding 1: re-check the render against what the fix agent just
+    // committed, BEFORE the next round's decideRound call — a renderEvidence
+    // left over from an earlier round describes a tree that no longer
+    // exists once the fix agent commits, and must never outlive it.
+    if (VERIFY_POLICY.mode === 'rendered') {
+      renderEvidence = await runRender()
     }
     round++
   }
@@ -1162,6 +1449,9 @@ return {
   // Non-blocking plan-check findings (D4's continue half): logged above and
   // carried here so nothing the plan-checker noticed is silently dropped.
   planFindings,
+  // D3/AC4: facts the loop can check, carried whatever the verdict — null in
+  // every mode other than 'rendered'.
+  renderEvidence,
   // Measure the run: turns/agent, ctx_max/turn and Opus share are what predict cost.
   measure: `${REIN} token-report`,
 }

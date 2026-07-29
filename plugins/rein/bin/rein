@@ -35,6 +35,7 @@ import dashboard as _dash  # noqa: E402
 import detect as _detect  # noqa: E402
 import gate as _gate  # noqa: E402
 import plan as _plan  # noqa: E402
+import serve as _serve  # noqa: E402
 import token_report as _tr  # noqa: E402
 
 USAGE = __doc__
@@ -245,6 +246,59 @@ def cmd_baseline(argv: list[str]) -> int:
     return 2
 
 
+def cmd_serve_probe(argv: list[str]) -> int:
+    """Start `--command`, poll `--url` until it accepts a TCP connection, tear down.
+
+    Default (single-shot) form: start, poll, ALWAYS tear down, report. Prints
+    exactly one JSON object and exits 0 only when ready is true, so an agent
+    gets the signal from the exit code without parsing (D3-adjacent: a boolean
+    the loop can check, not a sentence). Good for a throwaway boot check.
+
+    `--start --pidfile <path>` starts the same way but leaves the process
+    group running past this call (its pgid recorded in `pidfile`) so a render
+    can happen against it. `--stop --pidfile <path>` is the matching teardown
+    -- the SAME CLI, invoked a second time, still the one thing that owns the
+    server's lifecycle (D2).
+    """
+    if "--stop" in argv:
+        pidfile = _opt(argv, "pidfile")
+        if not pidfile:
+            print("usage: rein serve-probe --stop --pidfile <path>")
+            return 2
+        stopped, error = _serve.stop(pidfile)
+        print(json.dumps({"stopped": stopped, "error": error}))
+        return 0 if stopped else 1
+
+    command = _opt(argv, "command")
+    url = _opt(argv, "url")
+    if not command or not url:
+        print(
+            "usage: rein serve-probe --command <c> --url <u> [--timeout N] [--cwd <dir>] "
+            "[--start --pidfile <path>] | rein serve-probe --stop --pidfile <path>"
+        )
+        return 2
+    timeout_raw = _opt(argv, "timeout", str(_serve.DEFAULT_TIMEOUT))
+    try:
+        timeout = float(timeout_raw)
+    except ValueError:
+        print(f"invalid --timeout: {timeout_raw!r}")
+        return 2
+    cwd = _opt(argv, "cwd", ".")
+
+    if "--start" in argv:
+        pidfile = _opt(argv, "pidfile")
+        if not pidfile:
+            print("usage: rein serve-probe --command <c> --url <u> --start --pidfile <path>")
+            return 2
+        result = _serve.start(command, cwd, url, timeout, pidfile)
+        print(json.dumps(result.to_dict()))
+        return 0 if result.ready else 1
+
+    result = _serve.probe(command, cwd, url, timeout)
+    print(json.dumps(result.to_dict()))
+    return 0 if result.ready else 1
+
+
 def cmd_dashboard(argv: list[str]) -> int:
     return _dash.main(argv)
 
@@ -321,6 +375,7 @@ COMMANDS = {
     "ledger": cmd_ledger,
     "baseline": cmd_baseline,
     "dashboard": cmd_dashboard,
+    "serve-probe": cmd_serve_probe,
 }
 
 

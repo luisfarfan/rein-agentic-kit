@@ -31,11 +31,11 @@ function extract(name, params) {
   return m[1];
 }
 const decideRound = new Function(
-  'review', 'round', 'maxRounds',
-  extract('decideRound', 'review, round, maxRounds')
+  'review', 'round', 'maxRounds', 'render',
+  extract('decideRound', 'review, round, maxRounds, render')
 );
 const scenarios = JSON.parse(scenariosJson);
-const out = scenarios.map((s) => decideRound(s.review, s.round, s.maxRounds));
+const out = scenarios.map((s) => decideRound(s.review, s.round, s.maxRounds, s.render));
 process.stdout.write(JSON.stringify(out));
 """
 
@@ -45,7 +45,7 @@ class TestDecideRoundIsExtractable(unittest.TestCase):
     def test_function_exists_with_expected_signature(self):
         with open(LOOP_JS, encoding="utf-8") as f:
             src = f.read()
-        self.assertIn("function decideRound(review, round, maxRounds)", src)
+        self.assertIn("function decideRound(review, round, maxRounds, render)", src)
 
 
 @unittest.skipUnless(_NODE, "node not on PATH -- loop.js is a node workflow script")
