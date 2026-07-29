@@ -5,6 +5,7 @@ export const meta = {
     'To execute an already-planned change. Every task is implemented as a bounded loop of short, FRESH agents handing off a compact ledger; then a reviewer that wrote none of it audits the change as a whole, and its findings return to the implementer until approved. Pass {change} for openspec plans; tasks.md needs no argument.',
   phases: [
     { title: 'Prepare' },
+    { title: 'PlanCheck' },
     { title: 'Isolate' },
     { title: 'Map' },
     { title: 'Implement' },
@@ -240,6 +241,33 @@ const CODEMAP_SCHEMA = {
     },
   },
   required: ['maps'],
+  additionalProperties: false,
+}
+
+// Findings are per-task-id, same severity vocabulary as REVIEW_SCHEMA (D1: one
+// vocabulary, one consequence). 'blocked'/'blockedReason' are for the agent
+// itself failing its job (e.g. the plan file could not be read) — distinct
+// from findings, which are the agent's judgement about the plan's content.
+const PLANCHECK_SCHEMA = {
+  type: 'object',
+  properties: {
+    findings: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          taskId: { type: 'string' },
+          severity: { type: 'string', enum: ['BLOCKING', 'IMPORTANT', 'SUGGESTION'] },
+          text: { type: 'string' },
+        },
+        required: ['taskId', 'severity', 'text'],
+        additionalProperties: false,
+      },
+    },
+    blocked: { type: 'boolean' },
+    blockedReason: { type: 'string' },
+  },
+  required: ['findings', 'blocked', 'blockedReason'],
   additionalProperties: false,
 }
 
@@ -507,10 +535,86 @@ function decideRound(review, round, maxRounds) {
   return { decision: 'fix', findings: fixWorthy, reason }
 }
 
+// Pure and self-contained (only `planPath` in scope) so it can be extracted the
+// same way decideRound is: a regex pull of the source plus `new Function`,
+// proving the actual shipped prompt rather than a restatement of it.
+// Exactly four lenses (no more, no fewer) — each one a failure mode this repo
+// hit for real, not a generic "review the plan" ask.
+function buildPlanCheckPrompt(planPath) {
+  return (
+    `You are the PLAN-CHECK agent. Your ONLY job is to critique the plan's own text before any ` +
+    `implementer is paid to build it. Read ONLY ${planPath}. Do NOT read, grep, open, or explore ` +
+    `any other file in the repository — the codebase does not exist yet as far as you are concerned; ` +
+    `judging it against code is out of scope for this agent.\n\n` +
+    `Apply exactly these four lenses to every task in the plan:\n` +
+    `  1. Criteria that cannot be checked as written — vague or unfalsifiable acceptance text a ` +
+    `verifier could not mechanically confirm or deny.\n` +
+    `  2. Verifications that are unbounded — a command that runs the whole suite where one test or ` +
+    `one file would prove the criterion, burning far more context than the task needs.\n` +
+    `  3. Criteria satisfiable in letter by a test whose fixture avoids the case it claims to cover — ` +
+    `the failure this repo produced five times: a test that passes without ever exercising the real path.\n` +
+    `  4. Tasks that contradict the plan's own Scope or dependency order — touching something the plan ` +
+    `marks out of scope, or depending on a task that has not run yet.\n\n` +
+    `For every issue found, report one finding with the offending task's id, a severity of BLOCKING, ` +
+    `IMPORTANT, or SUGGESTION (BLOCKING only for something that would waste an implementer's run), and ` +
+    `a one-sentence 'text'. Report zero findings if the plan holds up under all four lenses.\n` +
+    `Set blocked=true only if you could not read or parse the plan file itself; that is a fault in the ` +
+    `check, not a judgement about its content.`
+  )
+}
+
+// Pure: findings in, one decision out. D4 — a BLOCKING plan finding stops the
+// run before any implementer is paid; anything else is carried in the return
+// value without stopping anything.
+function decidePlanCheck(findings) {
+  const list = (findings || []).map((f) =>
+    typeof f === 'string' ? { taskId: '', severity: 'IMPORTANT', text: f } : f
+  )
+  const sev = (f) => String(f.severity || '').toUpperCase()
+  const blocking = list.filter((f) => sev(f) === 'BLOCKING')
+  if (blocking.length) {
+    return {
+      decision: 'stop',
+      findings: list,
+      reason: `${blocking.length} BLOCKING plan finding(s) — stopping before Isolate (D4)`,
+    }
+  }
+  return { decision: 'continue', findings: list }
+}
+
 const closeCmd =
   ctx.tracker === 'beads'
     ? (id) => `'bd close ${id} --reason "<what landed>"' and '${REIN} close ${id} --root ${WD}'`
     : (id) => `'${REIN} close ${id} --root ${WD}' (ticks the checkbox deterministically — do not hand-edit the plan)`
+
+// ── Phase 1.3: PLAN CHECK — catch plan defects before paying implementers ───
+// D4: a BLOCKING plan finding stops the run before any implementer is paid.
+// One agent, no retries beyond agentRetry's standard, no second opinion, no
+// per-task fan-out — the check must cost less than the mistake it prevents.
+// A dead checker degrades to a logged warning: a run must never be lost to
+// the thing meant to protect it.
+if (ARGS.planCheck !== false) {
+  phase('PlanCheck')
+  const planCheck = await agentRetry(
+    buildPlanCheckPrompt(ctx.planPath),
+    { schema: PLANCHECK_SCHEMA, label: 'plan-check', phase: 'PlanCheck', agentType: 'general-purpose', effort: 'low', model: MODEL_IMPL }
+  )
+  if (!planCheck || planCheck.blocked) {
+    const why = planCheck ? planCheck.blockedReason || 'could not read the plan' : 'the plan-check agent died'
+    log(`⚠️ plan check unavailable (${why}) — continuing without it`)
+  } else {
+    const verdict = decidePlanCheck(planCheck.findings)
+    for (const f of verdict.findings) {
+      log(`  ${f.severity === 'BLOCKING' ? '⛔' : 'ℹ️'} plan-check [${f.taskId || '?'}] ${f.text}`)
+    }
+    if (verdict.decision === 'stop') {
+      log(`⛔ plan check: ${verdict.reason}`)
+      return { ok: false, phase: 'PlanCheck', problem: verdict.reason, findings: verdict.findings }
+    }
+  }
+} else {
+  log('plan check skipped (planCheck: false)')
+}
 
 // ── Phase 1.5: ISOLATE — one worktree + branch per run ──────────────────────
 // Running loops in parallel is then safe with no per-run decision, and an
