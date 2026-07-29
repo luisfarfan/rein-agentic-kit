@@ -25,7 +25,7 @@ demand. This is the failure the whole kit is named for: the tests pass, the UI i
 
 ---
 
-- [ ] T001 A deterministic serve probe
+- [x] T001 A deterministic serve probe
   - Type: implementation
   - Depends on: none
   - Human review: false
