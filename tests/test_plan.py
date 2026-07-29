@@ -87,6 +87,20 @@ class TestParsing(unittest.TestCase):
         self.assertEqual(tasks[0]["verification"], "make test")
         self.assertTrue(tasks[0]["humanReview"])
 
+    def test_acceptance_criterion_with_a_plain_words_colon_is_not_eaten(self):
+        """Found by this repo's own plan: 'carries exactly four lenses: x' is
+        field-shaped, and an unknown field silently ENDED the collection --
+        every later criterion vanished. Only a known field may do that."""
+        text = ("- [ ] T001 x\n  - Acceptance:\n"
+                "    - first criterion\n"
+                "    - the prompt carries exactly four lenses: a, b, c and d\n"
+                "    - third criterion, still collected\n"
+                "  - Verification: `make test`\n")
+        task = plan.parse_tasks_md(text)[0]
+        self.assertEqual(len(task["acceptance"]), 3)
+        self.assertIn("four lenses: a, b, c and d", task["acceptance"][1])
+        self.assertEqual(task["verification"], "make test", "a KNOWN field still ends collection")
+
     def test_prose_between_tasks_is_ignored(self):
         tasks = plan.parse_tasks_md("Some intro.\n\n- [ ] T001 a\n\nA paragraph.\n\n- [ ] T002 b\n")
         self.assertEqual(len(tasks), 2)

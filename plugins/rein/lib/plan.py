@@ -119,12 +119,20 @@ def parse_tasks_md(text: str) -> list[dict]:
 
         field = FIELD_RE.match(raw)
         if field and len(field.group(1)) > current["_indent"]:
-            key = _LOOKUP.get(field.group(2).strip().lower())
+            name = field.group(2).strip().lower()
+            key = _LOOKUP.get(name)
             value = field.group(3)
-            if field.group(2).strip().lower() in ("acceptance", "acceptance criteria", "criteria"):
+            if name in ("acceptance", "acceptance criteria", "criteria"):
                 collecting = "acceptance"
                 if value.strip():
                     current["acceptance"].append(_clean(value))
+                continue
+            if key is None and collecting == "acceptance":
+                # A criterion like "the prompt carries four lenses: a, b, c" is
+                # field-SHAPED (plain words, then a colon) but is not a field.
+                # Only a KNOWN field name may end the collection; swallowing
+                # unknown ones silently dropped criteria from real plans.
+                current["acceptance"].append(_clean(field.group(2) + ": " + value))
                 continue
             collecting = ""
             if key == "dependsOn":
