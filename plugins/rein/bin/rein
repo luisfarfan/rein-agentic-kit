@@ -35,6 +35,7 @@ import dashboard as _dash  # noqa: E402
 import detect as _detect  # noqa: E402
 import gate as _gate  # noqa: E402
 import plan as _plan  # noqa: E402
+import serve as _serve  # noqa: E402
 import token_report as _tr  # noqa: E402
 
 USAGE = __doc__
@@ -245,6 +246,30 @@ def cmd_baseline(argv: list[str]) -> int:
     return 2
 
 
+def cmd_serve_probe(argv: list[str]) -> int:
+    """Start `--command`, poll `--url` until it accepts a TCP connection, tear down.
+
+    Prints exactly one JSON object and exits 0 only when ready is true, so an
+    agent gets the signal from the exit code without parsing (D3-adjacent: a
+    boolean the loop can check, not a sentence).
+    """
+    command = _opt(argv, "command")
+    url = _opt(argv, "url")
+    if not command or not url:
+        print("usage: rein serve-probe --command <c> --url <u> [--timeout N] [--cwd <dir>]")
+        return 2
+    timeout_raw = _opt(argv, "timeout", str(_serve.DEFAULT_TIMEOUT))
+    try:
+        timeout = float(timeout_raw)
+    except ValueError:
+        print(f"invalid --timeout: {timeout_raw!r}")
+        return 2
+    cwd = _opt(argv, "cwd", ".")
+    result = _serve.probe(command, cwd, url, timeout)
+    print(json.dumps(result.to_dict()))
+    return 0 if result.ready else 1
+
+
 def cmd_dashboard(argv: list[str]) -> int:
     return _dash.main(argv)
 
@@ -321,6 +346,7 @@ COMMANDS = {
     "ledger": cmd_ledger,
     "baseline": cmd_baseline,
     "dashboard": cmd_dashboard,
+    "serve-probe": cmd_serve_probe,
 }
 
 
