@@ -1,0 +1,26 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # 3.9 is the floor the README claims; 3.12 is what people actually run.
+        python-version: ["3.9", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: unit tests (stdlib only — no pip install, that is the point)
+        run: python3 -m unittest discover -s tests -q
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: workflow script parses
+        run: node --check plugins/rein/workflows/loop.js

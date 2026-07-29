@@ -7,7 +7,7 @@ Plugin internals. For what this is and why, see the [repository README](../../RE
 ```
 plugins/rein/
 ├── .claude-plugin/plugin.json    name: "rein" -> the /rein:* namespace
-├── commands/ping.md              /rein:ping — plumbing self-check (removed in phase 4)
+├── commands/ping.md              /rein:ping — plumbing self-check for fresh installs
 ├── skills/plan|loop|review/      /rein:plan, /rein:loop, /rein:review
 ├── workflows/loop.js             the bounded loop (phase 0: resolution stub)
 ├── lib/detect.py                 stack + command resolution

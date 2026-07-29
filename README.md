@@ -8,7 +8,7 @@ A Claude Code plugin that turns agent work into a bounded, measured, independent
 and tells you what it actually cost, per model.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-208%20passing-brightgreen.svg)](tests)
+[![CI](https://github.com/luisfarfan/rein-agentic-kit/actions/workflows/ci.yml/badge.svg)](https://github.com/luisfarfan/rein-agentic-kit/actions/workflows/ci.yml)
 [![Dependencies](https://img.shields.io/badge/runtime%20deps-none-success.svg)](#)
 [![Python](https://img.shields.io/badge/python-3.9%2B%20stdlib-blue.svg)](#)
 [![Claude Code](https://img.shields.io/badge/Claude%20Code-plugin-8A2BE2.svg)](https://claude.com/claude-code)
