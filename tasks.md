@@ -53,7 +53,7 @@ demand. This is the failure the whole kit is named for: the tests pass, the UI i
     - `verifyPolicy.tools` empty yields `rendered-unverified` in the return with the reason, no render agent dispatched, and no stop (D4)
     - a new `tests/test_render_policy.py` extracts and executes the decision function and the prompt builder from the shipped `loop.js`, covering: evidence-less true, non-2xx, empty tools, non-rendered mode, and a prompt that names only reachable tools
 
-- [ ] T003 The reviewer cannot approve an unobserved render
+- [x] T003 The reviewer cannot approve an unobserved render
   - Type: implementation
   - Depends on: T002
   - Human review: false
