@@ -38,8 +38,8 @@ const decideRenderDispatch = new Function(
 );
 const decideRenderOutcome = new Function('render', extract('decideRenderOutcome', 'render'));
 const buildRenderPrompt = new Function(
-  'rein', 'command', 'url', 'tools', 'wd',
-  extract('buildRenderPrompt', 'rein, command, url, tools, wd')
+  'rein', 'command', 'url', 'tools', 'wd', 'pidfile',
+  extract('buildRenderPrompt', 'rein, command, url, tools, wd, pidfile')
 );
 const decideRound = new Function(
   'review', 'round', 'maxRounds', 'render',
@@ -50,7 +50,7 @@ const scenarios = JSON.parse(scenariosJson);
 const out = scenarios.map((s) => {
   if (s.kind === 'dispatch') return decideRenderDispatch(s.verifyPolicy, s.serve);
   if (s.kind === 'outcome') return decideRenderOutcome(s.render);
-  if (s.kind === 'prompt') return buildRenderPrompt(s.rein, s.command, s.url, s.tools, s.wd);
+  if (s.kind === 'prompt') return buildRenderPrompt(s.rein, s.command, s.url, s.tools, s.wd, s.pidfile || '/tmp/r.pid');
   if (s.kind === 'round') return decideRound(s.review, s.round, s.maxRounds, s.render);
   if (s.kind === 'fixfindings') return buildFixFindings(s.review, s.decision);
   throw new Error('unknown scenario kind: ' + s.kind);
@@ -81,7 +81,10 @@ class TestFunctionsAreExtractable(unittest.TestCase):
             src = f.read()
         self.assertIn("function decideRenderDispatch(verifyPolicy, serve)", src)
         self.assertIn("function decideRenderOutcome(render)", src)
-        self.assertIn("function buildRenderPrompt(rein, command, url, tools, wd)", src)
+        self.assertIn("function buildRenderPrompt(rein, command, url, tools, wd, pidfile)", src)
+        # The pidfile is a PARAMETER, not derived twice (round-4 IMPORTANT).
+        self.assertIn("function renderPidfile(wd)", src)
+        self.assertNotIn("`${wd}/.rein-render-serve.pid`", src)
 
 
 class TestDecideRenderOutcome(RenderPolicyTestCase):
@@ -305,10 +308,17 @@ class TestBuildRenderPrompt(RenderPolicyTestCase):
         [prompt] = self._run([self._scenario()])
         self.assertIn(self._WD, prompt)
         self.assertIn(f"--cwd {self._WD}", prompt)
-        start_pidfile = re.search(r"--start --pidfile (\S+)", prompt).group(1)
-        stop_pidfile = re.search(r"--stop --pidfile (\S+)", prompt).group(1)
+        # (\S+) alone swallows the trailing quote/period of the prompt text,
+        # which made the placement assertion below compare punctuation.
+        start_pidfile = re.search(r"--start --pidfile ([^\s'\"]+)", prompt).group(1)
+        stop_pidfile = re.search(r"--stop --pidfile ([^\s'\"]+)", prompt).group(1)
         self.assertEqual(start_pidfile, stop_pidfile)
-        self.assertTrue(start_pidfile.startswith(f"{self._WD}/"), start_pidfile)
+        self.assertTrue(start_pidfile.startswith("/"), start_pidfile)
+        # Round-4 SUGGESTION: NOT inside the worktree. A pidfile left in the
+        # tree under review on any incomplete-teardown path is an untracked
+        # file a later fix agent's `git add -A` commits into the merged branch.
+        self.assertFalse(start_pidfile.startswith(f"{self._WD}/"),
+                         f"the pidfile must live outside the reviewed tree: {start_pidfile}")
 
 
 class TestDecideRoundRenderOverride(RenderPolicyTestCase):
@@ -481,6 +491,99 @@ class TestRenderEvidenceIsFreshPerRound(RenderPolicyTestCase):
         second_call_idx = src.rindex("renderEvidence = await runRender()")
         self.assertGreater(second_call_idx, fix_idx)
         self.assertLess(second_call_idx, round_incr_idx)
+
+
+@unittest.skipUnless(_NODE, "node not on PATH")
+class TestRunRenderTeardownSurvivesAThrow(unittest.TestCase):
+    """Round-4 BLOCKING. agentRetry RETHROWS on its final attempt (it returns
+    null only when the agent dies without throwing), and runRender awaited it
+    bare — so a thrown render agent skipped teardown entirely and orphaned a
+    server that start() deliberately puts in its own session, holding the port
+    for this run and every later one. It also aborted the loop mid-Verify.
+
+    Executed against the SHIPPED runRender body with agentRetry and
+    stopRenderServer stubbed, so this cannot drift from the source."""
+
+    def _run(self, throws: bool) -> dict:
+        js = r"""
+const fs = require('fs');
+const src = fs.readFileSync(process.argv[2], 'utf8');
+const throws = process.argv[3] === 'true';
+const m = src.match(/async function runRender\(\) \{\n([\s\S]*?)\n\}\n/);
+if (!m) throw new Error('runRender not found');
+const calls = [];
+const deps = {
+  VERIFY_POLICY: { mode: 'rendered', tools: ['playwright'], requires: [], forbids: [] },
+  SERVE: { command: 'npm run dev', url: 'http://localhost:5173' },
+  WD: '/tmp/wt', REIN: 'rein', MODEL_AUX: 'haiku',
+  RENDER_SCHEMA: {}, TASK_SCHEMA: {},
+  log: () => {},
+  decideRenderDispatch: () => ({ dispatch: true, reason: '' }),
+  decideRenderOutcome: () => ({ status: 'passed', reason: '' }),
+  buildRenderPrompt: () => 'prompt',
+  renderPidfile: (wd) => '/tmp/pid-' + wd.replace(/[^a-z]/g, ''),
+  stopRenderServer: async (p) => { calls.push('teardown:' + p); },
+  agentRetry: async () => {
+    calls.push('render');
+    if (throws) throw new Error('API Error: Connection closed mid-response');
+    return { rendered: true, httpStatus: 200, title: 't', consoleErrors: [], evidence: ['HTTP 200'], notes: '' };
+  },
+};
+const names = Object.keys(deps);
+const fn = new Function(...names, `return (async () => { ${m[1]} })()`);
+fn(...names.map((n) => deps[n])).then(
+  (r) => process.stdout.write(JSON.stringify({ ok: true, result: r, calls })),
+  (e) => process.stdout.write(JSON.stringify({ ok: false, error: String(e && e.message), calls }))
+);
+"""
+        with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False, encoding="utf-8") as f:
+            f.write(js)
+            path = f.name
+        try:
+            proc = subprocess.run([_NODE, path, LOOP_JS, "true" if throws else "false"],
+                                  capture_output=True, text=True, check=True)
+        finally:
+            os.unlink(path)
+        return json.loads(proc.stdout)
+
+    def test_teardown_runs_even_when_the_render_agent_throws(self):
+        out = self._run(throws=True)
+        self.assertTrue(any(c.startswith("teardown:") for c in out["calls"]),
+                        f"teardown never ran on the throw path: {out}")
+
+    def test_a_thrown_render_becomes_rendered_unverified_not_a_lost_run(self):
+        out = self._run(throws=True)
+        self.assertTrue(out["ok"], f"the throw escaped runRender: {out.get('error')}")
+        self.assertEqual(out["result"]["status"], "rendered-unverified")
+        self.assertIn("threw", out["result"]["reason"])
+
+    def test_the_happy_path_still_tears_down_exactly_once(self):
+        out = self._run(throws=False)
+        self.assertEqual(out["result"]["status"], "passed")
+        self.assertEqual(sum(1 for c in out["calls"] if c.startswith("teardown:")), 1)
+
+
+@unittest.skipUnless(_NODE, "node not on PATH")
+class TestRenderEvidenceReachesTheReviewer(unittest.TestCase):
+    """Round-4 BLOCKING: on a PASSED render the reviewer got a sentence and a
+    count. consoleErrors reached no consumer on any path — a page that 200s
+    with uncaught TypeErrors and paints blank was reported as 'the render
+    requirement is satisfied'."""
+
+    def test_passed_render_hands_the_reviewer_facts_including_console_errors(self):
+        with open(LOOP_JS, encoding="utf-8") as f:
+            src = f.read()
+        passed = src[src.index("renderEvidence.status === 'passed'"):][:900]
+        for fact in ("consoleErrors", "title=", "evidence="):
+            self.assertIn(fact, passed, f"the passed path must hand over {fact}")
+        self.assertNotIn("fact(s)) — the render requirement is satisfied", passed,
+                         "a count is not a fact (D3)")
+
+    def test_failed_render_also_carries_console_errors(self):
+        with open(LOOP_JS, encoding="utf-8") as f:
+            src = f.read()
+        failed = src[src.index("renderEvidence.status === 'failed'"):][:700]
+        self.assertIn("consoleErrors", failed)
 
 
 if __name__ == "__main__":

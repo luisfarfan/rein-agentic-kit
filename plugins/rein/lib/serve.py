@@ -20,6 +20,7 @@ Python 3 standard library only.
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import select
 import signal
@@ -335,8 +336,14 @@ def start(command: str, cwd: str, url: str, timeout: float, pidfile: str) -> Ser
             os.remove(stderr_path)
         return ServeResult(False, url, elapsed_ms, error, stderr_tail)
     pgid = os.getpgid(proc.pid)
+    # Record the stderr path alongside the pgid: on the SUCCESS path it was
+    # previously dropped on the floor, so every render leaked one temp file
+    # that the still-running dev server kept writing to, unbounded, for the
+    # whole render — once per fix round, per run. stop() is the only place
+    # that knows the server is gone, so it is the only place that can unlink
+    # it. JSON, with the old bare-int format still readable by stop().
     with open(pidfile, "w", encoding="utf-8") as f:
-        f.write(str(pgid))
+        json.dump({"pgid": pgid, "stderrPath": stderr_path}, f)
     return ServeResult(True, url, elapsed_ms, "", [])
 
 
@@ -351,10 +358,24 @@ def stop(pidfile: str) -> tuple[bool, str]:
     """
     try:
         with open(pidfile, encoding="utf-8") as f:
-            pgid = int(f.read().strip())
-    except (OSError, ValueError) as e:
+            raw = f.read().strip()
+    except OSError as e:
         return False, f"could not read pidfile {pidfile!r}: {e}"
+    stderr_path = ""
+    try:
+        # Current format is JSON; a bare integer is the older shape and must
+        # still tear down rather than leaving a group alive on an upgrade.
+        record = json.loads(raw)
+        pgid = int(record["pgid"])
+        stderr_path = str(record.get("stderrPath") or "")
+    except (ValueError, TypeError, KeyError):
+        try:
+            pgid = int(raw)
+        except ValueError as e:
+            return False, f"could not read pidfile {pidfile!r}: {e}"
     _kill_pgid(pgid)
-    with contextlib.suppress(OSError):
-        os.remove(pidfile)
+    for path in (stderr_path, pidfile):
+        if path:
+            with contextlib.suppress(OSError):
+                os.remove(path)
     return True, ""

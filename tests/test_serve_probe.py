@@ -266,5 +266,43 @@ class TestServeProbeRejectsSchemelessUrl(unittest.TestCase):
             self.assertLess(elapsed, 1)
 
 
+class TestNoTempFileLeak(unittest.TestCase):
+    """Round-4 IMPORTANT: start() recorded the stderr temp path nowhere on the
+    SUCCESS path, so stop() could not unlink it — one leaked, growing file per
+    render, per fix round, per run."""
+
+    def test_stderr_temp_file_does_not_survive_a_start_stop_cycle(self):
+        import glob
+        before = set(glob.glob(os.path.join(tempfile.gettempdir(), "rein-serve-stderr-*")))
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "index.html"), "w") as f:
+                f.write("<h1>ok</h1>")
+            port = _free_port()
+            pidfile = os.path.join(d, "s.pid")
+            result = serve.start(f"python3 -m http.server {port}", d,
+                                 f"http://127.0.0.1:{port}", 15.0, pidfile)
+            self.assertTrue(result.ready, result.error)
+            during = set(glob.glob(os.path.join(tempfile.gettempdir(), "rein-serve-stderr-*")))
+            self.assertTrue(during - before, "start() should have created one")
+            stopped, err = serve.stop(pidfile)
+            self.assertTrue(stopped, err)
+        after = set(glob.glob(os.path.join(tempfile.gettempdir(), "rein-serve-stderr-*")))
+        self.assertEqual(after - before, set(), "stop() must unlink what start() created")
+
+    def test_a_bare_integer_pidfile_still_tears_down(self):
+        """The pre-JSON shape must not leave a group alive across an upgrade."""
+        with tempfile.TemporaryDirectory() as d:
+            port = _free_port()
+            proc = subprocess.Popen(f"python3 -m http.server {port}", shell=True, cwd=d,
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                    start_new_session=True)
+            pidfile = os.path.join(d, "legacy.pid")
+            with open(pidfile, "w") as f:
+                f.write(str(os.getpgid(proc.pid)))
+            stopped, err = serve.stop(pidfile)
+            self.assertTrue(stopped, err)
+            self.assertFalse(_listening(port), "legacy pidfile must still kill the group")
+
+
 if __name__ == "__main__":
     unittest.main()

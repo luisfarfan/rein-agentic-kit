@@ -768,9 +768,8 @@ function decideRenderOutcome(render) {
 // invocations get an explicit `--cwd`/`cd` into it and an ABSOLUTE pidfile —
 // a relative pidfile would be written in one bash round-trip's cwd and read
 // in another's, silently orphaning the server across a cwd difference.
-function buildRenderPrompt(rein, command, url, tools, wd) {
+function buildRenderPrompt(rein, command, url, tools, wd, pidfile) {
   const toolList = (tools || []).join(', ')
-  const pidfile = `${wd}/.rein-render-serve.pid`
   return (
     `You are the RENDER agent for the Verify phase. You implement NOTHING, edit NOTHING, commit NOTHING — ` +
     `you only observe and report facts. Run EVERYTHING from ${wd} — that is the tree containing the change; ` +
@@ -1083,6 +1082,16 @@ const RENDER_SCHEMA = {
 // pidfile reports stopped=false, never raises), so calling it unconditionally
 // after the render agent returns — success, failure, or death — is always
 // safe, including on the paths where the agent already stopped it itself.
+// One derivation, two callers. The path was a magic string computed
+// independently in buildRenderPrompt and runRender; they agreed only by
+// coincidence, and a divergence would make teardown target a pidfile the agent
+// never wrote — stopped=false, nothing alarming logged, server orphaned.
+// Outside the worktree on purpose: a pidfile left inside the tree under review
+// is an untracked file a later fix agent's `git add -A` would commit.
+function renderPidfile(wd) {
+  return `/tmp/rein-render-${String(wd).replace(/[^A-Za-z0-9]/g, '-')}.pid`
+}
+
 async function stopRenderServer(pidfile) {
   try {
     await agentRetry(
@@ -1113,14 +1122,30 @@ async function runRender() {
     log(`⚠️ rendered-unverified: ${dispatch.reason} — Verify continues, nothing stops`)
     return { status: 'rendered-unverified', reason: dispatch.reason, ...empty }
   }
-  const pidfile = `${WD}/.rein-render-serve.pid`
-  const render = await agentRetry(
-    buildRenderPrompt(REIN, SERVE.command, SERVE.url, VERIFY_POLICY.tools, WD),
-    { schema: RENDER_SCHEMA, label: 'render', phase: 'Verify', agentType: 'general-purpose', effort: 'low', model: MODEL_AUX }
-  )
-  // Unconditional, whatever the render agent reported or whether it answered
-  // at all (finding 5) — see stopRenderServer's own comment.
-  await stopRenderServer(pidfile)
+  const pidfile = renderPidfile(WD)
+  // agentRetry RETHROWS on its final attempt — it returns null only when the
+  // agent dies without throwing. Without this try/finally a thrown render agent
+  // skipped teardown entirely, orphaning a server that `serve-probe --start`
+  // deliberately puts in its own session (immune to the CLI's own exit): the
+  // port stays held for this run and every later one, which is precisely what
+  // D2 exists to prevent. It also aborted the whole loop mid-Verify — no
+  // review, no verdict, no Integrate — against D4's "never a hard stop".
+  let render = null
+  let threw = ''
+  try {
+    render = await agentRetry(
+      buildRenderPrompt(REIN, SERVE.command, SERVE.url, VERIFY_POLICY.tools, WD, pidfile),
+      { schema: RENDER_SCHEMA, label: 'render', phase: 'Verify', agentType: 'general-purpose', effort: 'low', model: MODEL_AUX }
+    )
+  } catch (e) {
+    threw = e && e.message ? e.message : String(e)
+  } finally {
+    await stopRenderServer(pidfile)
+  }
+  if (threw) {
+    log(`⚠️ rendered-unverified: the render agent threw (${threw})`)
+    return { status: 'rendered-unverified', reason: `the render agent threw: ${threw}`, ...empty }
+  }
   if (!render) {
     log(`⚠️ rendered-unverified: the render agent died`)
     return { status: 'rendered-unverified', reason: 'the render agent died', ...empty }
@@ -1218,14 +1243,21 @@ if (gateContradiction) {
           reviewerPolicyBlock() +
           (renderEvidence && renderEvidence.status === 'failed'
             ? `RENDER EVIDENCE (already gathered this Verify phase, do not re-run): rendered=${renderEvidence.rendered}, ` +
-              `httpStatus=${renderEvidence.httpStatus}, evidence=${JSON.stringify(renderEvidence.evidence)} — failed: ` +
+              `httpStatus=${renderEvidence.httpStatus}, title=${JSON.stringify(renderEvidence.title || '')}, ` +
+              `evidence=${JSON.stringify(renderEvidence.evidence)}, ` +
+              `consoleErrors=${JSON.stringify(renderEvidence.consoleErrors || [])} — failed: ` +
               `${renderEvidence.reason}. Treat this as a finding: this change's render is FAILED, not passed.\n`
             : renderEvidence && renderEvidence.status === 'rendered-unverified'
             ? `RENDER EVIDENCE: no render tool was reachable this Verify phase (${renderEvidence.reason}). This is an ` +
               `INCOMPLETE gate, not a failed one — 'we could not look' is a different fact from 'we looked and it broke'. ` +
               `State it as 'rendered-unverified' rather than a defect; it does not by itself block APPROVED (D4).\n`
             : renderEvidence && renderEvidence.status === 'passed'
-            ? `RENDER EVIDENCE: rendered and observed OK (HTTP ${renderEvidence.httpStatus}, ${(renderEvidence.evidence || []).length} fact(s)) — the render requirement is satisfied.\n`
+            ? `RENDER EVIDENCE (already gathered this Verify phase, do not re-run): rendered=true, ` +
+              `httpStatus=${renderEvidence.httpStatus}, title=${JSON.stringify(renderEvidence.title || '')}, ` +
+              `evidence=${JSON.stringify(renderEvidence.evidence || [])}, ` +
+              `consoleErrors=${JSON.stringify(renderEvidence.consoleErrors || [])}. The render requirement is ` +
+              `satisfied, but JUDGE THESE FACTS — a page can serve 200 with a title and still throw uncaught ` +
+              `errors and paint blank. Non-empty consoleErrors is a finding even though the render passed.\n`
             : '') +
           `2. JUDGEMENT over the full diff ('git -C ${WD} diff ${BASE}...${BRANCH}' or the run's commits), on five ` +
           `axes: correctness, readability, architecture, security, performance. Look at the change AS A WHOLE — ` +
