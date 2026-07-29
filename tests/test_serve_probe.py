@@ -151,6 +151,27 @@ class TestServeProbeStartStop(unittest.TestCase):
             self.assertFalse(os.path.exists(pidfile))
             self.assertFalse(_listening(port))
 
+    def test_start_timeout_carries_the_servers_own_stderr(self):
+        # Finding 6: the shipped render path (T002/T003) uses ONLY --start, so
+        # a dev server that fails to boot must not report a bare "timed out"
+        # -- the fix agent needs the server's own compile/bind error.
+        port = _free_port()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pidfile = os.path.join(tmpdir, "serve.pid")
+            command = (
+                f"{sys.executable} -c \"import sys, time; "
+                "sys.stderr.write('boom: address already in use\\n'); sys.stderr.flush(); "
+                "time.sleep(5)\""
+            )
+            result = serve.start(command, tmpdir, f"http://127.0.0.1:{port}", 1, pidfile)
+            self.assertFalse(result.ready)
+            self.assertIn("timed out", result.error)
+            self.assertFalse(os.path.exists(pidfile))
+            self.assertTrue(
+                any("boom: address already in use" in line for line in result.stderr_tail),
+                msg=f"stderr_tail was {result.stderr_tail!r}",
+            )
+
     def test_stop_with_missing_pidfile_reports_not_stopped_not_raises(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             stopped, error = serve.stop(os.path.join(tmpdir, "does-not-exist.pid"))

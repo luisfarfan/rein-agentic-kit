@@ -25,6 +25,7 @@ import select
 import signal
 import socket
 import subprocess
+import tempfile
 import time
 from urllib.parse import urlsplit
 
@@ -102,6 +103,22 @@ def _read_stderr_tail(
         chunks.append(chunk)
     data = b"".join(chunks).decode("utf-8", errors="replace")
     lines = data.splitlines()
+    return lines[-max_lines:]
+
+
+def _tail_file_lines(path: str, max_lines: int = STDERR_TAIL_LINES) -> list[str]:
+    """Last `max_lines` lines of a plain FILE -- used for `start()`'s stderr
+    capture. Unlike `_read_stderr_tail`'s live-pipe case, by the time this
+    runs the process has already been torn down (see the failure branch of
+    `start()`), so a normal blocking read cannot hang -- no select() budget
+    needed.
+    """
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+    except OSError:
+        return []
+    lines = data.decode("utf-8", errors="replace").splitlines()
     return lines[-max_lines:]
 
 
@@ -274,7 +291,8 @@ def start(command: str, cwd: str, url: str, timeout: float, pidfile: str) -> Ser
     nothing to hand off: the group is torn down here, same as probe(), and no
     pidfile is written.
 
-    stderr is DEVNULL, not PIPE, and that is load-bearing, not cosmetic:
+    stderr is redirected to a TEMP FILE -- neither DEVNULL nor a PIPE, and
+    the distinction from both is load-bearing, not cosmetic (finding 6).
     `probe()`/`serve_probe()` can safely use a PIPE because the process is
     always torn down inside the SAME invocation that created it. `start()` is
     explicitly meant to outlive its own invocation -- this CLI process exits
@@ -283,29 +301,39 @@ def start(command: str, cwd: str, url: str, timeout: float, pidfile: str) -> Ser
     server writes an ordinary access-log line to that now-read-end-closed
     pipe, it gets SIGPIPE and dies (subprocess.Popen restores default signal
     dispositions in the child) -- a --start that reports ready=true but is
-    dead by the time anything tries to render against it. DEVNULL has no
-    reader to lose, so it survives the launcher's exit.
+    dead by the time anything tries to render against it. A plain FILE has no
+    read end to lose -- the child's duplicated write fd stays valid no matter
+    what the launcher process does afterwards -- so it survives the
+    launcher's exit exactly like DEVNULL did, while still letting a FAILED
+    start (torn down inside THIS invocation, same as probe()) report the
+    server's own stderr instead of a bare "timed out".
     """
     try:
         host, port = _resolve_host_port(url)
     except InvalidUrlError as e:
         return ServeResult(False, url, 0, str(e), [])
     started = time.monotonic()
-    proc = subprocess.Popen(
-        command,
-        shell=True,
-        cwd=cwd,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        start_new_session=True,
-    )
+    stderr_fd, stderr_path = tempfile.mkstemp(prefix="rein-serve-stderr-", suffix=".log")
+    with os.fdopen(stderr_fd, "wb") as stderr_file:
+        proc = subprocess.Popen(
+            command,
+            shell=True,
+            cwd=cwd,
+            stdout=subprocess.DEVNULL,
+            stderr=stderr_file,
+            start_new_session=True,
+        )
+    # The `with` above closes OUR copy of the write fd as soon as Popen has
+    # duplicated it into the child -- the child keeps writing to its own
+    # duplicate regardless, same as it would with DEVNULL.
     ready, error = wait_until_ready(proc, host, port, timeout)
     elapsed_ms = int((time.monotonic() - started) * 1000)
     if not ready:
-        # No PIPE, so no stderr tail to report on failure -- see the
-        # docstring above for why that trade is made deliberately.
         _terminate_group(proc)
-        return ServeResult(False, url, elapsed_ms, error, [])
+        stderr_tail = _tail_file_lines(stderr_path)
+        with contextlib.suppress(OSError):
+            os.remove(stderr_path)
+        return ServeResult(False, url, elapsed_ms, error, stderr_tail)
     pgid = os.getpgid(proc.pid)
     with open(pidfile, "w", encoding="utf-8") as f:
         f.write(str(pgid))

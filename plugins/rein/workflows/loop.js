@@ -706,10 +706,21 @@ function decidePlanCheck(findings, runIds) {
 // silent pass, never a hard stop. Pure so it is executed by tests instead of
 // asserted by comment; also what the Verify phase itself calls, so the
 // dispatch decision under test IS the one that runs.
-function decideRenderDispatch(verifyPolicy) {
+// `serve` is checked too (finding 4): SERVE defaults to {command:'',url:''}
+// (a REACHABLE state — detect.py ships an empty serve command rather than an
+// absent one, and flow.config.json can set mode:'rendered' with no `_serve()`
+// at all) and an empty command/url renders as a bare, unusable serve-probe
+// invocation. That is "we could not look", not "we looked and it broke" —
+// D4 says it must degrade to unverified, never dispatch into a guaranteed
+// CLI usage failure the fix agent cannot resolve by writing code.
+function decideRenderDispatch(verifyPolicy, serve) {
   const vp = verifyPolicy || { mode: '', tools: [] }
   if (vp.mode !== 'rendered') return { dispatch: false, unverified: false, reason: '' }
   if (!(vp.tools || []).length) return { dispatch: false, unverified: true, reason: 'no browser tool reachable' }
+  const sv = serve || { command: '', url: '' }
+  if (!sv.command || !sv.url) {
+    return { dispatch: false, unverified: true, reason: 'no serve command/url is configured' }
+  }
   return { dispatch: true, unverified: false, reason: '' }
 }
 
@@ -736,7 +747,7 @@ function decideRenderOutcome(render) {
 // name a tool the caller did not pass — the caller passes ONLY
 // verifyPolicy.tools, already filtered to what is actually reachable.
 //
-// D2 as it actually applies to a render: 'rein serve-probe' is the ONE
+// D2 as it actually applies to a render: '${rein} serve-probe' is the ONE
 // deterministic CLI that owns the whole server lifecycle, but a render needs
 // the server held up WHILE a separate browser tool navigates — the reachable
 // tools (claude-in-chrome, browser-testing, ...) only navigate, they cannot
@@ -746,24 +757,36 @@ function decideRenderOutcome(render) {
 // CLI owning the process group but leaves it running past the call, and
 // `--stop --pidfile` is the matching teardown — two invocations of one
 // deterministic CLI, not two different mechanisms.
-function buildRenderPrompt(command, url, tools) {
+//
+// `rein` is ALWAYS the caller's resolved REIN (never the bare literal 'rein'
+// — finding 2): the binary may not be on PATH, or a stale 'rein' already on
+// PATH may resolve to an older installed plugin copy with no `serve-probe`
+// subcommand at all, in which case a hardcoded 'rein serve-probe' fails in a
+// way no fix agent can repair by writing code.
+// `wd` is ALWAYS the tree containing the change under review (finding 3): in
+// WORKTREE_MODE that is a sibling directory of the loop's own cwd, so both
+// invocations get an explicit `--cwd`/`cd` into it and an ABSOLUTE pidfile —
+// a relative pidfile would be written in one bash round-trip's cwd and read
+// in another's, silently orphaning the server across a cwd difference.
+function buildRenderPrompt(rein, command, url, tools, wd) {
   const toolList = (tools || []).join(', ')
-  const pidfile = '.rein-render-serve.pid'
+  const pidfile = `${wd}/.rein-render-serve.pid`
   return (
     `You are the RENDER agent for the Verify phase. You implement NOTHING, edit NOTHING, commit NOTHING — ` +
-    `you only observe and report facts.\n` +
+    `you only observe and report facts. Run EVERYTHING from ${wd} — that is the tree containing the change; ` +
+    `never render against any other checkout.\n` +
     `1. Start the app and keep it running for the render: run ` +
-    `'rein serve-probe --command "${command}" --url ${url} --start --pidfile ${pidfile}'. It starts the process ` +
-    `group, polls ${url} for a real TCP accept, and — because of --start — leaves the group running (already its ` +
-    `own session) instead of tearing it down immediately, so step 2 has a live server to render against; do NOT ` +
-    `background the server yourself (no '&', no nohup, no manual kill) at any point (D2) — this CLI owns the ` +
-    `whole lifecycle, start through stop. If its JSON says ready=false, stop here: there is nothing to render — ` +
-    `report rendered=false with the reported error in 'notes' and skip step 3 (a failed --start already tore ` +
-    `itself down, nothing is left running).\n` +
+    `'cd ${wd} && ${rein} serve-probe --command "${command}" --url ${url} --cwd ${wd} --start --pidfile ${pidfile}'. ` +
+    `It starts the process group, polls ${url} for a real TCP accept, and — because of --start — leaves the group ` +
+    `running (already its own session) instead of tearing it down immediately, so step 2 has a live server to ` +
+    `render against; do NOT background the server yourself (no '&', no nohup, no manual kill) at any point (D2) — ` +
+    `this CLI owns the whole lifecycle, start through stop. If its JSON says ready=false, stop here: there is ` +
+    `nothing to render — report rendered=false with the reported error in 'notes' and skip step 3 (a failed ` +
+    `--start already tore itself down, nothing is left running).\n` +
     `2. Render ${url} using ${toolList || '(no browser tool is reachable — do not invent one)'}. OBSERVE the HTTP ` +
     `status of the initial load, the page <title>, and any uncaught console errors.\n` +
-    `3. Tear the app down: run 'rein serve-probe --stop --pidfile ${pidfile}'. Do this even if step 2 failed — an ` +
-    `orphaned server must never outlive this agent.\n` +
+    `3. Tear the app down: run 'cd ${wd} && ${rein} serve-probe --stop --pidfile ${pidfile}'. Do this even if ` +
+    `step 2 failed — an orphaned server must never outlive this agent.\n` +
     `4. Report exactly these fields: rendered (boolean — did a page genuinely load), httpStatus (number, 0 if ` +
     `unknown), title (string), consoleErrors (array of strings, [] if none), evidence (array of concrete facts ` +
     `you observed, e.g. ["HTTP 200", "title: Dashboard", "0 console errors"] — NEVER a summary sentence), and ` +
@@ -1052,6 +1075,62 @@ const RENDER_SCHEMA = {
   additionalProperties: false,
 }
 
+// Finding 5: teardown is the LOOP's job, never left to an agent's memory. A
+// render agent that dies mid-step, or simply stops after starting the server,
+// leaves a process group holding the port for the rest of this run and every
+// later one — the exact "agents cannot be trusted with background server
+// lifecycles" reasoning D2 is built on. `stop()` is idempotent (a missing
+// pidfile reports stopped=false, never raises), so calling it unconditionally
+// after the render agent returns — success, failure, or death — is always
+// safe, including on the paths where the agent already stopped it itself.
+async function stopRenderServer(pidfile) {
+  try {
+    await agentRetry(
+      `Run EXACTLY this one command and report its JSON output; do NOT interpret, fix, retry, or run anything ` +
+        `else: 'cd ${WD} && ${REIN} serve-probe --stop --pidfile ${pidfile}'. It is idempotent — if nothing is ` +
+        `running it reports stopped=false, which is a normal, expected result, not a failure to fix.`,
+      { schema: TASK_SCHEMA, label: 'render-stop', phase: 'Verify', agentType: 'general-purpose', effort: 'low', model: MODEL_AUX }
+    )
+  } catch (e) {
+    log(`⚠️ render teardown agent failed (${e && e.message ? e.message : e}) — a server may still be holding the port`)
+  }
+}
+
+// Finding 1: extracted so the SAME render step can be re-run after EVERY fix
+// round, not only once in the Verify phase before the review loop starts. A
+// render observed to fail is exactly as disqualifying as a red mechanical
+// gate (T003), but unlike the gate — which the reviewer re-observes every
+// round — a renderEvidence computed once and handed unchanged to every
+// decideRound call would outlive its own round: a round-1 failure the fix
+// agent genuinely repairs could never be approved, no matter how many rounds
+// remained. Calling this again after each fix commits is what keeps
+// renderEvidence bound to the round it describes.
+async function runRender() {
+  if (VERIFY_POLICY.mode !== 'rendered') return null
+  const dispatch = decideRenderDispatch(VERIFY_POLICY, SERVE)
+  const empty = { rendered: false, httpStatus: 0, title: '', consoleErrors: [], evidence: [], notes: '' }
+  if (!dispatch.dispatch) {
+    log(`⚠️ rendered-unverified: ${dispatch.reason} — Verify continues, nothing stops`)
+    return { status: 'rendered-unverified', reason: dispatch.reason, ...empty }
+  }
+  const pidfile = `${WD}/.rein-render-serve.pid`
+  const render = await agentRetry(
+    buildRenderPrompt(REIN, SERVE.command, SERVE.url, VERIFY_POLICY.tools, WD),
+    { schema: RENDER_SCHEMA, label: 'render', phase: 'Verify', agentType: 'general-purpose', effort: 'low', model: MODEL_AUX }
+  )
+  // Unconditional, whatever the render agent reported or whether it answered
+  // at all (finding 5) — see stopRenderServer's own comment.
+  await stopRenderServer(pidfile)
+  if (!render) {
+    log(`⚠️ rendered-unverified: the render agent died`)
+    return { status: 'rendered-unverified', reason: 'the render agent died', ...empty }
+  }
+  const outcome = decideRenderOutcome(render)
+  if (outcome.failed) log(`⛔ render failed: ${outcome.reason}`)
+  else log(`✔ render observed: HTTP ${render.httpStatus}, ${render.evidence.length} fact(s)`)
+  return { status: outcome.failed ? 'failed' : 'passed', reason: outcome.reason, ...render }
+}
+
 let gateContradiction = ''
 // D3: facts the loop can check, never a sentence. null in every mode other
 // than 'rendered' (AC5: nothing changes for library, CLI or backend projects).
@@ -1082,28 +1161,11 @@ if (results.some((r) => r.status === 'implemented' || r.status === 'implemented-
   }
 
   // ── Render (mode: 'rendered' only, additive) — the ONE extra agent D1 asks
-  // for, dispatched with the SAME phase('Verify') as the gate above.
+  // for, dispatched with the SAME phase('Verify') as the gate above. Re-run
+  // (not just read) inside the review round loop below after every fix round
+  // — see runRender's own comment (finding 1).
   if (VERIFY_POLICY.mode === 'rendered') {
-    const dispatch = decideRenderDispatch(VERIFY_POLICY)
-    const empty = { rendered: false, httpStatus: 0, title: '', consoleErrors: [], evidence: [], notes: '' }
-    if (!dispatch.dispatch) {
-      renderEvidence = { status: 'rendered-unverified', reason: dispatch.reason, ...empty }
-      log(`⚠️ rendered-unverified: ${dispatch.reason} — Verify continues, nothing stops`)
-    } else {
-      const render = await agentRetry(
-        buildRenderPrompt(SERVE.command, SERVE.url, VERIFY_POLICY.tools),
-        { schema: RENDER_SCHEMA, label: 'render', phase: 'Verify', agentType: 'general-purpose', effort: 'low', model: MODEL_AUX }
-      )
-      if (!render) {
-        renderEvidence = { status: 'rendered-unverified', reason: 'the render agent died', ...empty }
-        log(`⚠️ rendered-unverified: the render agent died`)
-      } else {
-        const outcome = decideRenderOutcome(render)
-        renderEvidence = { status: outcome.failed ? 'failed' : 'passed', reason: outcome.reason, ...render }
-        if (outcome.failed) log(`⛔ render failed: ${outcome.reason}`)
-        else log(`✔ render observed: HTTP ${render.httpStatus}, ${render.evidence.length} fact(s)`)
-      }
-    }
+    renderEvidence = await runRender()
   }
 }
 
@@ -1282,6 +1344,13 @@ if (gateContradiction) {
     if (!fix || fix.blocked) {
       log(`⛔ fix blocked: ${fix ? fix.blockedReason : 'the agent died'}`)
       break
+    }
+    // Finding 1: re-check the render against what the fix agent just
+    // committed, BEFORE the next round's decideRound call — a renderEvidence
+    // left over from an earlier round describes a tree that no longer
+    // exists once the fix agent commits, and must never outlive it.
+    if (VERIFY_POLICY.mode === 'rendered') {
+      renderEvidence = await runRender()
     }
     round++
   }
