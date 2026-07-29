@@ -23,7 +23,7 @@ criteria (T006, port-edges) approved in a single round.
 
 ---
 
-- [ ] T001 Severity-tagged findings in the review gate
+- [x] T001 Severity-tagged findings in the review gate
   - Type: implementation
   - Depends on: none
   - Human review: false
