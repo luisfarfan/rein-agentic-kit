@@ -1,61 +1,62 @@
-# Change: dashboard
+# Change: review-economics
 
 ## Why
-The ledger already holds real runs and nobody can see them without reading JSON
-by hand. `rein ledger` prints them, but only to someone who already knows how to
-read turns/agent, ctx_max and opus share. The measurement exists and is unusable.
+4 of 6 runs exhausted their 3 review rounds. A round costs one Opus reviewer
+(~2M tokens) plus a fix agent plus wall-clock. Two measured causes: findings
+carry no severity, so cosmetic notes force rounds exactly like real defects; and
+plan-level defects only surface in code review — the most expensive place to
+find them. The counter-evidence exists too: the one task with impeccable
+criteria (T006, port-edges) approved in a single round.
 
 ## Scope
-- In: `rein dashboard` — a local server, a self-contained page, metrics per
-  project / session / run, deltas against a marked baseline, per-agent model config
-- Out: hosting, auth, or sharing — this is local and stays local
-- Out: live streaming during a run; the ledger is written when a run ends
-- Out: charts over data the ledger does not already store
+- In: severity on findings · only BLOCKING triggers another round · APPROVED
+  with recorded observations · a PlanCheck phase in the loop before implementers run
+- Out: rendered verification composition — that is the next change
+- Out: dashboard changes and reviewer model changes
+- Out: the /rein:review skill's manual procedure beyond the severity vocabulary
 
 ## Decisions
-- D1 Zero toolchain — a plugin that drags npm along at install time is a plugin nobody installs
-- D2 Data is embedded server-side, the page never fetches — that is what makes it verifiable without a browser
-- D3 Writing config shows a diff and asks first — a server that edits N repos silently produces surprise diffs
-- D4 No baseline, no savings figure — only a trend
+- D1 Three severities, one consequence — BLOCKING repeats the round; IMPORTANT travels to the fix agent when a round happens anyway; SUGGESTION is only ever recorded and reported
+- D2 CHANGES_REQUESTED requires at least one BLOCKING and APPROVED tolerates none — both incoherences are refused at the gate, not left to convention
+- D3 The plan is checked by a different agent inside the loop, never by the planner — no agent approves its own plan
+- D4 A BLOCKING plan finding stops the run before any implementer is paid
 
 ---
 
-- [x] T001 Assemble the dashboard view model and serve it
+- [ ] T001 Severity-tagged findings in the review gate
   - Type: implementation
   - Depends on: none
   - Human review: false
-  - Verification: `python3 -m unittest tests.test_dashboard`
+  - Verification: `python3 -m unittest tests.test_gate`
   - Acceptance:
-    - a new `plugins/rein/lib/dashboard.py` builds a view model from the ledger: runs grouped by project, each with turns_per_agent, ctx_max, opus_share, totals and its per-agent rows
-    - the baseline (from `~/.claude/rein/baseline.json`) is marked on its run, and every run recorded later in the same project carries signed deltas for those three metrics; runs in other projects and runs recorded before it carry none
-    - `rein dashboard --json` prints that view model and exits without opening a socket, so the whole data path is testable without a network
-    - `rein dashboard` serves it over `http.server` bound to 127.0.0.1 only, never `0.0.0.0`, with the port configurable via `--port`
-    - a missing, empty or partly corrupt ledger yields an empty view carrying a plain message — never a traceback and never a partial read that silently drops valid rows
-    - Python 3 standard library only; no new dependency appears anywhere
-    - a new `tests/test_dashboard.py` builds temporary ledgers and asserts each of the above, including the corrupt-line case
+    - `gate.record_review` parses a `BLOCKING:` / `IMPORTANT:` / `SUGGESTION:` prefix (case-insensitive) on each finding string and stores findings in the episode as `{"severity", "text"}` objects; an untagged finding defaults to `IMPORTANT`, never silently to the mildest level
+    - recording `CHANGES_REQUESTED` with zero BLOCKING findings raises `ValueError` naming the rule, and recording `APPROVED` with one or more BLOCKING findings does the same — both directions of D2, refused at write time
+    - `gate.check_review` returns the structured findings, and episodes written before this change (plain-string findings) still load and check without error — the old shape is read as `IMPORTANT`
+    - `rein review record --findings "BLOCKING: x|SUGGESTION: y"` round-trips through the CLI, and `rein review check` prints each finding with its severity
+    - new tests in `tests/test_gate.py` cover the prefix parsing, both D2 refusals, the untagged default, and the old-episode compatibility case — with at least one fixture whose finding text itself contains a colon, so the prefix split cannot be naive
 
-- [x] T002 Render the page
+- [ ] T002 Only a blocker buys another round
   - Type: implementation
   - Depends on: T001
   - Human review: false
-  - Verification: `python3 -m unittest tests.test_dashboard`
+  - Verification: `python3 -m unittest tests.test_loop_policy`
   - Acceptance:
-    - one self-contained HTML response: no external stylesheet, script, font or image, and no `fetch`/`XMLHttpRequest` — the numbers are already in the markup (D2)
-    - for every run it shows turns/agent, ctx_max/turn and opus share, grouped by project, with the per-agent rows reachable without leaving the page
-    - the baseline run is visibly marked and its deltas are labelled so that a negative number reads unambiguously as an improvement
-    - with no baseline marked, the page shows the trend and no savings figure anywhere — D4 is the thing being protected, so a test must assert that absence, not merely the presence of the trend
-    - it renders with zero runs, with one run, and with a run whose `agents` list is empty
-    - a test starts the real server, fetches the page over HTTP, and asserts that values taken from the temp ledger appear in the returned markup — proving the data reached the page, not that a template rendered
+    - `REVIEW_SCHEMA` findings become objects `{severity, text}` with both required, severity restricted to the three levels, and the reviewer prompt states D1 and D2 in one short paragraph — not an essay
+    - the round decision is a pure function in `loop.js` (review result in, one of `approve` / `fix` / `escalate` / `reject` out) so it can be extracted and executed by tests the way `tests/test_verify_policy.py` already executes the policy blocks
+    - a review with gate green and no BLOCKING findings resolves to approve even when the reviewer said CHANGES_REQUESTED, with the override logged — symmetric to the existing red-gate override in the other direction
+    - when a round does happen, the fix agent receives BLOCKING and IMPORTANT findings only; SUGGESTIONs never reach a fix prompt and never cost a round
+    - an approved run still carries its non-blocking observations into the final return value, so nothing the reviewer noticed is silently dropped
+    - `node --check plugins/rein/workflows/loop.js` passes, and a new `tests/test_loop_policy.py` executes the extracted decision function across: blockers present, only suggestions, only importants, gate red with no blockers, and needsHumanDecision
 
-- [x] T003 Edit per-agent models from the page
+- [ ] T003 Check the plan before paying implementers
   - Type: implementation
   - Depends on: T002
   - Human review: false
-  - Verification: `python3 -m unittest tests.test_dashboard`
+  - Verification: `python3 -m unittest tests.test_loop_policy`
   - Acceptance:
-    - each project in the view model shows its resolved `models.aux/impl/review` and the source of each (config or default)
-    - a POST endpoint writes only `models.*` into that project's `flow.config.json`, preserving every other key byte-for-byte, including unknown keys and the `$comment` entries the example config ships
-    - the response returns a unified diff of what would change, and nothing is written until a second confirming request arrives — a first request must never write
-    - a write targeting a path that is not a project root already present in the ledger is refused with a non-2xx and no filesystem change; a test asserts this with a traversal attempt
-    - writing to a project that has no `flow.config.json` creates one containing only the models block
-    - tests cover: unknown keys preserved, diff-then-confirm ordering, refusal outside known roots, and creation from absent
+    - a PlanCheck phase runs in `loop.js` after Prepare and before Isolate: one agent, low effort, implementation model, that reads ONLY the plan (never the codebase) and returns severity-tagged findings per task id
+    - its prompt carries exactly four lenses: criteria that cannot be checked as written; verifications that are unbounded (whole suite where one test would do); criteria satisfiable in letter by a test whose fixture avoids the case — the failure this repo produced five times; and tasks that contradict the plan's own Scope or dependency order
+    - a BLOCKING plan finding stops the run before Isolate with the findings in the return value (D4), and non-blocking findings are logged and carried in the return without stopping anything
+    - the phase is skippable with `args.planCheck: false`, and a dead PlanCheck agent degrades to a logged warning — a run must never be lost to the checker itself
+    - the check costs one agent: no retries beyond the standard `agentRetry`, no second opinion, no per-task fan-out
+    - `tests/test_loop_policy.py` executes the extracted prompt-builder and stop-decision: blocking finding stops, suggestion-only continues, `planCheck: false` skips, and the prompt names all four lenses and forbids reading the codebase
