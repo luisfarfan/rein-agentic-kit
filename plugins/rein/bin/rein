@@ -176,7 +176,7 @@ def cmd_review(argv: list[str]) -> int:
         if result["changed"]:
             print("  changed since approval: " + ", ".join(result["changed"][:10]))
         for f in result.get("findings", [])[:10]:
-            print(f"  finding: {f}")
+            print(f"  finding [{f['severity']}]: {f['text']}")
         return 1
 
     print(f"unknown review subcommand: {sub}\n\nusage: rein review <record|check> [...]")

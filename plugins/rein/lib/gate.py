@@ -31,6 +31,35 @@ import plan as _plan
 EPISODE_DIR = ".rein/reviews"
 VERDICTS = ("APPROVED", "CHANGES_REQUESTED")
 IMPLEMENTER = "implementer"
+SEVERITIES = ("BLOCKING", "IMPORTANT", "SUGGESTION")
+DEFAULT_SEVERITY = "IMPORTANT"
+
+
+def _parse_finding(raw) -> dict:
+    """Split a finding string into {"severity", "text"} on a known prefix.
+
+    Only the fixed severity words are recognized as prefixes -- a finding
+    whose own text contains a colon (e.g. "BLOCKING: SQL query: no params")
+    must not be mis-split, so this never does a naive partition on the first
+    colon it finds. Untagged text defaults to IMPORTANT (D1: never silently
+    to the mildest level, SUGGESTION).
+    """
+    if isinstance(raw, dict):
+        severity = str(raw.get("severity", DEFAULT_SEVERITY)).strip().upper()
+        if severity not in SEVERITIES:
+            severity = DEFAULT_SEVERITY
+        return {"severity": severity, "text": raw.get("text", "")}
+    text = str(raw)
+    for severity in SEVERITIES:
+        prefix = f"{severity}:"
+        if text[: len(prefix)].upper() == prefix:
+            return {"severity": severity, "text": text[len(prefix):].strip()}
+    return {"severity": DEFAULT_SEVERITY, "text": text.strip()}
+
+
+def _normalize_findings(raw_findings) -> list[dict]:
+    """Read findings of either shape (old plain strings, new tagged dicts)."""
+    return [_parse_finding(f) for f in (raw_findings or [])]
 
 
 # ------------------------------------------------------------- next task --
@@ -133,6 +162,17 @@ def record_review(
     if not files:
         raise ValueError("reviewed_files cannot be empty -- declare what you actually inspected")
 
+    parsed_findings = _normalize_findings(findings)
+    has_blocking = any(f["severity"] == "BLOCKING" for f in parsed_findings)
+    if verdict == "CHANGES_REQUESTED" and not has_blocking:
+        raise ValueError(
+            "D2: CHANGES_REQUESTED requires at least one BLOCKING finding"
+        )
+    if verdict == "APPROVED" and has_blocking:
+        raise ValueError(
+            "D2: APPROVED tolerates no BLOCKING findings"
+        )
+
     root = os.path.abspath(root)
     reviewed: dict[str, str] = {}
     missing: list[str] = []
@@ -153,7 +193,7 @@ def record_review(
         "agent": agent or reviewer.strip(),
         "reviewed_files": reviewed,
         "reviewed_state_hash": state_hash(reviewed),
-        "findings": findings,
+        "findings": parsed_findings,
         "timestamp_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
 
@@ -230,5 +270,5 @@ def check_review(root: str, change: str = "") -> dict:
         "stale": stale,
         "changed": changed,
         "episode": episode.get("path", ""),
-        "findings": episode.get("findings", []),
+        "findings": _normalize_findings(episode.get("findings", [])),
     }

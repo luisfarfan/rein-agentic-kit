@@ -162,16 +162,16 @@ class TestCheckReview(unittest.TestCase):
 
     def test_changes_requested_never_satisfies_the_gate(self):
         with Tree(self.FILES) as root:
-            gate.record_review(root, "demo", "CHANGES_REQUESTED", ["a.py"], ["fix it"], "rev")
+            gate.record_review(root, "demo", "CHANGES_REQUESTED", ["a.py"], ["BLOCKING: fix it"], "rev")
             r = gate.check_review(root, "demo")
         self.assertFalse(r["ok"])
         self.assertIn("CHANGES_REQUESTED", r["reason"])
-        self.assertEqual(r["findings"], ["fix it"])
+        self.assertEqual(r["findings"], [{"severity": "BLOCKING", "text": "fix it"}])
 
     def test_the_latest_episode_wins(self):
         """A re-review after a fix must supersede the older verdict."""
         with Tree(self.FILES) as root:
-            gate.record_review(root, "demo", "CHANGES_REQUESTED", ["a.py"], ["x"], "rev")
+            gate.record_review(root, "demo", "CHANGES_REQUESTED", ["a.py"], ["BLOCKING: x"], "rev")
             # Timestamped directory names are second-resolution; force ordering.
             base = os.path.join(root, gate.EPISODE_DIR)
             os.rename(os.path.join(base, os.listdir(base)[0]), os.path.join(base, "20200101T000000Z-demo"))
@@ -182,6 +182,71 @@ class TestCheckReview(unittest.TestCase):
         with Tree(self.FILES) as root:
             gate.record_review(root, "other", "APPROVED", ["a.py"], [], "rev")
             self.assertFalse(gate.check_review(root, "demo")["ok"])
+
+
+class TestSeverityFindings(unittest.TestCase):
+    FILES = {"a.py": "print(1)\n"}
+
+    def test_prefixes_are_parsed_case_insensitively(self):
+        with Tree(self.FILES) as root:
+            ep = gate.record_review(
+                root, "demo", "CHANGES_REQUESTED", ["a.py"],
+                ["blocking: fix the thing", "Important: nice to know", "SUGGESTION: polish"],
+                "rev",
+            )
+        self.assertEqual(ep["findings"], [
+            {"severity": "BLOCKING", "text": "fix the thing"},
+            {"severity": "IMPORTANT", "text": "nice to know"},
+            {"severity": "SUGGESTION", "text": "polish"},
+        ])
+
+    def test_untagged_finding_defaults_to_important_not_the_mildest(self):
+        """D1: an untagged finding must never silently become SUGGESTION."""
+        with Tree(self.FILES) as root:
+            ep = gate.record_review(
+                root, "demo", "CHANGES_REQUESTED", ["a.py"],
+                ["BLOCKING: x", "no prefix here"], "rev",
+            )
+        self.assertIn({"severity": "IMPORTANT", "text": "no prefix here"}, ep["findings"])
+
+    def test_colon_inside_finding_text_does_not_break_the_split(self):
+        """The prefix match must be anchored to the known severity words, not
+        a naive split on the first colon in the string."""
+        with Tree(self.FILES) as root:
+            ep = gate.record_review(
+                root, "demo", "CHANGES_REQUESTED", ["a.py"],
+                ["BLOCKING: SQL query: no bound params in login handler"], "rev",
+            )
+        self.assertEqual(ep["findings"], [
+            {"severity": "BLOCKING", "text": "SQL query: no bound params in login handler"},
+        ])
+
+    def test_changes_requested_without_a_blocking_finding_is_refused(self):
+        with Tree(self.FILES) as root:
+            with self.assertRaises(ValueError) as ctx:
+                gate.record_review(root, "demo", "CHANGES_REQUESTED", ["a.py"], ["IMPORTANT: meh"], "rev")
+        self.assertIn("BLOCKING", str(ctx.exception))
+
+    def test_approved_with_a_blocking_finding_is_refused(self):
+        with Tree(self.FILES) as root:
+            with self.assertRaises(ValueError) as ctx:
+                gate.record_review(root, "demo", "APPROVED", ["a.py"], ["BLOCKING: nope"], "rev")
+        self.assertIn("BLOCKING", str(ctx.exception))
+
+    def test_old_plain_string_episode_still_loads_and_checks(self):
+        """Episodes written before this change stored findings as bare strings."""
+        with Tree(self.FILES) as root:
+            gate.record_review(root, "demo", "CHANGES_REQUESTED", ["a.py"], ["BLOCKING: x"], "rev")
+            episode_path = gate.latest_episode(root, "demo")["path"]
+            with open(episode_path, encoding="utf-8") as fh:
+                raw = json.load(fh)
+            raw["findings"] = ["fix it please"]
+            with open(episode_path, "w", encoding="utf-8") as fh:
+                json.dump(raw, fh)
+
+            r = gate.check_review(root, "demo")
+        self.assertFalse(r["ok"])
+        self.assertEqual(r["findings"], [{"severity": "IMPORTANT", "text": "fix it please"}])
 
 
 if __name__ == "__main__":
