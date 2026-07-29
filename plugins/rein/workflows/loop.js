@@ -494,10 +494,20 @@ function reviewerPolicyBlock() {
 //   escalate  — the reviewer flagged a judgement only the human can make
 //   reject    — not approvable and no rounds remain
 function decideRound(review, round, maxRounds) {
-  const findings = (review.findings || []).map((f) =>
+  const RECOGNIZED_SEVERITIES = ['BLOCKING', 'IMPORTANT', 'SUGGESTION']
+  const rawFindings = review.findings || []
+  const findings = rawFindings.map((f) =>
     typeof f === 'string' ? { severity: 'IMPORTANT', text: f } : f
   )
   const sev = (f) => String(f.severity || '').toUpperCase()
+  // A finding "arrived untagged" if it was a plain string, or an object whose
+  // severity is missing or not one of the three recognized words. Both get
+  // normalized to IMPORTANT above for display, but that normalization must
+  // not silently unlock D2's override below — the reviewer never spoke the
+  // vocabulary D2 is judging against.
+  const hasUntagged = rawFindings.some(
+    (f) => typeof f === 'string' || !RECOGNIZED_SEVERITIES.includes(sev(f))
+  )
   const blocking = findings.filter((f) => sev(f) === 'BLOCKING')
   const fixWorthy = findings.filter((f) => sev(f) === 'BLOCKING' || sev(f) === 'IMPORTANT')
   const gateGreen = !!review.gateGreen
@@ -511,6 +521,20 @@ function decideRound(review, round, maxRounds) {
   }
 
   if (gateGreen && blocking.length === 0) {
+    if (hasUntagged && !review.approved) {
+      // The gate.record_review CLI refuses this exact input (CHANGES_REQUESTED
+      // with no BLOCKING-tagged finding). Silently overriding it to approve
+      // here would be quieter than that refusal and would merge a branch the
+      // reviewer asked to change — the precise false green this loop exists
+      // to prevent. Spend a round instead of trusting a vocabulary the
+      // reviewer never actually spoke.
+      return {
+        decision: 'fix',
+        findings: fixWorthy,
+        reason:
+          "the reviewer requested changes with untagged findings — D2's override cannot be applied to a vocabulary the reviewer did not speak",
+      }
+    }
     // Symmetric to the red-gate override below: D2 says CHANGES_REQUESTED
     // requires a BLOCKING finding, so a reviewer that said CHANGES_REQUESTED
     // anyway with none is overridden to approve, not trusted at face value.
@@ -619,7 +643,8 @@ if (ARGS.planCheck !== false) {
   } else {
     const verdict = decidePlanCheck(planCheck.findings)
     for (const f of verdict.findings) {
-      log(`  ${f.severity === 'BLOCKING' ? '⛔' : 'ℹ️'} plan-check [${f.taskId || '?'}] ${f.text}`)
+      const marker = f.severity === 'BLOCKING' ? '⛔' : f.severity === 'IMPORTANT' ? '⚠️' : 'ℹ️'
+      log(`  ${marker} plan-check [${f.taskId || '?'}] ${f.severity}: ${f.text}`)
     }
     if (verdict.decision === 'stop') {
       log(`⛔ plan check: ${verdict.reason}`)

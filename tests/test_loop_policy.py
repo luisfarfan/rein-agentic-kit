@@ -158,6 +158,24 @@ class TestDecideRoundPolicy(unittest.TestCase):
         }])
         self.assertEqual(result["decision"], "reject")
 
+    def test_untagged_string_findings_do_not_unlock_the_override(self):
+        # A reviewer whose structured-output schema still declares
+        # `findings: string[]` (an older harness) says CHANGES_REQUESTED with
+        # plain-string findings. gate.record_review refuses to even record
+        # that verdict (D2: no BLOCKING-tagged finding). decideRound must not
+        # be quieter than that refusal by silently flipping it to approve.
+        [result] = self._run([{
+            "review": {
+                "approved": False,
+                "verdict": "CHANGES_REQUESTED",
+                "findings": ["something is wrong"],
+                "gateGreen": True,
+                "needsHumanDecision": False,
+            },
+            "round": 1, "maxRounds": 3,
+        }])
+        self.assertEqual(result["decision"], "fix")
+
 
 # ── buildFixFindings: the red-gate reason must reach the fix agent ──────────
 # Regression coverage: an APPROVED verdict with a red gate produces a 'fix'

@@ -49,7 +49,10 @@ You implement; you do **not** plan or review.
 You review completed changes; you do **not** implement.
 
 - **Do**: `/rein:review`. Run the mechanical gate first, then the five-axis judgement, then
-  emit a verdict with findings and record it with `rein review record`.
+  emit a verdict with findings and record it with `rein review record`. Every finding passed
+  to `--findings` must be prefixed `BLOCKING:`, `IMPORTANT:`, or `SUGGESTION:` —
+  `CHANGES_REQUESTED` requires at least one `BLOCKING` finding, `APPROVED` tolerates none
+  (D2); an untagged or vocabulary-violating verdict is refused, not recorded.
 - **Don't**: implement tasks, tick checkboxes, or fix your own findings.
 - **Key rules**: never review your own implementation — you must be a different session than
   the implementer, and `rein review record` refuses `implementer` as the actor. An `APPROVED`

@@ -48,9 +48,21 @@ agent a **compact ledger** (`progress` / `remaining` / `filesTouched` /
    Workflow({ scriptPath: '<plugin root>/workflows/loop.js', args: { ... } })
    ```
 
+   The workflow runs eight phases in order: Prepare, PlanCheck, Isolate, Map,
+   Implement, Verify, Review, Integrate. PlanCheck runs a fresh agent that
+   critiques the plan's own text before any implementer is paid to build it.
+
    Useful `args`: `change` (openspec plans), `taskIds` (a subset), `worktree:
    false` (work in place), `autoHumanReview: true` (delegate supervised tasks),
-   `dryRun: true`, and `modelAux` / `modelImpl` / `modelReview` overrides.
+   `planCheck: false` (skip the PlanCheck phase — use when the plan was
+   already checked, e.g. a re-run of the same plan, or a PlanCheck false
+   positive is blocking a run you need to proceed with), `dryRun: true`, and
+   `modelAux` / `modelImpl` / `modelReview` overrides.
+
+   Both `openFindings` (from Review) and `planFindings` (from PlanCheck) in the
+   returned ledger are arrays of severity-tagged objects (`{severity, text}`
+   and `{taskId, severity, text}` respectively), not plain strings — format
+   them accordingly rather than interpolating the array directly.
 
 4. **Report the outcome honestly, then the cost:**
 
