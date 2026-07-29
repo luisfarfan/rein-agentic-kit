@@ -11,3 +11,10 @@ build/
 
 # Local scratch from POC runs
 /.scratch/
+
+# Serena's per-project state (language-server cache, project config).
+# Local and machine-specific: it must not travel with the repo.
+.serena/
+
+# graphify's code-graph index: machine-local and regenerated, never committed.
+graphify-out/

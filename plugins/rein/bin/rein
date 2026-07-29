@@ -3,6 +3,7 @@
 
 Subcommands:
   rein doctor         environment probe (plugin wiring, CLIs, config, stack)
+  rein setup          probe the recommended retrieval tools; --install adds what is missing
   rein detect         resolved stack + commands as JSON (config > runner > auto)
   rein tasks          parsed plan as JSON (tasks.md or openspec)
   rein context        detect + tasks in ONE call -- what the loop's first agent runs
@@ -35,6 +36,7 @@ import dashboard as _dash  # noqa: E402
 import detect as _detect  # noqa: E402
 import gate as _gate  # noqa: E402
 import plan as _plan  # noqa: E402
+import setup as _setup  # noqa: E402
 import serve as _serve  # noqa: E402
 import token_report as _tr  # noqa: E402
 
@@ -184,6 +186,43 @@ def cmd_review(argv: list[str]) -> int:
 
     print(f"unknown review subcommand: {sub}\n\nusage: rein review <record|check> [...]")
     return 2
+
+
+def cmd_setup(argv: list[str]) -> int:
+    """Probe by default, install only when asked. A bare run changes nothing."""
+    root = _positional(argv) or "."
+    if "--json" in argv:
+        print(json.dumps(_setup.probe(root), indent=2))
+        return 0
+    state = _setup.probe(root)
+    print(_setup.render(state))
+
+    ignore = _setup.gitignore_lines(root)
+    if ignore:
+        print(f"\n  these tools write local state into the repo — add to .gitignore: {', '.join(ignore)}")
+
+    if "--install" not in argv:
+        return 0 if not state["missing"] else 1
+
+    if not state["missing"]:
+        return 0
+    print(f"\ninstalling: {', '.join(state['missing'])}\n")
+    report = _setup.install(root=root)
+    failed = False
+    for name, res in report["results"].items():
+        print(f"  {name}: {'ok' if res['ok'] else 'FAILED'}")
+        for step in res.get("steps", []):
+            print(f"    $ {step['cmd']}  ->  {'ok' if step['ok'] else 'failed'}")
+            if not step["ok"] and step["output"]:
+                for line in step["output"].splitlines():
+                    print(f"      {line}")
+        if not res["ok"]:
+            failed = True
+            if res.get("reason"):
+                print(f"    {res['reason']}")
+        if res.get("caveat"):
+            print(f"    note: {res['caveat']}")
+    return 1 if failed else 0
 
 
 def cmd_token_report(argv: list[str]) -> int:
@@ -365,6 +404,7 @@ def cmd_doctor(argv: list[str]) -> int:
 
 COMMANDS = {
     "doctor": cmd_doctor,
+    "setup": cmd_setup,
     "detect": cmd_detect,
     "tasks": cmd_tasks,
     "context": cmd_context,
