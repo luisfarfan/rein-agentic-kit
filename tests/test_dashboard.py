@@ -2,6 +2,8 @@
 and the local-only server that can serve it.
 """
 
+from __future__ import annotations
+
 import http.client
 import json
 import os
