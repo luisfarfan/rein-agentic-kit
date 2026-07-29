@@ -39,7 +39,7 @@ demand. This is the failure the whole kit is named for: the tests pass, the UI i
     - Python 3 standard library only
     - a new `tests/test_serve_probe.py` covers ready, immediate-exit, timeout, and the no-listener-after-exit case using `python3 -m http.server` over a temp directory as the fixture — no npm, no network
 
-- [ ] T002 Render it in the Verify phase
+- [x] T002 Render it in the Verify phase
   - Type: implementation
   - Depends on: T001
   - Human review: false
