@@ -5,6 +5,7 @@ export const meta = {
     'To execute an already-planned change. Every task is implemented as a bounded loop of short, FRESH agents handing off a compact ledger; then a reviewer that wrote none of it audits the change as a whole, and its findings return to the implementer until approved. Pass {change} for openspec plans; tasks.md needs no argument.',
   phases: [
     { title: 'Prepare' },
+    { title: 'PlanCheck' },
     { title: 'Isolate' },
     { title: 'Map' },
     { title: 'Implement' },
@@ -199,7 +200,18 @@ const REVIEW_SCHEMA = {
   properties: {
     approved: { type: 'boolean' },
     verdict: { type: 'string' }, // APPROVED | CHANGES_REQUESTED
-    findings: { type: 'array', items: { type: 'string' } },
+    findings: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          severity: { type: 'string', enum: ['BLOCKING', 'IMPORTANT', 'SUGGESTION'] },
+          text: { type: 'string' },
+        },
+        required: ['severity', 'text'],
+        additionalProperties: false,
+      },
+    },
     gateOutput: { type: 'string' }, // literal output of the mechanical gate — objective evidence
     gateGreen: { type: 'boolean' },
     // The only thing that legitimately blocks is a judgement solely the human can
@@ -229,6 +241,33 @@ const CODEMAP_SCHEMA = {
     },
   },
   required: ['maps'],
+  additionalProperties: false,
+}
+
+// Findings are per-task-id, same severity vocabulary as REVIEW_SCHEMA (D1: one
+// vocabulary, one consequence). 'blocked'/'blockedReason' are for the agent
+// itself failing its job (e.g. the plan file could not be read) — distinct
+// from findings, which are the agent's judgement about the plan's content.
+const PLANCHECK_SCHEMA = {
+  type: 'object',
+  properties: {
+    findings: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          taskId: { type: 'string' },
+          severity: { type: 'string', enum: ['BLOCKING', 'IMPORTANT', 'SUGGESTION'] },
+          text: { type: 'string' },
+        },
+        required: ['taskId', 'severity', 'text'],
+        additionalProperties: false,
+      },
+    },
+    blocked: { type: 'boolean' },
+    blockedReason: { type: 'string' },
+  },
+  required: ['findings', 'blocked', 'blockedReason'],
   additionalProperties: false,
 }
 
@@ -447,10 +486,218 @@ function reviewerPolicyBlock() {
   return ''
 }
 
+// D1/D2 as executable policy, not just prose in the prompt. Pure so it can be
+// extracted and run by tests the same way implementerPolicyBlock/reviewerPolicyBlock
+// already are: review result (+ round bookkeeping) in, one decision out.
+//   approve   — gate green and zero BLOCKING findings, whatever the reviewer's verdict said
+//   fix       — a round is spent; the fix agent gets BLOCKING+IMPORTANT only (D1: SUGGESTION never costs a round)
+//   escalate  — the reviewer flagged a judgement only the human can make
+//   reject    — not approvable and no rounds remain
+function decideRound(review, round, maxRounds) {
+  const RECOGNIZED_SEVERITIES = ['BLOCKING', 'IMPORTANT', 'SUGGESTION']
+  const rawFindings = review.findings || []
+  const findings = rawFindings.map((f) =>
+    typeof f === 'string' ? { severity: 'IMPORTANT', text: f } : f
+  )
+  const sev = (f) => String(f.severity || '').toUpperCase()
+  // A finding "arrived untagged" if it was a plain string, or an object whose
+  // severity is missing or not one of the three recognized words. Both get
+  // normalized to IMPORTANT above for display, but that normalization must
+  // not silently unlock D2's override below — the reviewer never spoke the
+  // vocabulary D2 is judging against.
+  // Zero findings with a CHANGES_REQUESTED verdict is the same violation as
+  // untagged ones, only worse: the reviewer spoke the vocabulary LESS. The
+  // gate CLI refuses to record that episode; the loop must not quietly merge
+  // on it either.
+  const spokeNoVocabulary =
+    rawFindings.length === 0 ||
+    rawFindings.some((f) => typeof f === 'string' || !RECOGNIZED_SEVERITIES.includes(sev(f)))
+  const hasUntagged = spokeNoVocabulary
+  const blocking = findings.filter((f) => sev(f) === 'BLOCKING')
+  const fixWorthy = findings.filter((f) => sev(f) === 'BLOCKING' || sev(f) === 'IMPORTANT')
+  const gateGreen = !!review.gateGreen
+
+  if (review.needsHumanDecision) {
+    return {
+      decision: 'escalate',
+      findings,
+      humanDecisionReason: review.humanDecisionReason || 'a supervised task needs your verdict',
+    }
+  }
+
+  if (gateGreen && blocking.length === 0) {
+    if (hasUntagged && !review.approved) {
+      // The gate.record_review CLI refuses this exact input (CHANGES_REQUESTED
+      // with no BLOCKING-tagged finding). Silently overriding it to approve
+      // here would be quieter than that refusal and would merge a branch the
+      // reviewer asked to change — the precise false green this loop exists
+      // to prevent. Spend a round instead of trusting a vocabulary the
+      // reviewer never actually spoke.
+      // ...but never past the cap: on the final round a fix agent's commits
+      // can no longer be re-reviewed, so dispatching one is pure unreviewed
+      // spend — the exact cost this change exists to remove (round-5 finding).
+      if (round >= maxRounds) {
+        return {
+          decision: 'reject',
+          findings: fixWorthy,
+          reason: 'round cap reached with a vocabulary-less CHANGES_REQUESTED — not approved, not worth an unreviewable fix round',
+        }
+      }
+      return {
+        decision: 'fix',
+        findings: fixWorthy,
+        reason:
+          "the reviewer requested changes with untagged findings — D2's override cannot be applied to a vocabulary the reviewer did not speak",
+      }
+    }
+    // Symmetric to the red-gate override below: D2 says CHANGES_REQUESTED
+    // requires a BLOCKING finding, so a reviewer that said CHANGES_REQUESTED
+    // anyway with none is overridden to approve, not trusted at face value.
+    const overridden = !review.approved
+    return {
+      decision: 'approve',
+      findings,
+      overridden,
+      overrideReason: overridden
+        ? 'gate green and no BLOCKING findings, but the reviewer said CHANGES_REQUESTED — D2 requires a BLOCKING finding for that verdict'
+        : '',
+    }
+  }
+
+  const reason = !gateGreen
+    ? 'the mechanical gate is red; it must be green before approval'
+    : `${blocking.length} BLOCKING finding(s)`
+
+  if (round >= maxRounds) {
+    return { decision: 'reject', findings, reason }
+  }
+  return { decision: 'fix', findings: fixWorthy, reason }
+}
+
+// A red gate can produce a 'fix' decision with zero fixWorthy findings (an
+// APPROVED verdict carries no BLOCKING findings per D2), which would render
+// the fix prompt with an empty list and no statement that the gate is red.
+// This prepends the gate's own reason as a synthetic BLOCKING finding so the
+// fix agent is always told what actually forces the round.
+function buildFixFindings(review, decision) {
+  const base = decision.findings || []
+  // A fix round needs at least one concrete instruction. Two ways to arrive
+  // with none: a red gate (the failure IS the finding), or a reviewer that
+  // requested changes while speaking no vocabulary at all — empty findings.
+  // In both, the synthesized reason becomes the brief; an empty numbered list
+  // would send an agent to fix nothing.
+  if (!review.gateGreen || base.length === 0) {
+    return [{ severity: 'BLOCKING', text: decision.reason || 'the review gate did not pass' }, ...base]
+  }
+  return base
+}
+
+// Pure and self-contained (only `planPath` in scope) so it can be extracted the
+// same way decideRound is: a regex pull of the source plus `new Function`,
+// proving the actual shipped prompt rather than a restatement of it.
+// Exactly four lenses (no more, no fewer) — each one a failure mode this repo
+// hit for real, not a generic "review the plan" ask.
+function buildPlanCheckPrompt(planPath, taskIds) {
+  const scope = (taskIds || []).length
+    ? `Judge ONLY these tasks — the ones THIS run will execute: [${taskIds.join(', ')}]. Completed ` +
+      `tasks and tasks excluded from this run are not yours to judge: a defect there cannot waste ` +
+      `this run's implementers, and stopping for it would be a false stop.\n\n`
+    : ''
+  return (
+    scope +
+    `You are the PLAN-CHECK agent. Your ONLY job is to critique the plan's own text before any ` +
+    `implementer is paid to build it. Read ONLY ${planPath}. Do NOT read, grep, open, or explore ` +
+    `any other file in the repository — the codebase does not exist yet as far as you are concerned; ` +
+    `judging it against code is out of scope for this agent.\n\n` +
+    `Apply exactly these four lenses to every task in the plan:\n` +
+    `  1. Criteria that cannot be checked as written — vague or unfalsifiable acceptance text a ` +
+    `verifier could not mechanically confirm or deny.\n` +
+    `  2. Verifications that are unbounded — a command that runs the whole suite where one test or ` +
+    `one file would prove the criterion, burning far more context than the task needs.\n` +
+    `  3. Criteria satisfiable in letter by a test whose fixture avoids the case it claims to cover — ` +
+    `the failure this repo produced five times: a test that passes without ever exercising the real path.\n` +
+    `  4. Tasks that contradict the plan's own Scope or dependency order — touching something the plan ` +
+    `marks out of scope, or depending on a task that has not run yet.\n\n` +
+    `For every issue found, report one finding with the offending task's id, a severity of BLOCKING, ` +
+    `IMPORTANT, or SUGGESTION (BLOCKING only for something that would waste an implementer's run), and ` +
+    `a one-sentence 'text'. Report zero findings if the plan holds up under all four lenses.\n` +
+    `Set blocked=true only if you could not read or parse the plan file itself; that is a fault in the ` +
+    `check, not a judgement about its content.`
+  )
+}
+
+// Pure: findings in, one decision out. D4 — a BLOCKING plan finding stops the
+// run before any implementer is paid; anything else is carried in the return
+// value without stopping anything.
+// Pure so tests can execute it rather than grep for its call site.
+function shouldRunPlanCheck(args) {
+  return !args || args.planCheck !== false
+}
+
+function decidePlanCheck(findings, runIds) {
+  const list = (findings || []).map((f) =>
+    typeof f === 'string' ? { taskId: '', severity: 'IMPORTANT', text: f } : f
+  )
+  const sev = (f) => String(f.severity || '').toUpperCase()
+  const inRun = (f) => {
+    // A finding with no taskId is plan-LEVEL (a Scope contradiction, a broken
+    // dependency order) — it concerns the whole run, so it may stop it. A
+    // finding pinned to a task this run will not execute cannot waste this
+    // run's implementers, and stopping for it would be the false stop the
+    // scoping exists to prevent.
+    if (!f.taskId) return true
+    if (!runIds || !runIds.length) return true
+    return runIds.includes(String(f.taskId).toUpperCase())
+  }
+  const blocking = list.filter((f) => sev(f) === 'BLOCKING' && inRun(f))
+  if (blocking.length) {
+    return {
+      decision: 'stop',
+      findings: list,
+      reason: `${blocking.length} BLOCKING plan finding(s) — stopping before Isolate (D4)`,
+    }
+  }
+  return { decision: 'continue', findings: list }
+}
+
 const closeCmd =
   ctx.tracker === 'beads'
     ? (id) => `'bd close ${id} --reason "<what landed>"' and '${REIN} close ${id} --root ${WD}'`
     : (id) => `'${REIN} close ${id} --root ${WD}' (ticks the checkbox deterministically — do not hand-edit the plan)`
+
+// ── Phase 1.3: PLAN CHECK — catch plan defects before paying implementers ───
+// D4: a BLOCKING plan finding stops the run before any implementer is paid.
+// One agent, no retries beyond agentRetry's standard, no second opinion, no
+// per-task fan-out — the check must cost less than the mistake it prevents.
+// A dead checker degrades to a logged warning: a run must never be lost to
+// the thing meant to protect it.
+let planFindings = []
+if (shouldRunPlanCheck(ARGS)) {
+  phase('PlanCheck')
+  const planCheck = await agentRetry(
+    buildPlanCheckPrompt(ctx.planPath, tasks.map((t) => t.id)),
+    { schema: PLANCHECK_SCHEMA, label: 'plan-check', phase: 'PlanCheck', agentType: 'general-purpose', effort: 'low', model: MODEL_IMPL }
+  )
+  if (!planCheck || planCheck.blocked) {
+    const why = planCheck ? planCheck.blockedReason || 'could not read the plan' : 'the plan-check agent died'
+    log(`⚠️ plan check unavailable (${why}) — continuing without it`)
+  } else {
+    const verdict = decidePlanCheck(planCheck.findings, tasks.map((t) => t.id))
+    for (const f of verdict.findings) {
+      const marker = f.severity === 'BLOCKING' ? '⛔' : f.severity === 'IMPORTANT' ? '⚠️' : 'ℹ️'
+      log(`  ${marker} plan-check [${f.taskId || '?'}] ${f.severity}: ${f.text}`)
+    }
+    if (verdict.decision === 'stop') {
+      log(`⛔ plan check: ${verdict.reason}`)
+      return { ok: false, phase: 'PlanCheck', problem: verdict.reason, findings: verdict.findings }
+    }
+    // Non-blocking plan-check findings are carried, not dropped — symmetric to
+    // how review's non-blocking observations survive into openFindings below.
+    planFindings = verdict.findings
+  }
+} else {
+  log('plan check skipped (planCheck: false)')
+}
 
 // ── Phase 1.5: ISOLATE — one worktree + branch per run ──────────────────────
 // Running loops in parallel is then safe with no per-run decision, and an
@@ -757,6 +1004,10 @@ if (gateContradiction) {
           `coherence defects BETWEEN tasks are the ones nobody else will ever see.\n` +
           `3. COVERAGE: verify each task in ${ctx.planPath} genuinely meets its acceptance criteria, and that no ` +
           `checkbox was ticked without them being met.\n\n` +
+          `Tag every finding with a severity: BLOCKING (a real defect — repeats the round), IMPORTANT (worth fixing, ` +
+          `travels to the fix agent only if a round happens anyway), or SUGGESTION (recorded and reported, never ` +
+          `costs a round on its own). CHANGES_REQUESTED requires at least one BLOCKING finding; APPROVED tolerates ` +
+          `none — do not return either verdict without matching findings.\n\n` +
           `ESCALATION: if the ONLY thing blocking approval is a judgement solely the owner can give (a supervised ` +
           `task whose acceptance is "the owner confirms", closed by proxy without their real verdict), do NOT ` +
           `return CHANGES_REQUESTED — the implementer cannot fix it, so another round is wasted time. Return ` +
@@ -786,33 +1037,49 @@ if (gateContradiction) {
       continue
     }
 
-    lastFindings = review.findings || []
     lastVerdict = review.verdict || ''
     gateOutput = review.gateOutput || gateOutput
 
-    if (review.needsHumanDecision) {
+    const decision = decideRound(review, round, ROUNDS)
+    lastFindings = decision.findings || []
+
+    if (decision.decision === 'escalate') {
       needsHumanDecision = true
-      humanDecisionReason = review.humanDecisionReason || 'a supervised task needs your verdict'
+      humanDecisionReason = decision.humanDecisionReason
       lastVerdict = `escalated to the owner: ${humanDecisionReason}`
       log(`✋ the reviewer ESCALATES (the implementer cannot resolve it) — ${humanDecisionReason}`)
       break
     }
 
-    if (review.approved && review.gateGreen) {
+    if (decision.decision === 'approve') {
       approved = true
-      log(`✅ APPROVED in round ${round}`)
+      if (decision.overridden) {
+        // Symmetric to the red-gate override below: D2 says CHANGES_REQUESTED
+        // needs a BLOCKING finding, so a bare CHANGES_REQUESTED with none is
+        // overridden rather than trusted at face value.
+        lastVerdict = 'APPROVED (loop override: gate green, zero BLOCKING findings)'
+        log(`⚠️ reviewer said CHANGES_REQUESTED but gate is green with zero BLOCKING findings — overriding to APPROVED`)
+      } else {
+        log(`✅ APPROVED in round ${round}`)
+      }
       break
     }
+
+    if (decision.decision === 'reject') {
+      lastVerdict = `CHANGES_REQUESTED (${decision.reason}) — no review rounds remain`
+      log(`⛔ round ${round}: ${decision.reason}, and no rounds remain`)
+      break
+    }
+
+    // decision.decision === 'fix'
     if (review.approved && !review.gateGreen) {
       // Approving with a red gate is exactly the false green this loop exists to
       // prevent, so the loop overrides the reviewer rather than trusting it.
       log(`⚠️ reviewer said APPROVED with a RED gate — overriding to CHANGES_REQUESTED`)
       lastVerdict = 'CHANGES_REQUESTED (loop override: approved with a red gate)'
-      lastFindings = ['the mechanical gate is red; it must be green before approval', ...lastFindings]
     }
-
-    log(`↻ round ${round}: CHANGES_REQUESTED with ${lastFindings.length} finding(s) -> back to the implementer`)
-    if (round === ROUNDS) break
+    lastFindings = buildFixFindings(review, decision)
+    log(`↻ round ${round}: CHANGES_REQUESTED with ${lastFindings.length} BLOCKING/IMPORTANT finding(s) (SUGGESTIONs excluded) -> back to the implementer`)
 
     let fix
     try {
@@ -821,7 +1088,7 @@ if (gateContradiction) {
           `Tasks implemented in this run: ${implemented.map((r) => r.id).join(', ')}\n` +
           `Fix THESE findings, with tests, leaving the affected tasks' verification green` +
           (gateCmds.length ? ` (plus ${gateCmds.join(' and ')})` : '') + `, and commit:\n` +
-          lastFindings.map((f, i) => `${i + 1}. ${f}`).join('\n') +
+          lastFindings.map((f, i) => `${i + 1}. [${f.severity}] ${f.text}`).join('\n') +
           `\nWork FOCUSED with BOUNDED verification (one test/file, NOT the whole suite, no full output dumps): ` +
           `the loop's cost is re-read context — do not inflate yours.\n` +
           `If a finding seems wrong, do NOT ignore it silently: fix the rest and explain in the summary why that ` +
@@ -889,7 +1156,12 @@ return {
   implementedByProxy: results.filter((r) => r.status === 'implemented-proxy').map((r) => r.id),
   needsHuman: results.filter((r) => r.status === 'needs-human').map((r) => r.id),
   problems: incomplete.filter((r) => r.status !== 'needs-human'),
-  openFindings: approved ? [] : lastFindings,
+  // Non-blocking observations survive an approval too — AC5, D1: SUGGESTION/IMPORTANT
+  // findings on an approved run are still reported, never silently dropped.
+  openFindings: lastFindings,
+  // Non-blocking plan-check findings (D4's continue half): logged above and
+  // carried here so nothing the plan-checker noticed is silently dropped.
+  planFindings,
   // Measure the run: turns/agent, ctx_max/turn and Opus share are what predict cost.
   measure: `${REIN} token-report`,
 }

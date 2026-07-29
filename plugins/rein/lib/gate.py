@@ -31,6 +31,42 @@ import plan as _plan
 EPISODE_DIR = ".rein/reviews"
 VERDICTS = ("APPROVED", "CHANGES_REQUESTED")
 IMPLEMENTER = "implementer"
+SEVERITIES = ("BLOCKING", "IMPORTANT", "SUGGESTION")
+DEFAULT_SEVERITY = "IMPORTANT"
+
+
+def _parse_finding(raw) -> dict:
+    """Split a finding string into {"severity", "text"} on a known prefix.
+
+    Only the fixed severity words are recognized as prefixes -- a finding
+    whose own text contains a colon (e.g. "BLOCKING: SQL query: no params")
+    must not be mis-split, so this never does a naive partition on the first
+    colon it finds. Untagged text defaults to IMPORTANT (D1: never silently
+    to the mildest level, SUGGESTION).
+    """
+    if isinstance(raw, dict):
+        severity = str(raw.get("severity", DEFAULT_SEVERITY)).strip().upper()
+        if severity not in SEVERITIES:
+            severity = DEFAULT_SEVERITY
+        # str() so a machine-written episode with a numeric text fails later as
+        # a validation error, not as an AttributeError mid-record.
+        return {"severity": severity, "text": str(raw.get("text", ""))}
+    # Strip FIRST: the CLI splits --findings on '|', which leaves the natural
+    # spelling "IMPORTANT: a | BLOCKING: b" with a leading space on every
+    # finding after the first. Matching the prefix against the raw string made
+    # " BLOCKING: x" read as IMPORTANT — and D2's APPROVED-with-blocker
+    # refusal silently failed open on exactly the documented input shape.
+    text = str(raw).strip()
+    for severity in SEVERITIES:
+        prefix = f"{severity}:"
+        if text[: len(prefix)].upper() == prefix:
+            return {"severity": severity, "text": text[len(prefix):].strip()}
+    return {"severity": DEFAULT_SEVERITY, "text": text}
+
+
+def _normalize_findings(raw_findings) -> list[dict]:
+    """Read findings of either shape (old plain strings, new tagged dicts)."""
+    return [_parse_finding(f) for f in (raw_findings or [])]
 
 
 # ------------------------------------------------------------- next task --
@@ -133,6 +169,19 @@ def record_review(
     if not files:
         raise ValueError("reviewed_files cannot be empty -- declare what you actually inspected")
 
+    parsed_findings = _normalize_findings(findings)
+    if any(not f["text"].strip() for f in parsed_findings):
+        raise ValueError("a finding must carry non-empty text -- an empty finding informs no one")
+    has_blocking = any(f["severity"] == "BLOCKING" for f in parsed_findings)
+    if verdict == "CHANGES_REQUESTED" and not has_blocking:
+        raise ValueError(
+            "D2: CHANGES_REQUESTED requires at least one BLOCKING finding"
+        )
+    if verdict == "APPROVED" and has_blocking:
+        raise ValueError(
+            "D2: APPROVED tolerates no BLOCKING findings"
+        )
+
     root = os.path.abspath(root)
     reviewed: dict[str, str] = {}
     missing: list[str] = []
@@ -153,7 +202,7 @@ def record_review(
         "agent": agent or reviewer.strip(),
         "reviewed_files": reviewed,
         "reviewed_state_hash": state_hash(reviewed),
-        "findings": findings,
+        "findings": parsed_findings,
         "timestamp_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
 
@@ -230,5 +279,5 @@ def check_review(root: str, change: str = "") -> dict:
         "stale": stale,
         "changed": changed,
         "episode": episode.get("path", ""),
-        "findings": episode.get("findings", []),
+        "findings": _normalize_findings(episode.get("findings", [])),
     }

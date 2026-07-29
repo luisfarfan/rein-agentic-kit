@@ -63,6 +63,63 @@ class BaselineCliFixture(unittest.TestCase):
         )
 
 
+class ReviewCliFixture(unittest.TestCase):
+    """Round-trip `rein review record` -> `rein review check` as real subprocesses.
+
+    T001 AC4 ('`rein review check` prints each finding with its severity') is
+    only proven end-to-end here: the '|'-splitting of --findings and the
+    `finding [{severity}]: {text}` formatting in bin/rein are both bypassed by
+    tests/test_gate.py, which calls gate.record_review/check_review directly.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = self.tmp.name
+        with open(os.path.join(self.root, "a.py"), "w", encoding="utf-8") as fh:
+            fh.write("print('hi')\n")
+
+    def _run(self, *args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [sys.executable, REIN_BIN, "review", *args],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+
+
+class TestReviewSeverityRoundTrip(ReviewCliFixture):
+    def test_record_then_check_prints_each_finding_with_its_severity(self):
+        record = self._run(
+            "record", "--root", self.root, "--change", "demo",
+            "--verdict", "CHANGES_REQUESTED", "--files", "a.py",
+            "--findings", "BLOCKING: fix the thing|SUGGESTION: rename this var",
+            "--reviewer", "reviewer-agent",
+        )
+        self.assertEqual(record.returncode, 0, record.stdout + record.stderr)
+
+        result = self._run("check", "--root", self.root, "--change", "demo")
+        self.assertEqual(result.returncode, 1)  # CHANGES_REQUESTED never satisfies the gate
+        self.assertIn("finding [BLOCKING]: fix the thing", result.stdout)
+        self.assertIn("finding [SUGGESTION]: rename this var", result.stdout)
+
+    def test_approved_check_also_prints_its_findings(self):
+        # An APPROVED episode can still carry IMPORTANT/SUGGESTION findings
+        # (D1) -- the ok path must report them too, not just the failing path.
+        record = self._run(
+            "record", "--root", self.root, "--change", "demo2",
+            "--verdict", "APPROVED", "--files", "a.py",
+            "--findings", "SUGGESTION: consider a docstring",
+            "--reviewer", "reviewer-agent",
+        )
+        self.assertEqual(record.returncode, 0, record.stdout + record.stderr)
+
+        result = self._run("check", "--root", self.root, "--change", "demo2")
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("APPROVED and current", result.stdout)
+        self.assertIn("finding [SUGGESTION]: consider a docstring", result.stdout)
+
+
 class TestExitCodes(BaselineCliFixture):
     def test_no_subcommand_exits_2(self):
         result = self._run()

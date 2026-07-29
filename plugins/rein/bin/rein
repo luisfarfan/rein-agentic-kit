@@ -171,12 +171,14 @@ def cmd_review(argv: list[str]) -> int:
         result = _gate.check_review(root, change)
         if result["ok"]:
             print(f"APPROVED and current -- reviewed by {result['reviewer']} ({result['episode']})")
+            for f in result.get("findings", [])[:10]:
+                print(f"  finding [{f['severity']}]: {f['text']}")
             return 0
         print(f"gate NOT satisfied: {result['reason']}")
         if result["changed"]:
             print("  changed since approval: " + ", ".join(result["changed"][:10]))
         for f in result.get("findings", [])[:10]:
-            print(f"  finding: {f}")
+            print(f"  finding [{f['severity']}]: {f['text']}")
         return 1
 
     print(f"unknown review subcommand: {sub}\n\nusage: rein review <record|check> [...]")

@@ -22,7 +22,8 @@ R=$(command -v rein || ls -d ~/.claude/plugins/cache/*/rein/*/bin/rein 2>/dev/nu
    `git diff <base>...<branch>`.
 2. **Mechanical part.** Run the project's configured `test`, `lint` and `typecheck`
    (`"$R" detect .`). If any is red the verdict **cannot** be `APPROVED` however good the
-   code reads — record `CHANGES_REQUESTED` with the failing commands as findings. If a slot
+   code reads — record `CHANGES_REQUESTED` with the failing commands as `BLOCKING` findings
+   (a red gate is by definition a blocker; see the severity vocabulary in step 7). If a slot
    is not configured, say it is absent rather than substituting one. If `verifyPolicy.mode`
    is `rendered`, a green suite with no observed render is **not** a complete gate.
 3. **Judgement — five axes.** Delegate to the `agent-skills:code-reviewer` agent over the
@@ -46,11 +47,16 @@ R=$(command -v rein || ls -d ~/.claude/plugins/cache/*/rein/*/bin/rein 2>/dev/nu
 
    ```bash
    "$R" review record --change <name> --verdict APPROVED|CHANGES_REQUESTED \
-     --files <comma-separated> --reviewer <who-you-are> --findings "one|per|pipe"
+     --files <comma-separated> --reviewer <who-you-are> \
+     --findings "BLOCKING: ...|IMPORTANT: ...|SUGGESTION: ..."
    ```
 
-   It refuses an empty file list, a missing reviewer, and `implementer` as the actor. It
-   stores a content hash per file plus a state hash over the set.
+   Every finding must be prefixed with one of the three severities — `BLOCKING` (must fix,
+   costs a round), `IMPORTANT` (should fix, does not by itself block `APPROVED`), or
+   `SUGGESTION` (never costs a round). `CHANGES_REQUESTED` requires at least one `BLOCKING`
+   finding; `APPROVED` tolerates none (D2) — a verdict that violates this is refused, not
+   recorded. It also refuses an empty file list, a missing reviewer, and `implementer` as the
+   actor. It stores a content hash per file plus a state hash over the set.
 8. Report the verdict and, if `CHANGES_REQUESTED`, the findings the implementer needs. Make
    them precise enough to act on without asking you anything: file, what is wrong, what is
    missing. **Stop.**
