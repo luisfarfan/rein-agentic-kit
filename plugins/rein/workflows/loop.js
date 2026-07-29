@@ -660,6 +660,60 @@ function decidePlanCheck(findings, runIds) {
   return { decision: 'continue', findings: list }
 }
 
+// D4: no reachable browser tool is an explicit, carried outcome — never a
+// silent pass, never a hard stop. Pure so it is executed by tests instead of
+// asserted by comment; also what the Verify phase itself calls, so the
+// dispatch decision under test IS the one that runs.
+function decideRenderDispatch(verifyPolicy) {
+  const vp = verifyPolicy || { mode: '', tools: [] }
+  if (vp.mode !== 'rendered') return { dispatch: false, unverified: false, reason: '' }
+  if (!(vp.tools || []).length) return { dispatch: false, unverified: true, reason: 'no browser tool reachable' }
+  return { dispatch: true, unverified: false, reason: '' }
+}
+
+// D3 as executable policy: 'rendered: true' with no facts alongside it is a
+// failed render, whatever the agent claims. Pure so it is executed by tests.
+function decideRenderOutcome(render) {
+  const r = render || {}
+  const status = r.httpStatus
+  const statusOk = typeof status === 'number' && status >= 200 && status < 300
+  const evidence = Array.isArray(r.evidence) ? r.evidence : []
+  if (!r.rendered) return { failed: true, reason: 'rendered=false' }
+  if (!statusOk) {
+    return {
+      failed: true,
+      reason: `httpStatus ${status === undefined || status === null ? 'is absent' : `${status} is not 2xx`}`,
+    }
+  }
+  if (evidence.length === 0) return { failed: true, reason: 'rendered=true but evidence is empty' }
+  return { failed: false, reason: '' }
+}
+
+// The ONE additional Verify-phase agent for mode:'rendered' (D1: it implements
+// nothing, only observes). Built ONLY from its own arguments so it can never
+// name a tool the caller did not pass — the caller passes ONLY
+// verifyPolicy.tools, already filtered to what is actually reachable.
+function buildRenderPrompt(command, url, tools) {
+  const toolList = (tools || []).join(', ')
+  return (
+    `You are the RENDER agent for the Verify phase. You implement NOTHING, edit NOTHING, commit NOTHING — ` +
+    `you only observe and report facts.\n` +
+    `1. Confirm the app boots cleanly and deterministically, before touching a browser tool: run ` +
+    `'rein serve-probe --command '${command}' --url ${url}'. It starts the process group, polls ${url} for a ` +
+    `real TCP accept, and tears the whole group down for you. Use it for BOTH startup and teardown — do NOT ` +
+    `background the server yourself (no '&', no nohup, no manual kill) at any point (D2).\n` +
+    `2. Render ${url} using ${toolList || '(no browser tool is reachable — do not invent one)'}: let the tool own ` +
+    `its own server start/stop for the actual observation, never a bash background job. OBSERVE the HTTP status ` +
+    `of the initial load, the page <title>, and any uncaught console errors.\n` +
+    `3. Report exactly these fields: rendered (boolean — did a page genuinely load), httpStatus (number, 0 if ` +
+    `unknown), title (string), consoleErrors (array of strings, [] if none), evidence (array of concrete facts ` +
+    `you observed, e.g. ["HTTP 200", "title: Dashboard", "0 console errors"] — NEVER a summary sentence), and ` +
+    `notes (free text for anything else).\n` +
+    `'rendered: true' with an empty 'evidence' array is not a passed render (D3) — it is a claim with nothing ` +
+    `behind it.`
+  )
+}
+
 const closeCmd =
   ctx.tracker === 'beads'
     ? (id) => `'bd close ${id} --reason "<what landed>"' and '${REIN} close ${id} --root ${WD}'`
@@ -925,7 +979,24 @@ const GATE_SCHEMA = {
   additionalProperties: false,
 }
 
+const RENDER_SCHEMA = {
+  type: 'object',
+  properties: {
+    rendered: { type: 'boolean' },
+    httpStatus: { type: 'number' },
+    title: { type: 'string' },
+    consoleErrors: { type: 'array', items: { type: 'string' } },
+    evidence: { type: 'array', items: { type: 'string' } },
+    notes: { type: 'string' },
+  },
+  required: ['rendered', 'httpStatus', 'title', 'consoleErrors', 'evidence', 'notes'],
+  additionalProperties: false,
+}
+
 let gateContradiction = ''
+// D3: facts the loop can check, never a sentence. null in every mode other
+// than 'rendered' (AC5: nothing changes for library, CLI or backend projects).
+let renderEvidence = null
 if (results.some((r) => r.status === 'implemented' || r.status === 'implemented-proxy')) {
   phase('Verify')
   const gate = await agentRetry(
@@ -949,6 +1020,31 @@ if (results.some((r) => r.status === 'implemented' || r.status === 'implemented-
     }
   } else {
     log(`⚠️ gate agent died — proceeding, but the pass-level claim is unverified`)
+  }
+
+  // ── Render (mode: 'rendered' only, additive) — the ONE extra agent D1 asks
+  // for, dispatched with the SAME phase('Verify') as the gate above.
+  if (VERIFY_POLICY.mode === 'rendered') {
+    const dispatch = decideRenderDispatch(VERIFY_POLICY)
+    const empty = { rendered: false, httpStatus: 0, title: '', consoleErrors: [], evidence: [], notes: '' }
+    if (!dispatch.dispatch) {
+      renderEvidence = { status: 'rendered-unverified', reason: dispatch.reason, ...empty }
+      log(`⚠️ rendered-unverified: ${dispatch.reason} — Verify continues, nothing stops`)
+    } else {
+      const render = await agentRetry(
+        buildRenderPrompt(SERVE.command, SERVE.url, VERIFY_POLICY.tools),
+        { schema: RENDER_SCHEMA, label: 'render', phase: 'Verify', agentType: 'general-purpose', effort: 'low', model: MODEL_AUX }
+      )
+      if (!render) {
+        renderEvidence = { status: 'rendered-unverified', reason: 'the render agent died', ...empty }
+        log(`⚠️ rendered-unverified: the render agent died`)
+      } else {
+        const outcome = decideRenderOutcome(render)
+        renderEvidence = { status: outcome.failed ? 'failed' : 'passed', reason: outcome.reason, ...render }
+        if (outcome.failed) log(`⛔ render failed: ${outcome.reason}`)
+        else log(`✔ render observed: HTTP ${render.httpStatus}, ${render.evidence.length} fact(s)`)
+      }
+    }
   }
 }
 
@@ -999,6 +1095,11 @@ if (gateContradiction) {
           `and put their LITERAL output (trimmed to what matters) in 'gateOutput', with gateGreen set honestly. ` +
           `If anything is red the verdict CANNOT be APPROVED, however good the code reads.\n` +
           reviewerPolicyBlock() +
+          (renderEvidence && renderEvidence.status === 'failed'
+            ? `RENDER EVIDENCE (already gathered this Verify phase, do not re-run): rendered=${renderEvidence.rendered}, ` +
+              `httpStatus=${renderEvidence.httpStatus}, evidence=${JSON.stringify(renderEvidence.evidence)} — failed: ` +
+              `${renderEvidence.reason}. Treat this as a finding: this change's render is FAILED, not passed.\n`
+            : '') +
           `2. JUDGEMENT over the full diff ('git -C ${WD} diff ${BASE}...${BRANCH}' or the run's commits), on five ` +
           `axes: correctness, readability, architecture, security, performance. Look at the change AS A WHOLE — ` +
           `coherence defects BETWEEN tasks are the ones nobody else will ever see.\n` +
@@ -1162,6 +1263,9 @@ return {
   // Non-blocking plan-check findings (D4's continue half): logged above and
   // carried here so nothing the plan-checker noticed is silently dropped.
   planFindings,
+  // D3/AC4: facts the loop can check, carried whatever the verdict — null in
+  // every mode other than 'rendered'.
+  renderEvidence,
   // Measure the run: turns/agent, ctx_max/turn and Opus share are what predict cost.
   measure: `${REIN} token-report`,
 }
