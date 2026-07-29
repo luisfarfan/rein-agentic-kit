@@ -451,12 +451,19 @@ function implementerPolicyBlock() {
       // The requirement text comes from VERIFY_POLICY.requires, not a second
       // English restatement of it here: two copies of one rule drift apart with
       // nothing failing, and a future mode would silently get no requirement.
-      `RENDERED VERIFICATION REQUIRED (mode: rendered): ${VERIFY_POLICY.requires.join('; ')}. ` +
-      `A green ${ctx.stack} test suite does NOT make this task done by itself. Serve it — ` +
+      // D1: the render happens in Verify, by an agent that implemented nothing
+      // — NOT here. Telling the implementer to "serve and render" is the exact
+      // unsatisfiable instruction this policy exists to remove: only ask for
+      // what the implementer can honestly state (does it boot cleanly with the
+      // serve command), never for an observation only the render agent makes.
+      `RENDERED VERIFICATION (mode: rendered): ${VERIFY_POLICY.requires.join('; ')}. A green ${ctx.stack} test ` +
+      `suite does NOT make this task done by itself, but rendering it is NOT your job — a separate agent that ` +
+      `implemented nothing renders and observes it independently in the Verify phase after this run (D1), using ` +
       `${SERVE.command || '(no serve command is configured; say so rather than inventing one)'}` +
-      `${SERVE.url ? ` at ${SERVE.url}` : ''} — and render it` +
-      `${VERIFY_POLICY.tools.length ? ` (available: ${VERIFY_POLICY.tools.join(', ')})` : ''}. Record what you ` +
-      `OBSERVED — not just that the test suite passed — in 'verification'.\n`
+      `${SERVE.url ? ` at ${SERVE.url}` : ''}` +
+      `${VERIFY_POLICY.tools.length ? ` and ${VERIFY_POLICY.tools.join(', ')}` : ''}. Leave the app able to boot ` +
+      `cleanly with that command — that you CAN honestly verify, so do it — and do NOT serve it, render it, or ` +
+      `write a render claim into 'verification' yourself; that claim would be unfalsifiable coming from you.\n`
     )
   }
   if (VERIFY_POLICY.mode === 'plan-only' && VERIFY_POLICY.forbids.length) {
@@ -471,11 +478,17 @@ function implementerPolicyBlock() {
 function reviewerPolicyBlock() {
   if (VERIFY_POLICY.mode === 'rendered') {
     return (
+      // D1: the implementer never rendered anything to self-report, so this
+      // must not send the reviewer looking for a note the implementer had no
+      // honest way to write. The render outcome comes from the loop's own
+      // Verify phase (the RENDER EVIDENCE block appended below), not from the
+      // implementer's 'verification' text.
       `This project's policy is 'rendered': the mechanical gate is INCOMPLETE without observed render evidence — ` +
-      `a green test suite with a FAILED or ABSENT render is NOT grounds for APPROVED. Confirm the implementer recorded ` +
-      `what was served${SERVE.url ? ` (${SERVE.url})` : ''} and rendered, not just that tests passed; if the render ` +
-      `failed, that alone is a CHANGES_REQUESTED finding. If no render was possible at all (no browser tool reachable), ` +
-      `that is a DIFFERENT fact — 'rendered-unverified' — state it plainly but it does not by itself block APPROVED.\n`
+      `a green test suite with a FAILED or ABSENT render is NOT grounds for APPROVED. The render was gathered ` +
+      `independently this Verify phase against ${SERVE.url || 'the served app'} (D1) — judge the RENDER EVIDENCE ` +
+      `block below, NOT any claim in the implementer's own notes about serving or rendering. If it says FAILED, ` +
+      `that alone is a CHANGES_REQUESTED finding. If it says 'rendered-unverified' (no browser tool reachable), ` +
+      `that is a DIFFERENT fact — 'we could not look' — state it plainly but it does not by itself block APPROVED.\n`
     )
   }
   if (VERIFY_POLICY.mode === 'plan-only' && VERIFY_POLICY.forbids.length) {
@@ -534,6 +547,7 @@ function decideRound(review, round, maxRounds, render) {
       findings,
       humanDecisionReason: review.humanDecisionReason || 'a supervised task needs your verdict',
       renderUnverified,
+      renderFailed,
     }
   }
 
@@ -554,6 +568,7 @@ function decideRound(review, round, maxRounds, render) {
           findings: fixWorthy,
           reason: 'round cap reached with a vocabulary-less CHANGES_REQUESTED — not approved, not worth an unreviewable fix round',
           renderUnverified,
+          renderFailed,
         }
       }
       return {
@@ -562,6 +577,7 @@ function decideRound(review, round, maxRounds, render) {
         reason:
           "the reviewer requested changes with untagged findings — D2's override cannot be applied to a vocabulary the reviewer did not speak",
         renderUnverified,
+        renderFailed,
       }
     }
     // Symmetric to the red-gate override below: D2 says CHANGES_REQUESTED
@@ -576,6 +592,7 @@ function decideRound(review, round, maxRounds, render) {
         ? 'gate green and no BLOCKING findings, but the reviewer said CHANGES_REQUESTED — D2 requires a BLOCKING finding for that verdict'
         : '',
       renderUnverified,
+      renderFailed,
     }
   }
 
@@ -590,9 +607,9 @@ function decideRound(review, round, maxRounds, render) {
     : `${blocking.length} BLOCKING finding(s)`
 
   if (round >= maxRounds) {
-    return { decision: 'reject', findings, reason, renderUnverified }
+    return { decision: 'reject', findings, reason, renderUnverified, renderFailed }
   }
-  return { decision: 'fix', findings: fixWorthy, reason, renderUnverified }
+  return { decision: 'fix', findings: fixWorthy, reason, renderUnverified, renderFailed }
 }
 
 // A red gate can produce a 'fix' decision with zero fixWorthy findings (an
@@ -602,12 +619,16 @@ function decideRound(review, round, maxRounds, render) {
 // fix agent is always told what actually forces the round.
 function buildFixFindings(review, decision) {
   const base = decision.findings || []
-  // A fix round needs at least one concrete instruction. Two ways to arrive
-  // with none: a red gate (the failure IS the finding), or a reviewer that
-  // requested changes while speaking no vocabulary at all — empty findings.
-  // In both, the synthesized reason becomes the brief; an empty numbered list
-  // would send an agent to fix nothing.
-  if (!review.gateGreen || base.length === 0) {
+  // A fix round needs at least one concrete instruction. Three ways to arrive
+  // with none: a red MECHANICAL gate (the failure IS the finding), a FAILED
+  // render (decision.renderFailed — the mechanical gate can be green while the
+  // render is not, per T003's decideRound, and that fact must not be silently
+  // dropped just because the reviewer also returned unrelated findings), or a
+  // reviewer that requested changes while speaking no vocabulary at all — empty
+  // findings. In all three, the synthesized reason becomes the brief; an empty
+  // numbered list would send an agent to fix nothing, and a findings list with
+  // no mention of the render would send it to fix the WRONG thing.
+  if (!review.gateGreen || decision.renderFailed || base.length === 0) {
     return [{ severity: 'BLOCKING', text: decision.reason || 'the review gate did not pass' }, ...base]
   }
   return base
@@ -714,19 +735,36 @@ function decideRenderOutcome(render) {
 // nothing, only observes). Built ONLY from its own arguments so it can never
 // name a tool the caller did not pass — the caller passes ONLY
 // verifyPolicy.tools, already filtered to what is actually reachable.
+//
+// D2 as it actually applies to a render: 'rein serve-probe' is the ONE
+// deterministic CLI that owns the whole server lifecycle, but a render needs
+// the server held up WHILE a separate browser tool navigates — the reachable
+// tools (claude-in-chrome, browser-testing, ...) only navigate, they cannot
+// start a dev server themselves. So the single-shot `--command/--url` form
+// (start, poll, tear down, return) cannot host a render: by the time it
+// returns, the server is already gone. `--start --pidfile` keeps the SAME
+// CLI owning the process group but leaves it running past the call, and
+// `--stop --pidfile` is the matching teardown — two invocations of one
+// deterministic CLI, not two different mechanisms.
 function buildRenderPrompt(command, url, tools) {
   const toolList = (tools || []).join(', ')
+  const pidfile = '.rein-render-serve.pid'
   return (
     `You are the RENDER agent for the Verify phase. You implement NOTHING, edit NOTHING, commit NOTHING — ` +
     `you only observe and report facts.\n` +
-    `1. Confirm the app boots cleanly and deterministically, before touching a browser tool: run ` +
-    `'rein serve-probe --command '${command}' --url ${url}'. It starts the process group, polls ${url} for a ` +
-    `real TCP accept, and tears the whole group down for you. Use it for BOTH startup and teardown — do NOT ` +
-    `background the server yourself (no '&', no nohup, no manual kill) at any point (D2).\n` +
-    `2. Render ${url} using ${toolList || '(no browser tool is reachable — do not invent one)'}: let the tool own ` +
-    `its own server start/stop for the actual observation, never a bash background job. OBSERVE the HTTP status ` +
-    `of the initial load, the page <title>, and any uncaught console errors.\n` +
-    `3. Report exactly these fields: rendered (boolean — did a page genuinely load), httpStatus (number, 0 if ` +
+    `1. Start the app and keep it running for the render: run ` +
+    `'rein serve-probe --command "${command}" --url ${url} --start --pidfile ${pidfile}'. It starts the process ` +
+    `group, polls ${url} for a real TCP accept, and — because of --start — leaves the group running (already its ` +
+    `own session) instead of tearing it down immediately, so step 2 has a live server to render against; do NOT ` +
+    `background the server yourself (no '&', no nohup, no manual kill) at any point (D2) — this CLI owns the ` +
+    `whole lifecycle, start through stop. If its JSON says ready=false, stop here: there is nothing to render — ` +
+    `report rendered=false with the reported error in 'notes' and skip step 3 (a failed --start already tore ` +
+    `itself down, nothing is left running).\n` +
+    `2. Render ${url} using ${toolList || '(no browser tool is reachable — do not invent one)'}. OBSERVE the HTTP ` +
+    `status of the initial load, the page <title>, and any uncaught console errors.\n` +
+    `3. Tear the app down: run 'rein serve-probe --stop --pidfile ${pidfile}'. Do this even if step 2 failed — an ` +
+    `orphaned server must never outlive this agent.\n` +
+    `4. Report exactly these fields: rendered (boolean — did a page genuinely load), httpStatus (number, 0 if ` +
     `unknown), title (string), consoleErrors (array of strings, [] if none), evidence (array of concrete facts ` +
     `you observed, e.g. ["HTTP 200", "title: Dashboard", "0 console errors"] — NEVER a summary sentence), and ` +
     `notes (free text for anything else).\n` +

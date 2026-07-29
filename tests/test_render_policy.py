@@ -9,6 +9,7 @@ silently drift from it.
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -38,12 +39,14 @@ const decideRound = new Function(
   'review', 'round', 'maxRounds', 'render',
   extract('decideRound', 'review, round, maxRounds, render')
 );
+const buildFixFindings = new Function('review', 'decision', extract('buildFixFindings', 'review, decision'));
 const scenarios = JSON.parse(scenariosJson);
 const out = scenarios.map((s) => {
   if (s.kind === 'dispatch') return decideRenderDispatch(s.verifyPolicy);
   if (s.kind === 'outcome') return decideRenderOutcome(s.render);
   if (s.kind === 'prompt') return buildRenderPrompt(s.command, s.url, s.tools);
   if (s.kind === 'round') return decideRound(s.review, s.round, s.maxRounds, s.render);
+  if (s.kind === 'fixfindings') return buildFixFindings(s.review, s.decision);
   throw new Error('unknown scenario kind: ' + s.kind);
 });
 process.stdout.write(JSON.stringify(out));
@@ -180,6 +183,45 @@ class TestBuildRenderPrompt(RenderPolicyTestCase):
         self.assertNotIn(" & ", prompt)
         self.assertIn("do NOT", prompt)
 
+    def test_multiword_command_survives_shell_quoting(self):
+        # Finding 1: the old template nested single quotes around a
+        # single-quoted command example -- `--command '${command}'` inside an
+        # outer `'...'` -- which closes the outer quote early for any
+        # multi-word command. `npm run dev` rendered as
+        # `--command 'npm run dev'` (i.e. the ' after --command closes
+        # instantly), leaving `run dev` as stray positional args when an
+        # agent pastes it into bash. The command's value must survive intact
+        # -- proven here by the exact double-quoted substring a shell would
+        # actually parse as one argument.
+        [prompt] = self._run([{
+            "kind": "prompt",
+            "command": "npm run dev", "url": "http://localhost:5173", "tools": ["playwright"],
+        }])
+        self.assertIn('--command "npm run dev"', prompt)
+
+    def test_prompt_starts_and_stops_the_same_server_via_pidfile(self):
+        # Finding 2: the render needs the server held up WHILE a browser tool
+        # navigates, which the single-shot serve-probe form (start, poll, tear
+        # down, return) cannot provide -- and the reachable tools
+        # (claude-in-chrome, browser-testing, ...) only navigate, they cannot
+        # start a dev server themselves. The prompt must route the render
+        # through `--start`/`--stop`, both keyed to the SAME pidfile, so one
+        # deterministic CLI still owns the whole lifecycle (D2) across the
+        # two calls a render actually needs.
+        [prompt] = self._run([{
+            "kind": "prompt",
+            "command": "npm run dev", "url": "http://localhost:5173", "tools": ["playwright"],
+        }])
+        self.assertIn("--start --pidfile", prompt)
+        self.assertIn("--stop --pidfile", prompt)
+        start_pidfile = re.search(r"--start --pidfile (\S+)", prompt).group(1)
+        stop_pidfile = re.search(r"--stop --pidfile (\S+)", prompt).group(1)
+        self.assertEqual(start_pidfile, stop_pidfile)
+        # Never tells the render agent that a navigation-only browser tool
+        # owns the server's start/stop -- that was the self-contradiction
+        # between step 1 and step 2 of the old prompt.
+        self.assertNotIn("let the tool own", prompt)
+
     def test_prompt_requires_the_full_evidence_shape(self):
         [prompt] = self._run([{
             "kind": "prompt",
@@ -255,6 +297,56 @@ class TestDecideRoundRenderOverride(RenderPolicyTestCase):
         }])
         self.assertEqual(out["decision"], "approve")
         self.assertFalse(out.get("renderUnverified"))
+
+
+class TestBuildFixFindingsRenderFailure(RenderPolicyTestCase):
+    """Finding 4: a failed render must reach the fix agent even when the
+    MECHANICAL gate is green and the reviewer already returned findings of
+    its own -- the exact case `buildFixFindings` used to drop it in, since it
+    only ever looked at `review.gateGreen` (the mechanical gate) and
+    `base.length === 0`, never at the render outcome `decideRound` already
+    computed.
+    """
+
+    def _green_gate_review_with_findings(self):
+        return {
+            "verdict": "CHANGES_REQUESTED",
+            "approved": False,
+            "gateGreen": True,
+            "findings": [{"severity": "BLOCKING", "text": "unrelated reviewer finding"}],
+        }
+
+    def test_render_failed_is_prepended_even_with_a_green_gate_and_findings(self):
+        review = self._green_gate_review_with_findings()
+        [decision] = self._run([{
+            "kind": "round",
+            "review": review, "round": 1, "maxRounds": 5,
+            "render": {"status": "failed", "reason": "HTTP 500"},
+        }])
+        self.assertTrue(decision["renderFailed"])
+        [fix_findings] = self._run([{
+            "kind": "fixfindings",
+            "review": review, "decision": decision,
+        }])
+        self.assertGreater(len(fix_findings), len(review["findings"]))
+        self.assertEqual(fix_findings[0]["severity"], "BLOCKING")
+        self.assertIn("render", fix_findings[0]["text"])
+        # the reviewer's own finding must still travel too, not be replaced
+        self.assertTrue(any(f["text"] == "unrelated reviewer finding" for f in fix_findings))
+
+    def test_render_passed_does_not_synthesize_a_finding_when_gate_green_and_findings_present(self):
+        review = self._green_gate_review_with_findings()
+        [decision] = self._run([{
+            "kind": "round",
+            "review": review, "round": 1, "maxRounds": 5,
+            "render": {"status": "passed", "reason": ""},
+        }])
+        self.assertFalse(decision.get("renderFailed"))
+        [fix_findings] = self._run([{
+            "kind": "fixfindings",
+            "review": review, "decision": decision,
+        }])
+        self.assertEqual(len(fix_findings), len(review["findings"]))
 
 
 if __name__ == "__main__":
