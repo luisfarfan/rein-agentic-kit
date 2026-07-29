@@ -159,6 +159,86 @@ class TestDecideRoundPolicy(unittest.TestCase):
         self.assertEqual(result["decision"], "reject")
 
 
+# ── buildFixFindings: the red-gate reason must reach the fix agent ──────────
+# Regression coverage: an APPROVED verdict with a red gate produces a 'fix'
+# decision whose fixWorthy findings are empty (D2: APPROVED carries no
+# BLOCKING findings), which used to render the fix prompt with an empty
+# findings list and no mention that the gate is red. buildFixFindings is what
+# the loop actually calls to build lastFindings for the fix prompt, so this
+# is extracted from the shipped source the same way decideRound is.
+
+_EXTRACT_BUILD_FIX_FINDINGS_JS = r"""
+const fs = require('fs');
+const [, , loopPath, scenariosJson] = process.argv;
+const src = fs.readFileSync(loopPath, 'utf8');
+function extract(name, params) {
+  const re = new RegExp(`function ${name}\\(${params}\\) \\{\\n([\\s\\S]*?)\\n\\}\\n`);
+  const m = src.match(re);
+  if (!m) throw new Error('not found in loop.js: ' + name);
+  return m[1];
+}
+const buildFixFindings = new Function(
+  'review', 'decision',
+  extract('buildFixFindings', 'review, decision')
+);
+const scenarios = JSON.parse(scenariosJson);
+const out = scenarios.map((s) => buildFixFindings(s.review, s.decision));
+process.stdout.write(JSON.stringify(out));
+"""
+
+
+@unittest.skipUnless(_NODE, "node not on PATH -- loop.js is a node workflow script")
+class TestBuildFixFindingsIsExtractable(unittest.TestCase):
+    def test_function_exists_with_expected_signature(self):
+        with open(LOOP_JS, encoding="utf-8") as f:
+            src = f.read()
+        self.assertIn("function buildFixFindings(review, decision)", src)
+
+
+@unittest.skipUnless(_NODE, "node not on PATH -- loop.js is a node workflow script")
+class TestBuildFixFindingsPolicy(unittest.TestCase):
+    def _run(self, scenarios: list[dict]) -> list[list[dict]]:
+        with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False, encoding="utf-8") as f:
+            f.write(_EXTRACT_BUILD_FIX_FINDINGS_JS)
+            script_path = f.name
+        try:
+            proc = subprocess.run(
+                [_NODE, script_path, LOOP_JS, json.dumps(scenarios)],
+                capture_output=True, text=True, check=True,
+            )
+        finally:
+            os.unlink(script_path)
+        return json.loads(proc.stdout)
+
+    def test_red_gate_with_approved_verdict_and_no_findings_still_yields_a_reason(self):
+        # This is exactly the branch the loop override exists for: APPROVED with a
+        # red gate. By D2, APPROVED carries zero BLOCKING findings, so fixWorthy
+        # (decision.findings) is empty -- yet the fix agent must still be told the
+        # gate is red instead of receiving an empty findings list.
+        [result] = self._run([{
+            "review": {"approved": True, "gateGreen": False},
+            "decision": {
+                "decision": "fix",
+                "findings": [],
+                "reason": "the mechanical gate is red; it must be green before approval",
+            },
+        }])
+        self.assertTrue(result, "findings list must be non-empty when the gate is red")
+        self.assertIn("gate is red", " ".join(f["text"] for f in result))
+        self.assertTrue(any(f["severity"] == "BLOCKING" for f in result))
+
+    def test_green_gate_passes_findings_through_unchanged(self):
+        [result] = self._run([{
+            "review": {"approved": False, "gateGreen": True},
+            "decision": {
+                "decision": "fix",
+                "findings": [{"severity": "BLOCKING", "text": "off-by-one"}],
+                "reason": "1 BLOCKING finding(s)",
+            },
+        }])
+        self.assertEqual(result, [{"severity": "BLOCKING", "text": "off-by-one"}])
+
+
 # ── PlanCheck (T003): a plan-only reviewer that runs before any implementer ──
 # is paid. buildPlanCheckPrompt and decidePlanCheck are extracted the same way
 # decideRound is above -- straight regex pull of the shipped source, run with
@@ -270,6 +350,18 @@ class TestPlanCheckSkippable(unittest.TestCase):
         # to Isolate -- it must never `return { ok: false, ... }` on its own.
         self.assertIn("plan check unavailable", src)
         self.assertIn("continuing without it", src)
+
+    def test_non_blocking_plan_findings_are_carried_into_the_return(self):
+        # T003 AC3's continue half: non-blocking plan-check findings must reach
+        # the loop's return value, not just the log line. decidePlanCheck's pure
+        # 'findings are not dropped' guarantee (test_suggestion_only_continues
+        # above) proves nothing about the shipped call site unless the source
+        # actually threads verdict.findings through to the final return object.
+        with open(LOOP_JS, encoding="utf-8") as f:
+            src = f.read()
+        self.assertIn("let planFindings = []", src)
+        self.assertIn("planFindings = verdict.findings", src)
+        self.assertIn("planFindings,", src)
 
 
 if __name__ == "__main__":

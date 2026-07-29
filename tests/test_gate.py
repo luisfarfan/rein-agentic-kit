@@ -233,6 +233,14 @@ class TestSeverityFindings(unittest.TestCase):
                 gate.record_review(root, "demo", "APPROVED", ["a.py"], ["BLOCKING: nope"], "rev")
         self.assertIn("BLOCKING", str(ctx.exception))
 
+    def test_blocking_finding_with_empty_text_is_refused(self):
+        # An empty-text BLOCKING finding would satisfy D2's "at least one
+        # BLOCKING finding" at write time while telling the fix agent nothing.
+        with Tree(self.FILES) as root:
+            with self.assertRaises(ValueError) as ctx:
+                gate.record_review(root, "demo", "CHANGES_REQUESTED", ["a.py"], ["BLOCKING:   "], "rev")
+        self.assertIn("text", str(ctx.exception))
+
     def test_old_plain_string_episode_still_loads_and_checks(self):
         """Episodes written before this change stored findings as bare strings."""
         with Tree(self.FILES) as root:

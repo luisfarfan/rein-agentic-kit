@@ -535,6 +535,19 @@ function decideRound(review, round, maxRounds) {
   return { decision: 'fix', findings: fixWorthy, reason }
 }
 
+// A red gate can produce a 'fix' decision with zero fixWorthy findings (an
+// APPROVED verdict carries no BLOCKING findings per D2), which would render
+// the fix prompt with an empty list and no statement that the gate is red.
+// This prepends the gate's own reason as a synthetic BLOCKING finding so the
+// fix agent is always told what actually forces the round.
+function buildFixFindings(review, decision) {
+  const base = decision.findings || []
+  if (!review.gateGreen) {
+    return [{ severity: 'BLOCKING', text: decision.reason }, ...base]
+  }
+  return base
+}
+
 // Pure and self-contained (only `planPath` in scope) so it can be extracted the
 // same way decideRound is: a regex pull of the source plus `new Function`,
 // proving the actual shipped prompt rather than a restatement of it.
@@ -593,6 +606,7 @@ const closeCmd =
 // per-task fan-out — the check must cost less than the mistake it prevents.
 // A dead checker degrades to a logged warning: a run must never be lost to
 // the thing meant to protect it.
+let planFindings = []
 if (ARGS.planCheck !== false) {
   phase('PlanCheck')
   const planCheck = await agentRetry(
@@ -611,6 +625,9 @@ if (ARGS.planCheck !== false) {
       log(`⛔ plan check: ${verdict.reason}`)
       return { ok: false, phase: 'PlanCheck', problem: verdict.reason, findings: verdict.findings }
     }
+    // Non-blocking plan-check findings are carried, not dropped — symmetric to
+    // how review's non-blocking observations survive into openFindings below.
+    planFindings = verdict.findings
   }
 } else {
   log('plan check skipped (planCheck: false)')
@@ -995,6 +1012,7 @@ if (gateContradiction) {
       log(`⚠️ reviewer said APPROVED with a RED gate — overriding to CHANGES_REQUESTED`)
       lastVerdict = 'CHANGES_REQUESTED (loop override: approved with a red gate)'
     }
+    lastFindings = buildFixFindings(review, decision)
     log(`↻ round ${round}: CHANGES_REQUESTED with ${lastFindings.length} BLOCKING/IMPORTANT finding(s) (SUGGESTIONs excluded) -> back to the implementer`)
 
     let fix
@@ -1075,6 +1093,9 @@ return {
   // Non-blocking observations survive an approval too — AC5, D1: SUGGESTION/IMPORTANT
   // findings on an approved run are still reported, never silently dropped.
   openFindings: lastFindings,
+  // Non-blocking plan-check findings (D4's continue half): logged above and
+  // carried here so nothing the plan-checker noticed is silently dropped.
+  planFindings,
   // Measure the run: turns/agent, ctx_max/turn and Opus share are what predict cost.
   measure: `${REIN} token-report`,
 }

@@ -163,6 +163,8 @@ def record_review(
         raise ValueError("reviewed_files cannot be empty -- declare what you actually inspected")
 
     parsed_findings = _normalize_findings(findings)
+    if any(not f["text"].strip() for f in parsed_findings):
+        raise ValueError("a finding must carry non-empty text -- an empty finding informs no one")
     has_blocking = any(f["severity"] == "BLOCKING" for f in parsed_findings)
     if verdict == "CHANGES_REQUESTED" and not has_blocking:
         raise ValueError(
