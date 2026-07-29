@@ -199,7 +199,18 @@ const REVIEW_SCHEMA = {
   properties: {
     approved: { type: 'boolean' },
     verdict: { type: 'string' }, // APPROVED | CHANGES_REQUESTED
-    findings: { type: 'array', items: { type: 'string' } },
+    findings: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          severity: { type: 'string', enum: ['BLOCKING', 'IMPORTANT', 'SUGGESTION'] },
+          text: { type: 'string' },
+        },
+        required: ['severity', 'text'],
+        additionalProperties: false,
+      },
+    },
     gateOutput: { type: 'string' }, // literal output of the mechanical gate — objective evidence
     gateGreen: { type: 'boolean' },
     // The only thing that legitimately blocks is a judgement solely the human can
@@ -445,6 +456,55 @@ function reviewerPolicyBlock() {
     )
   }
   return ''
+}
+
+// D1/D2 as executable policy, not just prose in the prompt. Pure so it can be
+// extracted and run by tests the same way implementerPolicyBlock/reviewerPolicyBlock
+// already are: review result (+ round bookkeeping) in, one decision out.
+//   approve   — gate green and zero BLOCKING findings, whatever the reviewer's verdict said
+//   fix       — a round is spent; the fix agent gets BLOCKING+IMPORTANT only (D1: SUGGESTION never costs a round)
+//   escalate  — the reviewer flagged a judgement only the human can make
+//   reject    — not approvable and no rounds remain
+function decideRound(review, round, maxRounds) {
+  const findings = (review.findings || []).map((f) =>
+    typeof f === 'string' ? { severity: 'IMPORTANT', text: f } : f
+  )
+  const sev = (f) => String(f.severity || '').toUpperCase()
+  const blocking = findings.filter((f) => sev(f) === 'BLOCKING')
+  const fixWorthy = findings.filter((f) => sev(f) === 'BLOCKING' || sev(f) === 'IMPORTANT')
+  const gateGreen = !!review.gateGreen
+
+  if (review.needsHumanDecision) {
+    return {
+      decision: 'escalate',
+      findings,
+      humanDecisionReason: review.humanDecisionReason || 'a supervised task needs your verdict',
+    }
+  }
+
+  if (gateGreen && blocking.length === 0) {
+    // Symmetric to the red-gate override below: D2 says CHANGES_REQUESTED
+    // requires a BLOCKING finding, so a reviewer that said CHANGES_REQUESTED
+    // anyway with none is overridden to approve, not trusted at face value.
+    const overridden = !review.approved
+    return {
+      decision: 'approve',
+      findings,
+      overridden,
+      overrideReason: overridden
+        ? 'gate green and no BLOCKING findings, but the reviewer said CHANGES_REQUESTED — D2 requires a BLOCKING finding for that verdict'
+        : '',
+    }
+  }
+
+  const reason = !gateGreen
+    ? 'the mechanical gate is red; it must be green before approval'
+    : `${blocking.length} BLOCKING finding(s)`
+
+  if (round >= maxRounds) {
+    return { decision: 'reject', findings, reason }
+  }
+  return { decision: 'fix', findings: fixWorthy, reason }
 }
 
 const closeCmd =
@@ -757,6 +817,10 @@ if (gateContradiction) {
           `coherence defects BETWEEN tasks are the ones nobody else will ever see.\n` +
           `3. COVERAGE: verify each task in ${ctx.planPath} genuinely meets its acceptance criteria, and that no ` +
           `checkbox was ticked without them being met.\n\n` +
+          `Tag every finding with a severity: BLOCKING (a real defect — repeats the round), IMPORTANT (worth fixing, ` +
+          `travels to the fix agent only if a round happens anyway), or SUGGESTION (recorded and reported, never ` +
+          `costs a round on its own). CHANGES_REQUESTED requires at least one BLOCKING finding; APPROVED tolerates ` +
+          `none — do not return either verdict without matching findings.\n\n` +
           `ESCALATION: if the ONLY thing blocking approval is a judgement solely the owner can give (a supervised ` +
           `task whose acceptance is "the owner confirms", closed by proxy without their real verdict), do NOT ` +
           `return CHANGES_REQUESTED — the implementer cannot fix it, so another round is wasted time. Return ` +
@@ -786,33 +850,48 @@ if (gateContradiction) {
       continue
     }
 
-    lastFindings = review.findings || []
     lastVerdict = review.verdict || ''
     gateOutput = review.gateOutput || gateOutput
 
-    if (review.needsHumanDecision) {
+    const decision = decideRound(review, round, ROUNDS)
+    lastFindings = decision.findings || []
+
+    if (decision.decision === 'escalate') {
       needsHumanDecision = true
-      humanDecisionReason = review.humanDecisionReason || 'a supervised task needs your verdict'
+      humanDecisionReason = decision.humanDecisionReason
       lastVerdict = `escalated to the owner: ${humanDecisionReason}`
       log(`✋ the reviewer ESCALATES (the implementer cannot resolve it) — ${humanDecisionReason}`)
       break
     }
 
-    if (review.approved && review.gateGreen) {
+    if (decision.decision === 'approve') {
       approved = true
-      log(`✅ APPROVED in round ${round}`)
+      if (decision.overridden) {
+        // Symmetric to the red-gate override below: D2 says CHANGES_REQUESTED
+        // needs a BLOCKING finding, so a bare CHANGES_REQUESTED with none is
+        // overridden rather than trusted at face value.
+        lastVerdict = 'APPROVED (loop override: gate green, zero BLOCKING findings)'
+        log(`⚠️ reviewer said CHANGES_REQUESTED but gate is green with zero BLOCKING findings — overriding to APPROVED`)
+      } else {
+        log(`✅ APPROVED in round ${round}`)
+      }
       break
     }
+
+    if (decision.decision === 'reject') {
+      lastVerdict = `CHANGES_REQUESTED (${decision.reason}) — no review rounds remain`
+      log(`⛔ round ${round}: ${decision.reason}, and no rounds remain`)
+      break
+    }
+
+    // decision.decision === 'fix'
     if (review.approved && !review.gateGreen) {
       // Approving with a red gate is exactly the false green this loop exists to
       // prevent, so the loop overrides the reviewer rather than trusting it.
       log(`⚠️ reviewer said APPROVED with a RED gate — overriding to CHANGES_REQUESTED`)
       lastVerdict = 'CHANGES_REQUESTED (loop override: approved with a red gate)'
-      lastFindings = ['the mechanical gate is red; it must be green before approval', ...lastFindings]
     }
-
-    log(`↻ round ${round}: CHANGES_REQUESTED with ${lastFindings.length} finding(s) -> back to the implementer`)
-    if (round === ROUNDS) break
+    log(`↻ round ${round}: CHANGES_REQUESTED with ${lastFindings.length} BLOCKING/IMPORTANT finding(s) (SUGGESTIONs excluded) -> back to the implementer`)
 
     let fix
     try {
@@ -821,7 +900,7 @@ if (gateContradiction) {
           `Tasks implemented in this run: ${implemented.map((r) => r.id).join(', ')}\n` +
           `Fix THESE findings, with tests, leaving the affected tasks' verification green` +
           (gateCmds.length ? ` (plus ${gateCmds.join(' and ')})` : '') + `, and commit:\n` +
-          lastFindings.map((f, i) => `${i + 1}. ${f}`).join('\n') +
+          lastFindings.map((f, i) => `${i + 1}. [${f.severity}] ${f.text}`).join('\n') +
           `\nWork FOCUSED with BOUNDED verification (one test/file, NOT the whole suite, no full output dumps): ` +
           `the loop's cost is re-read context — do not inflate yours.\n` +
           `If a finding seems wrong, do NOT ignore it silently: fix the rest and explain in the summary why that ` +
@@ -889,7 +968,9 @@ return {
   implementedByProxy: results.filter((r) => r.status === 'implemented-proxy').map((r) => r.id),
   needsHuman: results.filter((r) => r.status === 'needs-human').map((r) => r.id),
   problems: incomplete.filter((r) => r.status !== 'needs-human'),
-  openFindings: approved ? [] : lastFindings,
+  // Non-blocking observations survive an approval too — AC5, D1: SUGGESTION/IMPORTANT
+  // findings on an approved run are still reported, never silently dropped.
+  openFindings: lastFindings,
   // Measure the run: turns/agent, ctx_max/turn and Opus share are what predict cost.
   measure: `${REIN} token-report`,
 }
