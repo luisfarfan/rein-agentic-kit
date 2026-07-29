@@ -219,8 +219,6 @@ Things a README usually hides:
 
 - **The reviewer is calibrated hard.** 4 of 6 runs here exhausted their 3 rounds. A three-task
   change will often use them all.
-- **Rendered verification declares, it doesn't compose.** In `rendered` mode the prompt demands a
-  real render; the kit doesn't open a browser for you yet.
 - **A stalled agent burns wall-clock.** One run spent 3.4 hours almost entirely in silent API
   retries.
 - **`discover` was considered and rejected** — a per-run version of it was measured in the origin
@@ -234,7 +232,8 @@ Things a README usually hides:
 | 1 | Config-driven core loop · `tasks.md` adapter — **measured** | ✅ |
 | 2 | Stack-aware verification policy | ✅ |
 | 3 | Local dashboard · per-agent model config | ✅ |
-| 4 | Compose real browser verification · docs · polish | ⏳ |
+| 4 | Compose real browser verification | ✅ |
+| 5 | Docs · polish · a second real-world project | ⏳ |
 
 ## 📄 License
 
