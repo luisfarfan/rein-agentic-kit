@@ -1085,23 +1085,35 @@ function buildRetrievalBlock(hasSerena, hasGraph) {
         `      codegraph callees <symbol>    every function/method it calls\n` +
         `      codegraph node <symbol>       its source plus its callers, instead of reading the file\n` +
         `      codegraph impact <symbol>     what breaks if you change it — run before an edit\n` +
+        `      codegraph sync .              refresh after your own edits — the four above answer from ` +
+        `the last sync, not from disk (the index was built once at run start)\n` +
         `    Read with offset/limit only for what these cannot answer.\n`
       : '') +
-    // serena keeps only what codegraph does NOT do: type errors without a
-    // build, and the symbol-level EDIT operations (D2) — its own former
-    // retrieval teaching (get_symbols_overview / find_symbol /
-    // find_referencing_symbols) is dropped here because codegraph now answers
-    // those questions when it is present; with the graph off, the bounded-
-    // search fallback below covers locating code instead.
+    // serena keeps only what codegraph does NOT do when the graph is present:
+    // type errors without a build, and the symbol-level EDIT operations (D2).
+    // Its own retrieval teaching (get_symbols_overview / find_symbol /
+    // find_referencing_symbols) is dropped ONLY once codegraph is actually
+    // there to answer those questions instead. With the graph off, serena is
+    // the sole tool left that can locate code without a whole-file read, so
+    // it keeps teaching retrieval there too (a graph-off FALLBACK, not a
+    // second owner — D2 is about which tool wins when both are present).
     (hasSerena
-      ? `  · serena (language-server backed) owns EDITS and build-free diagnostics here` +
-        (hasGraph ? `, not retrieval — codegraph answers "what/who" now` : '') +
-        `:\n` +
-        `      serena get_diagnostics_for_file   type errors WITHOUT running a build\n` +
-        `      serena replace_symbol_body / rename_symbol / insert_before_symbol / insert_after_symbol / ` +
-        `safe_delete_symbol   edit a symbol precisely, never a whole-file rewrite\n`
+      ? (hasGraph
+          ? `  · serena (language-server backed) owns EDITS and build-free diagnostics here, not retrieval — ` +
+            `codegraph answers "what/who" now:\n` +
+            `      serena get_diagnostics_for_file   type errors WITHOUT running a build\n` +
+            `      serena replace_symbol_body / rename_symbol / insert_before_symbol / insert_after_symbol / ` +
+            `safe_delete_symbol   edit a symbol precisely, never a whole-file rewrite\n`
+          : `  · SYMBOL-LEVEL FIRST — codegraph is not installed, but this project has serena ` +
+            `(language-server backed). Before any whole-file read:\n` +
+            `      serena get_symbols_overview <file>   what is in a file, without reading it\n` +
+            `      serena find_symbol <name>            the definition, with include_body for its source\n` +
+            `      serena find_referencing_symbols      every caller, instead of grepping for one\n` +
+            `      serena get_diagnostics_for_file      type errors WITHOUT running a build\n` +
+            `      serena replace_symbol_body / rename_symbol / insert_before_symbol / insert_after_symbol / ` +
+            `safe_delete_symbol   edit a symbol precisely, never a whole-file rewrite\n`)
       : '') +
-    (!hasGraph
+    (!hasGraph && !hasSerena
       ? `  · Locate with bounded search (grep with a concrete path and pattern) before opening files.\n`
       : '') +
     `  · Read ONLY the symbols/regions you will touch (Read with offset/limit), NEVER whole files "just in case" — ` +

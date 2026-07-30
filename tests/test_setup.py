@@ -235,16 +235,19 @@ class TestSerenaIsACapabilityNotAnAssumption(unittest.TestCase):
         self.assertIn("get_symbols_overview", src)
 
     def test_no_retrieval_tool_still_yields_the_plain_search_instruction(self):
-        """The degradation path: a bare repo must not be left with an empty
-        retrieval section. Gated on `!hasGraph` alone -- serena no longer
-        teaches a way to locate code (D2), so its presence must not suppress
-        the bounded-search fallback; only the graph does."""
+        """The degradation path: a bare repo (no graph, no serena) must not be
+        left with an empty retrieval section. Gated on `!hasGraph &&
+        !hasSerena` -- the TRUE no-tool case -- because serena itself now
+        teaches a graph-off retrieval fallback (get_symbols_overview /
+        find_symbol / find_referencing_symbols), so its presence must not
+        ALSO need the generic bounded-grep line; only the true no-tool case
+        does. See tests/test_graph_retrieval.py for the full per-combination
+        coverage this line only sanity-checks at the source level."""
         loop = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                             "plugins", "rein", "workflows", "loop.js")
         with open(loop, encoding="utf-8") as f:
             src = f.read()
-        self.assertIn("!hasGraph", src)
-        self.assertNotIn("!hasSerena && !hasGraph", src)
+        self.assertIn("!hasGraph && !hasSerena", src)
 
 
 class TestActivateSerena(unittest.TestCase):
@@ -321,33 +324,50 @@ class TestActivateCodegraph(unittest.TestCase):
         self.assertIn("codegraph", result["reason"])
 
     def test_disables_telemetry_and_reports_it(self):
-        if not setup._which("codegraph"):
-            self.skipTest("codegraph not installed on this machine")
-        result = setup.activate_codegraph(".")
+        """Hermetic: `_run` is mocked so this never shells out to the real
+        `codegraph telemetry off`, which would mutate machine-wide user state
+        (~/.codegraph/telemetry.json) outside the repo, silently opting a
+        contributor out even if they deliberately opted in."""
+        with mock.patch.object(setup, "_which", return_value="/usr/local/bin/codegraph"), \
+             mock.patch.object(setup, "_run", return_value=(True, "telemetry disabled")) as mock_run:
+            result = setup.activate_codegraph(".")
+        mock_run.assert_called_once_with(["codegraph", "telemetry", "off"])
         self.assertTrue(result["ok"], result)
         self.assertTrue(result["attempted"])
-        self.assertIn("telemetry off", result["cmd"])
-        self.assertTrue(result["reason"])
+        self.assertEqual(result["cmd"], "codegraph telemetry off")
+        self.assertEqual(result["reason"], "telemetry disabled")
 
     def test_running_it_twice_stays_ok(self):
-        """Idempotent: already-off is a success, not an error, on the second run."""
-        if not setup._which("codegraph"):
-            self.skipTest("codegraph not installed on this machine")
-        setup.activate_codegraph(".")
-        second = setup.activate_codegraph(".")
+        """Idempotent: already-off is a success, not an error, on the second
+        run -- proved here against a mocked `_run`, never the real CLI."""
+        with mock.patch.object(setup, "_which", return_value="/usr/local/bin/codegraph"), \
+             mock.patch.object(setup, "_run", return_value=(True, "telemetry disabled")):
+            setup.activate_codegraph(".")
+            second = setup.activate_codegraph(".")
         self.assertTrue(second["ok"], second)
 
     def test_install_always_attempts_it_even_when_nothing_is_missing(self):
-        with Tree({"README.md": "x"}) as root:
+        # Only fake "codegraph" being present -- every other tool's `_which`
+        # probe must see its real (missing-or-not) state, so `install`'s
+        # "nothing missing" behaviour for the OTHER tools is not distorted.
+        real_which = setup._which
+
+        def which_side_effect(name):
+            return "/usr/local/bin/codegraph" if name == "codegraph" else real_which(name)
+
+        with Tree({"README.md": "x"}) as root, \
+             mock.patch.object(setup, "_which", side_effect=which_side_effect), \
+             mock.patch.object(setup, "_run", return_value=(True, "telemetry disabled")) as mock_run:
             report = setup.install(names=[], root=root)
         self.assertIn("codegraph-telemetry", report["results"])
         entry = report["results"]["codegraph-telemetry"]
-        if setup._which("codegraph"):
-            self.assertTrue(entry["ok"], entry)
-            self.assertTrue(entry["attempted"])
-        else:
-            self.assertFalse(entry["ok"])
-            self.assertFalse(entry["attempted"])
+        self.assertTrue(entry["ok"], entry)
+        self.assertTrue(entry["attempted"])
+        # assert_any_call, not assert_called_once_with: `install` also runs
+        # `serena-activate` unconditionally in the same pass (real serena may
+        # be present on this machine and call `_run` too) -- this test only
+        # asserts the codegraph-telemetry step made its call correctly.
+        mock_run.assert_any_call(["codegraph", "telemetry", "off"])
 
     def test_a_failed_telemetry_call_never_stops_other_tools_installing(self):
         with Tree({"README.md": "x"}) as root:

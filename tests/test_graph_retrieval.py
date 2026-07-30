@@ -115,6 +115,24 @@ class GraphRetrievalPromptTestCase(unittest.TestCase):
         self.assertIn("codegraph impact <symbol>", block)
         self.assertIn("before an edit", block)
 
+    # ── the index is a run-start snapshot, not auto-synced (codegraph has no
+    # daemon and does not watch disk) -- every graph-on block must teach the
+    # one command that refreshes it after the agent's own edits, and say so
+    # plainly, so the four read-only commands are never mistaken for reading
+    # live disk state.
+
+    def test_graph_cases_teach_sync_as_the_refresh_after_edits(self):
+        out = self._run()
+        for block in (out["retrieval"][self.GRAPH_ONLY], out["retrieval"][self.BOTH]):
+            self.assertIn("codegraph sync .", block)
+            self.assertIn("refresh after your own edits", block)
+            self.assertIn("last sync, not from disk", block)
+
+    def test_no_tool_and_serena_only_cases_never_mention_sync(self):
+        out = self._run()
+        for block in (out["retrieval"][self.NONE], out["retrieval"][self.SERENA_ONLY]):
+            self.assertNotIn("codegraph sync", block)
+
     def test_graph_case_never_teaches_explore(self):
         # D4: 'explore' is a whole-file Read in disguise (3,701 tokens on this
         # repo) -- the block's entire point is bounded orientation.
@@ -127,9 +145,13 @@ class GraphRetrievalPromptTestCase(unittest.TestCase):
         for block in out["retrieval"]:
             self.assertNotIn("graphify", block)
 
-    # ── acceptance 4 (D2): serena no longer teaches retrieval codegraph owns
+    # ── acceptance 4 (D2): once codegraph is PRESENT, serena no longer teaches
+    # the retrieval it now owns. With the graph OFF, serena is the only tool
+    # left that can locate code without a whole-file read, so it keeps
+    # teaching its own retrieval there as a fallback -- this is not a second
+    # owner, since codegraph is simply absent in that case.
 
-    def test_serena_case_drops_retrieval_teaching_keeps_diagnostics_and_edits(self):
+    def test_serena_only_case_teaches_its_own_retrieval_as_a_graph_off_fallback(self):
         out = self._run()
         block = out["retrieval"][self.SERENA_ONLY]
         self.assertIn("serena get_diagnostics_for_file", block)
@@ -137,21 +159,25 @@ class GraphRetrievalPromptTestCase(unittest.TestCase):
         # symbol-level EDIT operations remain taught
         self.assertIn("replace_symbol_body", block)
         self.assertIn("rename_symbol", block)
-        # retrieval that codegraph now owns must be GONE from serena's part
-        self.assertNotIn("find_referencing_symbols", block)
-        self.assertNotIn("get_symbols_overview", block)
-        self.assertNotIn("find_symbol <name>", block)
+        # with codegraph absent, serena's own retrieval fills the gap
+        self.assertIn("find_referencing_symbols", block)
+        self.assertIn("get_symbols_overview", block)
+        self.assertIn("find_symbol <name>", block)
         self.assertNotIn("graphify", block)
-        # serena no longer teaches locating code (D2) -- with the graph off,
-        # the bounded-search fallback must still be there so the agent has
-        # SOME way to find code, not zero.
-        self.assertIn("Locate with bounded search", block)
+        # the generic bounded-grep fallback is for the TRUE no-tool case only;
+        # serena's own retrieval lines replace it here.
+        self.assertNotIn("Locate with bounded search", block)
 
-    def test_find_referencing_symbols_is_never_taught_as_the_way_to_find_callers(self):
-        # D2: one owner per question -- codegraph answers "who calls this" now.
+    def test_find_referencing_symbols_is_never_taught_once_codegraph_is_present(self):
+        # D2: one owner per question -- once codegraph is present it answers
+        # "who calls this", so serena's version must not also be taught.
         out = self._run()
-        for block in out["retrieval"]:
+        for block in (out["retrieval"][self.GRAPH_ONLY], out["retrieval"][self.BOTH]):
             self.assertNotIn("find_referencing_symbols", block)
+
+    def test_no_tool_case_never_teaches_find_referencing_symbols(self):
+        out = self._run()
+        self.assertNotIn("find_referencing_symbols", out["retrieval"][self.NONE])
 
     def test_graph_and_serena_both_on_keeps_both_narrowed_teachings(self):
         out = self._run()
