@@ -117,6 +117,8 @@ You come back when it finished, not before.
 ### CLI — the deterministic half
 
 ```bash
+rein doctor      # 🩺 start here: stack, resolved commands, and the source of each
+rein setup       # probe the optional tools · --install provisions what is missing
 rein detect      # stack + commands, with the source of each
 rein tasks       # the plan, parsed
 rein context     # detect + plan in ONE round-trip — what the loop's first agent runs
@@ -193,6 +195,13 @@ autodetection. A project that already declares how it is built is never second-g
 | 🐹 Go | `go.mod` | go test · vet |
 | 🎨 **Frontend** *(Next, Vite, Astro, SvelteKit, Nuxt, Remix)* | dependencies | **rendered verification** — unit tests alone don't catch "the tests pass but the UI is broken" |
 | ☁️ Serverless / infra | `serverless.yml`, `sst.config.ts`, `*.tf` | `plan` / `validate` — **never deploy** |
+| 📦 Monorepo | sub-projects one or two levels down, no root manifest | reports each sub-project and its own commands — **it never picks one for you**, even when there is only one candidate |
+
+> **A resolved command is an inference until something runs it.** `rein verify` executes each one
+> and reports what happened, distinguishing *"the binary is missing"* (a **setup** problem) from
+> *"the suite ran and failed"* (a **code** problem) — conflating them sends you to the wrong file.
+> The loop runs it at Prepare: a broken gate found there costs nothing, the same one found at
+> review costs a whole run.
 
 Optional tools (`serena`, `codegraph`, `graphify`, `openspec`) are **probed, never
 required**: if one is absent the flow degrades, it does not break. `rein setup` reports
@@ -207,6 +216,27 @@ inert.
 > `find_symbol` / `find_referencing_symbols` cover the same ground as a fallback. Whether
 > either reduces the turns an agent spends orienting is **unmeasured**, and the one control
 > available points the other way. See [docs/decisions.md](docs/decisions.md) D2.
+
+**One owner per question.** A tool is dropped from the prompts for having no *exclusive*
+question — not for being bad:
+
+```mermaid
+flowchart LR
+    Q1["❓ what is this?<br/>who touches it?<br/>what breaks if I change it?"] --> CG["🔎 codegraph<br/><i>query · callers · callees</i><br/><i>node · impact</i>"]
+    Q2["❓ edit this symbol<br/>type errors, no build"] --> SE["✏️ serena<br/><i>replace_symbol_body</i><br/><i>get_diagnostics_for_file</i>"]
+    Q3["❓ docs · papers · images"] --> GR["📚 graphify<br/><i>/graphify skill</i><br/><i>outside the loop</i>"]
+
+    style CG fill:#1e4620,stroke:#4caf50,color:#fff
+    style SE fill:#1e3a5f,stroke:#4a90d9,color:#fff
+    style GR fill:#4a3a1e,stroke:#d9a94a,color:#fff
+```
+
+Measured on this repo, same question, same index cost (~1.5s, no LLM, no API key for either):
+asked *"where is it decided that a command is not invocable?"*, codegraph returns
+`NOT_INVOCABLE_EXIT_CODES = (126,127)` with its file and line in **258 tokens**; the graph
+tool it replaced returned **546 tokens of an unrelated example config**, because a JSON key
+happened to match. Confident noise is worse for an agent than no answer — it cannot tell the
+two apart, and it pays for the difference on every later turn.
 
 ## 📊 Measure
 
