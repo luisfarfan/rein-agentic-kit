@@ -78,6 +78,11 @@ def cmd_verify(argv: list[str]) -> int:
     reported failure, or one that timed out, is the ordinary state of a repo
     mid-change and does not fail this exit code -- conflating the two is
     exactly the misdirection this command exists to remove.
+
+    `--only slot1,slot2` restricts execution to those slots -- the loop's
+    Prepare precheck reads only test/lint/typecheck and has no use for
+    running `build` (or the whole `test` suite a second time) in the
+    operator's main checkout before Isolate.
     """
     root = _positional(argv) or "."
     timeout_raw = _opt(argv, "timeout", str(_verify.DEFAULT_TIMEOUT))
@@ -86,9 +91,11 @@ def cmd_verify(argv: list[str]) -> int:
     except ValueError:
         print(f"invalid --timeout: {timeout_raw!r}")
         return 2
+    only_raw = _opt(argv, "only")
+    only = {s.strip() for s in only_raw.split(",") if s.strip()} if only_raw else None
 
     resolved = _detect.resolve(root)
-    report = _verify.verify_commands(resolved, timeout)
+    report = _verify.verify_commands(resolved, timeout, only=only)
     _verify.write_state(resolved["root"], report)
 
     if "--json" in argv:
@@ -424,7 +431,17 @@ def cmd_doctor(argv: list[str]) -> int:
     if resolved["commands"]:
         for slot, cmd in sorted(resolved["commands"].items()):
             vr = verify_results.get(slot)
-            status = f"  verified: {vr['outcome']} (exit={vr['exitCode']})" if vr else "  verified: unknown -- run `rein verify`"
+            if vr is None:
+                status = "  verified: unknown -- run `rein verify`"
+            elif vr.get("command") == cmd:
+                # Only trust the persisted outcome when it was recorded
+                # against the SAME configured command we are printing --
+                # flow.config.json, a lockfile-driven autodetect change, or a
+                # newly-set `subproject` key can all rewrite `cmd` out from
+                # under a report that already ran (finding 1).
+                status = f"  verified: {vr['outcome']} (exit={vr['exitCode']})"
+            else:
+                status = "  verified: stale -- the command changed since `rein verify` last ran"
             print(f"    {slot:<10} {cmd:<40} [{resolved['commandSources'][slot]}]{status}")
     else:
         print("    (none)")

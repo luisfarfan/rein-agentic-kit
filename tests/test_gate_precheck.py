@@ -199,5 +199,29 @@ class TestMissingVerifyGateDegradesGracefully(GatePrecheckTestCase):
         self.assertEqual(result["warnings"], [])
 
 
+class TestPreparePromptScopesVerifyToGateSlots(unittest.TestCase):
+    """Coherence gap between T002 and T003 (round-1 finding 3): `decideGatePrecheck`
+    reads only test/lint/typecheck, so the Prepare agent must be told to run
+    `rein verify` scoped to exactly those slots -- otherwise `detect`'s `build`
+    slot (and the whole `test` suite again) runs, unfiltered, in the operator's
+    MAIN checkout before Isolate even starts, for information this precheck
+    never consults. This is instruction TEXT for an LLM agent, not executable
+    policy -- unlike `decideGatePrecheck` itself (tested above by execution),
+    there is no function here to run, so a source assertion is the actual test.
+    """
+
+    def setUp(self):
+        with open(LOOP_JS, encoding="utf-8") as f:
+            self.source = f.read()
+
+    def test_prepare_prompt_passes_only_test_lint_typecheck(self):
+        self.assertIn("--only test,lint,typecheck", self.source)
+
+    def test_prepare_prompt_no_longer_runs_verify_unfiltered(self):
+        # The OLD instruction ran every resolved slot unfiltered -- assert
+        # the unscoped invocation is gone, not just that the new one exists.
+        self.assertNotIn("verify ${ROOT} --json", self.source)
+
+
 if __name__ == "__main__":
     unittest.main()

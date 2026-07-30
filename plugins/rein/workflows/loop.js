@@ -347,12 +347,14 @@ const ctx = await agentRetry(
     `   Report the working invocation in 'reinPath' (an absolute path, or the bare word 'rein').\n` +
     `2. Run: '<reinPath> context ${ROOT}${changeArg}'. It prints JSON with 'config' and 'plan'.\n` +
     `   READ that JSON. Do NOT re-derive any of it, do NOT run the commands it reports.\n` +
-    `2b. Also run (same round-trip, chain with '&&'): '<reinPath> verify ${ROOT} --json'. It ACTUALLY RUNS\n` +
-    `    every resolved command and prints JSON with 'results' keyed by slot (e.g. 'test', 'lint',\n` +
-    `    'typecheck'), each carrying 'invocable' (boolean) and 'outcome' (a string). It may exit\n` +
-    `    non-zero when something is not invocable — that is expected, still read its JSON stdout.\n` +
-    `    READ that JSON too. Do NOT re-run anything yourself, do NOT judge pass/fail — just report\n` +
-    `    what it found, literally.\n` +
+    `2b. Also run (same round-trip, chain with '&&'): '<reinPath> verify ${ROOT} --only test,lint,typecheck ` +
+    `--json'. It ACTUALLY RUNS just those three resolved slots (never 'build' or anything else — the\n` +
+    `    gate precheck below only reads test/lint/typecheck, and running more in the operator's MAIN\n` +
+    `    checkout before Isolate would burn time and risk writes for nothing this run consumes) and\n` +
+    `    prints JSON with 'results' keyed by slot, each carrying 'invocable' (boolean) and 'outcome' (a\n` +
+    `    string). It may exit non-zero when something is not invocable — that is expected, still read\n` +
+    `    its JSON stdout. READ that JSON too. Do NOT re-run anything yourself, do NOT judge pass/fail —\n` +
+    `    just report what it found, literally.\n` +
     `3. Report it back, mapping fields exactly:\n` +
     `   · cmdTest/cmdTestOne/cmdLint/cmdTypecheck  <- config.commands.{test,testOne,lint,typecheck}\n` +
     `     (empty string when a slot is absent — say so rather than inventing a command)\n` +

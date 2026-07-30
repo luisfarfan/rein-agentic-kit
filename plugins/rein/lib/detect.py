@@ -225,6 +225,17 @@ def _find_subprojects(root: str) -> list[str]:
     return found
 
 
+def _normalize_subproject_path(value: str) -> str:
+    """`./apps/api/` and `apps/api` must name the same sub-project -- an
+    operator following the kit's own `subprojects[].path` hint with a
+    trailing slash or a leading `./` must not be treated as a typo.
+    """
+    v = value.strip()
+    if v.startswith("./"):
+        v = v[2:]
+    return v.rstrip("/")
+
+
 def _resolve_subproject(root: str, rel: str) -> dict:
     """A sub-project's own stack + commands, resolved the same way a
     single-project repo is -- without the root-only extras (capabilities,
@@ -243,6 +254,11 @@ def _resolve_subproject(root: str, rel: str) -> dict:
         "stack": cfg.get("stack") or auto["stack"],
         "packageManager": auto.get("packageManager", ""),
         "commands": commands,
+        # Carried so a chosen sub-project's own subtypes (e.g. "frontend")
+        # drive the ROOT's verify policy / serve block instead of the
+        # manifest-less root's empty ones (finding 6) -- not surfaced in
+        # `subprojects[]`'s own consumers, which only ever read path/stack/commands.
+        "subtypes": cfg.get("subtypes") or auto.get("subtypes", []),
     }
 
 
@@ -724,6 +740,8 @@ def resolve(root: str = ".") -> dict:
     # what is actually there does not.
     subprojects: list[dict] = []
     subproject_choice = ""
+    subproject_invalid = ""
+    subproject_subtypes: list[str] = []
     stack_override = ""
     auto_cmds = auto.get("commands", {})
     if auto["stack"] == "unknown":
@@ -731,14 +749,30 @@ def resolve(root: str = ".") -> dict:
         if found:
             subprojects = [_resolve_subproject(root, rel) for rel in found]
             stack_override = "monorepo"
-            subproject_choice = str(cfg.get("subproject") or "").strip()
-            if subproject_choice:
-                chosen = next((s for s in subprojects if s["path"] == subproject_choice), None)
+            raw_choice = str(cfg.get("subproject") or "").strip()
+            normalized_choice = _normalize_subproject_path(raw_choice) if raw_choice else ""
+            if normalized_choice:
+                chosen = next((s for s in subprojects if s["path"] == normalized_choice), None)
                 if chosen is None:
-                    chosen = _resolve_subproject(root, subproject_choice)
-                # Carry the path so the command runs from the repo root, not
-                # from inside the sub-project.
-                auto_cmds = {slot: f"cd {subproject_choice} && {cmd}" for slot, cmd in chosen["commands"].items()}
+                    # Not one of the DISCOVERED candidates (may be outside the
+                    # depth-2 scan) -- only trust it if it is a real directory
+                    # that actually carries a manifest. A path that names
+                    # nothing real must not silently reproduce the "zero
+                    # commands, wrong problem" dead end this change removes.
+                    candidate_root = os.path.join(root, normalized_choice)
+                    if os.path.isdir(candidate_root) and _exists(candidate_root, *_SUBPROJECT_MARKERS):
+                        chosen = _resolve_subproject(root, normalized_choice)
+                if chosen is not None:
+                    subproject_choice = normalized_choice
+                    subproject_subtypes = chosen.get("subtypes", [])
+                    # Carry the path so the command runs from the repo root,
+                    # not from inside the sub-project.
+                    auto_cmds = {
+                        slot: f"cd {normalized_choice} && {cmd}" for slot, cmd in chosen["commands"].items()
+                    }
+                else:
+                    subproject_invalid = raw_choice
+                    auto_cmds = {}
             else:
                 # The kit must not pick a sub-project, even a single
                 # candidate (D1) -- no commands resolve at the root until
@@ -765,10 +799,22 @@ def resolve(root: str = ".") -> dict:
     worktree = {"enabled": True, "prefix": "rein-wt", **(cfg.get("worktree") or {})}
     plan = {"source": _detect_plan_source(root), "path": "", **(cfg.get("plan") or {})}
     tracker = {"kind": "none", **(cfg.get("tracker") or {})}
-    subtypes = cfg.get("subtypes") or auto.get("subtypes", [])
-    serve, serve_warnings = _serve(root, subtypes, commands, cfg)
-    verify_policy, verify_warnings = _verify_policy(root, subtypes, commands, cfg)
+    # A chosen sub-project's subtypes drive the ROOT's verify policy / serve
+    # block (finding 6): the manifest-less monorepo root has none of its own,
+    # so falling through to `auto.get("subtypes")` here would silently keep
+    # `mode: unit` and no `serve` for a frontend sub-project forever.
+    verify_subtypes_root = os.path.join(root, subproject_choice) if subproject_choice else root
+    subtypes = cfg.get("subtypes") or (subproject_subtypes if subproject_choice else auto.get("subtypes", []))
+    serve, serve_warnings = _serve(verify_subtypes_root, subtypes, commands, cfg)
+    verify_policy, verify_warnings = _verify_policy(verify_subtypes_root, subtypes, commands, cfg)
     verify_warnings = serve_warnings + verify_warnings
+    if subproject_invalid:
+        valid_paths = ", ".join(s["path"] for s in subprojects) or "(none discovered)"
+        verify_warnings.append(
+            f'flow.config.json "subproject" {subproject_invalid!r} does not name a real sub-project '
+            f"(no such directory, or it carries none of {_SUBPROJECT_MARKERS}) -- "
+            f"valid subprojects[].path values: {valid_paths}"
+        )
 
     missing_commands = [s for s in ("test", "testOne", "lint", "typecheck") if not _is_set(commands, s)]
     if subprojects and not subproject_choice:

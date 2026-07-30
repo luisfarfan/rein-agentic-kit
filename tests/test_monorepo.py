@@ -139,6 +139,109 @@ class TestSubprojectOverride(unittest.TestCase):
         self.assertEqual(r["commandSources"]["test"], "flow.config.json")
 
 
+PKG_FRONTEND = json.dumps(
+    {
+        "scripts": {"test": "vitest", "dev": "vite"},
+        "dependencies": {"vite": "^5"},
+        "devDependencies": {"vitest": "^1"},
+    }
+)
+
+
+class TestSubprojectDrivesVerifyPolicyAndServe(unittest.TestCase):
+    """A chosen sub-project's OWN subtypes must drive the root's verify
+    policy / serve block (finding 6) -- the manifest-less monorepo root has
+    none of its own, so `rendered` mode must not silently degrade to `unit`
+    with no `serve` block for every monorepo whose chosen sub-project is a
+    frontend.
+    """
+
+    def test_frontend_subproject_gets_rendered_mode_and_a_serve_block(self):
+        with Project(
+            {
+                "README.md": "monorepo\n",
+                "apps/api/package.json": PKG_TEST,
+                "apps/web/package.json": PKG_FRONTEND,
+                "flow.config.json": json.dumps({"subproject": "apps/web"}),
+            }
+        ) as root:
+            r = detect.resolve(root)
+        self.assertIn("frontend", r["subtypes"])
+        self.assertEqual(r["verifyPolicy"]["mode"], "rendered")
+        self.assertIsNotNone(r.get("serve"))
+        self.assertTrue(r["serve"]["command"], r["serve"])
+
+    def test_backend_subproject_keeps_unit_mode_and_no_serve(self):
+        with Project(
+            {
+                "README.md": "monorepo\n",
+                "apps/api/package.json": PKG_TEST,
+                "apps/web/package.json": PKG_FRONTEND,
+                "flow.config.json": json.dumps({"subproject": "apps/api"}),
+            }
+        ) as root:
+            r = detect.resolve(root)
+        self.assertNotIn("frontend", r["subtypes"])
+        self.assertEqual(r["verifyPolicy"]["mode"], "unit")
+        self.assertIsNone(r.get("serve"))
+
+
+class TestInvalidSubprojectChoice(unittest.TestCase):
+    """A `subproject` naming nothing real must not silently reproduce the
+    'zero commands, wrong problem' dead end (finding 2) -- the operator gets
+    a warning naming the bad value and the valid choices, and the
+    'choose a sub-project' hint stays instead of being suppressed.
+    """
+
+    def test_nonexistent_path_stays_a_choice_hint_plus_a_named_warning(self):
+        with Project(
+            {
+                "README.md": "monorepo\n",
+                "apps/api/package.json": PKG_TEST,
+                "apps/web/package.json": PKG_TEST,
+                "flow.config.json": json.dumps({"subproject": "apps/ap"}),  # typo
+            }
+        ) as root:
+            r = detect.resolve(root)
+        self.assertEqual(r["stack"], "monorepo")
+        self.assertEqual(r["commands"], {})
+        self.assertTrue(
+            any("subproject" in m for m in r["missingCommands"]),
+            r["missingCommands"],
+        )
+        warnings = r.get("verifyWarnings", [])
+        self.assertTrue(any("apps/ap" in w for w in warnings), warnings)
+        self.assertTrue(any("apps/api" in w and "apps/web" in w for w in warnings), warnings)
+
+    def test_existing_dir_with_no_manifest_is_also_invalid(self):
+        with Project(
+            {
+                "README.md": "monorepo\n",
+                "apps/api/package.json": PKG_TEST,
+                "apps/web/package.json": PKG_TEST,
+                "apps/docs/index.md": "no manifest here\n",
+                "flow.config.json": json.dumps({"subproject": "apps/docs"}),
+            }
+        ) as root:
+            r = detect.resolve(root)
+        self.assertEqual(r["commands"], {})
+        self.assertTrue(any("subproject" in m for m in r["missingCommands"]), r["missingCommands"])
+        warnings = r.get("verifyWarnings", [])
+        self.assertTrue(any("apps/docs" in w for w in warnings), warnings)
+
+    def test_trailing_slash_and_leading_dot_slash_are_normalized(self):
+        with Project(
+            {
+                "README.md": "monorepo\n",
+                "apps/api/package.json": PKG_TEST,
+                "flow.config.json": json.dumps({"subproject": "./apps/api/"}),
+            }
+        ) as root:
+            r = detect.resolve(root)
+        self.assertEqual(r["commands"]["test"], "cd apps/api && npm run test")
+        self.assertNotIn("verifyWarnings", r)
+
+
 class TestPlainRepoUnaffected(unittest.TestCase):
     """A single-project repo must produce byte-identical output to today."""
 

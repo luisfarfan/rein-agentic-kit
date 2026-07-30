@@ -247,5 +247,139 @@ class TestEmptyCommandsSkipped(unittest.TestCase):
         self.assertTrue(report["allInvocable"])
 
 
+class TestConfiguredVsExecutedCommand(unittest.TestCase):
+    """`command` must stay the CONFIGURED (pre-substitution) command -- what
+    `doctor` compares against `detect.resolve()`'s current output -- and the
+    ACTUAL, substituted invocation must still be recoverable separately
+    (finding 1). Comparing against the executed command would never match
+    for `testOne` again: its target is a fresh temp path every run.
+    """
+
+    def test_command_field_is_configured_not_substituted(self):
+        with Project({"one.sh": "#!/bin/sh\nexit 0\n"}) as root:
+            report = verify.verify_commands(_resolved(root, {"testOne": "./one.sh {target}"}))
+        res = report["results"]["testOne"]
+        self.assertEqual(res["command"], "./one.sh {target}")
+        self.assertIn("{target}", res["command"])
+        self.assertNotIn("{target}", res["executedCommand"])
+        self.assertIn("./one.sh ", res["executedCommand"])
+
+    def test_ordinary_command_has_matching_configured_and_executed(self):
+        with Project({"ok.sh": "#!/bin/sh\nexit 0\n"}) as root:
+            report = verify.verify_commands(_resolved(root, {"test": "./ok.sh"}))
+        res = report["results"]["test"]
+        self.assertEqual(res["command"], "./ok.sh")
+        self.assertEqual(res["executedCommand"], "./ok.sh")
+
+
+class TestOnlyFilter(unittest.TestCase):
+    """`only` restricts execution to the given slots -- what the loop's
+    Prepare precheck needs (finding 3): it consumes test/lint/typecheck only
+    and must not pay for `build` running in the operator's main checkout.
+    """
+
+    def test_only_runs_the_named_slots(self):
+        with Project(
+            {
+                "test.sh": "#!/bin/sh\nexit 0\n",
+                "lint.sh": "#!/bin/sh\nexit 0\n",
+                "build.sh": "#!/bin/sh\nexit 0\n",
+            }
+        ) as root:
+            report = verify.verify_commands(
+                _resolved(root, {"test": "./test.sh", "lint": "./lint.sh", "build": "./build.sh"}),
+                only={"test", "lint"},
+            )
+        self.assertEqual(set(report["results"]), {"test", "lint"})
+
+    def test_only_with_no_matching_slots_runs_nothing(self):
+        with Project({"build.sh": "#!/bin/sh\nexit 0\n"}) as root:
+            report = verify.verify_commands(_resolved(root, {"build": "./build.sh"}), only={"test"})
+        self.assertEqual(report["results"], {})
+
+
+class TestWrapperRunnerSetupFailure(unittest.TestCase):
+    """A wrapper runner (poetry/uv/npm/yarn) that invokes CLEANLY but exits
+    non-zero because ITS target is missing must be read as not_invocable, not
+    failed (finding 4) -- the 126/127 exit-code check alone cannot see this,
+    since the wrapper itself was found and ran fine.
+    """
+
+    def test_poetry_style_command_not_found_is_not_invocable(self):
+        script = "#!/bin/sh\necho 'Command not found: pytest'\nexit 1\n"
+        with Project({"poetry.sh": script}) as root:
+            report = verify.verify_commands(_resolved(root, {"test": "./poetry.sh"}))
+        res = report["results"]["test"]
+        self.assertFalse(res["invocable"])
+        self.assertEqual(res["outcome"], verify.OUTCOME_NOT_INVOCABLE)
+        self.assertFalse(report["allInvocable"])
+
+    def test_uv_style_failed_to_spawn_is_not_invocable(self):
+        script = "#!/bin/sh\necho 'error: Failed to spawn: \\`pytest\\`'\nexit 2\n"
+        with Project({"uv.sh": script}) as root:
+            report = verify.verify_commands(_resolved(root, {"test": "./uv.sh"}))
+        res = report["results"]["test"]
+        self.assertFalse(res["invocable"])
+        self.assertEqual(res["outcome"], verify.OUTCOME_NOT_INVOCABLE)
+
+    def test_npm_missing_script_is_not_invocable(self):
+        script = "#!/bin/sh\necho 'npm ERR! Missing script: \"test\"'\nexit 1\n"
+        with Project({"npm.sh": script}) as root:
+            report = verify.verify_commands(_resolved(root, {"test": "./npm.sh"}))
+        res = report["results"]["test"]
+        self.assertFalse(res["invocable"])
+        self.assertEqual(res["outcome"], verify.OUTCOME_NOT_INVOCABLE)
+
+    def test_ordinary_failure_output_is_not_misclassified(self):
+        """A real code failure (assertion output, no wrapper phrasing) must
+        stay `failed` -- the heuristic must not over-fire on ordinary text.
+        """
+        script = "#!/bin/sh\necho 'AssertionError: 1 != 2'\nexit 1\n"
+        with Project({"fail.sh": script}) as root:
+            report = verify.verify_commands(_resolved(root, {"test": "./fail.sh"}))
+        res = report["results"]["test"]
+        self.assertTrue(res["invocable"])
+        self.assertEqual(res["outcome"], verify.OUTCOME_FAILED)
+
+
+class TestInconclusiveTestOne(unittest.TestCase):
+    """`testOne`'s cheap synthetic `{target}` is real but owned by no actual
+    test suite -- a runner reporting "nothing to run" for it must not be
+    read as the configured command having failed (finding 5).
+    """
+
+    def test_pytest_style_not_found_target_is_inconclusive_not_failed(self):
+        script = '#!/bin/sh\necho "ERROR: not found: $1"\nexit 4\n'
+        with Project({"pytest.sh": script}) as root:
+            report = verify.verify_commands(_resolved(root, {"testOne": "./pytest.sh {target}"}))
+        res = report["results"]["testOne"]
+        self.assertEqual(res["outcome"], verify.OUTCOME_INCONCLUSIVE)
+        self.assertNotEqual(res["outcome"], verify.OUTCOME_FAILED)
+        self.assertTrue(res["invocable"])
+
+    def test_vitest_style_no_test_files_found_is_inconclusive(self):
+        script = "#!/bin/sh\necho 'No test files found, exiting with code 1'\nexit 1\n"
+        with Project({"vitest.sh": script}) as root:
+            report = verify.verify_commands(_resolved(root, {"testOne": "./vitest.sh {target}"}))
+        res = report["results"]["testOne"]
+        self.assertEqual(res["outcome"], verify.OUTCOME_INCONCLUSIVE)
+
+    def test_a_real_testOne_failure_still_reports_failed(self):
+        """A genuine failure of the CONFIGURED testOne command (not "found
+        nothing to run") must still be reported as `failed`.
+        """
+        script = "#!/bin/sh\necho 'AssertionError: 1 != 2'\nexit 1\n"
+        with Project({"one.sh": script}) as root:
+            report = verify.verify_commands(_resolved(root, {"testOne": "./one.sh {target}"}))
+        res = report["results"]["testOne"]
+        self.assertEqual(res["outcome"], verify.OUTCOME_FAILED)
+
+    def test_inconclusive_does_not_flip_allInvocable(self):
+        script = '#!/bin/sh\necho "no tests found"\nexit 1\n'
+        with Project({"one.sh": script}) as root:
+            report = verify.verify_commands(_resolved(root, {"testOne": "./one.sh {target}"}))
+        self.assertTrue(report["allInvocable"])
+
+
 if __name__ == "__main__":
     unittest.main()
