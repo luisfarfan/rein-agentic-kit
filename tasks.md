@@ -47,7 +47,7 @@ discipline `setup.py` already enforces, applied to recommendations.
 
 ---
 
-- [ ] T001 codegraph owns retrieval, where the agents work
+- [x] T001 codegraph owns retrieval, where the agents work
   - Type: implementation
   - Depends on: none
   - Human review: false
