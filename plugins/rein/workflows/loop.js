@@ -1051,28 +1051,42 @@ const hasGraph = decideGraphAvailable(WORKTREE_MODE, ctx.capabilities, setup)
 // where the money is: the median agent spends 41 turns before its first edit, and
 // every tool result it accumulates is re-sent on every later turn.
 const hasSerena = (ctx.capabilities || []).includes('serena-project')
-const RETRIEVAL =
-  `RETRIEVAL — do not burn context. The real cost is cache_read: every turn re-reads everything ` +
-  `accumulated so far, so cost ≈ context-size × turns.\n` +
-  (hasSerena
-    ? `  · SYMBOL-LEVEL FIRST — this project has serena (language-server backed). Before any whole-file read:\n` +
-      `      serena get_symbols_overview <file>   what is in a file, without reading it\n` +
-      `      serena find_symbol <name>            the definition, with include_body for its source\n` +
-      `      serena find_referencing_symbols      every caller, instead of grepping for one\n` +
-      `      serena get_diagnostics_for_file      type errors WITHOUT running a build\n` +
-      `    Read with offset/limit only for what these cannot answer.\n`
-    : '') +
-  (hasGraph
-    ? `  · Orient with the graph before grepping or opening whole files: 'graphify query "<what you need>"' ` +
-      `(a bounded subgraph, far smaller than a raw grep), 'graphify path "<A>" "<B>"', 'graphify explain "<concept>"'.\n`
-    : '') +
-  (!hasSerena && !hasGraph
-    ? `  · Locate with bounded search (grep with a concrete path and pattern) before opening files.\n`
-    : '') +
-  `  · Read ONLY the symbols/regions you will touch (Read with offset/limit), NEVER whole files "just in case" — ` +
-  `every large file you pull in is RE-READ on every later turn.\n` +
-  `  · Keep command output small: filter and scope it (head, -q, concrete paths) instead of dumping everything.\n` +
-  `  · Aim to finish in FEW turns with precise reads, not to explore incrementally.`
+// Pure (hasSerena/hasGraph as args, not read from the outer closure) so all four
+// on/off combinations are executed by a test the same way decideGraphAvailable
+// is (T002 acceptance) — including proving the no-tool and serena-only branches
+// stay byte-identical to before the graph teaching below existed.
+// D3: teaches 'graphify explain'/'graphify path', each with a one-line statement
+// of what it returns — NEVER 'graphify query'. This repo's extracted graph is
+// structure-only (contains/calls edges, no data/string-literal edges), so a
+// natural-language query answers with a confident-looking subgraph an agent
+// cannot tell apart from a correct one, and pays for on every later turn (D3).
+function buildRetrievalBlock(hasSerena, hasGraph) {
+  return (
+    `RETRIEVAL — do not burn context. The real cost is cache_read: every turn re-reads everything ` +
+    `accumulated so far, so cost ≈ context-size × turns.\n` +
+    (hasSerena
+      ? `  · SYMBOL-LEVEL FIRST — this project has serena (language-server backed). Before any whole-file read:\n` +
+        `      serena get_symbols_overview <file>   what is in a file, without reading it\n` +
+        `      serena find_symbol <name>            the definition, with include_body for its source\n` +
+        `      serena find_referencing_symbols      every caller, instead of grepping for one\n` +
+        `      serena get_diagnostics_for_file      type errors WITHOUT running a build\n` +
+        `    Read with offset/limit only for what these cannot answer.\n`
+      : '') +
+    (hasGraph
+      ? `  · Orient with the graph before grepping or opening whole files: 'graphify explain "<symbol>"' returns ` +
+        `its definition plus its direct callers/callees; 'graphify path "<A>" "<B>"' returns the call/reference ` +
+        `chain between two symbols, if one exists.\n`
+      : '') +
+    (!hasSerena && !hasGraph
+      ? `  · Locate with bounded search (grep with a concrete path and pattern) before opening files.\n`
+      : '') +
+    `  · Read ONLY the symbols/regions you will touch (Read with offset/limit), NEVER whole files "just in case" — ` +
+    `every large file you pull in is RE-READ on every later turn.\n` +
+    `  · Keep command output small: filter and scope it (head, -q, concrete paths) instead of dumping everything.\n` +
+    `  · Aim to finish in FEW turns with precise reads, not to explore incrementally.`
+  )
+}
+const RETRIEVAL = buildRetrievalBlock(hasSerena, hasGraph)
 
 const artifactList = (ctx.artifacts || []).length
   ? `Read these first — they are the source of truth for intent:\n` + ctx.artifacts.map((a) => `  - ${a}\n`).join('')
@@ -1104,20 +1118,32 @@ const CTX =
 // ── Phase 1.7: MAP — one cheap scout, so N implementers do not each explore ──
 // A HINT, never a contract: if the scout dies the map is empty and implementers
 // explore exactly as they would have.
+// Pure (root/planPath/artifactList/taskIds as args) so it is executed by the
+// same test as buildRetrievalBlock (T002 acceptance) — this is the single
+// heaviest graph consumer in the loop (every task, every run), so its D3
+// discipline (teach 'explain'/'path', never 'query') matters most here.
+function buildScoutPrompt(root, planPath, artifactList, taskIds) {
+  return (
+    `You work in ${root}. You are the SCOUT: implement NOTHING, commit NOTHING. Build a small CODE MAP ` +
+    `per task so implementers do not explore from zero — the loop's real cost is re-read context, so less ` +
+    `exploration = fewer turns.\n` +
+    (artifactList || `Read ${planPath} ONCE.\n`) +
+    `For EACH of [${taskIds.join(', ')}] use THE GRAPH, not grep or whole-file reads: ` +
+    `'graphify explain "<symbol>"' returns its definition plus its direct callers/callees; ` +
+    `'graphify path "<A>" "<B>"' returns the call/reference chain between two symbols, when a task spans more ` +
+    `than one.\n` +
+    `Return per task: 'touchpoints' (a SHORT list of "path:symbol" — a hint, not a dump) and 'orientation' ` +
+    `(one line: where to start). If unsure about a task, return empty touchpoints and say so — it is a ` +
+    `STARTING POINT, not a contract.`
+  )
+}
+
 const codeMapById = {}
 if (hasGraph) {
   phase('Map')
   try {
     const scout = await agent(
-      `You work in ${ctx.root}. You are the SCOUT: implement NOTHING, commit NOTHING. Build a small CODE MAP ` +
-        `per task so implementers do not explore from zero — the loop's real cost is re-read context, so less ` +
-        `exploration = fewer turns.\n` +
-        (artifactList || `Read ${ctx.planPath} ONCE.\n`) +
-        `For EACH of [${tasks.map((t) => t.id).join(', ')}] use THE GRAPH, not grep or whole-file reads: ` +
-        `'graphify query "<what the task touches>"', 'graphify path "<A>" "<B>"', 'graphify explain "<concept>"'.\n` +
-        `Return per task: 'touchpoints' (a SHORT list of "path:symbol" — a hint, not a dump) and 'orientation' ` +
-        `(one line: where to start). If unsure about a task, return empty touchpoints and say so — it is a ` +
-        `STARTING POINT, not a contract.`,
+      buildScoutPrompt(ctx.root, ctx.planPath, artifactList, tasks.map((t) => t.id)),
       { schema: CODEMAP_SCHEMA, label: 'scout', phase: 'Map', agentType: 'general-purpose', effort: 'low', model: MODEL_IMPL }
     )
     for (const m of (scout && scout.maps) || []) codeMapById[m.id] = m
