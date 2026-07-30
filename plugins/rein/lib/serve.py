@@ -362,16 +362,33 @@ def stop(pidfile: str) -> tuple[bool, str]:
     except OSError as e:
         return False, f"could not read pidfile {pidfile!r}: {e}"
     stderr_path = ""
+    # Current format is JSON; a bare integer is the older shape and must
+    # still tear down rather than leaving a group alive on an upgrade.
+    # These are distinct failure modes and must not collapse into one
+    # generic "invalid literal for int()" message: malformed JSON, a valid
+    # JSON record with a bad pgid shape, and a genuinely unparseable pidfile
+    # each point the operator somewhere different.
+    json_error: Exception | None = None
     try:
-        # Current format is JSON; a bare integer is the older shape and must
-        # still tear down rather than leaving a group alive on an upgrade.
         record = json.loads(raw)
-        pgid = int(record["pgid"])
+    except json.JSONDecodeError as e:
+        record = None
+        json_error = e
+
+    if isinstance(record, dict):
+        try:
+            pgid = int(record["pgid"])
+        except (ValueError, TypeError, KeyError) as e:
+            return False, (
+                f"pidfile {pidfile!r} has an invalid pgid {record.get('pgid')!r}: {e}"
+            )
         stderr_path = str(record.get("stderrPath") or "")
-    except (ValueError, TypeError, KeyError):
+    else:
         try:
             pgid = int(raw)
         except ValueError as e:
+            if json_error is not None:
+                return False, f"could not parse pidfile {pidfile!r} as JSON: {json_error}"
             return False, f"could not read pidfile {pidfile!r}: {e}"
     # The pidfile lives in a shared temp dir under a predictable name, so its
     # contents are not fully trusted: pgid 0 signals the CALLER's own group

@@ -6,6 +6,7 @@ network. Covers: a server that comes up, a command that exits immediately
 terminate() really kills the whole process group (no listener survives).
 """
 
+import json
 import os
 import socket
 import subprocess
@@ -302,6 +303,32 @@ class TestNoTempFileLeak(unittest.TestCase):
             stopped, err = serve.stop(pidfile)
             self.assertTrue(stopped, err)
             self.assertFalse(_listening(port), "legacy pidfile must still kill the group")
+
+
+class TestServeStopReportsActualFailure(unittest.TestCase):
+    """T001: stop() must report the failure it actually hit, not fall through
+    to a generic int() parse error for every malformed pidfile shape."""
+
+    def test_malformed_json_pidfile_reports_json_error_not_int_error(self):
+        with tempfile.TemporaryDirectory() as d:
+            pidfile = os.path.join(d, "broken.pid")
+            with open(pidfile, "w") as f:
+                f.write("{not json")
+            stopped, err = serve.stop(pidfile)
+            self.assertFalse(stopped)
+            self.assertIn("as JSON", err)
+            self.assertNotIn("invalid literal for int", err)
+
+    def test_valid_json_with_non_integer_pgid_reports_pgid_shape(self):
+        with tempfile.TemporaryDirectory() as d:
+            pidfile = os.path.join(d, "badpgid.pid")
+            with open(pidfile, "w") as f:
+                f.write(json.dumps({"pgid": "not-a-number"}))
+            stopped, err = serve.stop(pidfile)
+            self.assertFalse(stopped)
+            self.assertIn("invalid pgid", err)
+            self.assertIn("not-a-number", err)
+            self.assertNotIn("as JSON", err)
 
 
 if __name__ == "__main__":
