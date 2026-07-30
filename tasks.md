@@ -46,7 +46,7 @@ Measured on `plugins/rein/lib/verify.py`:
 
 ---
 
-- [ ] T001 The graph exists where the agents work
+- [x] T001 The graph exists where the agents work
   - Type: implementation
   - Depends on: none
   - Human review: false
@@ -58,7 +58,7 @@ Measured on `plugins/rein/lib/verify.py`:
     - indexing that fails, times out, or finds no `graphify` binary is reported and the run CONTINUES with the graph off (D4); a test covers the failure path returning unavailable rather than raising
     - a test asserts the worktree's `graphify-out/` is never added to git — the index stays machine-local, and a run that committed 2.6MB of regenerable JSON would be a regression
 
-- [ ] T002 Teach the commands that answer
+- [x] T002 Teach the commands that answer
   - Type: implementation
   - Depends on: T001
   - Human review: false
