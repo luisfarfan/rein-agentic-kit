@@ -142,6 +142,13 @@ const CONTEXT_SCHEMA = {
       required: ['test', 'lint', 'typecheck'],
       additionalProperties: false,
     },
+    // Round-2 finding 6: for the exact repo that motivated this change (a
+    // monorepo with no `subproject` chosen), detect resolves ZERO commands,
+    // so every verifyGate slot above is "unconfigured" and the ordinary
+    // precheck default ("unconfigured is never a stop") would run a full
+    // change with no mechanical gate whatsoever. This carries the one fact
+    // that distinguishes that case from an honest "no linter here".
+    monorepoUnconfigured: { type: 'boolean' },
     planPath: { type: 'string' },
     planSource: { type: 'string' },
     why: { type: 'string' },
@@ -180,7 +187,7 @@ const CONTEXT_SCHEMA = {
   required: [
     'ok', 'reinPath', 'root', 'stack', 'subtypes', 'verifyPolicy', 'serve', 'cmdTest', 'cmdTestOne', 'cmdLint', 'cmdTypecheck',
     'planPath', 'planSource', 'why', 'scopeOut', 'decisions', 'artifacts', 'capabilities', 'tracker', 'baseBranch', 'worktreePrefix',
-    'verifyWarnings', 'verifyGate',
+    'verifyWarnings', 'verifyGate', 'monorepoUnconfigured',
     'maxTaskSteps', 'maxReviewRounds', 'modelAux', 'modelImpl', 'modelReview', 'tasks', 'problem',
   ],
   additionalProperties: false,
@@ -367,6 +374,10 @@ const ctx = await agentRetry(
     `     cmd{Test,Lint,Typecheck} above is non-empty. When configured, 'invocable'/'outcome' come\n` +
     `     LITERALLY from the verify JSON's results[slot].invocable/outcome. When NOT configured,\n` +
     `     there is nothing to check — report invocable=true, outcome="" (absence is not a broken gate).\n` +
+    `   · monorepoUnconfigured <- true iff config.stack === "monorepo" AND config.missingCommands\n` +
+    `     contains an entry starting with "choose a sub-project" (no sub-project has been named yet);\n` +
+    `     else false. This is a monorepo root the kit can see into but that has not been pointed at a\n` +
+    `     sub-project, which is a different fact than an ordinary project with no linter configured.\n` +
     `   · baseBranch <- config.worktree.baseBranch, worktreePrefix <- config.worktree.prefix\n` +
     `   · maxTaskSteps/maxReviewRounds <- config.limits, model* <- config.models\n` +
     `   · tasks <- plan.pending, ALREADY dependency-ordered. Keep that order. Copy each field\n` +
@@ -423,7 +434,7 @@ const VERIFY_GATE = ctx.verifyGate || {
   lint: { configured: false, invocable: true, outcome: '' },
   typecheck: { configured: false, invocable: true, outcome: '' },
 }
-const gatePrecheck = decideGatePrecheck(VERIFY_GATE)
+const gatePrecheck = decideGatePrecheck(VERIFY_GATE, !!ctx.monorepoUnconfigured)
 for (const w of gatePrecheck.warnings) log(`⚠️ ${w}`)
 if (gatePrecheck.decision === 'stop') {
   log(`⛔ gate precheck: ${gatePrecheck.reason}`)
@@ -522,10 +533,35 @@ const gateCmds = [
   ctx.cmdTypecheck && `'${ctx.cmdTypecheck}'`,
 ].filter(Boolean)
 
-function boundedVerification(task) {
+// Pure (takes cmdTestOne/cmdTest as arguments rather than reading the outer
+// `ctx` closure) so it can be extracted straight out of the shipped source and
+// executed by a test, the same way decideRound/decideGatePrecheck are.
+//
+// Round-2 finding 2: `detect.resolve()` prefixes a chosen sub-project's
+// `testOne` with `cd <subproject> &&` (same construction as test/lint/
+// typecheck), which silently changes what `{target}` is relative to. An
+// implementer working from the worktree ROOT naturally substitutes a
+// root-relative path (`apps/web/src/foo.test.ts`), producing
+// `cd apps/web && npx vitest run apps/web/src/foo.test.ts` — nothing found,
+// a burned step whose red signal is not a code problem. `rein verify` cannot
+// catch this either: it substitutes an ABSOLUTE temp path for {target}, which
+// works from any cwd, so verify-green + step-red is exactly the setup-vs-code
+// misdirection T002 exists to remove. Stating the base explicitly here is the
+// chosen fix (over NOT prefixing testOne): the prefix is required for the
+// command to be invocable AT ALL from the worktree root, so the base must be
+// named instead of removed.
+function boundedVerification(task, cmdTestOne, cmdTest) {
   if (task.verification) return `'${task.verification}'`
-  if (ctx.cmdTestOne) return `the narrowest form of '${ctx.cmdTestOne}' (substitute {target} with the one test file or id covering your change)`
-  if (ctx.cmdTest) return `'${ctx.cmdTest}'`
+  if (cmdTestOne) {
+    const cdMatch = /^cd\s+('[^']*'|\S+)\s+&&\s+/.exec(cmdTestOne)
+    const dir = cdMatch ? cdMatch[1].replace(/^'|'$/g, '') : ''
+    const targetNote = dir
+      ? `substitute {target} with the one test file or id covering your change, given RELATIVE TO '${dir}' — ` +
+        `this command already 'cd's there first, so {target} is NOT relative to the repo root`
+      : `substitute {target} with the one test file or id covering your change`
+    return `the narrowest form of '${cmdTestOne}' (${targetNote})`
+  }
+  if (cmdTest) return `'${cmdTest}'`
   return `(no verification command is configured — say so in 'verification' rather than pretending you ran one)`
 }
 
@@ -803,7 +839,14 @@ function decidePlanCheck(findings, runIds) {
 //                                   neither is required for a verdict
 //   an unconfigured slot is never a stop or a warning — there is nothing to
 //   check, which is a different fact than "checked and broken"
-function decideGatePrecheck(verifyGate) {
+//   EXCEPT: a monorepo root with no sub-project chosen (round-2 finding 6).
+//   `detect` there resolves ZERO commands, so every slot above reads
+//   "unconfigured" — but that is not "no linter exists", it is "the kit can
+//   see this is a monorepo and knows exactly what is missing" (the same fact
+//   already carried in `missingCommands`). Paying an implementer toward a
+//   gate that cannot report anything at all inverts D3, so this is its own
+//   stop, checked BEFORE the ordinary "unconfigured is never a stop" default.
+function decideGatePrecheck(verifyGate, monorepoUnconfigured) {
   const vg = verifyGate || {}
   const slot = (name) => vg[name] || { configured: false, invocable: true, outcome: '' }
   const warnings = []
@@ -818,6 +861,14 @@ function decideGatePrecheck(verifyGate) {
     return {
       decision: 'stop',
       reason: `the test command is not invocable (${test.outcome || 'unknown'}) — no implementer is paid to work toward a gate that cannot pass`,
+      warnings,
+    }
+  }
+  if (monorepoUnconfigured) {
+    return {
+      decision: 'stop',
+      reason: 'this is a monorepo root with no sub-project chosen — set "subproject" in flow.config.json to one ' +
+        'of subprojects[].path before the loop can resolve a mechanical gate at all',
       warnings,
     }
   }
@@ -1055,7 +1106,7 @@ function stepPrompt(task, proxied, ledger, step) {
     cont +
     `BOUNDED-STEP CONTRACT (this is the point — an agent that runs 200 turns re-reads its bloated context ` +
     `every single turn and costs a fortune): do ONE FOCUSED STRETCH, not the whole task at once. Run the ` +
-    `NARROWEST verification that covers your change — ${boundedVerification(task)} — NEVER the full suite, ` +
+    `NARROWEST verification that covers your change — ${boundedVerification(task, ctx.cmdTestOne, ctx.cmdTest)} — NEVER the full suite, ` +
     `and do not dump its whole output. Commit whatever is green.\n` +
     implementerPolicyBlock() +
     `If the task is NOT 100% complete after that, STOP and return done=false with a COMPACT ledger ` +

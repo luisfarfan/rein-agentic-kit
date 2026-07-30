@@ -31,9 +31,12 @@ function extract(name, params) {
   if (!m) throw new Error('not found in loop.js: ' + name);
   return m[1];
 }
-const decideGatePrecheck = new Function('verifyGate', extract('decideGatePrecheck', 'verifyGate'));
+const decideGatePrecheck = new Function(
+  'verifyGate', 'monorepoUnconfigured',
+  extract('decideGatePrecheck', 'verifyGate, monorepoUnconfigured')
+);
 const scenarios = JSON.parse(scenariosJson);
-const out = scenarios.map((s) => decideGatePrecheck(s.verifyGate));
+const out = scenarios.map((s) => decideGatePrecheck(s.verifyGate, s.monorepoUnconfigured));
 process.stdout.write(JSON.stringify(out));
 """
 
@@ -70,7 +73,7 @@ class TestFunctionIsExtractable(unittest.TestCase):
     def test_function_exists_with_expected_signature(self):
         with open(LOOP_JS, encoding="utf-8") as f:
             src = f.read()
-        self.assertIn("function decideGatePrecheck(verifyGate)", src)
+        self.assertIn("function decideGatePrecheck(verifyGate, monorepoUnconfigured)", src)
 
 
 class TestContextSchemaCarriesVerifyGate(unittest.TestCase):
@@ -88,6 +91,17 @@ class TestContextSchemaCarriesVerifyGate(unittest.TestCase):
             self.assertIn(slot, schema_src)
         for prop in ("configured", "invocable", "outcome"):
             self.assertIn(prop, schema_src)
+
+    def test_context_schema_has_monorepo_unconfigured_field(self):
+        # Round-2 finding 6: the ONE fact that distinguishes "monorepo root
+        # awaiting a sub-project choice" from an ordinary unconfigured slot.
+        with open(LOOP_JS, encoding="utf-8") as f:
+            src = f.read()
+        schema_start = src.index("const CONTEXT_SCHEMA")
+        schema_end = src.index("const ISOLATE_SCHEMA")
+        schema_src = src[schema_start:schema_end]
+        self.assertIn("monorepoUnconfigured", schema_src)
+        self.assertIn("'monorepoUnconfigured'", schema_src)
 
 
 class TestTestNotInvocableStops(GatePrecheckTestCase):
@@ -221,6 +235,45 @@ class TestPreparePromptScopesVerifyToGateSlots(unittest.TestCase):
         # The OLD instruction ran every resolved slot unfiltered -- assert
         # the unscoped invocation is gone, not just that the new one exists.
         self.assertNotIn("verify ${ROOT} --json", self.source)
+
+
+class TestMonorepoUnconfiguredStops(GatePrecheckTestCase):
+    """Round-2 finding 6: for the exact repo that motivated this change --
+    a monorepo with no `subproject` chosen -- detect resolves ZERO commands,
+    so every verifyGate slot reads 'unconfigured' and, without this, the
+    ordinary 'unconfigured is never a stop' default would run a full change
+    with no mechanical gate whatsoever.
+    """
+
+    def test_monorepo_unconfigured_stops_even_with_every_slot_unconfigured(self):
+        [result] = self._run([
+            {"verifyGate": _gate(), "monorepoUnconfigured": True},
+        ])
+        self.assertEqual(result["decision"], "stop")
+        self.assertIn("sub-project", result["reason"])
+        self.assertIn("monorepo", result["reason"])
+
+    def test_monorepo_unconfigured_false_continues_as_before(self):
+        [result] = self._run([
+            {"verifyGate": _gate(), "monorepoUnconfigured": False},
+        ])
+        self.assertEqual(result["decision"], "continue")
+
+    def test_missing_monorepo_unconfigured_key_degrades_to_continue(self):
+        # An older Prepare agent's ctx may not carry this field at all.
+        [result] = self._run([{"verifyGate": _gate()}])
+        self.assertEqual(result["decision"], "continue")
+
+    def test_test_not_invocable_reason_takes_precedence(self):
+        [result] = self._run([
+            {
+                "verifyGate": _gate(test=_slot(True, False, "not_invocable")),
+                "monorepoUnconfigured": True,
+            },
+        ])
+        self.assertEqual(result["decision"], "stop")
+        self.assertIn("not_invocable", result["reason"])
+        self.assertNotIn("sub-project", result["reason"])
 
 
 if __name__ == "__main__":

@@ -73,6 +73,13 @@ def cmd_detect(argv: list[str]) -> int:
 def cmd_verify(argv: list[str]) -> int:
     """Run every resolved command for real -- an inference is not a fact (D2).
 
+    This command itself never repairs, installs, or writes anything -- it
+    only runs and reports. But it runs the PROJECT'S OWN real test/lint/
+    typecheck commands, in the operator's actual checkout, and those may
+    write whatever they normally write (caches, coverage, build info): `rein
+    verify` can leave a working tree dirtier than it found it, as a property
+    of the commands being verified, not of this command.
+
     Exits non-zero only when a command is NOT INVOCABLE (missing binary, a
     shell resolution failure): a setup problem. A command that ran and
     reported failure, or one that timed out, is the ordinary state of a repo

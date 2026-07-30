@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 
 CONFIG_NAME = "flow.config.json"
 
@@ -503,7 +504,9 @@ def _browser_tools(root: str) -> list[str]:
 _PORT_FLAG_RE = re.compile(r"(?:--port|-p)[=\s]+(\d+)")
 
 
-def _serve(root: str, subtypes: list[str], commands: dict[str, str], cfg: dict) -> tuple[dict | None, list[str]]:
+def _serve(
+    root: str, subtypes: list[str], commands: dict[str, str], cfg: dict, subproject: str = ""
+) -> tuple[dict | None, list[str]]:
     """How to run a frontend project so a real page can be rendered and checked.
 
     Returns None for non-frontend projects: there is nothing to serve, so no
@@ -515,6 +518,16 @@ def _serve(root: str, subtypes: list[str], commands: dict[str, str], cfg: dict) 
     a frontend whose dev server is not an npm script (static site, a Django/
     Rails-served front end, docker compose) could never be configured: the
     `serve` slot would stay in `missingCommands` with no way to satisfy it.
+
+    `subproject`, when a monorepo root has one chosen, gets the SAME `cd
+    <path> &&` treatment `test`/`testOne`/`lint`/`typecheck` already get
+    (round-2 finding 1) -- otherwise `loop.js` starts this command from the
+    monorepo ROOT (which by definition has no package.json of its own) and
+    every rendered verification for a frontend sub-project fails at boot.
+    Deliberately NOT applied to `cfg_command`: an operator-supplied
+    `commands.serve` is explicit intent and already runs from wherever the
+    operator wrote it to run from (same reasoning as flow.config.json always
+    winning on precedence).
     """
     if "frontend" not in subtypes:
         return None, []
@@ -524,6 +537,7 @@ def _serve(root: str, subtypes: list[str], commands: dict[str, str], cfg: dict) 
     runner = _pm_runner(_package_manager(root))
 
     cfg_command = (commands.get("serve") or "").strip()
+    cd_prefix = f"cd {shlex.quote(subproject)} && " if subproject else ""
 
     script_body = ""
     if cfg_command:
@@ -531,10 +545,10 @@ def _serve(root: str, subtypes: list[str], commands: dict[str, str], cfg: dict) 
         command = cfg_command
     elif "dev" in scripts:
         script_body = scripts["dev"]
-        command = f"{runner} dev"
+        command = f"{cd_prefix}{runner} dev"
     elif "start" in scripts:
         script_body = scripts["start"]
-        command = f"{runner} start"
+        command = f"{cd_prefix}{runner} start"
     else:
         command = ""
 
@@ -766,9 +780,15 @@ def resolve(root: str = ".") -> dict:
                     subproject_choice = normalized_choice
                     subproject_subtypes = chosen.get("subtypes", [])
                     # Carry the path so the command runs from the repo root,
-                    # not from inside the sub-project.
+                    # not from inside the sub-project. shlex.quote (finding 3):
+                    # `normalized_choice` is an operator-supplied path that
+                    # reaches `shell=True` in verify.run_one -- unquoted, a
+                    # sub-project directory containing a space (which passes
+                    # the isdir + manifest check above) yields a broken,
+                    # confusingly-shell-parsed command.
                     auto_cmds = {
-                        slot: f"cd {normalized_choice} && {cmd}" for slot, cmd in chosen["commands"].items()
+                        slot: f"cd {shlex.quote(normalized_choice)} && {cmd}"
+                        for slot, cmd in chosen["commands"].items()
                     }
                 else:
                     subproject_invalid = raw_choice
@@ -805,7 +825,7 @@ def resolve(root: str = ".") -> dict:
     # `mode: unit` and no `serve` for a frontend sub-project forever.
     verify_subtypes_root = os.path.join(root, subproject_choice) if subproject_choice else root
     subtypes = cfg.get("subtypes") or (subproject_subtypes if subproject_choice else auto.get("subtypes", []))
-    serve, serve_warnings = _serve(verify_subtypes_root, subtypes, commands, cfg)
+    serve, serve_warnings = _serve(verify_subtypes_root, subtypes, commands, cfg, subproject_choice)
     verify_policy, verify_warnings = _verify_policy(verify_subtypes_root, subtypes, commands, cfg)
     verify_warnings = serve_warnings + verify_warnings
     if subproject_invalid:

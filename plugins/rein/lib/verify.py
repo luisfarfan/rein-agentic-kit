@@ -3,10 +3,19 @@
 
 `detect.resolve()` produces an INFERENCE: "this project probably runs `pytest
 -q`". Nobody has actually run it. This module is the thing that runs it, once,
-and reports the truth -- never repairing, never installing, never writing to
-the repo (D2). Verification happens where it is cheap (D3): here, at `rein
-verify`, before an implementer or reviewer is ever paid for work that was
-always going to hit a broken gate.
+and reports the truth -- never repairing, never installing, never fixing
+anything itself (D2). Verification happens where it is cheap (D3): here, at
+`rein verify`, before an implementer or reviewer is ever paid for work that
+was always going to hit a broken gate.
+
+QUALIFIED, not absolute, on writes: THIS module never writes to the repo --
+`run_one` only executes and captures output, `verify_commands` only reports.
+But the resolved commands it runs are the PROJECT'S OWN real `test`/`lint`/
+`typecheck` (etc.), and those routinely write whatever they normally write --
+`.pytest_cache`, `__pycache__`, coverage output, tsc build info, node caches.
+`rein verify` on a project's main checkout can leave it dirtier than it found
+it; that is a property of the commands being verified, not a promise this
+module breaks.
 
 The one distinction the whole task exists to preserve: a command that could
 not be INVOKED at all (missing binary, a typo, a shell that cannot resolve
@@ -276,6 +285,13 @@ def _cheap_target() -> str:
 def verify_commands(resolved: dict, timeout: float = DEFAULT_TIMEOUT, only: set[str] | None = None) -> dict:
     """Run every resolved command slot for real and report per-slot outcome.
 
+    This function itself never repairs, installs, or writes anything -- it
+    only executes and reports. But the commands it runs are the PROJECT'S
+    OWN real test/lint/typecheck etc., in the caller's actual `root`, and
+    those may write whatever they normally write (caches, build info,
+    coverage files). That is not this function's write, but it is a real
+    effect of calling it against a project's main checkout.
+
     Takes the dict `detect.resolve()` produces (or anything with the same
     `root` / `commands` shape) rather than a root path + calling resolve()
     itself, so callers that already resolved once do not pay for it twice.
@@ -346,8 +362,10 @@ def verify_commands(resolved: dict, timeout: float = DEFAULT_TIMEOUT, only: set[
 # Persisted OUTSIDE the repo (same convention as token_report's ledger under
 # ~/.claude/rein/) so `rein doctor` can report the last-known verification
 # state without running anything itself -- and so `verify` writing this file
-# is never mistaken for the "never writes to the repo" guarantee it exists to
-# uphold (D2): nothing here ever touches a path under `root`.
+# is never mistaken for "this module never touches `root` itself" (D2):
+# nothing in THIS module ever writes under `root` -- the resolved commands it
+# executes may, per their own project's normal behaviour (see verify_commands'
+# docstring above).
 
 
 def _state_path(root: str) -> str:

@@ -169,7 +169,13 @@ class TestSubprojectDrivesVerifyPolicyAndServe(unittest.TestCase):
         self.assertIn("frontend", r["subtypes"])
         self.assertEqual(r["verifyPolicy"]["mode"], "rendered")
         self.assertIsNotNone(r.get("serve"))
-        self.assertTrue(r["serve"]["command"], r["serve"])
+        # Round-2 finding 1: the sub-project path must actually be IN the serve
+        # command -- loop.js's serve-probe runs it from the monorepo ROOT (which
+        # by definition has no package.json), so a bare "npm run dev" cannot
+        # start and every rendered verification fails at boot. `serve.command`
+        # is truthy either way, which is exactly why that assertion alone passed
+        # review-by-tests before this fix.
+        self.assertEqual(r["serve"]["command"], "cd apps/web && npm run dev")
 
     def test_backend_subproject_keeps_unit_mode_and_no_serve(self):
         with Project(
@@ -257,6 +263,38 @@ class TestPlainRepoUnaffected(unittest.TestCase):
             r = detect.resolve(root)
         self.assertEqual(r["stack"], "unknown")
         self.assertNotIn("subprojects", r)
+
+
+class TestSubprojectPathWithSpaceIsQuoted(unittest.TestCase):
+    """Round-2 finding 3: `f"cd {normalized_choice} && ..."` interpolated an
+    operator-supplied path into a shell command unquoted. A sub-project
+    directory containing a space passes the isdir + manifest check and must
+    still produce a correctly-quoted, single-token `cd` argument -- both for
+    the ordinary command slots and for `serve` (finding 1's fix reuses the
+    same construction).
+    """
+
+    def test_test_command_quotes_a_space_in_the_path(self):
+        with Project(
+            {
+                "README.md": "monorepo\n",
+                "apps/my web/package.json": PKG_TEST,
+                "flow.config.json": json.dumps({"subproject": "apps/my web"}),
+            }
+        ) as root:
+            r = detect.resolve(root)
+        self.assertEqual(r["commands"]["test"], "cd 'apps/my web' && npm run test")
+
+    def test_serve_command_quotes_a_space_in_the_path(self):
+        with Project(
+            {
+                "README.md": "monorepo\n",
+                "apps/my web/package.json": PKG_FRONTEND,
+                "flow.config.json": json.dumps({"subproject": "apps/my web"}),
+            }
+        ) as root:
+            r = detect.resolve(root)
+        self.assertEqual(r["serve"]["command"], "cd 'apps/my web' && npm run dev")
 
 
 if __name__ == "__main__":

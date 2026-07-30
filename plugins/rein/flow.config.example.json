@@ -1,8 +1,9 @@
 {
-  "$comment": "Copy to your project root as flow.config.json. EVERY key is optional: what you omit is autodetected. This file always wins over autodetection.",
+  "$comment": "Copy to your project root as flow.config.json. EVERY key is optional: what you omit is autodetected. This file always wins over autodetection. `subproject` (below) is monorepo-only: set when `rein detect` reports stack:'monorepo' -- the kit never guesses which sub-project is the target (a wrong guess is worse than asking), so this is the ONLY way any command resolves at all.",
 
   "stack": "python",
   "subtypes": [],
+  "subproject": "",
 
   "commands": {
     "$comment": "{target} is substituted with a single test file or test id. Bounded verification is the point: never the whole suite inside an implementation step. `serve` (frontend subtypes only) is how to start the dev server for rendered verification -- set it whenever the server isn't an npm `dev`/`start` script (static site, a Django/Rails-served front end, docker compose); it always wins over the package.json script lookup.",
