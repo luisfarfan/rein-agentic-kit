@@ -252,7 +252,14 @@ def run_one(
     if code == 0:
         return CommandResult(slot, configured_cmd, True, OUTCOME_OK, code, lines, elapsed_ms, executed_command=command)
 
-    setup_signal = _setup_failure_signal(text)
+    # Matched against `lines`, NOT the whole capture: a wrapper runner that
+    # cannot find its target says so and stops, on the first line. The same
+    # phrasing appearing DEEP in a long run belongs to something the suite
+    # itself shelled out to -- a suite that ran and reported failures, which
+    # is a CODE problem. Grepping the whole capture turned that into a SETUP
+    # problem and stopped the run. And `lines` is the only output the operator
+    # is ever shown, so matching anything else cites evidence they cannot see.
+    setup_signal = _setup_failure_signal("\n".join(lines))
     if setup_signal:
         # A wrapper runner (poetry/uv/npm/yarn) exited cleanly-but-nonzero
         # because ITS target was missing -- a SETUP problem the 126/127

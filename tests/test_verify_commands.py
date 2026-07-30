@@ -341,6 +341,44 @@ class TestWrapperRunnerSetupFailure(unittest.TestCase):
         self.assertTrue(res["invocable"])
         self.assertEqual(res["outcome"], verify.OUTCOME_FAILED)
 
+    def test_wrapper_phrasing_past_the_reported_head_stays_a_code_failure(self):
+        """The signal is matched against the head that is actually REPORTED.
+
+        A suite that runs, prints pages of output, shells out to something
+        missing along the way, and reports failures is a CODE problem. Reading
+        the whole capture made it a SETUP problem -- and stopped the run at
+        `decideGatePrecheck` -- while showing the operator an `outputHead`
+        containing none of the phrasing the error message cited.
+        """
+        noise = "\n".join("echo 'ok test_%d'" % i for i in range(verify.OUTPUT_HEAD_LINES * 2))
+        script = (
+            "#!/bin/sh\n" + noise + "\n"
+            "echo 'sh: 1: helper-tool: command not found'\n"
+            "echo 'FAILED (failures=1)'\nexit 1\n"
+        )
+        with Project({"suite.sh": script}) as root:
+            report = verify.verify_commands(_resolved(root, {"test": "./suite.sh"}))
+        res = report["results"]["test"]
+        self.assertEqual(res["outcome"], verify.OUTCOME_FAILED)
+        self.assertTrue(res["invocable"])
+        self.assertTrue(report["allInvocable"])
+        # The cited phrase is absent from the head, which is why it must not
+        # be cited: whatever the error says has to be visible in outputHead.
+        self.assertNotIn("command not found", "\n".join(res["outputHead"]))
+
+    def test_wrapper_phrasing_inside_the_reported_head_still_fires(self):
+        """The narrowing must not disarm the signal for the real case: a
+        wrapper that cannot find its target says so and stops immediately."""
+        script = (
+            "#!/bin/sh\necho 'first line of noise'\n"
+            "echo 'Command not found: pytest'\nexit 1\n"
+        )
+        with Project({"poetry.sh": script}) as root:
+            report = verify.verify_commands(_resolved(root, {"test": "./poetry.sh"}))
+        res = report["results"]["test"]
+        self.assertEqual(res["outcome"], verify.OUTCOME_NOT_INVOCABLE)
+        self.assertIn("command not found", "\n".join(res["outputHead"]).lower())
+
 
 class TestInconclusiveTestOne(unittest.TestCase):
     """`testOne`'s cheap synthetic `{target}` is real but owned by no actual
