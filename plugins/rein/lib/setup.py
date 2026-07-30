@@ -53,9 +53,13 @@ TOOLS = {
                         "the kit's symbol-first retrieval prompts will not fire here",
     },
     "graphify": {
-        "why": "Precomputed code graph: `graphify query/path/explain` for bounded "
+        "why": "Precomputed code graph: `graphify explain \"<symbol>\"` returns its "
+               "definition plus direct callers/callees, `graphify path \"<A>\" \"<B>\"` "
+               "returns the call/reference chain between two symbols -- bounded "
                "orientation instead of a raw grep. The kit's CTX already teaches "
-               "these commands, but only when an index exists.",
+               "these two commands (never `graphify query`, which is BFS from a "
+               "literal token match and returns confident noise), but only when "
+               "an index exists.",
         "probe": ["graphify"],
         "install": None,  # distributed as a skill, not a package this can fetch
         "manual": "install the graphify skill, then build this repo's index once "

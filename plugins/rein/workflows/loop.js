@@ -861,7 +861,13 @@ function buildIsolatePrompt(root, base, wd, branch, rein) {
     `   'pendingIds' the ids of tasks whose checkbox is still unticked THERE. On a resumed run\n` +
     `   the worktree knows what already landed and the base branch does not. Copy the ids\n` +
     `   literally; do not judge whether the work looks done.\n` +
-    `5. Build the code graph index IN THE WORKTREE (no LLM, ~1-2s): run 'cd ${wd} && graphify update . --no-cluster' ` +
+    `5. Build the code graph index IN THE WORKTREE (no LLM, ~1-2s). First make its output path ` +
+    `worktree-locally excluded so it can never end up staged from here, even in a repo whose own ` +
+    `.gitignore lacks the entry: run 'f="$(git -C ${wd} rev-parse --git-path info/exclude)"; ` +
+    `grep -qxF "graphify-out/" "$f" 2>/dev/null || printf "graphify-out/\\n" >> "$f"' — info/exclude is ` +
+    `per-worktree state that is itself never committed, so this needs no change to ${root}'s tracked ` +
+    `files. This step is non-blocking too (D4): if it fails, continue anyway. Then run ` +
+    `'cd ${wd} && graphify update . --no-cluster' ` +
     `(cwd MUST be ${wd} itself — 'graphify update ${wd}' from a different cwd splits the index, writing ` +
     `manifest.json into the WRONG directory and corrupting that directory's own incrementality). ` +
     `This is a HINT for later steps, never a gate — if the 'graphify' binary is missing, the command errors, ` +

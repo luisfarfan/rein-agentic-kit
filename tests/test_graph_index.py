@@ -130,6 +130,23 @@ class GraphIndexPolicyTestCase(unittest.TestCase):
         self.assertIn("never blocks done", prompt)
         self.assertIn("D4", prompt)
 
+    def test_isolate_prompt_excludes_graphify_out_worktree_locally(self):
+        # round-2 finding: every worktree the loop cuts, in every repo, must
+        # have graphify-out/ excluded from ITS OWN git state -- not rely on
+        # the target repo's tracked .gitignore (which this change does not
+        # control and does not modify). info/exclude is per-worktree and is
+        # itself never committed, so no target-repo file needs to change.
+        out = self._run([{"worktreeMode": True, "capabilities": [], "isolate": None}])
+        prompt = out["prompt"]
+        self.assertIn("git -C /base-wt-x rev-parse --git-path info/exclude", prompt)
+        self.assertIn('grep -qxF "graphify-out/" "$f"', prompt)
+        self.assertIn('printf "graphify-out/\\n" >> "$f"', prompt)
+        # must happen before the index build, and must itself be non-blocking
+        exclude_pos = prompt.index("rev-parse --git-path info/exclude")
+        build_pos = prompt.index("cd /base-wt-x && graphify update . --no-cluster")
+        self.assertLess(exclude_pos, build_pos)
+        self.assertIn("This step is non-blocking too (D4)", prompt)
+
 
 class FunctionsAreExtractableTestCase(unittest.TestCase):
     def test_functions_exist_with_expected_signatures(self):
@@ -184,9 +201,16 @@ class GraphOutputNeverTrackedTestCase(unittest.TestCase):
         # Build the actual index (the no-LLM path Isolate uses) and confirm git
         # sees nothing to add -- a run that committed 2.6MB of regenerable JSON
         # would be a regression.
+        # round-2 finding: this MUST be 'graphify update . --no-cluster' with
+        # cwd=REPO_ROOT -- exactly the invariant loop.js itself states (cwd
+        # MUST be the target directory itself). Passing REPO_ROOT as the
+        # argument from an arbitrary cwd is the wrong-directory invocation the
+        # change documents as splitting the index and corrupting an unrelated
+        # directory's incrementality; it was only harmless when this suite
+        # happened to run from the repo root.
         subprocess.run(
-            ["graphify", "update", REPO_ROOT, "--no-cluster"],
-            capture_output=True, timeout=30,
+            ["graphify", "update", ".", "--no-cluster"],
+            cwd=REPO_ROOT, capture_output=True, timeout=30,
         )
         proc = subprocess.run(
             ["git", "-C", REPO_ROOT, "status", "--porcelain", "--", "graphify-out"],
