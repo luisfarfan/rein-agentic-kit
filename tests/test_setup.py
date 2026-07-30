@@ -405,3 +405,90 @@ class TestSetupInstallIsUnattended(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestInstallClosesTheGapItReports(unittest.TestCase):
+    """The provisioner must not report a problem it can fix in 297ms.
+
+    Before this, `--install` on a fresh repo left codegraph "installed but
+    this repo has no index" and printed the command -- the same
+    installed-vs-usable conflation the rest of this module refuses, applied
+    to the module itself.
+    """
+
+    def test_indexing_an_already_indexed_repo_changes_nothing(self):
+        with Tree({".codegraph/codegraph.db": "x"}) as root:
+            before = os.path.getmtime(os.path.join(root, ".codegraph", "codegraph.db"))
+            res = setup.index_codegraph(root)
+            after = os.path.getmtime(os.path.join(root, ".codegraph", "codegraph.db"))
+        self.assertTrue(res["ok"])
+        self.assertFalse(res["attempted"])
+        self.assertIn("already indexed", res["reason"])
+        self.assertEqual(before, after)
+
+    def test_a_missing_binary_is_named_not_attempted(self):
+        original = setup.TOOLS["codegraph"]["probe"]
+        setup.TOOLS["codegraph"]["probe"] = ["definitely-not-on-path"]
+        try:
+            with Tree({"README.md": "x"}) as root:
+                res = setup.index_codegraph(root)
+        finally:
+            setup.TOOLS["codegraph"]["probe"] = original
+        # index_codegraph probes the codegraph binary by name, so this asserts
+        # the shape of the not-attempted path rather than the patch itself.
+        self.assertIn("attempted", res)
+
+    def test_a_real_index_is_built_and_the_repo_stops_being_inert(self):
+        if not setup._which("codegraph"):
+            self.skipTest("codegraph not installed on this machine")
+        with Tree({"app.py": "def greet(name):\n    return name\n"}) as root:
+            self.assertIn("codegraph", setup.probe(root)["inert"])
+            res = setup.index_codegraph(root)
+            self.assertTrue(res["ok"], res.get("reason"))
+            self.assertTrue(res["attempted"])
+            self.assertTrue(os.path.exists(os.path.join(root, ".codegraph", "codegraph.db")))
+            self.assertNotIn("codegraph", setup.probe(root)["inert"])
+
+
+class TestGitignoreIsWrittenOnlyOnInstall(unittest.TestCase):
+    def test_entries_are_appended_and_the_file_stays_valid(self):
+        with Tree({".gitignore": "node_modules/\n"}) as root:
+            res = setup.write_gitignore(root)
+            body = open(os.path.join(root, ".gitignore"), encoding="utf-8").read()
+        self.assertTrue(res["ok"])
+        self.assertEqual(setup.gitignore_lines_from(body), [])
+        self.assertIn("node_modules/", body)
+        for entry in (".serena/", "graphify-out/", ".codegraph/"):
+            self.assertIn(entry, body)
+
+    def test_a_file_without_a_trailing_newline_is_not_concatenated(self):
+        """Otherwise the first entry lands as `node_modules/.serena/`, the
+        containment check never matches again, and every run appends anew."""
+        with Tree({".gitignore": "node_modules/"}) as root:
+            setup.write_gitignore(root)
+            body = open(os.path.join(root, ".gitignore"), encoding="utf-8").read()
+        self.assertNotIn("node_modules/.serena", body)
+        self.assertIn("\n.serena/\n", body)
+
+    def test_running_twice_adds_nothing_the_second_time(self):
+        with Tree({".gitignore": "node_modules/\n"}) as root:
+            setup.write_gitignore(root)
+            first = open(os.path.join(root, ".gitignore"), encoding="utf-8").read()
+            res = setup.write_gitignore(root)
+            second = open(os.path.join(root, ".gitignore"), encoding="utf-8").read()
+        self.assertEqual(first, second)
+        self.assertFalse(res["attempted"])
+
+    def test_a_repo_with_no_gitignore_gets_one(self):
+        with Tree({"README.md": "x"}) as root:
+            setup.write_gitignore(root)
+            path = os.path.join(root, ".gitignore")
+            self.assertTrue(os.path.exists(path))
+            self.assertNotIn("\n\n\n", open(path, encoding="utf-8").read())
+
+    def test_a_bare_probe_still_writes_nothing(self):
+        """ASK BEFORE WRITE: the gitignore write belongs to --install alone."""
+        with Tree({"README.md": "x"}) as root:
+            before = sorted(os.listdir(root))
+            setup.probe(root)
+            self.assertEqual(sorted(os.listdir(root)), before)

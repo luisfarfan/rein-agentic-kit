@@ -243,6 +243,12 @@ def install(names: list[str] | None = None, root: str = ".") -> dict:
     # accepts a vendor default is not provisioning. Runs on every --install,
     # same as serena-activate above, and never gates the other tools.
     results["codegraph-telemetry"] = activate_codegraph(root)
+    # Same reason as serena-activate above, one tool over: a binary on PATH
+    # buys nothing here until THIS repo has an index. Reporting the fix
+    # instead of applying it left every freshly provisioned repo inert.
+    results["codegraph-index"] = index_codegraph(root)
+    # A tracked-file write, so it belongs to --install and nowhere else.
+    results["gitignore"] = write_gitignore(root)
     return {"root": state["root"], "results": results}
 
 
@@ -302,6 +308,80 @@ def activate_codegraph(root: str = ".") -> dict:
     result = {"ok": ok, "attempted": True, "cmd": "codegraph telemetry off"}
     result["reason"] = out if out else ("telemetry disabled" if ok else "telemetry off failed")
     return result
+
+
+def index_codegraph(root: str = ".") -> dict:
+    """Build codegraph's index for THIS repo, so the recommendation is usable.
+
+    Reporting "installed but this repo has no index" and naming the fix was
+    half a job: the fix is `codegraph init <root>`, it is deterministic, it
+    needs no LLM and no API key, and it took 297ms on a fresh repo. A
+    provisioner that can close a gap it just reported, and instead prints the
+    command, is the "installed vs usable" conflation this module exists to
+    refuse -- one level up, applied to itself.
+
+    Idempotent: an already-indexed repo is reported as such and NOT re-built,
+    the same contract `activate_serena` keeps. Never raises and never gates
+    anything else (the same non-blocking rule the loop's D4 states): a repo
+    codegraph cannot parse still gets every other tool provisioned.
+    """
+    root = os.path.abspath(root)
+    if not _which("codegraph"):
+        return {"ok": False, "attempted": False,
+                "reason": "missing prerequisite: codegraph binary not found"}
+    marker = os.path.join(root, TOOLS["codegraph"]["index"])
+    if os.path.exists(marker):
+        return {"ok": True, "attempted": False, "reason": "already indexed — left untouched"}
+    ok, out = _run(["codegraph", "init", root])
+    return {
+        "ok": ok,
+        "attempted": True,
+        "cmd": f"codegraph init {root}",
+        "reason": (out or "").strip()[-200:] or ("indexed" if ok else "indexing failed"),
+    }
+
+
+def write_gitignore(root: str = ".") -> dict:
+    """Append the tools' local-state entries to `.gitignore` (--install only).
+
+    These directories are machine-local and regenerable; committing an index
+    ships a stale answer to everyone who clones. Writing a TRACKED file is a
+    real repo change, which is why it happens under `--install` and never on
+    a bare probe -- the module's ASK BEFORE WRITE rule.
+
+    The leading newline matters: a `.gitignore` with no trailing newline
+    would otherwise get the first entry concatenated onto its last line,
+    after which the containment check never matches again and every run
+    appends once more, forever.
+    """
+    root = os.path.abspath(root)
+    missing = gitignore_lines(root)
+    if not missing:
+        return {"ok": True, "attempted": False, "reason": "already ignored — left untouched"}
+    path = os.path.join(root, ".gitignore")
+    try:
+        existing = ""
+        if os.path.exists(path):
+            with open(path, encoding="utf-8") as fh:
+                existing = fh.read()
+        prefix = "" if (not existing or existing.endswith("\n")) else "\n"
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(prefix + "\n# Local state written by the retrieval tools "
+                              "rein provisions: machine-specific, regenerated, never committed.\n")
+            fh.write("".join(f"{e}\n" for e in missing))
+    except OSError as exc:
+        return {"ok": False, "attempted": True, "reason": f"could not write .gitignore: {exc}"}
+    return {"ok": True, "attempted": True, "added": missing,
+            "reason": "added to .gitignore: " + ", ".join(missing)}
+
+
+def gitignore_lines_from(body: str) -> list[str]:
+    """The entries `body` does not already carry. Split out so a caller that
+    just wrote the file can check it without a second disk read."""
+    return [
+        spec["gitignore"] for spec in TOOLS.values()
+        if spec.get("gitignore") and spec["gitignore"].rstrip("/") not in body
+    ]
 
 
 def gitignore_lines(root: str = ".") -> list[str]:
