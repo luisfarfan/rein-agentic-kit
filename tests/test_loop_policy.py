@@ -464,5 +464,100 @@ class TestPlanCheckSkippable(_PlanCheckHarness):
         self.assertIn("planFindings,", src)
 
 
+# ── boundedVerification (round-2 finding 2): `{target}`'s base under a ─────
+# sub-project `cd <path> &&` prefix. Extracted and executed the same way
+# decideRound is above -- proves the actual shipped prompt text, not a
+# reimplementation.
+
+_EXTRACT_BOUNDED_VERIFICATION_JS = r"""
+const fs = require('fs');
+const [, , loopPath, scenariosJson] = process.argv;
+const src = fs.readFileSync(loopPath, 'utf8');
+function extract(name, params) {
+  const re = new RegExp(`function ${name}\\(${params}\\) \\{\\n([\\s\\S]*?)\\n\\}\\n`);
+  const m = src.match(re);
+  if (!m) throw new Error('not found in loop.js: ' + name);
+  return m[1];
+}
+const boundedVerification = new Function(
+  'task', 'cmdTestOne', 'cmdTest',
+  extract('boundedVerification', 'task, cmdTestOne, cmdTest')
+);
+const scenarios = JSON.parse(scenariosJson);
+const out = scenarios.map((s) => boundedVerification(s.task, s.cmdTestOne, s.cmdTest));
+process.stdout.write(JSON.stringify(out));
+"""
+
+
+@unittest.skipUnless(_NODE, "node not on PATH -- loop.js is a node workflow script")
+class TestBoundedVerificationIsExtractable(unittest.TestCase):
+    def test_function_exists_with_expected_signature(self):
+        with open(LOOP_JS, encoding="utf-8") as f:
+            src = f.read()
+        self.assertIn("function boundedVerification(task, cmdTestOne, cmdTest)", src)
+
+
+@unittest.skipUnless(_NODE, "node not on PATH -- loop.js is a node workflow script")
+class TestBoundedVerificationTargetBase(unittest.TestCase):
+    """Round-2 finding 2: a `cd <subproject> &&`-prefixed cmdTestOne must tell
+    the implementer {target} is relative to THAT directory, not the repo root
+    -- otherwise a naturally root-relative substitution silently fails with a
+    red step that is not a code problem, and `rein verify` (which substitutes
+    an absolute temp path) cannot catch the mismatch.
+    """
+
+    def _run(self, scenarios: list[dict]) -> list[str]:
+        with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False, encoding="utf-8") as f:
+            f.write(_EXTRACT_BOUNDED_VERIFICATION_JS)
+            script_path = f.name
+        try:
+            proc = subprocess.run(
+                [_NODE, script_path, LOOP_JS, json.dumps(scenarios)],
+                capture_output=True, text=True, check=True,
+            )
+        finally:
+            os.unlink(script_path)
+        return json.loads(proc.stdout)
+
+    def test_plain_test_one_has_no_base_note(self):
+        [result] = self._run([
+            {"task": {}, "cmdTestOne": "npx vitest run {target}", "cmdTest": "npm run test"},
+        ])
+        self.assertIn("npx vitest run {target}", result)
+        self.assertNotIn("RELATIVE TO", result)
+
+    def test_subproject_prefixed_test_one_states_the_base(self):
+        [result] = self._run([
+            {
+                "task": {},
+                "cmdTestOne": "cd apps/web && npx vitest run {target}",
+                "cmdTest": "cd apps/web && npm run test",
+            },
+        ])
+        self.assertIn("cd apps/web && npx vitest run {target}", result)
+        self.assertIn("RELATIVE TO 'apps/web'", result)
+        self.assertIn("NOT relative to the repo root", result)
+
+    def test_quoted_subproject_path_with_space_is_unwrapped_in_the_note(self):
+        [result] = self._run([
+            {
+                "task": {},
+                "cmdTestOne": "cd 'apps/my web' && npx vitest run {target}",
+                "cmdTest": "cd 'apps/my web' && npm run test",
+            },
+        ])
+        self.assertIn("RELATIVE TO 'apps/my web'", result)
+
+    def test_task_level_verification_wins_over_cmd_test_one(self):
+        [result] = self._run([
+            {"task": {"verification": "python3 -m unittest tests.test_foo"}, "cmdTestOne": "cd apps/web && npx vitest run {target}", "cmdTest": ""},
+        ])
+        self.assertEqual(result, "'python3 -m unittest tests.test_foo'")
+
+    def test_no_commands_configured_says_so(self):
+        [result] = self._run([{"task": {}, "cmdTestOne": "", "cmdTest": ""}])
+        self.assertIn("no verification command is configured", result)
+
+
 if __name__ == "__main__":
     unittest.main()

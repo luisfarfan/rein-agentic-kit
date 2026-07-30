@@ -46,6 +46,11 @@ TOOLS = {
         # difference between "installed" and "usable".
         "caveat": "registers an MCP server — its tools appear in the NEXT session, not this one",
         "gitignore": ".serena/",
+        # The binary being on PATH and THIS repo being usable with it are
+        # different facts -- the marker `serena project create` writes.
+        "activation_marker": ".serena/project.yml",
+        "inertReason": "installed but this repo is not activated for serena — "
+                        "the kit's symbol-first retrieval prompts will not fire here",
     },
     "graphify": {
         "why": "Precomputed code graph: `graphify query/path/explain` for bounded "
@@ -102,17 +107,40 @@ def probe(root: str = ".") -> dict:
             entry["indexed"] = os.path.exists(entry["indexPath"])
             if entry["present"] and not entry["indexed"]:
                 entry["inert"] = "installed but this repo has no index — the kit's graph-first prompts will not fire here"
+        if spec.get("activation_marker"):
+            entry["activationPath"] = os.path.join(root, spec["activation_marker"])
+            entry["activated"] = os.path.exists(entry["activationPath"])
+            if entry["present"] and not entry["activated"]:
+                entry["inert"] = spec.get("inertReason", "installed but not activated for this repo")
         out["tools"][name] = entry
     out["missing"] = [n for n, e in out["tools"].items() if not e["present"]]
     out["inert"] = [n for n, e in out["tools"].items() if e.get("inert")]
     return out
 
 
-def _run(cmd: list[str], timeout: int = 900) -> tuple[bool, str]:
+def _run(cmd: list[str], timeout: int = 900, input_text: str | None = None) -> tuple[bool, str]:
+    """D4: unattended means unattended -- a child must never be able to wait
+    on an operator who is not there. Two ways that plays out, both handled
+    here:
+
+    * no prompt expected: `input_text=None` closes stdin (DEVNULL) so any
+      surprise prompt hits EOF and fails fast instead of hanging.
+    * a bounded prompt IS expected: `input_text` feeds it a fixed stream of
+      answers. The pipe still closes once that's consumed -- there is no
+      operator on the other end either way, just a scripted one instead of
+      none, because some CLIs (see `activate_serena`) abort on EOF rather
+      than taking the prompt's own default, which would fail cleanly but
+      would not deliver "activates serena for the current repo".
+    """
     env = dict(os.environ)
     env["PATH"] = os.path.expanduser("~/.local/bin") + os.pathsep + env.get("PATH", "")
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
+        if input_text is None:
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env,
+                                   stdin=subprocess.DEVNULL)
+        else:
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env,
+                                   input=input_text)
     except (OSError, subprocess.TimeoutExpired) as exc:
         return False, str(exc)
     tail = (proc.stdout + proc.stderr).strip().splitlines()[-3:]
@@ -152,7 +180,51 @@ def install(names: list[str] | None = None, root: str = ".") -> dict:
                     ok = False
                     break
         results[name] = {"ok": ok, "steps": steps, "caveat": spec.get("caveat", "")}
+    # Installing the binary and activating it FOR THIS REPO are different
+    # facts -- the whole distinction this module exists to enforce, one
+    # level down. A machine that already had serena would otherwise never
+    # get this repo's `.serena/project.yml`, because "missing" alone never
+    # surfaces that. Runs on every --install, not gated behind `targets`,
+    # and a failed activation never stops any other tool's install.
+    results["serena-activate"] = activate_serena(root)
     return {"root": state["root"], "results": results}
+
+
+def activate_serena(root: str = ".") -> dict:
+    """Activate serena for THIS repo by creating `.serena/project.yml`.
+
+    A serena binary on PATH buys nothing here until this runs -- see
+    `activation_marker` in TOOLS and the installed-vs-usable split `probe`
+    already draws for graphify. Idempotent: an already-activated repo is
+    reported as such and left untouched, never re-created.
+
+    Unattended (D4): no `--language` is passed, so serena infers the
+    project's languages from its own files -- its own dominant-language
+    detection is unconditional and needs no prompt. But for any repo that
+    isn't single-language, `serena project create` ALSO asks, once per
+    additional minority language it finds, "Enable <lang>? [y/N]" -- and
+    with stdin simply closed, that prompt hits EOF and ABORTS THE WHOLE
+    ACTIVATION, main language included. Feeding it a bounded run of "n"
+    answers takes the bracketed default for each -- the same choice an
+    operator hitting Enter would make, so still no language beyond what the
+    repo's own files already carry gets enabled -- while still closing the
+    pipe once consumed, so this never blocks on an operator who is not there.
+    """
+    root = os.path.abspath(root)
+    marker = os.path.join(root, ".serena", "project.yml")
+    if os.path.exists(marker):
+        return {"ok": True, "attempted": False, "reason": "already activated — nothing done"}
+    path = _which("serena")
+    if not path:
+        return {"ok": False, "attempted": False,
+                "reason": "missing prerequisite: serena binary not found"}
+    # 64 is a generous cap on how many "any other language?" prompts a
+    # single repo could trigger; unused answers are simply never read.
+    ok, out = _run(["serena", "project", "create", root], input_text="n\n" * 64)
+    result = {"ok": ok, "attempted": True, "cmd": f"serena project create {root}"}
+    if not ok:
+        result["reason"] = out
+    return result
 
 
 def gitignore_lines(root: str = ".") -> list[str]:

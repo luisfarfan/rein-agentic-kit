@@ -5,6 +5,7 @@ Subcommands:
   rein doctor         environment probe (plugin wiring, CLIs, config, stack)
   rein setup          probe the recommended retrieval tools; --install adds what is missing
   rein detect         resolved stack + commands as JSON (config > runner > auto)
+  rein verify         actually RUN each resolved command and report the truth
   rein tasks          parsed plan as JSON (tasks.md or openspec)
   rein context        detect + tasks in ONE call -- what the loop's first agent runs
   rein close <id>     tick a task's checkbox in the plan
@@ -39,6 +40,7 @@ import plan as _plan  # noqa: E402
 import setup as _setup  # noqa: E402
 import serve as _serve  # noqa: E402
 import token_report as _tr  # noqa: E402
+import verify as _verify  # noqa: E402
 
 USAGE = __doc__
 
@@ -66,6 +68,62 @@ def _positional(argv: list[str]) -> str:
 def cmd_detect(argv: list[str]) -> int:
     print(json.dumps(_detect.resolve(_positional(argv) or "."), indent=2))
     return 0
+
+
+def cmd_verify(argv: list[str]) -> int:
+    """Run every resolved command for real -- an inference is not a fact (D2).
+
+    This command itself never repairs, installs, or writes anything -- it
+    only runs and reports. But it runs the PROJECT'S OWN real test/lint/
+    typecheck commands, in the operator's actual checkout, and those may
+    write whatever they normally write (caches, coverage, build info): `rein
+    verify` can leave a working tree dirtier than it found it, as a property
+    of the commands being verified, not of this command.
+
+    Exits non-zero only when a command is NOT INVOCABLE (missing binary, a
+    shell resolution failure): a setup problem. A command that ran and
+    reported failure, or one that timed out, is the ordinary state of a repo
+    mid-change and does not fail this exit code -- conflating the two is
+    exactly the misdirection this command exists to remove.
+
+    `--only slot1,slot2` restricts execution to those slots -- the loop's
+    Prepare precheck reads only test/lint/typecheck and has no use for
+    running `build` (or the whole `test` suite a second time) in the
+    operator's main checkout before Isolate.
+    """
+    root = _positional(argv) or "."
+    timeout_raw = _opt(argv, "timeout", str(_verify.DEFAULT_TIMEOUT))
+    try:
+        timeout = float(timeout_raw)
+    except ValueError:
+        print(f"invalid --timeout: {timeout_raw!r}")
+        return 2
+    only_raw = _opt(argv, "only")
+    only = {s.strip() for s in only_raw.split(",") if s.strip()} if only_raw else None
+
+    resolved = _detect.resolve(root)
+    report = _verify.verify_commands(resolved, timeout, only=only)
+    _verify.write_state(resolved["root"], report)
+
+    if "--json" in argv:
+        print(json.dumps(report, indent=2))
+        return 0 if report["allInvocable"] else 1
+
+    print(f"verify: {resolved['root']}")
+    if not report["results"]:
+        print("  (no commands resolved -- nothing to verify)")
+        return 0
+    for slot, res in sorted(report["results"].items()):
+        code = res["exitCode"] if res["exitCode"] is not None else "-"
+        print(f"  {slot:<10} [{res['outcome']:<13}] exit={code}  {res['elapsedMs']}ms  $ {res['command']}")
+        if res["outcome"] in (_verify.OUTCOME_NOT_INVOCABLE, _verify.OUTCOME_TIMEOUT) and res["error"]:
+            print(f"    {res['error']}")
+        for line in res["outputHead"][:5]:
+            print(f"    | {line}")
+    if not report["allInvocable"]:
+        not_invocable = [s for s, r in report["results"].items() if not r["invocable"]]
+        print(f"\n  NOT INVOCABLE: {', '.join(sorted(not_invocable))} -- a setup problem, fix the environment")
+    return 0 if report["allInvocable"] else 1
 
 
 def cmd_tasks(argv: list[str]) -> int:
@@ -204,9 +262,12 @@ def cmd_setup(argv: list[str]) -> int:
     if "--install" not in argv:
         return 0 if not state["missing"] else 1
 
-    if not state["missing"]:
-        return 0
-    print(f"\ninstalling: {', '.join(state['missing'])}\n")
+    # Even with nothing "missing" there may still be work: a repo can carry
+    # every binary and still not be activated for serena (D4/T004) -- so
+    # --install always runs, it just has less to do when truly nothing
+    # needs it.
+    if state["missing"]:
+        print(f"\ninstalling: {', '.join(state['missing'])}\n")
     report = _setup.install(root=root)
     failed = False
     for name, res in report["results"].items():
@@ -367,14 +428,37 @@ def cmd_doctor(argv: list[str]) -> int:
     print(f"  plan source : {resolved['plan']['source']}   tracker: {resolved['tracker']['kind']}")
     print(f"  plan        : {plan_state}")
     print()
+    # Last-known verification state, read-only -- doctor never runs a command
+    # itself (that is `rein verify`'s job). "known" means a prior `rein
+    # verify` ran and persisted a report; nothing here re-derives it.
+    verify_state = _verify.read_state(resolved["root"])
+    verify_results = (verify_state or {}).get("results", {})
+
     print("  resolved commands:")
     if resolved["commands"]:
         for slot, cmd in sorted(resolved["commands"].items()):
-            print(f"    {slot:<10} {cmd:<40} [{resolved['commandSources'][slot]}]")
+            vr = verify_results.get(slot)
+            if vr is None:
+                status = "  verified: unknown -- run `rein verify`"
+            elif vr.get("command") == cmd:
+                # Only trust the persisted outcome when it was recorded
+                # against the SAME configured command we are printing --
+                # flow.config.json, a lockfile-driven autodetect change, or a
+                # newly-set `subproject` key can all rewrite `cmd` out from
+                # under a report that already ran (finding 1).
+                status = f"  verified: {vr['outcome']} (exit={vr['exitCode']})"
+            else:
+                status = "  verified: stale -- the command changed since `rein verify` last ran"
+            print(f"    {slot:<10} {cmd:<40} [{resolved['commandSources'][slot]}]{status}")
     else:
         print("    (none)")
     if resolved["missingCommands"]:
         print(f"    {miss}: {', '.join(resolved['missingCommands'])} -- set them in flow.config.json")
+    if verify_state:
+        import datetime as _dt
+
+        checked = _dt.datetime.fromtimestamp(verify_state["checkedAt"]).isoformat(timespec="seconds")
+        print(f"    last verified: {checked}")
     print()
     vp = resolved["verifyPolicy"]
     tools_str = ", ".join(vp["tools"]) if vp["tools"] else "(none reachable)"
@@ -406,6 +490,7 @@ COMMANDS = {
     "doctor": cmd_doctor,
     "setup": cmd_setup,
     "detect": cmd_detect,
+    "verify": cmd_verify,
     "tasks": cmd_tasks,
     "context": cmd_context,
     "close": cmd_close,

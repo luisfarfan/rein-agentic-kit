@@ -11,13 +11,32 @@ recommendation becomes decoration.
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "plugins", "rein", "lib"))
 
 import setup  # noqa: E402
+
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+REIN_BIN = os.path.join(REPO_ROOT, "plugins", "rein", "bin", "rein")
+
+
+def _active_languages(yml_path: str) -> list[str]:
+    """The `languages:` block of a generated project.yml, without a yaml dep."""
+    with open(yml_path, encoding="utf-8") as fh:
+        lines = fh.read().splitlines()
+    start = lines.index("languages:") + 1
+    langs = []
+    for line in lines[start:]:
+        if line.startswith("- "):
+            langs.append(line[2:].strip())
+        else:
+            break
+    return langs
 
 
 class Tree:
@@ -198,6 +217,92 @@ class TestSerenaIsACapabilityNotAnAssumption(unittest.TestCase):
         with open(loop, encoding="utf-8") as f:
             src = f.read()
         self.assertIn("!hasSerena && !hasGraph", src)
+
+
+class TestActivateSerena(unittest.TestCase):
+    """T004: activating serena FOR A REPO is a different fact from the binary
+    being on PATH -- installed-vs-usable, one level down."""
+
+    def test_already_activated_repo_is_left_untouched(self):
+        with Tree({".serena/project.yml": "project_name: x\n"}) as root:
+            before = os.path.getmtime(os.path.join(root, ".serena", "project.yml"))
+            result = setup.activate_serena(root)
+            after = os.path.getmtime(os.path.join(root, ".serena", "project.yml"))
+        self.assertTrue(result["ok"])
+        self.assertFalse(result["attempted"])
+        self.assertIn("already activated", result["reason"])
+        self.assertEqual(before, after)
+
+    def test_absent_binary_is_reported_as_missing_prerequisite_not_attempted(self):
+        with Tree({"README.md": "x"}) as root:
+            with mock.patch.object(setup, "_which", return_value=""):
+                result = setup.activate_serena(root)
+        self.assertFalse(result["ok"])
+        self.assertFalse(result["attempted"])
+        self.assertIn("missing prerequisite", result["reason"])
+        self.assertIn("serena", result["reason"])
+
+    def test_activation_does_not_enable_a_language_the_repo_does_not_use(self):
+        """D4: the interactive default is inference, not 'enable everything'."""
+        if not setup._which("serena"):
+            self.skipTest("serena binary not installed on this machine")
+        with Tree({"a.py": "def f():\n    pass\n"}) as root:
+            result = setup.activate_serena(root)
+            self.assertTrue(result["ok"], result)
+            langs = _active_languages(os.path.join(root, ".serena", "project.yml"))
+        self.assertIn("python", langs)
+        for unrequested in ("typescript", "javascript", "java", "go", "rust"):
+            self.assertNotIn(unrequested, langs)
+
+    def test_install_always_attempts_activation_even_when_nothing_is_missing(self):
+        """The bug this task fixes: previously a repo with every binary
+        present got NO activation at all, because `install()` only ever
+        looked at the `missing` list."""
+        with Tree({"README.md": "x"}) as root:
+            report = setup.install(names=[], root=root)
+            self.assertIn("serena-activate", report["results"])
+            entry = report["results"]["serena-activate"]
+            if setup._which("serena"):
+                self.assertTrue(entry["ok"], entry)
+                self.assertTrue(entry["attempted"])
+                self.assertTrue(os.path.exists(os.path.join(root, ".serena", "project.yml")))
+            else:
+                self.assertFalse(entry["ok"])
+                self.assertFalse(entry["attempted"])
+
+    def test_a_failed_activation_never_stops_other_tools_installing(self):
+        """One tool never takes the others down."""
+        with Tree({"README.md": "x"}) as root:
+            with mock.patch.object(setup, "activate_serena",
+                                    return_value={"ok": False, "attempted": True, "reason": "boom"}):
+                report = setup.install(names=["definitely-not-a-tool"], root=root)
+        self.assertFalse(report["results"]["definitely-not-a-tool"]["ok"])
+        self.assertFalse(report["results"]["serena-activate"]["ok"])
+
+
+class TestSetupInstallIsUnattended(unittest.TestCase):
+    """T004 AC1, run against the real CLI: `rein setup --install` must
+    terminate with stdin closed, not hang on a prompt nobody can answer."""
+
+    def test_install_terminates_with_stdin_closed(self):
+        state = setup.probe(".")
+        if state["missing"]:
+            self.skipTest("this host is missing a tool --install would really "
+                           "try to fetch (npm/uv) -- unsafe to run for real here")
+        with Tree({"README.md": "x"}) as root:
+            try:
+                proc = subprocess.run(
+                    [sys.executable, REIN_BIN, "setup", root, "--install"],
+                    stdin=subprocess.DEVNULL,
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                )
+            except subprocess.TimeoutExpired:
+                self.fail("rein setup --install hung with stdin closed instead of terminating")
+            self.assertIn(proc.returncode, (0, 1))
+            if setup._which("serena"):
+                self.assertTrue(os.path.exists(os.path.join(root, ".serena", "project.yml")))
 
 
 if __name__ == "__main__":

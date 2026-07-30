@@ -29,7 +29,7 @@ for the first person who tries.
 
 ---
 
-- [ ] T001 See into monorepos
+- [x] T001 See into monorepos
   - Type: implementation
   - Depends on: none
   - Human review: false
@@ -43,7 +43,7 @@ for the first person who tries.
     - a single-project repo produces byte-identical output to today: no `subprojects` key, and `tests/test_detect.py` passes unchanged
     - a new `tests/test_monorepo.py` covers a `firecrawl`-shaped fixture (`apps/api`, `apps/web`, no root manifest), a single-candidate monorepo, the `subproject` override, and a plain repo
 
-- [ ] T002 A resolved command is an inference until something runs it
+- [x] T002 A resolved command is an inference until something runs it
   - Type: implementation
   - Depends on: T001
   - Human review: false
@@ -57,7 +57,7 @@ for the first person who tries.
     - `rein doctor` reports the verification state of each command when it is known, without running anything itself
     - a new `tests/test_verify_commands.py` covers: invocable, missing binary, runs-and-fails, timeout, and the no-write guarantee, using commands built in a temp directory — no dependency on what is installed on the machine
 
-- [ ] T003 The loop learns a gate is broken before it pays implementers
+- [x] T003 The loop learns a gate is broken before it pays implementers
   - Type: implementation
   - Depends on: T002
   - Human review: false
@@ -71,7 +71,7 @@ for the first person who tries.
     - that file covers every branch above: test not invocable -> stop, test invocable but failing -> continue, lint/typecheck not invocable -> warning only, all verified -> continue
     - `node --check plugins/rein/workflows/loop.js` passes, and a test asserts `CONTEXT_SCHEMA` carries the verification field so the Prepare agent can report it
 
-- [ ] T004 Unattended setup means unattended
+- [x] T004 Unattended setup means unattended
   - Type: implementation
   - Depends on: none
   - Human review: false

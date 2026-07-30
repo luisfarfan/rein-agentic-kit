@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 
 CONFIG_NAME = "flow.config.json"
 
@@ -173,6 +174,93 @@ def _from_task_runner(runner: str, targets: list[str]) -> dict[str, str]:
                 found[slot] = f"{runner} {lowered[alias]}"
                 break
     return found
+
+
+# ---------------------------------------------------------------- monorepo --
+
+_SUBPROJECT_MARKERS = ("pyproject.toml", "setup.py", "requirements.txt", "Cargo.toml", "go.mod", "package.json")
+
+
+def _find_subprojects(root: str) -> list[str]:
+    """Directories one or two levels down that carry their own language
+    manifest -- only consulted when `root` itself has none.
+
+    Bounded and dir-skipped the same way `_infra_files` is, and for the same
+    reason: an unbounded walk would make every `rein detect` pay for a
+    recursive scan of the whole tree. A directory that matches is not
+    descended into further -- its own subdirectories belong to THAT
+    sub-project, not to this scan.
+    """
+
+    found: list[str] = []
+
+    def scan(rel: str, depth: int):
+        path = os.path.join(root, rel)
+        if _exists(path, *_SUBPROJECT_MARKERS):
+            found.append(rel)
+            return
+        if depth <= 0:
+            return
+        try:
+            entries = sorted(os.listdir(path))
+        except OSError:
+            return
+        for entry in entries:
+            if entry in _INFRA_SKIP_DIRS or entry.startswith("."):
+                continue
+            child = os.path.join(path, entry)
+            if os.path.isdir(child):
+                scan(f"{rel}/{entry}" if rel else entry, depth - 1)
+
+    try:
+        top_entries = sorted(os.listdir(root))
+    except OSError:
+        return []
+    for entry in top_entries:
+        if entry in _INFRA_SKIP_DIRS or entry.startswith("."):
+            continue
+        child = os.path.join(root, entry)
+        if os.path.isdir(child):
+            scan(entry, _INFRA_MAX_DEPTH - 1)
+
+    return found
+
+
+def _normalize_subproject_path(value: str) -> str:
+    """`./apps/api/` and `apps/api` must name the same sub-project -- an
+    operator following the kit's own `subprojects[].path` hint with a
+    trailing slash or a leading `./` must not be treated as a typo.
+    """
+    v = value.strip()
+    if v.startswith("./"):
+        v = v[2:]
+    return v.rstrip("/")
+
+
+def _resolve_subproject(root: str, rel: str) -> dict:
+    """A sub-project's own stack + commands, resolved the same way a
+    single-project repo is -- without the root-only extras (capabilities,
+    verify policy, worktree, ...) that make no sense per sub-project and
+    would just repeat themselves N times in `subprojects`.
+    """
+    sub_root = os.path.join(root, rel)
+    auto = _autodetect(sub_root)
+    runner, targets = _task_runner(sub_root)
+    runner_cmds = _from_task_runner(runner, targets) if runner else {}
+    cfg = _read_json(os.path.join(sub_root, CONFIG_NAME))
+    cfg_cmds = cfg.get("commands") or {}
+    commands = {**auto.get("commands", {}), **runner_cmds, **cfg_cmds}
+    return {
+        "path": rel,
+        "stack": cfg.get("stack") or auto["stack"],
+        "packageManager": auto.get("packageManager", ""),
+        "commands": commands,
+        # Carried so a chosen sub-project's own subtypes (e.g. "frontend")
+        # drive the ROOT's verify policy / serve block instead of the
+        # manifest-less root's empty ones (finding 6) -- not surfaced in
+        # `subprojects[]`'s own consumers, which only ever read path/stack/commands.
+        "subtypes": cfg.get("subtypes") or auto.get("subtypes", []),
+    }
 
 
 # --------------------------------------------------------------- autodetect --
@@ -416,7 +504,9 @@ def _browser_tools(root: str) -> list[str]:
 _PORT_FLAG_RE = re.compile(r"(?:--port|-p)[=\s]+(\d+)")
 
 
-def _serve(root: str, subtypes: list[str], commands: dict[str, str], cfg: dict) -> tuple[dict | None, list[str]]:
+def _serve(
+    root: str, subtypes: list[str], commands: dict[str, str], cfg: dict, subproject: str = ""
+) -> tuple[dict | None, list[str]]:
     """How to run a frontend project so a real page can be rendered and checked.
 
     Returns None for non-frontend projects: there is nothing to serve, so no
@@ -428,6 +518,16 @@ def _serve(root: str, subtypes: list[str], commands: dict[str, str], cfg: dict) 
     a frontend whose dev server is not an npm script (static site, a Django/
     Rails-served front end, docker compose) could never be configured: the
     `serve` slot would stay in `missingCommands` with no way to satisfy it.
+
+    `subproject`, when a monorepo root has one chosen, gets the SAME `cd
+    <path> &&` treatment `test`/`testOne`/`lint`/`typecheck` already get
+    (round-2 finding 1) -- otherwise `loop.js` starts this command from the
+    monorepo ROOT (which by definition has no package.json of its own) and
+    every rendered verification for a frontend sub-project fails at boot.
+    Deliberately NOT applied to `cfg_command`: an operator-supplied
+    `commands.serve` is explicit intent and already runs from wherever the
+    operator wrote it to run from (same reasoning as flow.config.json always
+    winning on precedence).
     """
     if "frontend" not in subtypes:
         return None, []
@@ -437,6 +537,7 @@ def _serve(root: str, subtypes: list[str], commands: dict[str, str], cfg: dict) 
     runner = _pm_runner(_package_manager(root))
 
     cfg_command = (commands.get("serve") or "").strip()
+    cd_prefix = f"cd {shlex.quote(subproject)} && " if subproject else ""
 
     script_body = ""
     if cfg_command:
@@ -444,10 +545,10 @@ def _serve(root: str, subtypes: list[str], commands: dict[str, str], cfg: dict) 
         command = cfg_command
     elif "dev" in scripts:
         script_body = scripts["dev"]
-        command = f"{runner} dev"
+        command = f"{cd_prefix}{runner} dev"
     elif "start" in scripts:
         script_body = scripts["start"]
-        command = f"{runner} start"
+        command = f"{cd_prefix}{runner} start"
     else:
         command = ""
 
@@ -647,14 +748,69 @@ def resolve(root: str = ".") -> dict:
     cfg = _read_json(os.path.join(root, CONFIG_NAME))
     cfg_cmds = cfg.get("commands") or {}
 
-    # Precedence: config > task runner > autodetect.
-    commands = {**auto.get("commands", {}), **runner_cmds, **cfg_cmds}
+    # A monorepo is a root with no language manifest of its own but real
+    # projects one or two levels down (see the "monorepo" section above).
+    # "unknown" would send the operator to the wrong problem (D1); reporting
+    # what is actually there does not.
+    subprojects: list[dict] = []
+    subproject_choice = ""
+    subproject_invalid = ""
+    subproject_subtypes: list[str] = []
+    stack_override = ""
+    auto_cmds = auto.get("commands", {})
+    if auto["stack"] == "unknown":
+        found = _find_subprojects(root)
+        if found:
+            subprojects = [_resolve_subproject(root, rel) for rel in found]
+            stack_override = "monorepo"
+            raw_choice = str(cfg.get("subproject") or "").strip()
+            normalized_choice = _normalize_subproject_path(raw_choice) if raw_choice else ""
+            if normalized_choice:
+                chosen = next((s for s in subprojects if s["path"] == normalized_choice), None)
+                if chosen is None:
+                    # Not one of the DISCOVERED candidates (may be outside the
+                    # depth-2 scan) -- only trust it if it is a real directory
+                    # that actually carries a manifest. A path that names
+                    # nothing real must not silently reproduce the "zero
+                    # commands, wrong problem" dead end this change removes.
+                    candidate_root = os.path.join(root, normalized_choice)
+                    if os.path.isdir(candidate_root) and _exists(candidate_root, *_SUBPROJECT_MARKERS):
+                        chosen = _resolve_subproject(root, normalized_choice)
+                if chosen is not None:
+                    subproject_choice = normalized_choice
+                    subproject_subtypes = chosen.get("subtypes", [])
+                    # Carry the path so the command runs from the repo root,
+                    # not from inside the sub-project. shlex.quote (finding 3):
+                    # `normalized_choice` is an operator-supplied path that
+                    # reaches `shell=True` in verify.run_one -- unquoted, a
+                    # sub-project directory containing a space (which passes
+                    # the isdir + manifest check above) yields a broken,
+                    # confusingly-shell-parsed command.
+                    auto_cmds = {
+                        slot: f"cd {shlex.quote(normalized_choice)} && {cmd}"
+                        for slot, cmd in chosen["commands"].items()
+                    }
+                else:
+                    subproject_invalid = raw_choice
+                    auto_cmds = {}
+            else:
+                # The kit must not pick a sub-project, even a single
+                # candidate (D1) -- no commands resolve at the root until
+                # told which one.
+                auto_cmds = {}
+
+    # Precedence: config > task runner > autodetect (a chosen sub-project
+    # stands in for "autodetect" here -- it IS the root's resolution once a
+    # sub-project has been named).
+    commands = {**auto_cmds, **runner_cmds, **cfg_cmds}
     sources = {}
     for slot in commands:
         if slot in cfg_cmds:
             sources[slot] = "flow.config.json"
         elif slot in runner_cmds:
             sources[slot] = runner or "task-runner"
+        elif subproject_choice:
+            sources[slot] = "subproject"
         else:
             sources[slot] = "autodetect"
 
@@ -663,12 +819,28 @@ def resolve(root: str = ".") -> dict:
     worktree = {"enabled": True, "prefix": "rein-wt", **(cfg.get("worktree") or {})}
     plan = {"source": _detect_plan_source(root), "path": "", **(cfg.get("plan") or {})}
     tracker = {"kind": "none", **(cfg.get("tracker") or {})}
-    subtypes = cfg.get("subtypes") or auto.get("subtypes", [])
-    serve, serve_warnings = _serve(root, subtypes, commands, cfg)
-    verify_policy, verify_warnings = _verify_policy(root, subtypes, commands, cfg)
+    # A chosen sub-project's subtypes drive the ROOT's verify policy / serve
+    # block (finding 6): the manifest-less monorepo root has none of its own,
+    # so falling through to `auto.get("subtypes")` here would silently keep
+    # `mode: unit` and no `serve` for a frontend sub-project forever.
+    verify_subtypes_root = os.path.join(root, subproject_choice) if subproject_choice else root
+    subtypes = cfg.get("subtypes") or (subproject_subtypes if subproject_choice else auto.get("subtypes", []))
+    serve, serve_warnings = _serve(verify_subtypes_root, subtypes, commands, cfg, subproject_choice)
+    verify_policy, verify_warnings = _verify_policy(verify_subtypes_root, subtypes, commands, cfg)
     verify_warnings = serve_warnings + verify_warnings
+    if subproject_invalid:
+        valid_paths = ", ".join(s["path"] for s in subprojects) or "(none discovered)"
+        verify_warnings.append(
+            f'flow.config.json "subproject" {subproject_invalid!r} does not name a real sub-project '
+            f"(no such directory, or it carries none of {_SUBPROJECT_MARKERS}) -- "
+            f"valid subprojects[].path values: {valid_paths}"
+        )
 
     missing_commands = [s for s in ("test", "testOne", "lint", "typecheck") if not _is_set(commands, s)]
+    if subprojects and not subproject_choice:
+        missing_commands.append(
+            'choose a sub-project: set "subproject" in flow.config.json to one of subprojects[].path'
+        )
     if serve is not None and not serve["command"]:
         missing_commands.append("serve")
 
@@ -677,7 +849,7 @@ def resolve(root: str = ".") -> dict:
         "root": root,
         "configFound": bool(cfg),
         "configPath": os.path.join(root, CONFIG_NAME) if cfg else "",
-        "stack": cfg.get("stack") or auto["stack"],
+        "stack": cfg.get("stack") or stack_override or auto["stack"],
         "subtypes": subtypes,
         "packageManager": auto.get("packageManager", ""),
         "taskRunner": runner,
@@ -692,6 +864,8 @@ def resolve(root: str = ".") -> dict:
         "capabilities": _capabilities(root),
         "verifyPolicy": verify_policy,
     }
+    if subprojects:
+        result["subprojects"] = subprojects
     if serve is not None:
         result["serve"] = serve
     if verify_warnings:

@@ -120,6 +120,7 @@ You come back when it finished, not before.
 rein detect      # stack + commands, with the source of each
 rein tasks       # the plan, parsed
 rein context     # detect + plan in ONE round-trip — what the loop's first agent runs
+rein verify      # actually RUN each resolved command and report the truth — an inference is not a fact
 rein next        # ✅ the gate: is there a task to claim, and may it be
 rein close T001  # tick a checkbox deterministically — no agent hand-edits the plan
 rein review      # record / check a verdict bound to a code state
