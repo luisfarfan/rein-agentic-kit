@@ -204,10 +204,16 @@ const ISOLATE_SCHEMA = {
     // Reading it here costs nothing: this agent is already in the worktree.
     pendingIds: { type: 'array', items: { type: 'string' } },
     commits: { type: 'array', items: { type: 'string' } },
+    // Literal facts about the graph index build in the worktree (D2/D4): report
+    // it, do not re-derive it. graphIndexed=false covers every failure mode —
+    // missing binary, non-zero exit, timeout — uniformly, so a run never stops
+    // over it; graphOutcome is the free-text reason, for the log only.
+    graphIndexed: { type: 'boolean' },
+    graphOutcome: { type: 'string' },
     blocked: { type: 'boolean' },
     blockedReason: { type: 'string' },
   },
-  required: ['done', 'summary', 'pendingIds', 'commits', 'blocked', 'blockedReason'],
+  required: ['done', 'summary', 'pendingIds', 'commits', 'graphIndexed', 'graphOutcome', 'blocked', 'blockedReason'],
   additionalProperties: false,
 }
 
@@ -459,64 +465,9 @@ if (DRY_RUN) {
   }
 }
 
-// ── Shared prompt fragments ─────────────────────────────────────────────────
-
-const hasGraph = (ctx.capabilities || []).includes('graphify-index')
-// Measured on this repo: get_symbols_overview maps a 697-line file in 178 tokens
-// where reading it costs 7,097 — 40x — and find_symbol returns one function body
-// in the single turn a grep-then-read pair would have taken two. Orientation is
-// where the money is: the median agent spends 41 turns before its first edit, and
-// every tool result it accumulates is re-sent on every later turn.
-const hasSerena = (ctx.capabilities || []).includes('serena-project')
-const RETRIEVAL =
-  `RETRIEVAL — do not burn context. The real cost is cache_read: every turn re-reads everything ` +
-  `accumulated so far, so cost ≈ context-size × turns.\n` +
-  (hasSerena
-    ? `  · SYMBOL-LEVEL FIRST — this project has serena (language-server backed). Before any whole-file read:\n` +
-      `      serena get_symbols_overview <file>   what is in a file, without reading it\n` +
-      `      serena find_symbol <name>            the definition, with include_body for its source\n` +
-      `      serena find_referencing_symbols      every caller, instead of grepping for one\n` +
-      `      serena get_diagnostics_for_file      type errors WITHOUT running a build\n` +
-      `    Read with offset/limit only for what these cannot answer.\n`
-    : '') +
-  (hasGraph
-    ? `  · Orient with the graph before grepping or opening whole files: 'graphify query "<what you need>"' ` +
-      `(a bounded subgraph, far smaller than a raw grep), 'graphify path "<A>" "<B>"', 'graphify explain "<concept>"'.\n`
-    : '') +
-  (!hasSerena && !hasGraph
-    ? `  · Locate with bounded search (grep with a concrete path and pattern) before opening files.\n`
-    : '') +
-  `  · Read ONLY the symbols/regions you will touch (Read with offset/limit), NEVER whole files "just in case" — ` +
-  `every large file you pull in is RE-READ on every later turn.\n` +
-  `  · Keep command output small: filter and scope it (head, -q, concrete paths) instead of dumping everything.\n` +
-  `  · Aim to finish in FEW turns with precise reads, not to explore incrementally.`
-
-const artifactList = (ctx.artifacts || []).length
-  ? `Read these first — they are the source of truth for intent:\n` + ctx.artifacts.map((a) => `  - ${a}\n`).join('')
-  : ''
-
-const CTX =
-  `You work in ${WD}` +
-  (WORKTREE_MODE
-    ? ` (a git worktree on branch ${BRANCH}, already created). 'cd ${WD}' first and always use paths inside ` +
-      `${WD}; do NOT touch ${ctx.root} directly. Commit to ${BRANCH}, NOT ${BASE}: the loop merges only if the ` +
-      `change is approved.\n`
-    : ` (branch ${BASE}).\n`) +
-  `Plan: ${ctx.planPath}\n` +
-  // Deliberately NOT the "why": that is judgement context the reviewer needs and
-  // an implementer does not, and CTX is re-read on every turn of every agent.
-  // Only what an implementer could actually violate travels here.
-  ((ctx.scopeOut || []).length
-    ? `OUT OF SCOPE for this change — do not touch, even if it looks broken:\n` +
-      ctx.scopeOut.map((s) => `  - ${s}\n`).join('')
-    : '') +
-  ((ctx.decisions || []).length
-    ? `DECISIONS already made — respect them, do NOT re-open what was decided:\n` +
-      ctx.decisions.map((d) => `  - ${d}\n`).join('')
-    : '') +
-  artifactList +
-  `Conventional Commits.\n` +
-  RETRIEVAL
+// Shared prompt fragments (hasGraph/RETRIEVAL/artifactList/CTX) are built AFTER
+// Isolate — see below — because hasGraph depends on what Isolate reports about
+// the WORKTREE it just built (D2), not on ctx.capabilities alone.
 
 const INTEGRITY =
   `INTEGRITY (non-negotiable): real logic and real tests. NEVER weaken or skip a verification, NEVER fake ` +
@@ -875,6 +826,52 @@ function decideGatePrecheck(verifyGate, monorepoUnconfigured) {
   return { decision: 'continue', reason: '', warnings }
 }
 
+// D2: a capability is only claimed where its tools will actually RUN. Every
+// graph command (`graphify query/path/explain`) executes inside the WORKTREE
+// the Isolate step just built — a DIFFERENT directory than the base repo
+// `ctx.capabilities` was detected in. A base-repo `graphify-index` capability
+// says nothing about whether THIS worktree has an index: that mismatch is
+// exactly what made every graph command in every past run answer "graph file
+// not found". Availability comes ONLY from what Isolate reports building in
+// the worktree — never from the base-repo capability list — so a stale or
+// mismatched capability can never claim a graph that is not actually there.
+// When there is no worktree at all (WORKTREE_MODE=false) there is no base/work
+// split to guard against: work happens directly where capabilities were
+// detected, so that list is trusted as-is.
+// Pure so it is executed by a test (T001 acceptance), not asserted by comment.
+function decideGraphAvailable(worktreeMode, capabilities, isolate) {
+  if (!worktreeMode) return (capabilities || []).includes('graphify-index')
+  return !!(isolate && isolate.graphIndexed)
+}
+
+// D4: indexing failure never stops the run — building the prompt is separate
+// from deciding availability (decideGraphAvailable reads what this prompt's
+// agent reports, never re-derives it). Pure so the actual instructions the
+// agent receives are executed by a test, not asserted by comment.
+function buildIsolatePrompt(root, base, wd, branch, rein) {
+  return (
+    `You work in ${root} (the ${base} tree). Prepare ISOLATION for this run. Implement NOTHING.\n` +
+    `1. If ${root} has UNCOMMITTED work ('git status --porcelain'), mention it in the summary ` +
+    `   (another loop may be active) — but continue: the worktree is cut from the committed HEAD.\n` +
+    `2. Create it: 'git -C ${root} worktree add ${wd} -b ${branch} 2>/dev/null || ` +
+    `   git -C ${root} worktree add ${wd} ${branch}' (reuse the branch if it exists). If ${wd} already ` +
+    `   exists and belongs to this change, reuse it — do not fail.\n` +
+    `3. Verify: 'git -C ${wd} rev-parse --abbrev-ref HEAD' reports ${branch}.\n` +
+    `4. Report the plan's state INSIDE the worktree: run '${rein} tasks ${wd}' and put in\n` +
+    `   'pendingIds' the ids of tasks whose checkbox is still unticked THERE. On a resumed run\n` +
+    `   the worktree knows what already landed and the base branch does not. Copy the ids\n` +
+    `   literally; do not judge whether the work looks done.\n` +
+    `5. Build the code graph index IN THE WORKTREE (no LLM, ~1-2s): run 'graphify update ${wd} --no-cluster'. ` +
+    `This is a HINT for later steps, never a gate — if the 'graphify' binary is missing, the command errors, ` +
+    `or it hangs past your tool's own timeout, that is fine: do NOT retry it and do NOT let it fail this step ` +
+    `(D4, the run continues with the graph off). Set graphIndexed=true ONLY if the command exited 0 AND ` +
+    `${wd}/graphify-out/graph.json now exists; otherwise graphIndexed=false. Set graphOutcome to what ` +
+    `literally happened (the command's own message, or "graphify: command not found" if it is not on PATH) ` +
+    `— report it, do not judge it.\n` +
+    `Set done=true when steps 2-4 all succeeded (step 5 never blocks done, per D4).`
+  )
+}
+
 // D4: no reachable browser tool is an explicit, carried outcome — never a
 // silent pass, never a hard stop. Pure so it is executed by tests instead of
 // asserted by comment; also what the Verify phase itself calls, so the
@@ -1010,21 +1007,11 @@ if (shouldRunPlanCheck(ARGS)) {
 // ── Phase 1.5: ISOLATE — one worktree + branch per run ──────────────────────
 // Running loops in parallel is then safe with no per-run decision, and an
 // unapproved run leaves an ugly branch rather than a broken base branch.
+let setup = null
 if (WORKTREE_MODE) {
   phase('Isolate')
-  const setup = await agentRetry(
-    `You work in ${ctx.root} (the ${BASE} tree). Prepare ISOLATION for this run. Implement NOTHING.\n` +
-      `1. If ${ctx.root} has UNCOMMITTED work ('git status --porcelain'), mention it in the summary ` +
-      `   (another loop may be active) — but continue: the worktree is cut from the committed HEAD.\n` +
-      `2. Create it: 'git -C ${ctx.root} worktree add ${WD} -b ${BRANCH} 2>/dev/null || ` +
-      `   git -C ${ctx.root} worktree add ${WD} ${BRANCH}' (reuse the branch if it exists). If ${WD} already ` +
-      `   exists and belongs to this change, reuse it — do not fail.\n` +
-      `3. Verify: 'git -C ${WD} rev-parse --abbrev-ref HEAD' reports ${BRANCH}.\n` +
-      `4. Report the plan's state INSIDE the worktree: run '${REIN} tasks ${WD}' and put in\n` +
-      `   'pendingIds' the ids of tasks whose checkbox is still unticked THERE. On a resumed run\n` +
-      `   the worktree knows what already landed and the base branch does not. Copy the ids\n` +
-      `   literally; do not judge whether the work looks done.\n` +
-      `Set done=true only when steps 2-4 all succeeded.`,
+  setup = await agentRetry(
+    buildIsolatePrompt(ctx.root, BASE, WD, BRANCH, REIN),
     { schema: ISOLATE_SCHEMA, label: 'isolate', phase: 'Isolate', agentType: 'general-purpose', effort: 'low', model: MODEL_AUX }
   )
   if (!setup || setup.blocked || !setup.done) {
@@ -1033,6 +1020,8 @@ if (WORKTREE_MODE) {
     return { ok: false, phase: 'Isolate', problem: why, worktree: WD, branch: BRANCH }
   }
   log(`🌿 isolated in ${WD} (branch ${BRANCH})`)
+  // D4: indexing failure never stops the run — only logged, never a gate.
+  log(setup.graphIndexed ? `📈 graph indexed in ${WD}` : `📉 graph not indexed (${setup.graphOutcome || 'no report'}) — continuing with the graph off`)
 
   // Drop tasks the worktree already closed. Without this a resumed run re-does
   // finished work: the plan is read from the base branch, where nothing is ticked
@@ -1049,6 +1038,68 @@ if (WORKTREE_MODE) {
     log('every task is already closed in the worktree — nothing to implement')
   }
 }
+
+// ── Shared prompt fragments ─────────────────────────────────────────────────
+// Built HERE, after Isolate: hasGraph must reflect the WORKTREE the agents
+// actually run graph commands in, never the base repo ctx.capabilities was
+// detected in (D2) — see decideGraphAvailable. Evaluated by a test the same
+// way decideRound/decideGatePrecheck are (T001 acceptance).
+const hasGraph = decideGraphAvailable(WORKTREE_MODE, ctx.capabilities, setup)
+// Measured on this repo: get_symbols_overview maps a 697-line file in 178 tokens
+// where reading it costs 7,097 — 40x — and find_symbol returns one function body
+// in the single turn a grep-then-read pair would have taken two. Orientation is
+// where the money is: the median agent spends 41 turns before its first edit, and
+// every tool result it accumulates is re-sent on every later turn.
+const hasSerena = (ctx.capabilities || []).includes('serena-project')
+const RETRIEVAL =
+  `RETRIEVAL — do not burn context. The real cost is cache_read: every turn re-reads everything ` +
+  `accumulated so far, so cost ≈ context-size × turns.\n` +
+  (hasSerena
+    ? `  · SYMBOL-LEVEL FIRST — this project has serena (language-server backed). Before any whole-file read:\n` +
+      `      serena get_symbols_overview <file>   what is in a file, without reading it\n` +
+      `      serena find_symbol <name>            the definition, with include_body for its source\n` +
+      `      serena find_referencing_symbols      every caller, instead of grepping for one\n` +
+      `      serena get_diagnostics_for_file      type errors WITHOUT running a build\n` +
+      `    Read with offset/limit only for what these cannot answer.\n`
+    : '') +
+  (hasGraph
+    ? `  · Orient with the graph before grepping or opening whole files: 'graphify query "<what you need>"' ` +
+      `(a bounded subgraph, far smaller than a raw grep), 'graphify path "<A>" "<B>"', 'graphify explain "<concept>"'.\n`
+    : '') +
+  (!hasSerena && !hasGraph
+    ? `  · Locate with bounded search (grep with a concrete path and pattern) before opening files.\n`
+    : '') +
+  `  · Read ONLY the symbols/regions you will touch (Read with offset/limit), NEVER whole files "just in case" — ` +
+  `every large file you pull in is RE-READ on every later turn.\n` +
+  `  · Keep command output small: filter and scope it (head, -q, concrete paths) instead of dumping everything.\n` +
+  `  · Aim to finish in FEW turns with precise reads, not to explore incrementally.`
+
+const artifactList = (ctx.artifacts || []).length
+  ? `Read these first — they are the source of truth for intent:\n` + ctx.artifacts.map((a) => `  - ${a}\n`).join('')
+  : ''
+
+const CTX =
+  `You work in ${WD}` +
+  (WORKTREE_MODE
+    ? ` (a git worktree on branch ${BRANCH}, already created). 'cd ${WD}' first and always use paths inside ` +
+      `${WD}; do NOT touch ${ctx.root} directly. Commit to ${BRANCH}, NOT ${BASE}: the loop merges only if the ` +
+      `change is approved.\n`
+    : ` (branch ${BASE}).\n`) +
+  `Plan: ${ctx.planPath}\n` +
+  // Deliberately NOT the "why": that is judgement context the reviewer needs and
+  // an implementer does not, and CTX is re-read on every turn of every agent.
+  // Only what an implementer could actually violate travels here.
+  ((ctx.scopeOut || []).length
+    ? `OUT OF SCOPE for this change — do not touch, even if it looks broken:\n` +
+      ctx.scopeOut.map((s) => `  - ${s}\n`).join('')
+    : '') +
+  ((ctx.decisions || []).length
+    ? `DECISIONS already made — respect them, do NOT re-open what was decided:\n` +
+      ctx.decisions.map((d) => `  - ${d}\n`).join('')
+    : '') +
+  artifactList +
+  `Conventional Commits.\n` +
+  RETRIEVAL
 
 // ── Phase 1.7: MAP — one cheap scout, so N implementers do not each explore ──
 // A HINT, never a contract: if the scout dies the map is empty and implementers
