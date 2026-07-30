@@ -31,9 +31,16 @@ import subprocess
 # keeps this honest — what it actually buys, in terms this kit can measure.
 TOOLS = {
     "serena": {
-        "why": "LSP symbol retrieval: find_symbol / find_declaration / "
-               "find_referencing_symbols / get_symbols_overview. Attacks the "
-               "measured 41 turns of orientation before an agent's first edit.",
+        # Re-scoped (D2, one-owner-for-retrieval): codegraph now owns code
+        # retrieval inside the loop -- serena's symbol-first retrieval calls
+        # (find_symbol / find_referencing_symbols / get_symbols_overview) are
+        # no longer taught. What it keeps is what codegraph does NOT do:
+        # build-free diagnostics and precise symbol-level edits.
+        "why": "Build-free diagnostics and symbol-level edits: "
+               "get_diagnostics_for_file finds type errors WITHOUT running a "
+               "build, and replace_symbol_body / rename_symbol / "
+               "insert_before_symbol / insert_after_symbol / safe_delete_symbol "
+               "edit a symbol precisely instead of a whole-file rewrite.",
         "probe": ["serena"],
         "install": ["uv", "tool", "install", "-p", "3.13", "serena-agent"],
         "needs": ["uv"],
@@ -50,7 +57,9 @@ TOOLS = {
         # different facts -- the marker `serena project create` writes.
         "activation_marker": ".serena/project.yml",
         "inertReason": "installed but this repo is not activated for serena — "
-                        "the kit's symbol-first retrieval prompts will not fire here",
+                        "the kit's symbol-level EDIT prompts (replace_symbol_body / "
+                        "rename_symbol / insert_before_symbol / insert_after_symbol / "
+                        "safe_delete_symbol) will not fire here",
     },
     "graphify": {
         # Re-scoped (D2, one-owner-for-retrieval): codegraph now owns code
@@ -86,7 +95,13 @@ TOOLS = {
         "probe": ["codegraph"],
         "install": ["npm", "i", "-g", "@colbymchenry/codegraph"],
         "needs": ["npm"],
-        "index": ".codegraph/",
+        # The db, not the bare directory: an aborted/interrupted `codegraph
+        # init` leaves `.codegraph/` behind without a usable db (codegraph
+        # ships an `unlock` subcommand precisely for that stale-lock case), and
+        # a bare-directory marker would report the tool indexed when it cannot
+        # answer anything -- the installed-but-inert conflation this module
+        # exists to prevent (mirrors graphify's `graphify-out/graph.json`).
+        "index": ".codegraph/codegraph.db",
         "gitignore": ".codegraph/",
         # D5: telemetry defaults to ON; a provisioner that silently accepts a
         # vendor default is not provisioning -- see activate_codegraph().

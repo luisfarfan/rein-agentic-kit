@@ -428,7 +428,11 @@ def _capabilities(root: str) -> list[str]:
         caps.append("serena-project")
     if os.path.isdir(os.path.join(root, "graphify-out")):
         caps.append("graphify-index")
-    if os.path.isdir(os.path.join(root, ".codegraph")):
+    # The db, not the bare directory: an aborted/interrupted `codegraph init`
+    # leaves `.codegraph/` behind without a usable db (codegraph ships an
+    # `unlock` subcommand precisely for that stale-lock case) -- a
+    # bare-directory check would report the index usable when it is not.
+    if os.path.isfile(os.path.join(root, ".codegraph", "codegraph.db")):
         caps.append("codegraph-index")
     return caps
 

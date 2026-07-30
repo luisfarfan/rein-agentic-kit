@@ -109,7 +109,7 @@ class TestInstalledIsNotUsable(unittest.TestCase):
         self.assertIn("codegraph init", entry["inert"])
 
     def test_codegraph_with_an_index_is_not_inert(self):
-        with Tree({".codegraph/marker": "x"}) as root:
+        with Tree({".codegraph/codegraph.db": "x"}) as root:
             entry = setup.probe(root)["tools"]["codegraph"]
         if not entry["present"]:
             self.skipTest("codegraph not installed on this machine")
@@ -236,12 +236,15 @@ class TestSerenaIsACapabilityNotAnAssumption(unittest.TestCase):
 
     def test_no_retrieval_tool_still_yields_the_plain_search_instruction(self):
         """The degradation path: a bare repo must not be left with an empty
-        retrieval section."""
+        retrieval section. Gated on `!hasGraph` alone -- serena no longer
+        teaches a way to locate code (D2), so its presence must not suppress
+        the bounded-search fallback; only the graph does."""
         loop = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                             "plugins", "rein", "workflows", "loop.js")
         with open(loop, encoding="utf-8") as f:
             src = f.read()
-        self.assertIn("!hasSerena && !hasGraph", src)
+        self.assertIn("!hasGraph", src)
+        self.assertNotIn("!hasSerena && !hasGraph", src)
 
 
 class TestActivateSerena(unittest.TestCase):

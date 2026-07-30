@@ -142,8 +142,10 @@ class GraphRetrievalPromptTestCase(unittest.TestCase):
         self.assertNotIn("get_symbols_overview", block)
         self.assertNotIn("find_symbol <name>", block)
         self.assertNotIn("graphify", block)
-        # no bounded-search fallback line once serena is present
-        self.assertNotIn("Locate with bounded search", block)
+        # serena no longer teaches locating code (D2) -- with the graph off,
+        # the bounded-search fallback must still be there so the agent has
+        # SOME way to find code, not zero.
+        self.assertIn("Locate with bounded search", block)
 
     def test_find_referencing_symbols_is_never_taught_as_the_way_to_find_callers(self):
         # D2: one owner per question -- codegraph answers "who calls this" now.

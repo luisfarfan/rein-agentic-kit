@@ -1053,11 +1053,16 @@ if (WORKTREE_MODE) {
 // detected in (D2) — see decideGraphAvailable. Evaluated by a test the same
 // way decideRound/decideGatePrecheck are (T001 acceptance).
 const hasGraph = decideGraphAvailable(WORKTREE_MODE, ctx.capabilities, setup)
-// Measured on this repo: get_symbols_overview maps a 697-line file in 178 tokens
-// where reading it costs 7,097 — 40x — and find_symbol returns one function body
-// in the single turn a grep-then-read pair would have taken two. Orientation is
-// where the money is: the median agent spends 41 turns before its first edit, and
-// every tool result it accumulates is re-sent on every later turn.
+// Measured on this repo against the other code-graph tool this kit also
+// ships (see tasks.md, one-owner-for-retrieval, "Why" — not named here so
+// this file stays clear of it, per that same change's own guard below):
+// same questions, same ~1.5s index build, neither needs an LLM or an API
+// key, yet codegraph answers "where is it decided that a command is not
+// invocable?" in 258 tok vs the other tool's 546 (a JSON key match, not the
+// decision); "who calls / is called by run_one" in 1 turn (158 tok, both
+// directions) vs 2 turns (22 + 75 tok); and "which tests cover this symbol",
+// which the other tool has no concept of at all. That is the case for
+// codegraph as the one owner of retrieval below.
 const hasSerena = (ctx.capabilities || []).includes('serena-project')
 // Pure (hasSerena/hasGraph as args, not read from the outer closure) so all four
 // on/off combinations are executed by a test the same way decideGraphAvailable
@@ -1068,10 +1073,7 @@ const hasSerena = (ctx.capabilities || []).includes('serena-project')
 // 'callers'/'callees'/'node'/'impact', each with a one-line statement of what
 // it returns, NEVER 'codegraph explore' (D4: at 3,701 tokens on this repo it is
 // a whole-file Read in disguise, and this block's entire point is bounded
-// orientation). serena keeps only what codegraph does NOT do: type errors
-// without a build, and the symbol-level EDIT operations (D2) — its own former
-// retrieval teaching (get_symbols_overview / find_symbol / find_referencing_symbols)
-// is dropped here because codegraph now answers those questions.
+// orientation).
 function buildRetrievalBlock(hasSerena, hasGraph) {
   return (
     `RETRIEVAL — do not burn context. The real cost is cache_read: every turn re-reads everything ` +
@@ -1085,14 +1087,21 @@ function buildRetrievalBlock(hasSerena, hasGraph) {
         `      codegraph impact <symbol>     what breaks if you change it — run before an edit\n` +
         `    Read with offset/limit only for what these cannot answer.\n`
       : '') +
+    // serena keeps only what codegraph does NOT do: type errors without a
+    // build, and the symbol-level EDIT operations (D2) — its own former
+    // retrieval teaching (get_symbols_overview / find_symbol /
+    // find_referencing_symbols) is dropped here because codegraph now answers
+    // those questions when it is present; with the graph off, the bounded-
+    // search fallback below covers locating code instead.
     (hasSerena
-      ? `  · serena (language-server backed) owns EDITS and build-free diagnostics here, not retrieval — ` +
-        `codegraph answers "what/who" now:\n` +
+      ? `  · serena (language-server backed) owns EDITS and build-free diagnostics here` +
+        (hasGraph ? `, not retrieval — codegraph answers "what/who" now` : '') +
+        `:\n` +
         `      serena get_diagnostics_for_file   type errors WITHOUT running a build\n` +
         `      serena replace_symbol_body / rename_symbol / insert_before_symbol / insert_after_symbol / ` +
         `safe_delete_symbol   edit a symbol precisely, never a whole-file rewrite\n`
       : '') +
-    (!hasSerena && !hasGraph
+    (!hasGraph
       ? `  · Locate with bounded search (grep with a concrete path and pattern) before opening files.\n`
       : '') +
     `  · Read ONLY the symbols/regions you will touch (Read with offset/limit), NEVER whole files "just in case" — ` +
