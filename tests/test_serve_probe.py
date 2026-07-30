@@ -14,6 +14,7 @@ import sys
 import tempfile
 import time
 import unittest
+import warnings
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 REIN_BIN = os.path.join(REPO_ROOT, "plugins", "rein", "bin", "rein")
@@ -21,6 +22,26 @@ REIN_BIN = os.path.join(REPO_ROOT, "plugins", "rein", "bin", "rein")
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "plugins", "rein", "lib"))
 
 import serve  # noqa: E402
+
+def setUpModule():
+    # serve.start() deliberately returns without retaining its Popen object:
+    # the server process must outlive the launching call for a cross-process
+    # --start/--stop split to work at all (see
+    # TestServeProbeCliStartStopSurvivesLauncherExit). Once that Popen is
+    # garbage-collected, its __del__ fires a ResourceWarning ("subprocess N
+    # is still running") -- an expected consequence of the design this
+    # module exercises, not a leak. Scope the filter to this module and this
+    # warning class only, so it can never mask a real ResourceWarning (or
+    # any other warning class) elsewhere.
+    #
+    # This has to run as setUpModule (not a bare module-level statement) --
+    # unittest's own TextTestRunner wraps the whole run in
+    # `warnings.catch_warnings()` and calls `warnings.simplefilter('default')`
+    # by default, which would blow away a filter registered at import time,
+    # before that context even starts.
+    warnings.filterwarnings(
+        "ignore", message=r"subprocess \d+ is still running", category=ResourceWarning
+    )
 
 
 def _free_port() -> int:
@@ -329,6 +350,29 @@ class TestServeStopReportsActualFailure(unittest.TestCase):
             self.assertIn("invalid pgid", err)
             self.assertIn("not-a-number", err)
             self.assertNotIn("as JSON", err)
+
+
+class TestResourceWarningFilterStaysScoped(unittest.TestCase):
+    """T002: the filter installed in setUpModule() targets exactly the
+    Popen-still-running ResourceWarning it names in its comment -- it must
+    not become a blanket suppression that could hide a real one."""
+
+    def test_other_warning_classes_still_surface(self):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.warn("this must still surface", UserWarning)
+            self.assertTrue(
+                any(isinstance(w.message, UserWarning) for w in caught),
+                "a UserWarning must not be silenced by the ResourceWarning filter",
+            )
+
+    def test_differently_worded_resourcewarning_still_surfaces(self):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.warn("totally unrelated resource leak", ResourceWarning)
+            self.assertTrue(
+                any(isinstance(w.message, ResourceWarning) for w in caught),
+                "a ResourceWarning that isn't the known subprocess-still-running "
+                "one must not be silenced",
+            )
 
 
 if __name__ == "__main__":
