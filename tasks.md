@@ -47,7 +47,7 @@ discipline `setup.py` already enforces, applied to recommendations.
 
 ---
 
-- [ ] T001 codegraph owns retrieval, where the agents work
+- [x] T001 codegraph owns retrieval, where the agents work
   - Type: implementation
   - Depends on: none
   - Human review: false
@@ -60,7 +60,7 @@ discipline `setup.py` already enforces, applied to recommendations.
     - no agent-facing prompt in `loop.js` mentions `graphify` in any form — the Map scout included — and a test scanning the shipped source fails if one reappears, the same guard that today catches `graphify query`
     - the pure functions stay extracted from the SHIPPED `loop.js` and EXECUTED (never asserted by source substring), all four serena/graph combinations remain covered, and the no-tool branch is proven byte-identical to today
 
-- [ ] T002 The provisioner recommends what the loop actually uses
+- [x] T002 The provisioner recommends what the loop actually uses
   - Type: implementation
   - Depends on: T001
   - Human review: false

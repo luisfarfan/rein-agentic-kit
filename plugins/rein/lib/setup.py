@@ -31,9 +31,16 @@ import subprocess
 # keeps this honest — what it actually buys, in terms this kit can measure.
 TOOLS = {
     "serena": {
-        "why": "LSP symbol retrieval: find_symbol / find_declaration / "
-               "find_referencing_symbols / get_symbols_overview. Attacks the "
-               "measured 41 turns of orientation before an agent's first edit.",
+        # Re-scoped (D2, one-owner-for-retrieval): codegraph now owns code
+        # retrieval inside the loop -- serena's symbol-first retrieval calls
+        # (find_symbol / find_referencing_symbols / get_symbols_overview) are
+        # no longer taught. What it keeps is what codegraph does NOT do:
+        # build-free diagnostics and precise symbol-level edits.
+        "why": "Build-free diagnostics and symbol-level edits: "
+               "get_diagnostics_for_file finds type errors WITHOUT running a "
+               "build, and replace_symbol_body / rename_symbol / "
+               "insert_before_symbol / insert_after_symbol / safe_delete_symbol "
+               "edit a symbol precisely instead of a whole-file rewrite.",
         "probe": ["serena"],
         "install": ["uv", "tool", "install", "-p", "3.13", "serena-agent"],
         "needs": ["uv"],
@@ -50,25 +57,57 @@ TOOLS = {
         # different facts -- the marker `serena project create` writes.
         "activation_marker": ".serena/project.yml",
         "inertReason": "installed but this repo is not activated for serena — "
-                        "the kit's symbol-first retrieval prompts will not fire here",
+                        "the kit's symbol-level EDIT prompts (replace_symbol_body / "
+                        "rename_symbol / insert_before_symbol / insert_after_symbol / "
+                        "safe_delete_symbol) will not fire here",
     },
     "graphify": {
-        "why": "Precomputed code graph: `graphify explain \"<symbol>\"` returns its "
-               "definition plus direct callers/callees, `graphify path \"<A>\" \"<B>\"` "
-               "returns the call/reference chain between two symbols -- bounded "
-               "orientation instead of a raw grep. The kit's CTX already teaches "
-               "these two commands (never `graphify query`, which is BFS from a "
-               "literal token match and returns confident noise), but only when "
-               "an index exists.",
+        # Re-scoped (D2, one-owner-for-retrieval): codegraph now owns code
+        # retrieval inside the loop -- graphify claims no role there. What it
+        # keeps is the half codegraph does not touch: non-code corpora.
+        "why": "Knowledge graph for non-code corpora -- docs, papers, images, "
+               "video -- via the `/graphify` skill: `graphify explain \"<concept>\"` "
+               "returns a node plus its direct neighbors, `graphify path \"<A>\" "
+               "\"<B>\"` returns the connecting chain, once an index exists. It "
+               "has no role in the loop's code retrieval; codegraph is that "
+               "owner now (D2).",
         "probe": ["graphify"],
         "install": None,  # distributed as a skill, not a package this can fetch
-        "manual": "install the graphify skill, then run "
-                  "`graphify update . --no-cluster` in this repo once -- no LLM, "
-                  "no API key, ~1-2s. Without an index every graph command "
-                  "answers 'graph file not found', which is how this capability "
-                  "stayed inert across seven runs.",
+        "manual": "install the graphify skill, then run `graphify update "
+                  "<path-to-your-docs-or-corpus> --no-cluster` once -- no LLM, "
+                  "no API key, ~1-2s -- to index a non-code corpus (docs, "
+                  "papers, images). Without an index every graph command "
+                  "answers 'graph file not found'.",
         "index": "graphify-out/graph.json",
         "gitignore": "graphify-out/",
+    },
+    "codegraph": {
+        # D2: the single owner of code retrieval inside the loop -- "what is
+        # this / who touches it / what breaks if I change it" -- the
+        # exclusive question neither serena (edits/diagnostics) nor graphify
+        # (non-code corpora, re-scoped above) answers.
+        "why": "Owns \"what is this / who touches it / what breaks if I change "
+               "it\" (D2): `codegraph query \"<concept>\"` finds symbols by "
+               "concept with file:line, `codegraph callers`/`callees <symbol>` "
+               "walks the call graph, `codegraph impact <symbol>` is the blast "
+               "radius before an edit -- one owner, not a BFS over a literal "
+               "token match.",
+        "probe": ["codegraph"],
+        "install": ["npm", "i", "-g", "@colbymchenry/codegraph"],
+        "needs": ["npm"],
+        # The db, not the bare directory: an aborted/interrupted `codegraph
+        # init` leaves `.codegraph/` behind without a usable db (codegraph
+        # ships an `unlock` subcommand precisely for that stale-lock case), and
+        # a bare-directory marker would report the tool indexed when it cannot
+        # answer anything -- the installed-but-inert conflation this module
+        # exists to prevent (mirrors graphify's `graphify-out/graph.json`).
+        "index": ".codegraph/codegraph.db",
+        "gitignore": ".codegraph/",
+        # D5: telemetry defaults to ON; a provisioner that silently accepts a
+        # vendor default is not provisioning -- see activate_codegraph().
+        "inertReason": "installed but this repo has no index — run "
+                        "`codegraph init .` once to build it, or none of the "
+                        "kit's graph-first retrieval prompts will fire here",
     },
     "openspec": {
         "why": "Richer plan source than tasks.md: proposal / specs / design "
@@ -113,7 +152,13 @@ def probe(root: str = ".") -> dict:
             entry["indexPath"] = os.path.join(root, spec["index"])
             entry["indexed"] = os.path.exists(entry["indexPath"])
             if entry["present"] and not entry["indexed"]:
-                entry["inert"] = "installed but this repo has no index — the kit's graph-first prompts will not fire here"
+                # inertReason lets a tool name its own one-command fix
+                # (codegraph does); tools that don't set one (graphify) keep
+                # the generic message unchanged.
+                entry["inert"] = spec.get(
+                    "inertReason",
+                    "installed but this repo has no index — the kit's graph-first prompts will not fire here",
+                )
         if spec.get("activation_marker"):
             entry["activationPath"] = os.path.join(root, spec["activation_marker"])
             entry["activated"] = os.path.exists(entry["activationPath"])
@@ -194,6 +239,10 @@ def install(names: list[str] | None = None, root: str = ".") -> dict:
     # surfaces that. Runs on every --install, not gated behind `targets`,
     # and a failed activation never stops any other tool's install.
     results["serena-activate"] = activate_serena(root)
+    # D5: telemetry defaults to ON in codegraph; a provisioner that silently
+    # accepts a vendor default is not provisioning. Runs on every --install,
+    # same as serena-activate above, and never gates the other tools.
+    results["codegraph-telemetry"] = activate_codegraph(root)
     return {"root": state["root"], "results": results}
 
 
@@ -231,6 +280,27 @@ def activate_serena(root: str = ".") -> dict:
     result = {"ok": ok, "attempted": True, "cmd": f"serena project create {root}"}
     if not ok:
         result["reason"] = out
+    return result
+
+
+def activate_codegraph(root: str = ".") -> dict:
+    """Disable codegraph's telemetry as part of activation (D5).
+
+    Telemetry defaults to ON in codegraph and is a machine-wide setting, not
+    a per-repo one -- there is no per-repo marker to gate on, unlike
+    `activate_serena`. `codegraph telemetry off` is idempotent (an
+    already-disabled machine reports success and changes nothing), so this
+    can simply run every time rather than needing its own presence check
+    beyond the binary itself. A provisioner that silently accepts a vendor
+    default is not provisioning.
+    """
+    path = _which("codegraph")
+    if not path:
+        return {"ok": False, "attempted": False,
+                "reason": "missing prerequisite: codegraph binary not found"}
+    ok, out = _run(["codegraph", "telemetry", "off"])
+    result = {"ok": ok, "attempted": True, "cmd": "codegraph telemetry off"}
+    result["reason"] = out if out else ("telemetry disabled" if ok else "telemetry off failed")
     return result
 
 

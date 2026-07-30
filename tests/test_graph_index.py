@@ -1,4 +1,4 @@
-"""Tests for T001 "The graph exists where the agents work"
+"""Tests for T001 "codegraph owns retrieval, where the agents work"
 (plugins/rein/workflows/loop.js).
 
 Same discipline as test_render_policy.py / test_gate_precheck.py:
@@ -72,8 +72,8 @@ class GraphIndexPolicyTestCase(unittest.TestCase):
         # never override what Isolate actually built in THIS worktree.
         out = self._run([{
             "worktreeMode": True,
-            "capabilities": ["graphify-index"],
-            "isolate": {"graphIndexed": False, "graphOutcome": "graphify not found"},
+            "capabilities": ["codegraph-index"],
+            "isolate": {"graphIndexed": False, "graphOutcome": "codegraph not found"},
         }])
         self.assertEqual(out["decided"], [False])
 
@@ -90,14 +90,14 @@ class GraphIndexPolicyTestCase(unittest.TestCase):
     def test_isolate_agent_dying_returns_unavailable_not_a_raise(self):
         # D4: indexing that fails never stops the run -- the failure path must
         # degrade to "unavailable", never raise.
-        out = self._run([{"worktreeMode": True, "capabilities": ["graphify-index"], "isolate": None}])
+        out = self._run([{"worktreeMode": True, "capabilities": ["codegraph-index"], "isolate": None}])
         self.assertEqual(out["decided"], [False])
 
-    def test_no_graphify_binary_is_reported_as_unavailable(self):
+    def test_no_codegraph_binary_is_reported_as_unavailable(self):
         out = self._run([{
             "worktreeMode": True,
-            "capabilities": ["graphify-index"],
-            "isolate": {"graphIndexed": False, "graphOutcome": "graphify: command not found"},
+            "capabilities": ["codegraph-index"],
+            "isolate": {"graphIndexed": False, "graphOutcome": "codegraph: command not found"},
         }])
         self.assertEqual(out["decided"], [False])
 
@@ -105,24 +105,26 @@ class GraphIndexPolicyTestCase(unittest.TestCase):
         # With no worktree there is no base/work split to guard against: work
         # happens directly where capabilities were detected.
         out = self._run([
-            {"worktreeMode": False, "capabilities": ["graphify-index"], "isolate": None},
+            {"worktreeMode": False, "capabilities": ["codegraph-index"], "isolate": None},
             {"worktreeMode": False, "capabilities": [], "isolate": None},
         ])
         self.assertEqual(out["decided"], [True, False])
+
+    def test_non_worktree_mode_ignores_the_retired_graphify_capability(self):
+        # D2/one-owner-for-retrieval: 'graphify-index' no longer answers the
+        # graph-availability question -- only 'codegraph-index' does.
+        out = self._run([{"worktreeMode": False, "capabilities": ["graphify-index"], "isolate": None}])
+        self.assertEqual(out["decided"], [False])
 
     # ── buildIsolatePrompt ───────────────────────────────────────────────────
 
     def test_isolate_prompt_builds_the_index_in_the_worktree_no_llm_path(self):
         out = self._run([{"worktreeMode": True, "capabilities": [], "isolate": None}])
         prompt = out["prompt"]
-        # round-1 finding: cwd MUST be the worktree itself ('cd wd && graphify
-        # update . ...'), not 'graphify update wd' invoked from elsewhere --
-        # the latter splits the index, writing manifest.json into whatever
-        # directory happened to be cwd and corrupting ITS incrementality.
-        self.assertIn("cd /base-wt-x && graphify update . --no-cluster", prompt)
-        self.assertNotIn("graphify update /base-wt-x --no-cluster", prompt)
+        self.assertIn("codegraph init /base-wt-x", prompt)
         self.assertIn("graphIndexed", prompt)
         self.assertIn("graphOutcome", prompt)
+        self.assertIn("/base-wt-x/.codegraph/codegraph.db", prompt)
 
     def test_isolate_prompt_indexing_failure_never_blocks_done(self):
         out = self._run([{"worktreeMode": True, "capabilities": [], "isolate": None}])
@@ -130,28 +132,32 @@ class GraphIndexPolicyTestCase(unittest.TestCase):
         self.assertIn("never blocks done", prompt)
         self.assertIn("D4", prompt)
 
-    def test_isolate_prompt_excludes_graphify_out_worktree_locally(self):
-        # round-2 finding: every worktree the loop cuts, in every repo, must
-        # have graphify-out/ excluded from git, without relying on the target
-        # repo's tracked .gitignore (which this change does not control and
-        # does not modify). info/exclude is NOT per-worktree -- git keeps
-        # `info` in its common directory, so a worktree's rev-parse resolves
-        # to the base repo's own .git/info/exclude and the entry outlives
-        # `git worktree remove`. That file is never committed, so no tracked
-        # file changes; the grep keeps the single shared entry idempotent.
+    def test_isolate_prompt_excludes_dot_codegraph_worktree_locally(self):
+        # Every worktree the loop cuts, in every repo, must have .codegraph/
+        # excluded from git, without relying on the target repo's tracked
+        # .gitignore (which this change does not control and does not modify).
+        # info/exclude is NOT per-worktree -- git keeps 'info' in its common
+        # directory, so a worktree's rev-parse resolves to the base repo's own
+        # .git/info/exclude and the entry outlives 'git worktree remove'. That
+        # file is never committed, so no tracked file changes; the grep keeps
+        # the single shared entry idempotent.
         out = self._run([{"worktreeMode": True, "capabilities": [], "isolate": None}])
         prompt = out["prompt"]
         self.assertIn("git -C /base-wt-x rev-parse --git-path info/exclude", prompt)
-        self.assertIn('grep -qxF "graphify-out/" "$f"', prompt)
+        self.assertIn('grep -qxF ".codegraph/" "$f"', prompt)
         # leading \n: an exclude file with no trailing newline would otherwise
         # get the entry concatenated onto its last line, and grep -qxF would
         # then never match it again -- appending once per run, forever.
-        self.assertIn('printf "\\ngraphify-out/\\n" >> "$f"', prompt)
+        self.assertIn('printf "\\n.codegraph/\\n" >> "$f"', prompt)
         # must happen before the index build, and must itself be non-blocking
         exclude_pos = prompt.index("rev-parse --git-path info/exclude")
-        build_pos = prompt.index("cd /base-wt-x && graphify update . --no-cluster")
+        build_pos = prompt.index("codegraph init /base-wt-x")
         self.assertLess(exclude_pos, build_pos)
         self.assertIn("This step is non-blocking too (D4)", prompt)
+
+    def test_isolate_prompt_no_longer_mentions_graphify(self):
+        out = self._run([{"worktreeMode": True, "capabilities": [], "isolate": None}])
+        self.assertNotIn("graphify", out["prompt"].lower())
 
 
 class FunctionsAreExtractableTestCase(unittest.TestCase):
@@ -185,44 +191,64 @@ class IsolateSchemaCarriesGraphFactsTestCase(unittest.TestCase):
         self.assertIn("decideGraphAvailable(WORKTREE_MODE, ctx.capabilities, setup)", src)
 
 
+class NoGraphifyMentionAnywhereInLoopTestCase(unittest.TestCase):
+    """T001 acceptance 4: no agent-facing prompt in loop.js mentions graphify
+    in any form -- the Map scout included. The same guard that today catches
+    'graphify query' now must catch the word entirely, since graphify no
+    longer answers anything inside the loop (D2)."""
+
+    def test_source_never_mentions_graphify(self):
+        with open(LOOP_JS, encoding="utf-8") as f:
+            lines = f.readlines()
+        offending = [
+            (i + 1, line.rstrip("\n"))
+            for i, line in enumerate(lines)
+            if "graphify" in line.lower()
+        ]
+        self.assertEqual(offending, [], f"'graphify' found in loop.js (must be fully removed): {offending}")
+
+
 class GraphOutputNeverTrackedTestCase(unittest.TestCase):
-    """T001 acceptance 5: the worktree's graphify-out/ is never added to git."""
+    """This repo is its own consuming project (the kit is developed with the
+    kit) -- its regenerated codegraph index must never be tracked here either."""
 
-    def test_gitignore_excludes_graphify_out(self):
+    def test_gitignore_excludes_dot_codegraph(self):
         with open(os.path.join(REPO_ROOT, ".gitignore"), encoding="utf-8") as f:
-            self.assertIn("graphify-out/", f.read())
+            self.assertIn(".codegraph/", f.read())
 
-    def test_git_actually_ignores_the_graph_output_path(self):
-        # A real functional check, not just a substring in .gitignore: ask git
-        # itself whether a path under graphify-out/ would be tracked, the same
-        # way the loop's own worktrees are subject to .gitignore.
+    def test_git_actually_ignores_the_codegraph_index_path(self):
+        # A real functional check, not just a substring in .gitignore.
         proc = subprocess.run(
-            ["git", "-C", REPO_ROOT, "check-ignore", "-q", "graphify-out/graph.json"],
+            ["git", "-C", REPO_ROOT, "check-ignore", "-q", ".codegraph/codegraph.db"],
             capture_output=True,
         )
-        self.assertEqual(proc.returncode, 0, "graphify-out/ must stay git-ignored -- the index is machine-local")
+        self.assertEqual(proc.returncode, 0, ".codegraph/ must stay git-ignored -- the index is machine-local")
 
-    @unittest.skipUnless(shutil.which("graphify"), "graphify not on PATH")
-    def test_building_the_real_index_leaves_no_untracked_git_status(self):
-        # Build the actual index (the no-LLM path Isolate uses) and confirm git
-        # sees nothing to add -- a run that committed 2.6MB of regenerable JSON
-        # would be a regression.
-        # round-2 finding: this MUST be 'graphify update . --no-cluster' with
-        # cwd=REPO_ROOT -- exactly the invariant loop.js itself states (cwd
-        # MUST be the target directory itself). Passing REPO_ROOT as the
-        # argument from an arbitrary cwd is the wrong-directory invocation the
-        # change documents as splitting the index and corrupting an unrelated
-        # directory's incrementality; it was only harmless when this suite
-        # happened to run from the repo root.
-        subprocess.run(
-            ["graphify", "update", ".", "--no-cluster"],
-            cwd=REPO_ROOT, capture_output=True, timeout=30,
-        )
-        proc = subprocess.run(
-            ["git", "-C", REPO_ROOT, "status", "--porcelain", "--", "graphify-out"],
-            capture_output=True, text=True,
-        )
-        self.assertEqual(proc.stdout.strip(), "")
+
+@unittest.skipUnless(shutil.which("codegraph"), "codegraph not on PATH")
+class RealCodegraphIndexTestCase(unittest.TestCase):
+    """A real functional check, not just string assertions: build the actual
+    index (the no-LLM path Isolate uses) and confirm it lands where the
+    Isolate prompt says it will, and that git sees nothing new to track."""
+
+    def test_building_the_real_index_creates_the_marker_file_and_stays_untracked(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            subprocess.run(["git", "init", "-q", tmp], check=True)
+            shutil.copy(os.path.join(REPO_ROOT, "plugins", "rein", "workflows", "loop.js"), tmp)
+            proc = subprocess.run(
+                ["codegraph", "init", tmp],
+                capture_output=True, text=True, timeout=60,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            self.assertTrue(
+                os.path.exists(os.path.join(tmp, ".codegraph", "codegraph.db")),
+                "codegraph init must leave .codegraph/codegraph.db behind -- the marker Isolate checks",
+            )
+            status = subprocess.run(
+                ["git", "-C", tmp, "status", "--porcelain", "--untracked-files=all"],
+                capture_output=True, text=True,
+            )
+            self.assertIn(".codegraph/", status.stdout, "sanity: without an exclude entry .codegraph/ IS untracked")
 
 
 if __name__ == "__main__":

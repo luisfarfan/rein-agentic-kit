@@ -417,7 +417,7 @@ def _detect_plan_source(root: str) -> str:
 def _capabilities(root: str) -> list[str]:
     import shutil
 
-    caps = [c for c in ("graphify", "openspec", "bd", "just", "git", "node", "python3") if shutil.which(c)]
+    caps = [c for c in ("graphify", "openspec", "codegraph", "bd", "just", "git", "node", "python3") if shutil.which(c)]
     # serena installs into ~/.local/bin, which a non-login shell may not have on
     # PATH -- probing only shutil.which would report it absent when it is there.
     if shutil.which("serena") or os.access(os.path.expanduser("~/.local/bin/serena"), os.X_OK):
@@ -428,6 +428,12 @@ def _capabilities(root: str) -> list[str]:
         caps.append("serena-project")
     if os.path.isdir(os.path.join(root, "graphify-out")):
         caps.append("graphify-index")
+    # The db, not the bare directory: an aborted/interrupted `codegraph init`
+    # leaves `.codegraph/` behind without a usable db (codegraph ships an
+    # `unlock` subcommand precisely for that stale-lock case) -- a
+    # bare-directory check would report the index usable when it is not.
+    if os.path.isfile(os.path.join(root, ".codegraph", "codegraph.db")):
+        caps.append("codegraph-index")
     return caps
 
 

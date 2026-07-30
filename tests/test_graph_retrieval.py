@@ -1,4 +1,5 @@
-"""Tests for T002 "Teach the commands that answer" (plugins/rein/workflows/loop.js).
+"""Tests for T001 "codegraph owns retrieval, where the agents work"
+(plugins/rein/workflows/loop.js) -- the RETRIEVAL block and the Map scout.
 
 Same discipline as test_graph_index.py: `buildRetrievalBlock` and
 `buildScoutPrompt` are extracted straight out of loop.js's source by regex and
@@ -31,15 +32,15 @@ function extract(name, params) {
   return m[1];
 }
 const buildRetrievalBlock = new Function(
-  'hasSerena', 'hasGraph',
-  extract('buildRetrievalBlock', 'hasSerena, hasGraph')
+  'hasSerena', 'hasGraph', 'wd',
+  extract('buildRetrievalBlock', 'hasSerena, hasGraph, wd')
 );
 const buildScoutPrompt = new Function(
   'wd', 'planPath', 'artifactList', 'taskIds',
   extract('buildScoutPrompt', 'wd, planPath, artifactList, taskIds')
 );
 const cases = JSON.parse(casesJson);
-const retrieval = cases.retrieval.map((c) => buildRetrievalBlock(c.hasSerena, c.hasGraph));
+const retrieval = cases.retrieval.map((c) => buildRetrievalBlock(c.hasSerena, c.hasGraph, '/worktree-path'));
 const scout = buildScoutPrompt('/worktree-path', '/root/tasks.md', '', ['T001', 'T002']);
 process.stdout.write(JSON.stringify({ retrieval, scout }));
 """
@@ -71,29 +72,26 @@ class GraphRetrievalPromptTestCase(unittest.TestCase):
     # index order matches the `cases["retrieval"]` list above
     NONE, SERENA_ONLY, GRAPH_ONLY, BOTH = range(4)
 
-    # ── acceptance 1: pure function, unchanged behaviour for no-tool/serena ──
+    # ── acceptance 6: pure function, executed for all four combinations,
+    # no-tool branch byte-identical to before codegraph existed ─────────────
 
     def test_no_tool_case_is_the_original_bounded_search_text(self):
         out = self._run()
         block = out["retrieval"][self.NONE]
-        self.assertIn(
-            "Locate with bounded search (grep with a concrete path and pattern) before opening files.",
+        self.assertEqual(
             block,
+            "RETRIEVAL — do not burn context. The real cost is cache_read: every turn re-reads everything "
+            "accumulated so far, so cost ≈ context-size × turns.\n"
+            "  · Locate with bounded search (grep with a concrete path and pattern) before opening files.\n"
+            "  · Read ONLY the symbols/regions you will touch (Read with offset/limit), NEVER whole files "
+            "\"just in case\" — every large file you pull in is RE-READ on every later turn.\n"
+            "  · Keep command output small: filter and scope it (head, -q, concrete paths) instead of "
+            "dumping everything.\n"
+            "  · Aim to finish in FEW turns with precise reads, not to explore incrementally.",
         )
         self.assertNotIn("serena", block)
         self.assertNotIn("graphify", block)
-
-    def test_serena_case_is_unchanged(self):
-        out = self._run()
-        block = out["retrieval"][self.SERENA_ONLY]
-        self.assertIn("SYMBOL-LEVEL FIRST", block)
-        self.assertIn("serena get_symbols_overview <file>", block)
-        self.assertIn("serena find_symbol <name>", block)
-        self.assertIn("serena find_referencing_symbols", block)
-        self.assertIn("serena get_diagnostics_for_file", block)
-        self.assertNotIn("graphify", block)
-        # no bounded-search fallback line once serena is present
-        self.assertNotIn("Locate with bounded search", block)
+        self.assertNotIn("codegraph", block)
 
     def test_all_four_combinations_run_without_raising(self):
         out = self._run()
@@ -102,41 +100,148 @@ class GraphRetrievalPromptTestCase(unittest.TestCase):
             self.assertIsInstance(block, str)
             self.assertIn("RETRIEVAL", block)
 
-    # ── acceptance 2: graph teaches explain/path, never query ───────────────
+    # ── acceptance 3: with the graph on, teach query/callers/callees/node/
+    # impact, each with a one-line statement of what it returns, never explore
 
-    def test_graph_case_teaches_explain_and_path_with_one_line_each(self):
+    def test_graph_case_teaches_the_five_codegraph_commands_with_one_liners(self):
         out = self._run()
         block = out["retrieval"][self.GRAPH_ONLY]
-        self.assertIn('graphify explain "<symbol>"', block)
-        self.assertIn('graphify path "<A>" "<B>"', block)
-        # one-line statement of what each returns
-        self.assertIn("returns its definition plus its direct callers/callees", block)
-        self.assertIn("returns the call/reference chain between two symbols", block)
+        self.assertIn('codegraph query "<concept>"', block)
+        self.assertIn("symbols matching a concept, with file:line", block)
+        self.assertIn("codegraph callers <symbol>", block)
+        self.assertIn("codegraph callees <symbol>", block)
+        self.assertIn("codegraph node <symbol>", block)
+        self.assertIn("instead of reading the file", block)
+        self.assertIn("codegraph impact <symbol>", block)
+        self.assertIn("before an edit", block)
 
-    def test_graph_case_never_teaches_query(self):
+    # ── the index is a run-start snapshot, not auto-synced (codegraph has no
+    # daemon and does not watch disk) -- every graph-on block must teach the
+    # one command that refreshes it after the agent's own edits, and say so
+    # plainly, so the five read-only commands are never mistaken for reading
+    # live disk state.
+
+    def test_graph_cases_teach_sync_as_the_refresh_after_edits(self):
+        out = self._run()
+        for block in (out["retrieval"][self.GRAPH_ONLY], out["retrieval"][self.BOTH]):
+            self.assertIn("codegraph sync /worktree-path", block)
+            self.assertIn("refresh after your own edits", block)
+            self.assertIn("last sync, not from disk", block)
+            # the count must name the set it means: query, callers, callees,
+            # node, impact. "the four above" left the agent guessing which one
+            # reads live disk -- and the natural wrong guess was `query`.
+            self.assertIn("the five above", block)
+
+    def test_every_taught_graph_command_is_anchored_to_the_worktree(self):
+        """The round-3 BLOCKING finding.
+
+        codegraph resolves its index from cwd ALONE -- there is no parent
+        walk. An agent's shell starts at the base repo and resets between
+        calls, and a call made from there does NOT error: it answers from the
+        BASE index, silently, with the wrong branch's content. Every taught
+        command must therefore carry the worktree path, or the block hands
+        agents a confidently wrong subgraph -- the one failure it exists to
+        prevent.
+        """
+        import re
+        # Every actual INVOCATION, not every line that says the word: the
+        # block also explains in prose why the anchor is there.
+        invocation = re.compile(r"codegraph (query|callers|callees|node|impact|sync)\b([^\n']*)")
+        out = self._run()
+        for name, text in (
+            ("retrieval/graph-only", out["retrieval"][self.GRAPH_ONLY]),
+            ("retrieval/both", out["retrieval"][self.BOTH]),
+            ("scout", out["scout"]),
+        ):
+            found = invocation.findall(text)
+            self.assertTrue(found, f"{name} teaches no codegraph command at all")
+            for sub, rest in found:
+                self.assertIn(
+                    "/worktree-path", rest,
+                    f"{name}: unanchored 'codegraph {sub}' answers from the BASE index — {rest.strip()!r}",
+                )
+
+    def test_the_worktree_path_reaches_the_block_from_its_real_call_site(self):
+        """Threading `wd` through is worthless if the shipped call site does
+        not pass it -- the defect would survive with every assertion green."""
+        with open(LOOP_JS, encoding="utf-8") as fh:
+            src = fh.read()
+        self.assertIn("buildRetrievalBlock(hasSerena, hasGraph, WD)", src)
+
+    def test_no_tool_and_serena_only_cases_never_mention_sync(self):
+        out = self._run()
+        for block in (out["retrieval"][self.NONE], out["retrieval"][self.SERENA_ONLY]):
+            self.assertNotIn("codegraph sync", block)
+
+    def test_graph_case_never_teaches_explore(self):
+        # D4: 'explore' is a whole-file Read in disguise (3,701 tokens on this
+        # repo) -- the block's entire point is bounded orientation.
         out = self._run()
         for block in out["retrieval"]:
-            self.assertNotIn("graphify query", block)
+            self.assertNotIn("codegraph explore", block)
 
-    def test_graph_and_serena_both_on_keeps_both_teachings(self):
+    def test_graph_case_never_mentions_graphify(self):
+        out = self._run()
+        for block in out["retrieval"]:
+            self.assertNotIn("graphify", block)
+
+    # ── acceptance 4 (D2): once codegraph is PRESENT, serena no longer teaches
+    # the retrieval it now owns. With the graph OFF, serena is the only tool
+    # left that can locate code without a whole-file read, so it keeps
+    # teaching its own retrieval there as a fallback -- this is not a second
+    # owner, since codegraph is simply absent in that case.
+
+    def test_serena_only_case_teaches_its_own_retrieval_as_a_graph_off_fallback(self):
+        out = self._run()
+        block = out["retrieval"][self.SERENA_ONLY]
+        self.assertIn("serena get_diagnostics_for_file", block)
+        self.assertIn("type errors", block)
+        # symbol-level EDIT operations remain taught
+        self.assertIn("replace_symbol_body", block)
+        self.assertIn("rename_symbol", block)
+        # with codegraph absent, serena's own retrieval fills the gap
+        self.assertIn("find_referencing_symbols", block)
+        self.assertIn("get_symbols_overview", block)
+        self.assertIn("find_symbol <name>", block)
+        self.assertNotIn("graphify", block)
+        # the generic bounded-grep fallback is for the TRUE no-tool case only;
+        # serena's own retrieval lines replace it here.
+        self.assertNotIn("Locate with bounded search", block)
+
+    def test_find_referencing_symbols_is_never_taught_once_codegraph_is_present(self):
+        # D2: one owner per question -- once codegraph is present it answers
+        # "who calls this", so serena's version must not also be taught.
+        out = self._run()
+        for block in (out["retrieval"][self.GRAPH_ONLY], out["retrieval"][self.BOTH]):
+            self.assertNotIn("find_referencing_symbols", block)
+
+    def test_no_tool_case_never_teaches_find_referencing_symbols(self):
+        out = self._run()
+        self.assertNotIn("find_referencing_symbols", out["retrieval"][self.NONE])
+
+    def test_graph_and_serena_both_on_keeps_both_narrowed_teachings(self):
         out = self._run()
         block = out["retrieval"][self.BOTH]
-        self.assertIn("serena get_symbols_overview <file>", block)
-        self.assertIn('graphify explain "<symbol>"', block)
-        self.assertNotIn("graphify query", block)
+        self.assertIn("codegraph query", block)
+        self.assertIn("serena get_diagnostics_for_file", block)
+        self.assertIn("replace_symbol_body", block)
+        self.assertNotIn("find_referencing_symbols", block)
+        self.assertNotIn("codegraph explore", block)
+        self.assertNotIn("graphify", block)
         # no bounded-search fallback line once either tool is present
         self.assertNotIn("Locate with bounded search", block)
 
-    # ── acceptance 3: the Map scout's prompt, same fix, same test ───────────
+    # ── the Map scout's prompt, same fix, same test ─────────────────────────
 
-    def test_scout_prompt_teaches_explain_and_path_not_query(self):
+    def test_scout_prompt_teaches_query_and_node_not_explore_or_graphify(self):
         out = self._run()
         scout = out["scout"]
-        self.assertIn('graphify explain "<symbol>"', scout)
-        self.assertIn('graphify path "<A>" "<B>"', scout)
-        self.assertIn("returns its definition plus its direct callers/callees", scout)
-        self.assertIn("returns the call/reference chain between two symbols", scout)
-        self.assertNotIn("graphify query", scout)
+        self.assertIn('codegraph query "<concept>"', scout)
+        self.assertIn("symbols matching a concept, with file:line", scout)
+        self.assertIn("codegraph node <symbol>", scout)
+        self.assertIn("instead of reading the file", scout)
+        self.assertNotIn("codegraph explore", scout)
+        self.assertNotIn("graphify", scout)
 
     def test_scout_prompt_carries_its_inputs(self):
         out = self._run()
@@ -149,14 +254,6 @@ class GraphRetrievalPromptTestCase(unittest.TestCase):
         self.assertIn("You work in /worktree-path.", scout)
         self.assertIn("T001, T002", scout)
         self.assertIn("Read /root/tasks.md ONCE.", scout)
-
-    # ── acceptance 5 (round-1 finding): the Map scout must be dispatched into
-    # the WORKTREE (WD), not the base repo (ctx.root) -- hasGraph means "the
-    # WORKTREE is indexed" (decideGraphAvailable), so a scout pointed at
-    # ctx.root would run 'graphify explain/path' against a directory that,
-    # in the normal case, has no index at all (graph file not found on every
-    # call), or, where the base repo happens to be indexed, maps the stale
-    # base-branch graph D1 refuses to trust.
 
     def test_scout_call_site_passes_the_worktree_not_ctx_root(self):
         with open(LOOP_JS, "r", encoding="utf-8") as f:
@@ -173,24 +270,23 @@ class GraphRetrievalPromptTestCase(unittest.TestCase):
             "the worktree's graph index lives",
         )
 
-    # ── acceptance 4: 'graphify query' cannot silently regress anywhere in
-    # an agent-facing prompt in loop.js — every prompt string built from these
+    # ── acceptance 5: 'graphify' cannot silently regress anywhere in an
+    # agent-facing prompt in loop.js -- every prompt string built from these
     # two functions (the RETRIEVAL block and the heaviest graph consumer, the
     # Map scout) is checked above; this asserts the shipped source itself
-    # carries no other call site that inlines the same graph-teaching text
-    # outside these two pure functions.
+    # carries no other mention outside these two pure functions either.
 
-    def test_source_has_exactly_the_two_known_non_prompt_mentions_of_query(self):
+    def test_source_has_no_mention_of_graphify_at_all(self):
         with open(LOOP_JS, "r", encoding="utf-8") as f:
             lines = f.readlines()
         offending = [
             (i + 1, line.rstrip("\n"))
             for i, line in enumerate(lines)
-            if "graphify query" in line and not line.strip().startswith("//")
+            if "graphify" in line.lower()
         ]
         self.assertEqual(
             offending, [],
-            f"'graphify query' found outside a comment (agent-facing prompt regression): {offending}",
+            f"'graphify' found in loop.js (agent-facing prompt regression): {offending}",
         )
 
 

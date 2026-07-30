@@ -194,15 +194,19 @@ autodetection. A project that already declares how it is built is never second-g
 | 🎨 **Frontend** *(Next, Vite, Astro, SvelteKit, Nuxt, Remix)* | dependencies | **rendered verification** — unit tests alone don't catch "the tests pass but the UI is broken" |
 | ☁️ Serverless / infra | `serverless.yml`, `sst.config.ts`, `*.tf` | `plan` / `validate` — **never deploy** |
 
-Optional tools (`serena`, `graphify`, `openspec`) are **probed, never required**: if one is
-absent the flow degrades, it does not break. `rein setup` reports what is missing and
-installs it on request — and distinguishes *installed* from *usable*, because graphify
-without an index and a just-registered MCP server are both present and inert.
+Optional tools (`serena`, `codegraph`, `graphify`, `openspec`) are **probed, never
+required**: if one is absent the flow degrades, it does not break. `rein setup` reports
+what is missing and installs it on request — and distinguishes *installed* from *usable*,
+because graphify without an index and a just-registered MCP server are both present and
+inert.
 
-> **No retrieval speedup is claimed.** `serena get_symbols_overview` maps a 697-line file
-> in 178 tokens where reading it costs 7,097 — 40× per call, measured. Whether that reduces
-> the turns an agent spends orienting is **unmeasured**, and the one control available points
-> the other way. See [docs/decisions.md](docs/decisions.md) D2.
+> **No retrieval speedup is claimed.** With codegraph present, the loop's implementers are
+> taught `codegraph query` / `callers` / `callees` / `node` / `impact` (plus `sync` to
+> refresh the index after their own edits) as the one owner of "what is this / who touches
+> it / what breaks if I change it"; with codegraph absent, serena's `get_symbols_overview` /
+> `find_symbol` / `find_referencing_symbols` cover the same ground as a fallback. Whether
+> either reduces the turns an agent spends orienting is **unmeasured**, and the one control
+> available points the other way. See [docs/decisions.md](docs/decisions.md) D2.
 
 ## 📊 Measure
 
