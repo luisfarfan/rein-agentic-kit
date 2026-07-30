@@ -18,3 +18,6 @@ build/
 
 # graphify's code-graph index: machine-local and regenerated, never committed.
 graphify-out/
+
+# CodeGraph's local index: tree-sitter -> SQLite, regenerated, never committed.
+.codegraph/

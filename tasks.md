@@ -1,71 +1,73 @@
-# Change: graph-reaches-the-agents
+# Change: one-owner-for-retrieval
 
 ## Why
-Across seven runs of this repo, `graphify` was invoked ZERO times while the
-loop's prompts advertised it. Three mechanical reasons, all measured:
+Three tools now answer "who calls X": serena `find_referencing_symbols`,
+graphify `explain`, codegraph `callers`. Measured on this repo, same questions,
+same index cost (graphify 1.4s/1179 nodes; codegraph 1.5s/1227 nodes; neither
+needs an LLM or an API key for code):
 
-1. Nothing ever built an index. `graphify update . --no-cluster` costs **1.4s**,
-   no LLM and no API key, and produces 1179 nodes / 2231 edges on this repo.
-2. `graphify-out/` is gitignored — correctly, it is machine-local and
-   regenerable. But implementers work in the `rein-wt-*` WORKTREE, which is
-   therefore always born without one. `hasGraph` is computed from `ctx`
-   (the base repo) while every graph command runs in the worktree, so even a
-   fully indexed base repo hands agents commands that answer
-   `error: graph file not found`.
-3. The command the prompts teach is the wrong one. `graphify query` does not
-   do semantic search; it runs BFS from a literal token match. Asked
-   "how does verify decide a command is not invocable" it returned 16 nodes of
-   `flow.config.example.json` — because the JSON key `verify` matched. That is
-   546 tokens of plausible-looking noise, which is worse for an agent than no
-   answer at all.
+| the question an implementer actually asks | graphify | codegraph |
+|---|---:|---:|
+| "where is it decided that a command is not invocable?" | 546 tok of `flow.config.example.json` — the JSON key `verify` matched | 258 tok: `NOT_INVOCABLE_EXIT_CODES = (126,127)` at `verify.py:71` |
+| who calls / is called by `run_one` | 158 tok, both directions, 1 turn | 22 + 75 tok, 2 turns |
+| chain between two named symbols | 19 tok | no direct equivalent |
+| which tests cover this symbol | no such concept | `⚠️ no covering tests found`, per symbol |
 
-Measured on `plugins/rein/lib/verify.py`:
+The prompt-surface argument for cutting tools was checked and does NOT hold:
+the whole RETRIEVAL block costs 314 tokens with everything on against 149 with
+nothing, so ~16.5k over a 100-turn agent — 2% of an 808k run. The cost of a
+menu is not bytes, it is turns spent choosing. The only signal we have on that
+is D2's control (the agent that used serena most oriented in 29 turns, the one
+that used none in 12; n=3, weak, and pointing at choice cost).
 
-| | tokens |
-|---|---:|
-| `Read` the whole file | 4,652 |
-| `graphify query "<a natural-language question>"` | 546 (noise) |
-| `graphify explain "run_one"` | **158** (the real call graph, in and out) |
-
-**29×** — on the one thing that costs money, orientation before the first edit.
+So: one owner per question, and a tool with no exclusive question does not
+appear in an agent-facing prompt at all. That is the same installed-vs-usable
+discipline `setup.py` already enforces, applied to recommendations.
 
 ## Scope
-- In: making the index exist where the agents actually work, and teaching the
-  commands that answer
-- Out: CodeGraph — a separate evaluation, and only worth a run if it beats
-  `graphify explain` per call first
-- Out: any claim about run-level savings; this change makes a wired capability
-  REACHABLE, and whether that shortens runs is the measurement, not the premise
-- Out: committing the index — it stays gitignored, machine-local, regenerated
+- In: codegraph as the single owner of code retrieval, in the worktree where
+  agents work; serena's block narrowed to what only it does; graphify removed
+  from every agent-facing prompt
+- In: the provisioner learns codegraph, its gitignore entry and its telemetry
+- Out: any run-level savings claim — this is a per-call result, and D2 is the
+  standing record of how that inference failed before
+- Out: wiring or measuring serena's editing half; its retrieval overlap is
+  removed here, its own value is a separate measurement
+- Out: uninstalling graphify — it stays as the `/graphify` skill for non-code
+  corpora (docs, papers, images), which is the half only it has
+- Out: codegraph's MCP server — 9 tools registered in every session is real
+  surface, where the CLI costs nothing
 
 ## Decisions
-- D1 The index is built in the WORKTREE, not shared from the base repo: 1.4s is cheaper than reasoning about whether a stale base-repo graph misleads an implementer working on new code
-- D2 A capability is only claimed where its tools will actually RUN — `hasGraph` derived from the base repo while commands execute in the worktree is the same installed-vs-usable conflation `setup.py` already refuses
-- D3 A retrieval command that returns confident noise is worse than none: an agent cannot tell a bad subgraph from a good one, and it pays for it on every later turn
-- D4 Indexing failure never stops a run — the graph is a HINT; a repo where extraction fails degrades to bounded search exactly as today
+- D1 CLI, never MCP: `codegraph install` registers 9 tools into every session whether or not a run uses them; the CLI is invoked only when an agent chooses to
+- D2 One owner per question. codegraph answers "what is this / who touches it / what breaks if I change it"; serena answers "edit this symbol" and "what are the type errors without running a build"; graphify answers nothing inside the loop
+- D3 A tool is removed from the prompt for having no EXCLUSIVE question, not for being bad — graphify's `path` is genuinely cheaper, and implementers still ask the concept question far more often than the two-named-symbols question
+- D4 `explore` is not taught: at 3,701 tokens it is a whole-file Read in disguise, and the block's entire point is bounded orientation
+- D5 Defaults are the operator's, not the vendor's: telemetry is disabled and the index directory is excluded before anything is indexed
 
 ---
 
-- [x] T001 The graph exists where the agents work
+- [ ] T001 codegraph owns retrieval, where the agents work
   - Type: implementation
   - Depends on: none
   - Human review: false
-  - Verification: `python3 -m unittest tests.test_graph_index`
+  - Verification: `python3 -m unittest tests.test_graph_index tests.test_graph_retrieval`
   - Acceptance:
-    - the Isolate step builds the index inside the worktree it just created (`graphify update <wd> --no-cluster`, the no-LLM path) and reports the outcome into `ISOLATE_SCHEMA` as a literal fact, in the same "report it, do not re-derive it" style as the existing fields
-    - graph availability is decided by a pure function extracted from the SHIPPED `loop.js` and EXECUTED by the test — the same way `tests/test_render_policy.py` executes `decideRound`; a source-substring assertion does not count
-    - that function returns unavailable when the worktree has no index, even if `ctx.capabilities` claims `graphify-index` from the base repo — the mismatch that made every graph command in every past run answer "graph file not found" (D2)
-    - indexing that fails, times out, or finds no `graphify` binary is reported and the run CONTINUES with the graph off (D4); a test covers the failure path returning unavailable rather than raising
-    - a test asserts the worktree's `graphify-out/` is never added to git — the index stays machine-local, and a run that committed 2.6MB of regenerable JSON would be a regression
+    - the Isolate step builds codegraph's index inside the worktree (`codegraph init`, ~1.5s, no LLM) and excludes `.codegraph/` the same shared-`info/exclude` way `graphify-out/` is excluded today, reporting the outcome into `ISOLATE_SCHEMA` as a literal fact; the graphify index build is removed from that prompt
+    - the availability decision keeps its current shape and tests — derived from what the Isolate step REPORTED about the worktree, never from `ctx.capabilities` of the base repo (the standing D2 of `graph-reaches-the-agents`) — and now answers for codegraph
+    - with the graph on, the RETRIEVAL block teaches `codegraph query "<concept>"` (symbols matching a concept, with file:line), `codegraph callers`/`callees <symbol>`, `codegraph node <symbol>` (source plus callers, instead of reading the file) and `codegraph impact <symbol>` before an edit — each with a one-line statement of what it returns, and NOT `codegraph explore` (D4)
+    - serena's part of the block no longer teaches retrieval that codegraph now owns: it keeps `get_diagnostics_for_file` (type errors without a build) and the symbol-level EDIT operations, and a test asserts `find_referencing_symbols` is no longer taught as the way to find callers (D2)
+    - no agent-facing prompt in `loop.js` mentions `graphify` in any form — the Map scout included — and a test scanning the shipped source fails if one reappears, the same guard that today catches `graphify query`
+    - the pure functions stay extracted from the SHIPPED `loop.js` and EXECUTED (never asserted by source substring), all four serena/graph combinations remain covered, and the no-tool branch is proven byte-identical to today
 
-- [x] T002 Teach the commands that answer
+- [ ] T002 The provisioner recommends what the loop actually uses
   - Type: implementation
   - Depends on: T001
   - Human review: false
-  - Verification: `python3 -m unittest tests.test_graph_retrieval`
+  - Verification: `python3 -m unittest tests.test_setup`
   - Acceptance:
-    - the RETRIEVAL block is extracted into a pure function of its inputs (serena on/off, graph on/off) in the SHIPPED `loop.js`, executed by the test with each combination, and the existing behaviour is unchanged for the no-tool case (bounded search) and the serena case
-    - with the graph on, the block teaches `graphify explain "<symbol>"` and `graphify path "<A>" "<B>"` with a one-line statement of what each returns, and does NOT teach `graphify query` with a natural-language question (D3)
-    - the Map scout's prompt is fixed the same way and covered by the same test — it is the single heaviest graph consumer in the loop and it currently asks `query` three ways
-    - a test fails if `graphify query` reappears anywhere in an agent-facing prompt in `loop.js`, so this cannot silently regress
-    - `node --check plugins/rein/workflows/loop.js` passes, and `python3 -m unittest discover -s tests -q` stays green
+    - `setup.py` gains a `codegraph` entry: probed by binary, installable with `npm i -g @colbymchenry/codegraph` (needing `npm`), index marker `.codegraph/`, gitignore entry `.codegraph/`, and a `why` that states its exclusive question rather than a generic benefit — the existing test that every tool states one must pass unchanged
+    - installed-but-no-index is reported `inert` exactly as graphify is today, with its own one-command fix named; a test covers indexed and not-indexed
+    - `--install` disables telemetry as part of activation (`codegraph telemetry off`) and reports that it did — it is on by default, and a provisioner that silently accepts a vendor default is not provisioning (D5)
+    - graphify's entry is re-scoped in `why` and `manual` to non-code corpora, and no longer claims a role in the loop's retrieval; nothing about it is uninstalled or removed from `TOOLS`
+    - `rein doctor` and `rein setup` render codegraph alongside the others with no change to their output contract, and `python3 -m unittest discover -s tests -q` stays green
