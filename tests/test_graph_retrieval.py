@@ -35,12 +35,12 @@ const buildRetrievalBlock = new Function(
   extract('buildRetrievalBlock', 'hasSerena, hasGraph')
 );
 const buildScoutPrompt = new Function(
-  'root', 'planPath', 'artifactList', 'taskIds',
-  extract('buildScoutPrompt', 'root, planPath, artifactList, taskIds')
+  'wd', 'planPath', 'artifactList', 'taskIds',
+  extract('buildScoutPrompt', 'wd, planPath, artifactList, taskIds')
 );
 const cases = JSON.parse(casesJson);
 const retrieval = cases.retrieval.map((c) => buildRetrievalBlock(c.hasSerena, c.hasGraph));
-const scout = buildScoutPrompt('/root', '/root/tasks.md', '', ['T001', 'T002']);
+const scout = buildScoutPrompt('/worktree-path', '/root/tasks.md', '', ['T001', 'T002']);
 process.stdout.write(JSON.stringify({ retrieval, scout }));
 """
 
@@ -141,9 +141,37 @@ class GraphRetrievalPromptTestCase(unittest.TestCase):
     def test_scout_prompt_carries_its_inputs(self):
         out = self._run()
         scout = out["scout"]
-        self.assertIn("/root", scout)
+        # the scout must open with the WORKTREE it was handed, not any other
+        # directory (e.g. the base repo root) -- '/worktree-path' here is
+        # deliberately distinct from '/root' (the plan path's directory) so
+        # this assertion cannot pass by coincidence if the wrong directory
+        # were threaded through instead.
+        self.assertIn("You work in /worktree-path.", scout)
         self.assertIn("T001, T002", scout)
         self.assertIn("Read /root/tasks.md ONCE.", scout)
+
+    # ── acceptance 5 (round-1 finding): the Map scout must be dispatched into
+    # the WORKTREE (WD), not the base repo (ctx.root) -- hasGraph means "the
+    # WORKTREE is indexed" (decideGraphAvailable), so a scout pointed at
+    # ctx.root would run 'graphify explain/path' against a directory that,
+    # in the normal case, has no index at all (graph file not found on every
+    # call), or, where the base repo happens to be indexed, maps the stale
+    # base-branch graph D1 refuses to trust.
+
+    def test_scout_call_site_passes_the_worktree_not_ctx_root(self):
+        with open(LOOP_JS, "r", encoding="utf-8") as f:
+            src = f.read()
+        self.assertIn(
+            "buildScoutPrompt(WD, ctx.planPath, artifactList, tasks.map((t) => t.id))",
+            src,
+            "the scout dispatch call site must pass WD (the worktree), not ctx.root (the base repo)",
+        )
+        self.assertNotIn(
+            "buildScoutPrompt(ctx.root,",
+            src,
+            "the scout dispatch call site must not pass ctx.root -- that is the base repo, not where "
+            "the worktree's graph index lives",
+        )
 
     # ── acceptance 4: 'graphify query' cannot silently regress anywhere in
     # an agent-facing prompt in loop.js — every prompt string built from these

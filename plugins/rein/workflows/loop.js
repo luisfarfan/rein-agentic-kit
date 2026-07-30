@@ -861,7 +861,9 @@ function buildIsolatePrompt(root, base, wd, branch, rein) {
     `   'pendingIds' the ids of tasks whose checkbox is still unticked THERE. On a resumed run\n` +
     `   the worktree knows what already landed and the base branch does not. Copy the ids\n` +
     `   literally; do not judge whether the work looks done.\n` +
-    `5. Build the code graph index IN THE WORKTREE (no LLM, ~1-2s): run 'graphify update ${wd} --no-cluster'. ` +
+    `5. Build the code graph index IN THE WORKTREE (no LLM, ~1-2s): run 'cd ${wd} && graphify update . --no-cluster' ` +
+    `(cwd MUST be ${wd} itself — 'graphify update ${wd}' from a different cwd splits the index, writing ` +
+    `manifest.json into the WRONG directory and corrupting that directory's own incrementality). ` +
     `This is a HINT for later steps, never a gate — if the 'graphify' binary is missing, the command errors, ` +
     `or it hangs past your tool's own timeout, that is fine: do NOT retry it and do NOT let it fail this step ` +
     `(D4, the run continues with the graph off). Set graphIndexed=true ONLY if the command exited 0 AND ` +
@@ -1122,9 +1124,9 @@ const CTX =
 // same test as buildRetrievalBlock (T002 acceptance) — this is the single
 // heaviest graph consumer in the loop (every task, every run), so its D3
 // discipline (teach 'explain'/'path', never 'query') matters most here.
-function buildScoutPrompt(root, planPath, artifactList, taskIds) {
+function buildScoutPrompt(wd, planPath, artifactList, taskIds) {
   return (
-    `You work in ${root}. You are the SCOUT: implement NOTHING, commit NOTHING. Build a small CODE MAP ` +
+    `You work in ${wd}. You are the SCOUT: implement NOTHING, commit NOTHING. Build a small CODE MAP ` +
     `per task so implementers do not explore from zero — the loop's real cost is re-read context, so less ` +
     `exploration = fewer turns.\n` +
     (artifactList || `Read ${planPath} ONCE.\n`) +
@@ -1143,7 +1145,7 @@ if (hasGraph) {
   phase('Map')
   try {
     const scout = await agent(
-      buildScoutPrompt(ctx.root, ctx.planPath, artifactList, tasks.map((t) => t.id)),
+      buildScoutPrompt(WD, ctx.planPath, artifactList, tasks.map((t) => t.id)),
       { schema: CODEMAP_SCHEMA, label: 'scout', phase: 'Map', agentType: 'general-purpose', effort: 'low', model: MODEL_IMPL }
     )
     for (const m of (scout && scout.maps) || []) codeMapById[m.id] = m

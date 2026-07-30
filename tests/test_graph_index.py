@@ -115,7 +115,12 @@ class GraphIndexPolicyTestCase(unittest.TestCase):
     def test_isolate_prompt_builds_the_index_in_the_worktree_no_llm_path(self):
         out = self._run([{"worktreeMode": True, "capabilities": [], "isolate": None}])
         prompt = out["prompt"]
-        self.assertIn("graphify update /base-wt-x --no-cluster", prompt)
+        # round-1 finding: cwd MUST be the worktree itself ('cd wd && graphify
+        # update . ...'), not 'graphify update wd' invoked from elsewhere --
+        # the latter splits the index, writing manifest.json into whatever
+        # directory happened to be cwd and corrupting ITS incrementality.
+        self.assertIn("cd /base-wt-x && graphify update . --no-cluster", prompt)
+        self.assertNotIn("graphify update /base-wt-x --no-cluster", prompt)
         self.assertIn("graphIndexed", prompt)
         self.assertIn("graphOutcome", prompt)
 
