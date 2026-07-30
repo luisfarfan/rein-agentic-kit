@@ -47,8 +47,8 @@
   },
 
   "retrieval": {
-    "$comment": "auto = use graphify if an index exists, otherwise plain search. Presence is probed; a missing tool degrades the flow, never breaks it.",
-    "graphify": "auto"
+    "$comment": "auto = use codegraph if an index exists, otherwise plain search. Presence is probed; a missing tool degrades the flow, never breaks it.",
+    "codegraph": "auto"
   },
 
   "verify": {

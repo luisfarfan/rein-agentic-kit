@@ -428,6 +428,8 @@ def _capabilities(root: str) -> list[str]:
         caps.append("serena-project")
     if os.path.isdir(os.path.join(root, "graphify-out")):
         caps.append("graphify-index")
+    if os.path.isdir(os.path.join(root, ".codegraph")):
+        caps.append("codegraph-index")
     return caps
 
 

@@ -827,20 +827,20 @@ function decideGatePrecheck(verifyGate, monorepoUnconfigured) {
 }
 
 // D2: a capability is only claimed where its tools will actually RUN. Every
-// graph command (`graphify query/path/explain`) executes inside the WORKTREE
-// the Isolate step just built — a DIFFERENT directory than the base repo
-// `ctx.capabilities` was detected in. A base-repo `graphify-index` capability
-// says nothing about whether THIS worktree has an index: that mismatch is
-// exactly what made every graph command in every past run answer "graph file
-// not found". Availability comes ONLY from what Isolate reports building in
-// the worktree — never from the base-repo capability list — so a stale or
-// mismatched capability can never claim a graph that is not actually there.
-// When there is no worktree at all (WORKTREE_MODE=false) there is no base/work
-// split to guard against: work happens directly where capabilities were
-// detected, so that list is trusted as-is.
+// graph command (`codegraph query/callers/callees/node/impact`) executes inside
+// the WORKTREE the Isolate step just built — a DIFFERENT directory than the base
+// repo `ctx.capabilities` was detected in. A base-repo `codegraph-index`
+// capability says nothing about whether THIS worktree has an index: that
+// mismatch is exactly what made every graph command in every past run answer
+// "graph file not found". Availability comes ONLY from what Isolate reports
+// building in the worktree — never from the base-repo capability list — so a
+// stale or mismatched capability can never claim a graph that is not actually
+// there. When there is no worktree at all (WORKTREE_MODE=false) there is no
+// base/work split to guard against: work happens directly where capabilities
+// were detected, so that list is trusted as-is.
 // Pure so it is executed by a test (T001 acceptance), not asserted by comment.
 function decideGraphAvailable(worktreeMode, capabilities, isolate) {
-  if (!worktreeMode) return (capabilities || []).includes('graphify-index')
+  if (!worktreeMode) return (capabilities || []).includes('codegraph-index')
   return !!(isolate && isolate.graphIndexed)
 }
 
@@ -861,23 +861,21 @@ function buildIsolatePrompt(root, base, wd, branch, rein) {
     `   'pendingIds' the ids of tasks whose checkbox is still unticked THERE. On a resumed run\n` +
     `   the worktree knows what already landed and the base branch does not. Copy the ids\n` +
     `   literally; do not judge whether the work looks done.\n` +
-    `5. Build the code graph index IN THE WORKTREE (no LLM, ~1-2s). First make its output path ` +
+    `5. Build the code graph index IN THE WORKTREE (no LLM, ~1.5s). First make its output path ` +
     `worktree-locally excluded so it can never end up staged from here, even in a repo whose own ` +
     `.gitignore lacks the entry: run 'f="$(git -C ${wd} rev-parse --git-path info/exclude)"; ` +
-    `grep -qxF "graphify-out/" "$f" 2>/dev/null || printf "\\ngraphify-out/\\n" >> "$f"' — info/exclude is ` +
+    `grep -qxF ".codegraph/" "$f" 2>/dev/null || printf "\\n.codegraph/\\n" >> "$f"' — info/exclude is ` +
     `the repository's SHARED exclude file (git keeps 'info' in its common directory, so a worktree's ` +
     `rev-parse resolves to ${root}'s own .git/info/exclude, and the entry outlives 'git worktree remove'). ` +
     `It is never committed, so no tracked file changes; the grep makes the one entry idempotent and it ` +
     `covers this worktree and every other. This step is non-blocking too (D4): if it fails, continue anyway. Then run ` +
-    `'cd ${wd} && graphify update . --no-cluster' ` +
-    `(cwd MUST be ${wd} itself — 'graphify update ${wd}' from a different cwd splits the index, writing ` +
-    `manifest.json into the WRONG directory and corrupting that directory's own incrementality). ` +
-    `This is a HINT for later steps, never a gate — if the 'graphify' binary is missing, the command errors, ` +
-    `or it hangs past your tool's own timeout, that is fine: do NOT retry it and do NOT let it fail this step ` +
-    `(D4, the run continues with the graph off). Set graphIndexed=true ONLY if the command exited 0 AND ` +
-    `${wd}/graphify-out/graph.json now exists; otherwise graphIndexed=false. Set graphOutcome to what ` +
-    `literally happened (the command's own message, or "graphify: command not found" if it is not on PATH) ` +
-    `— report it, do not judge it.\n` +
+    `'codegraph init ${wd}' (the path argument decides where the index is written, not cwd, so this is ` +
+    `safe to run from anywhere). This is a HINT for later steps, never a gate — if the 'codegraph' binary is ` +
+    `missing, the command errors, or it hangs past your tool's own timeout, that is fine: do NOT retry it and ` +
+    `do NOT let it fail this step (D4, the run continues with the graph off). Set graphIndexed=true ONLY if ` +
+    `the command exited 0 AND ${wd}/.codegraph/codegraph.db now exists; otherwise graphIndexed=false. Set ` +
+    `graphOutcome to what literally happened (the command's own message, or "codegraph: command not found" ` +
+    `if it is not on PATH) — report it, do not judge it.\n` +
     `Set done=true when steps 2-4 all succeeded (step 5 never blocks done, per D4).`
   )
 }
@@ -1063,29 +1061,36 @@ const hasGraph = decideGraphAvailable(WORKTREE_MODE, ctx.capabilities, setup)
 const hasSerena = (ctx.capabilities || []).includes('serena-project')
 // Pure (hasSerena/hasGraph as args, not read from the outer closure) so all four
 // on/off combinations are executed by a test the same way decideGraphAvailable
-// is (T002 acceptance) — including proving the no-tool and serena-only branches
-// stay byte-identical to before the graph teaching below existed.
-// D3: teaches 'graphify explain'/'graphify path', each with a one-line statement
-// of what it returns — NEVER 'graphify query'. This repo's extracted graph is
-// structure-only (contains/calls edges, no data/string-literal edges), so a
-// natural-language query answers with a confident-looking subgraph an agent
-// cannot tell apart from a correct one, and pays for on every later turn (D3).
+// is (T001 acceptance) — including proving the no-tool branch stays
+// byte-identical to before the graph teaching below existed.
+// D2/D3/D4: codegraph is the single owner of retrieval ("what is this / who
+// touches it / what breaks if I change it") — teaches 'codegraph query'/
+// 'callers'/'callees'/'node'/'impact', each with a one-line statement of what
+// it returns, NEVER 'codegraph explore' (D4: at 3,701 tokens on this repo it is
+// a whole-file Read in disguise, and this block's entire point is bounded
+// orientation). serena keeps only what codegraph does NOT do: type errors
+// without a build, and the symbol-level EDIT operations (D2) — its own former
+// retrieval teaching (get_symbols_overview / find_symbol / find_referencing_symbols)
+// is dropped here because codegraph now answers those questions.
 function buildRetrievalBlock(hasSerena, hasGraph) {
   return (
     `RETRIEVAL — do not burn context. The real cost is cache_read: every turn re-reads everything ` +
     `accumulated so far, so cost ≈ context-size × turns.\n` +
-    (hasSerena
-      ? `  · SYMBOL-LEVEL FIRST — this project has serena (language-server backed). Before any whole-file read:\n` +
-        `      serena get_symbols_overview <file>   what is in a file, without reading it\n` +
-        `      serena find_symbol <name>            the definition, with include_body for its source\n` +
-        `      serena find_referencing_symbols      every caller, instead of grepping for one\n` +
-        `      serena get_diagnostics_for_file      type errors WITHOUT running a build\n` +
+    (hasGraph
+      ? `  · SYMBOL-LEVEL FIRST — this project has codegraph. Before any whole-file read:\n` +
+        `      codegraph query "<concept>"   symbols matching a concept, with file:line\n` +
+        `      codegraph callers <symbol>    every function/method that calls it\n` +
+        `      codegraph callees <symbol>    every function/method it calls\n` +
+        `      codegraph node <symbol>       its source plus its callers, instead of reading the file\n` +
+        `      codegraph impact <symbol>     what breaks if you change it — run before an edit\n` +
         `    Read with offset/limit only for what these cannot answer.\n`
       : '') +
-    (hasGraph
-      ? `  · Orient with the graph before grepping or opening whole files: 'graphify explain "<symbol>"' returns ` +
-        `its definition plus its direct callers/callees; 'graphify path "<A>" "<B>"' returns the call/reference ` +
-        `chain between two symbols, if one exists.\n`
+    (hasSerena
+      ? `  · serena (language-server backed) owns EDITS and build-free diagnostics here, not retrieval — ` +
+        `codegraph answers "what/who" now:\n` +
+        `      serena get_diagnostics_for_file   type errors WITHOUT running a build\n` +
+        `      serena replace_symbol_body / rename_symbol / insert_before_symbol / insert_after_symbol / ` +
+        `safe_delete_symbol   edit a symbol precisely, never a whole-file rewrite\n`
       : '') +
     (!hasSerena && !hasGraph
       ? `  · Locate with bounded search (grep with a concrete path and pattern) before opening files.\n`
@@ -1129,9 +1134,9 @@ const CTX =
 // A HINT, never a contract: if the scout dies the map is empty and implementers
 // explore exactly as they would have.
 // Pure (root/planPath/artifactList/taskIds as args) so it is executed by the
-// same test as buildRetrievalBlock (T002 acceptance) — this is the single
-// heaviest graph consumer in the loop (every task, every run), so its D3
-// discipline (teach 'explain'/'path', never 'query') matters most here.
+// same test as buildRetrievalBlock (T001 acceptance) — this is the single
+// heaviest graph consumer in the loop (every task, every run), so its D4
+// discipline (teach 'query'/'node', never 'explore') matters most here.
 function buildScoutPrompt(wd, planPath, artifactList, taskIds) {
   return (
     `You work in ${wd}. You are the SCOUT: implement NOTHING, commit NOTHING. Build a small CODE MAP ` +
@@ -1139,9 +1144,8 @@ function buildScoutPrompt(wd, planPath, artifactList, taskIds) {
     `exploration = fewer turns.\n` +
     (artifactList || `Read ${planPath} ONCE.\n`) +
     `For EACH of [${taskIds.join(', ')}] use THE GRAPH, not grep or whole-file reads: ` +
-    `'graphify explain "<symbol>"' returns its definition plus its direct callers/callees; ` +
-    `'graphify path "<A>" "<B>"' returns the call/reference chain between two symbols, when a task spans more ` +
-    `than one.\n` +
+    `'codegraph query "<concept>"' returns symbols matching a concept, with file:line; ` +
+    `'codegraph node <symbol>' returns its source plus its callers, instead of reading the file.\n` +
     `Return per task: 'touchpoints' (a SHORT list of "path:symbol" — a hint, not a dump) and 'orientation' ` +
     `(one line: where to start). If unsure about a task, return empty touchpoints and say so — it is a ` +
     `STARTING POINT, not a contract.`
