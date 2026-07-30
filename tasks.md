@@ -57,7 +57,7 @@ for the first person who tries.
     - `rein doctor` reports the verification state of each command when it is known, without running anything itself
     - a new `tests/test_verify_commands.py` covers: invocable, missing binary, runs-and-fails, timeout, and the no-write guarantee, using commands built in a temp directory — no dependency on what is installed on the machine
 
-- [ ] T003 The loop learns a gate is broken before it pays implementers
+- [x] T003 The loop learns a gate is broken before it pays implementers
   - Type: implementation
   - Depends on: T002
   - Human review: false

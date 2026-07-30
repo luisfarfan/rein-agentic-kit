@@ -100,6 +100,48 @@ const CONTEXT_SCHEMA = {
     cmdTestOne: { type: 'string' }, // contains {target}
     cmdLint: { type: 'string' },
     cmdTypecheck: { type: 'string' },
+    // T003: `rein verify` ACTUALLY RAN each configured command (D2) before any
+    // implementer is paid. 'configured' distinguishes "no command to check" from
+    // "checked and it is not invocable" -- an unconfigured slot is not a stop.
+    // Reported literally from verify's own JSON, never re-derived (same style
+    // as cmdTest/verifyPolicy above).
+    verifyGate: {
+      type: 'object',
+      properties: {
+        test: {
+          type: 'object',
+          properties: {
+            configured: { type: 'boolean' },
+            invocable: { type: 'boolean' },
+            outcome: { type: 'string' },
+          },
+          required: ['configured', 'invocable', 'outcome'],
+          additionalProperties: false,
+        },
+        lint: {
+          type: 'object',
+          properties: {
+            configured: { type: 'boolean' },
+            invocable: { type: 'boolean' },
+            outcome: { type: 'string' },
+          },
+          required: ['configured', 'invocable', 'outcome'],
+          additionalProperties: false,
+        },
+        typecheck: {
+          type: 'object',
+          properties: {
+            configured: { type: 'boolean' },
+            invocable: { type: 'boolean' },
+            outcome: { type: 'string' },
+          },
+          required: ['configured', 'invocable', 'outcome'],
+          additionalProperties: false,
+        },
+      },
+      required: ['test', 'lint', 'typecheck'],
+      additionalProperties: false,
+    },
     planPath: { type: 'string' },
     planSource: { type: 'string' },
     why: { type: 'string' },
@@ -138,7 +180,7 @@ const CONTEXT_SCHEMA = {
   required: [
     'ok', 'reinPath', 'root', 'stack', 'subtypes', 'verifyPolicy', 'serve', 'cmdTest', 'cmdTestOne', 'cmdLint', 'cmdTypecheck',
     'planPath', 'planSource', 'why', 'scopeOut', 'decisions', 'artifacts', 'capabilities', 'tracker', 'baseBranch', 'worktreePrefix',
-    'verifyWarnings',
+    'verifyWarnings', 'verifyGate',
     'maxTaskSteps', 'maxReviewRounds', 'modelAux', 'modelImpl', 'modelReview', 'tasks', 'problem',
   ],
   additionalProperties: false,
@@ -305,6 +347,12 @@ const ctx = await agentRetry(
     `   Report the working invocation in 'reinPath' (an absolute path, or the bare word 'rein').\n` +
     `2. Run: '<reinPath> context ${ROOT}${changeArg}'. It prints JSON with 'config' and 'plan'.\n` +
     `   READ that JSON. Do NOT re-derive any of it, do NOT run the commands it reports.\n` +
+    `2b. Also run (same round-trip, chain with '&&'): '<reinPath> verify ${ROOT} --json'. It ACTUALLY RUNS\n` +
+    `    every resolved command and prints JSON with 'results' keyed by slot (e.g. 'test', 'lint',\n` +
+    `    'typecheck'), each carrying 'invocable' (boolean) and 'outcome' (a string). It may exit\n` +
+    `    non-zero when something is not invocable — that is expected, still read its JSON stdout.\n` +
+    `    READ that JSON too. Do NOT re-run anything yourself, do NOT judge pass/fail — just report\n` +
+    `    what it found, literally.\n` +
     `3. Report it back, mapping fields exactly:\n` +
     `   · cmdTest/cmdTestOne/cmdLint/cmdTypecheck  <- config.commands.{test,testOne,lint,typecheck}\n` +
     `     (empty string when a slot is absent — say so rather than inventing a command)\n` +
@@ -313,6 +361,10 @@ const ctx = await agentRetry(
     `   · verifyWarnings <- config.verifyWarnings, or [] when the key is absent. These say the policy\n` +
     `     cannot be satisfied as detected (no browser tool reachable, a guessed URL); the run surfaces\n` +
     `     them so a wrong instruction is visible instead of silently followed.\n` +
+    `   · verifyGate.{test,lint,typecheck} <- for each slot: 'configured' is true iff the matching\n` +
+    `     cmd{Test,Lint,Typecheck} above is non-empty. When configured, 'invocable'/'outcome' come\n` +
+    `     LITERALLY from the verify JSON's results[slot].invocable/outcome. When NOT configured,\n` +
+    `     there is nothing to check — report invocable=true, outcome="" (absence is not a broken gate).\n` +
     `   · baseBranch <- config.worktree.baseBranch, worktreePrefix <- config.worktree.prefix\n` +
     `   · maxTaskSteps/maxReviewRounds <- config.limits, model* <- config.models\n` +
     `   · tasks <- plan.pending, ALREADY dependency-ordered. Keep that order. Copy each field\n` +
@@ -358,6 +410,23 @@ if (ONLY.length) tasks = tasks.filter((t) => ONLY.includes(t.id.toUpperCase()))
 // Before the no-tasks return: these describe project CONFIGURATION, not task
 // state, and are the only in-run signal that the policy cannot be satisfied.
 for (const w of ctx.verifyWarnings || []) log(`⚠️ ${w}`)
+
+// T003/D3: the gate is checked (not re-derived) HERE, before any implementer
+// is paid — a red gate found before Isolate costs nothing, the same one found
+// at Review costs a whole run. Reported literally by Prepare; defaulted only
+// so a prepare agent talking to an older CLI (no verifyGate yet) degrades to
+// "nothing configured" instead of throwing.
+const VERIFY_GATE = ctx.verifyGate || {
+  test: { configured: false, invocable: true, outcome: '' },
+  lint: { configured: false, invocable: true, outcome: '' },
+  typecheck: { configured: false, invocable: true, outcome: '' },
+}
+const gatePrecheck = decideGatePrecheck(VERIFY_GATE)
+for (const w of gatePrecheck.warnings) log(`⚠️ ${w}`)
+if (gatePrecheck.decision === 'stop') {
+  log(`⛔ gate precheck: ${gatePrecheck.reason}`)
+  return { ok: false, phase: 'Prepare', problem: gatePrecheck.reason, verifyGate: VERIFY_GATE }
+}
 
 if (!tasks.length) {
   log('nothing to do: no pending tasks in the plan')
@@ -717,6 +786,40 @@ function decidePlanCheck(findings, runIds) {
     }
   }
   return { decision: 'continue', findings: list }
+}
+
+// D3 as executable policy: verification happens where it is cheap — a red
+// gate found HERE (before Isolate) costs nothing, the same one found at
+// Review costs a whole run. Pure so it can be extracted and run by tests the
+// same way decidePlanCheck/decideRound already are.
+//   test not invocable           -> stop: no implementer is paid toward a gate
+//                                   that cannot pass
+//   test invocable but failing   -> continue: the ordinary state of a repo
+//                                   mid-change; stopping for it would make the
+//                                   loop unusable
+//   lint/typecheck not invocable -> warning only, carried to the reviewer;
+//                                   neither is required for a verdict
+//   an unconfigured slot is never a stop or a warning — there is nothing to
+//   check, which is a different fact than "checked and broken"
+function decideGatePrecheck(verifyGate) {
+  const vg = verifyGate || {}
+  const slot = (name) => vg[name] || { configured: false, invocable: true, outcome: '' }
+  const warnings = []
+  for (const name of ['lint', 'typecheck']) {
+    const s = slot(name)
+    if (s.configured && !s.invocable) {
+      warnings.push(`${name} is not invocable (${s.outcome || 'unknown'}) — carried to the reviewer, not required for a verdict`)
+    }
+  }
+  const test = slot('test')
+  if (test.configured && !test.invocable) {
+    return {
+      decision: 'stop',
+      reason: `the test command is not invocable (${test.outcome || 'unknown'}) — no implementer is paid to work toward a gate that cannot pass`,
+      warnings,
+    }
+  }
+  return { decision: 'continue', reason: '', warnings }
 }
 
 // D4: no reachable browser tool is an explicit, carried outcome — never a
