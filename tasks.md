@@ -28,7 +28,7 @@ is the cheapest way to find out — and if it does not move, that is the answer.
     - a pidfile holding valid JSON with a non-integer `pgid` reports that specific shape rather than a generic parse error
     - each of the three messages is asserted in `tests/test_serve_probe.py` by its distinguishing substring, so a future refactor cannot collapse them back into one
 
-- [ ] T002 Serve tests must not leak subprocess warnings over real ones
+- [x] T002 Serve tests must not leak subprocess warnings over real ones
   - Type: implementation
   - Depends on: none
   - Human review: false
