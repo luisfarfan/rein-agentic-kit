@@ -1,84 +1,71 @@
-# Change: works-in-any-repo
+# Change: graph-reaches-the-agents
 
 ## Why
-Trying to run an experiment in two of the author's real repos failed twice, and
-neither failure was the repo's fault. `firecrawl` (7 sub-projects, no root
-manifest) resolved to `stack: unknown` with zero commands. A Python repo resolved
-`test: poetry run pytest -q` — a command that does not run on that machine, which
-would have turned the loop's mechanical gate red and sent the reviewer looking for
-a defect in the code. And `rein setup --install` cannot activate serena
-unattended because serena's project setup blocks on interactive prompts.
+Across seven runs of this repo, `graphify` was invoked ZERO times while the
+loop's prompts advertised it. Three mechanical reasons, all measured:
 
-The kit's promise is "installable in ANY project". These three are what break it
-for the first person who tries.
+1. Nothing ever built an index. `graphify update . --no-cluster` costs **1.4s**,
+   no LLM and no API key, and produces 1179 nodes / 2231 edges on this repo.
+2. `graphify-out/` is gitignored — correctly, it is machine-local and
+   regenerable. But implementers work in the `rein-wt-*` WORKTREE, which is
+   therefore always born without one. `hasGraph` is computed from `ctx`
+   (the base repo) while every graph command runs in the worktree, so even a
+   fully indexed base repo hands agents commands that answer
+   `error: graph file not found`.
+3. The command the prompts teach is the wrong one. `graphify query` does not
+   do semantic search; it runs BFS from a literal token match. Asked
+   "how does verify decide a command is not invocable" it returned 16 nodes of
+   `flow.config.example.json` — because the JSON key `verify` matched. That is
+   546 tokens of plausible-looking noise, which is worse for an agent than no
+   answer at all.
+
+Measured on `plugins/rein/lib/verify.py`:
+
+| | tokens |
+|---|---:|
+| `Read` the whole file | 4,652 |
+| `graphify query "<a natural-language question>"` | 546 (noise) |
+| `graphify explain "run_one"` | **158** (the real call graph, in and out) |
+
+**29×** — on the one thing that costs money, orientation before the first edit.
 
 ## Scope
-- In: monorepo-aware detection; verifying that resolved commands actually run;
-  unattended serena activation
-- Out: guessing which sub-project of a monorepo is the target — that is the
-  operator's call, and inventing it is worse than reporting the choice
-- Out: CodeGraph and any further retrieval-tool evaluation, which is only
-  meaningful after these land
-- Out: installing project dependencies on the operator's behalf
+- In: making the index exist where the agents actually work, and teaching the
+  commands that answer
+- Out: CodeGraph — a separate evaluation, and only worth a run if it beats
+  `graphify explain` per call first
+- Out: any claim about run-level savings; this change makes a wired capability
+  REACHABLE, and whether that shortens runs is the measurement, not the premise
+- Out: committing the index — it stays gitignored, machine-local, regenerated
 
 ## Decisions
-- D1 A monorepo reports its sub-projects and resolves NO commands at the root — "unknown" sends the operator to the wrong problem, and a guess sends the loop to the wrong sub-project
-- D2 A resolved command is an inference until something runs it; `verify` executes and reports, and never repairs
-- D3 Verification happens where it is cheap — a red gate found at Prepare costs nothing, the same one found at Review costs a whole run
-- D4 Unattended means unattended: stdin closed, and no language or feature enabled that the operator did not ask for
+- D1 The index is built in the WORKTREE, not shared from the base repo: 1.4s is cheaper than reasoning about whether a stale base-repo graph misleads an implementer working on new code
+- D2 A capability is only claimed where its tools will actually RUN — `hasGraph` derived from the base repo while commands execute in the worktree is the same installed-vs-usable conflation `setup.py` already refuses
+- D3 A retrieval command that returns confident noise is worse than none: an agent cannot tell a bad subgraph from a good one, and it pays for it on every later turn
+- D4 Indexing failure never stops a run — the graph is a HINT; a repo where extraction fails degrades to bounded search exactly as today
 
 ---
 
-- [x] T001 See into monorepos
+- [ ] T001 The graph exists where the agents work
   - Type: implementation
   - Depends on: none
   - Human review: false
-  - Verification: `python3 -m unittest tests.test_monorepo`
+  - Verification: `python3 -m unittest tests.test_graph_index`
   - Acceptance:
-    - when the root has no language manifest but directories one or two levels down do, `resolve()` reports a `subprojects` list, each entry carrying its relative path, detected stack, and its own resolved commands
-    - the root `stack` becomes `monorepo` in that case, never `unknown` — reporting "unknown" for a repo the kit can plainly see into sends the operator to the wrong problem (D1)
-    - root-level `commands` stay EMPTY and `missingCommands` explains that a sub-project must be chosen — the kit must not pick one, even when there is only a single candidate
-    - `flow.config.json` may name one with a `subproject` key; the resolved commands then carry the path so they run from the repo root, and `commandSources` attributes them to that key
-    - the scan is bounded at depth 2 and skips the same directories `_infra_files` skips, so `rein detect` never pays for a recursive walk
-    - a single-project repo produces byte-identical output to today: no `subprojects` key, and `tests/test_detect.py` passes unchanged
-    - a new `tests/test_monorepo.py` covers a `firecrawl`-shaped fixture (`apps/api`, `apps/web`, no root manifest), a single-candidate monorepo, the `subproject` override, and a plain repo
+    - the Isolate step builds the index inside the worktree it just created (`graphify update <wd> --no-cluster`, the no-LLM path) and reports the outcome into `ISOLATE_SCHEMA` as a literal fact, in the same "report it, do not re-derive it" style as the existing fields
+    - graph availability is decided by a pure function extracted from the SHIPPED `loop.js` and EXECUTED by the test — the same way `tests/test_render_policy.py` executes `decideRound`; a source-substring assertion does not count
+    - that function returns unavailable when the worktree has no index, even if `ctx.capabilities` claims `graphify-index` from the base repo — the mismatch that made every graph command in every past run answer "graph file not found" (D2)
+    - indexing that fails, times out, or finds no `graphify` binary is reported and the run CONTINUES with the graph off (D4); a test covers the failure path returning unavailable rather than raising
+    - a test asserts the worktree's `graphify-out/` is never added to git — the index stays machine-local, and a run that committed 2.6MB of regenerable JSON would be a regression
 
-- [x] T002 A resolved command is an inference until something runs it
+- [ ] T002 Teach the commands that answer
   - Type: implementation
   - Depends on: T001
   - Human review: false
-  - Verification: `python3 -m unittest tests.test_verify_commands`
+  - Verification: `python3 -m unittest tests.test_graph_retrieval`
   - Acceptance:
-    - `rein verify [root]` executes each resolved command and reports, per command, whether it is invocable, its exit code, and the first lines of its output — and exits non-zero if any configured command is not invocable
-    - "not invocable" is distinguished from "ran and failed": a missing binary or a shell resolution failure is a SETUP problem, a test suite that runs and reports failures is a CODE problem, and conflating them is precisely the misdirection this task exists to remove
-    - `testOne` is verified with its `{target}` substituted by something guaranteed to exist and be cheap, never by running the whole suite
-    - each command runs with a timeout, and a timeout is reported as its own outcome rather than as a failure or a pass
-    - `verify` never repairs, never installs, and never writes to the repo (D2); a test asserts the working tree is unchanged after a run
-    - `rein doctor` reports the verification state of each command when it is known, without running anything itself
-    - a new `tests/test_verify_commands.py` covers: invocable, missing binary, runs-and-fails, timeout, and the no-write guarantee, using commands built in a temp directory — no dependency on what is installed on the machine
-
-- [x] T003 The loop learns a gate is broken before it pays implementers
-  - Type: implementation
-  - Depends on: T002
-  - Human review: false
-  - Verification: `python3 -m unittest tests.test_gate_precheck`
-  - Acceptance:
-    - the Prepare agent runs `rein verify` and reports each command's invocability into `CONTEXT_SCHEMA`, in the same "report it literally, do not re-derive it" style as the existing fields
-    - a `test` command that is not invocable STOPS the run before Isolate with that fact in the return value — no implementer is paid to work toward a gate that cannot pass (D3)
-    - a command that is invocable but currently failing does NOT stop the run: that is the normal state of a repo mid-change, and stopping for it would make the loop unusable
-    - `lint` or `typecheck` not being invocable is a warning carried to the reviewer, not a stop — neither is required for a verdict
-    - the stop decision is a pure function extracted from the SHIPPED `loop.js` and executed by a new `tests/test_gate_precheck.py`, the same way `tests/test_render_policy.py` executes `decideRound` — a source-substring assertion does not count
-    - that file covers every branch above: test not invocable -> stop, test invocable but failing -> continue, lint/typecheck not invocable -> warning only, all verified -> continue
-    - `node --check plugins/rein/workflows/loop.js` passes, and a test asserts `CONTEXT_SCHEMA` carries the verification field so the Prepare agent can report it
-
-- [x] T004 Unattended setup means unattended
-  - Type: implementation
-  - Depends on: none
-  - Human review: false
-  - Verification: `python3 -m unittest tests.test_setup`
-  - Acceptance:
-    - `rein setup --install` activates serena for the current repo without blocking on stdin — verified by a test that runs it with stdin closed and asserts it terminates
-    - no language, feature, or tool is enabled that the operator did not ask for: the activation takes the same defaults the interactive prompts offer, and a test asserts the generated config does not enable a language the repo's own files do not require (D4)
-    - an already-activated repo is left untouched, and the run reports it as such rather than re-creating anything
-    - a serena binary that is absent is reported as a missing prerequisite, not attempted
-    - failure to activate is reported and the rest of `--install` continues — one tool never takes the others down
+    - the RETRIEVAL block is extracted into a pure function of its inputs (serena on/off, graph on/off) in the SHIPPED `loop.js`, executed by the test with each combination, and the existing behaviour is unchanged for the no-tool case (bounded search) and the serena case
+    - with the graph on, the block teaches `graphify explain "<symbol>"` and `graphify path "<A>" "<B>"` with a one-line statement of what each returns, and does NOT teach `graphify query` with a natural-language question (D3)
+    - the Map scout's prompt is fixed the same way and covered by the same test — it is the single heaviest graph consumer in the loop and it currently asks `query` three ways
+    - a test fails if `graphify query` reappears anywhere in an agent-facing prompt in `loop.js`, so this cannot silently regress
+    - `node --check plugins/rein/workflows/loop.js` passes, and `python3 -m unittest discover -s tests -q` stays green
