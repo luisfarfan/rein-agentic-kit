@@ -29,7 +29,7 @@ for the first person who tries.
 
 ---
 
-- [ ] T001 See into monorepos
+- [x] T001 See into monorepos
   - Type: implementation
   - Depends on: none
   - Human review: false
