@@ -330,6 +330,14 @@ def _capabilities(root: str) -> list[str]:
     import shutil
 
     caps = [c for c in ("graphify", "openspec", "bd", "just", "git", "node", "python3") if shutil.which(c)]
+    # serena installs into ~/.local/bin, which a non-login shell may not have on
+    # PATH -- probing only shutil.which would report it absent when it is there.
+    if shutil.which("serena") or os.access(os.path.expanduser("~/.local/bin/serena"), os.X_OK):
+        caps.append("serena")
+    # Installed is not usable: serena reaches a project through its MCP server,
+    # and .serena/ is what proves this repo was activated for it.
+    if os.path.isdir(os.path.join(root, ".serena")):
+        caps.append("serena-project")
     if os.path.isdir(os.path.join(root, "graphify-out")):
         caps.append("graphify-index")
     return caps

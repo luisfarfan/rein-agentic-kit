@@ -157,5 +157,48 @@ class TestRender(unittest.TestCase):
         self.assertIn("rein setup --install", setup.render(state))
 
 
+class TestSerenaIsACapabilityNotAnAssumption(unittest.TestCase):
+    """Wiring serena into the CTX only helps if the CTX knows it is REACHABLE.
+    'serena is installed' and 'this repo is activated for serena' are different
+    facts -- the same installed-vs-usable split the rest of this module enforces."""
+
+    def setUp(self):
+        sys.path.insert(0, os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "plugins", "rein", "lib"))
+        global detect
+        import detect
+
+    def test_serena_project_requires_the_activation_dir_not_just_the_binary(self):
+        with Tree({"pyproject.toml": ""}) as root:
+            caps = detect.resolve(root)["capabilities"]
+        # The binary may or may not be on this machine, but a repo with no
+        # .serena/ must NEVER claim serena-project.
+        self.assertNotIn("serena-project", caps)
+
+    def test_an_activated_repo_reports_serena_project(self):
+        with Tree({"pyproject.toml": "", ".serena/project.yml": "name: x\n"}) as root:
+            caps = detect.resolve(root)["capabilities"]
+        self.assertIn("serena-project", caps)
+
+    def test_the_loop_gates_the_symbol_first_block_on_serena_project(self):
+        """Not on 'serena': an installed-but-unactivated serena would teach
+        agents commands that return nothing for this repo."""
+        loop = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                            "plugins", "rein", "workflows", "loop.js")
+        with open(loop, encoding="utf-8") as f:
+            src = f.read()
+        self.assertIn("includes('serena-project')", src)
+        self.assertIn("get_symbols_overview", src)
+
+    def test_no_retrieval_tool_still_yields_the_plain_search_instruction(self):
+        """The degradation path: a bare repo must not be left with an empty
+        retrieval section."""
+        loop = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                            "plugins", "rein", "workflows", "loop.js")
+        with open(loop, encoding="utf-8") as f:
+            src = f.read()
+        self.assertIn("!hasSerena && !hasGraph", src)
+
+
 if __name__ == "__main__":
     unittest.main()

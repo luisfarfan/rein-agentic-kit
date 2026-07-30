@@ -380,13 +380,30 @@ if (DRY_RUN) {
 // ── Shared prompt fragments ─────────────────────────────────────────────────
 
 const hasGraph = (ctx.capabilities || []).includes('graphify-index')
+// Measured on this repo: get_symbols_overview maps a 697-line file in 178 tokens
+// where reading it costs 7,097 — 40x — and find_symbol returns one function body
+// in the single turn a grep-then-read pair would have taken two. Orientation is
+// where the money is: the median agent spends 41 turns before its first edit, and
+// every tool result it accumulates is re-sent on every later turn.
+const hasSerena = (ctx.capabilities || []).includes('serena-project')
 const RETRIEVAL =
   `RETRIEVAL — do not burn context. The real cost is cache_read: every turn re-reads everything ` +
   `accumulated so far, so cost ≈ context-size × turns.\n` +
+  (hasSerena
+    ? `  · SYMBOL-LEVEL FIRST — this project has serena (language-server backed). Before any whole-file read:\n` +
+      `      serena get_symbols_overview <file>   what is in a file, without reading it\n` +
+      `      serena find_symbol <name>            the definition, with include_body for its source\n` +
+      `      serena find_referencing_symbols      every caller, instead of grepping for one\n` +
+      `      serena get_diagnostics_for_file      type errors WITHOUT running a build\n` +
+      `    Read with offset/limit only for what these cannot answer.\n`
+    : '') +
   (hasGraph
-    ? `  · Orient with the graph BEFORE grepping or opening whole files: 'graphify query "<what you need>"' ` +
+    ? `  · Orient with the graph before grepping or opening whole files: 'graphify query "<what you need>"' ` +
       `(a bounded subgraph, far smaller than a raw grep), 'graphify path "<A>" "<B>"', 'graphify explain "<concept>"'.\n`
-    : `  · Locate with bounded search (grep with a concrete path and pattern) before opening files.\n`) +
+    : '') +
+  (!hasSerena && !hasGraph
+    ? `  · Locate with bounded search (grep with a concrete path and pattern) before opening files.\n`
+    : '') +
   `  · Read ONLY the symbols/regions you will touch (Read with offset/limit), NEVER whole files "just in case" — ` +
   `every large file you pull in is RE-READ on every later turn.\n` +
   `  · Keep command output small: filter and scope it (head, -q, concrete paths) instead of dumping everything.\n` +
