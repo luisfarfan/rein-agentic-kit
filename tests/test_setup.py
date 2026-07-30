@@ -492,3 +492,41 @@ class TestGitignoreIsWrittenOnlyOnInstall(unittest.TestCase):
             before = sorted(os.listdir(root))
             setup.probe(root)
             self.assertEqual(sorted(os.listdir(root)), before)
+
+
+class TestAnInstallIsProvenByTheBinaryNotTheExitCode(unittest.TestCase):
+    """Found by trying the branch nobody had run: the "missing" path.
+
+    `openspec` unscoped is a 0.0.0 placeholder on npm with no binaries.
+    Installing it exits 0, so trusting the exit code reported success and
+    left the operator with nothing on PATH -- a false green inside the very
+    table this module uses to refuse false greens.
+    """
+
+    def test_every_install_target_is_a_scoped_or_exact_package_name(self):
+        # The two traps, both real: npm `openspec` is an empty placeholder,
+        # PyPI `serena` is an AMQP client. Bare, ambiguous names are how a
+        # provisioner installs the wrong thing and reports ok.
+        self.assertIn("@fission-ai/openspec", setup.TOOLS["openspec"]["install"])
+        self.assertIn("@colbymchenry/codegraph", setup.TOOLS["codegraph"]["install"])
+        self.assertIn("serena-agent", setup.TOOLS["serena"]["install"])
+
+    def test_an_install_that_leaves_no_binary_is_reported_failed(self):
+        """The general guard, not the one-off name fix: any future rename or
+        yank must surface as a failure, not as a green with nothing on PATH."""
+        original_install = setup.TOOLS["openspec"]["install"]
+        original_probe = setup.TOOLS["openspec"]["probe"]
+        # An install command that succeeds, probed by a binary that will
+        # never exist: exactly the placeholder-package shape.
+        setup.TOOLS["openspec"]["install"] = ["true"]
+        setup.TOOLS["openspec"]["probe"] = ["definitely-not-a-real-binary"]
+        setup.TOOLS["openspec"]["needs"] = []
+        try:
+            report = setup.install(["openspec"])
+        finally:
+            setup.TOOLS["openspec"]["install"] = original_install
+            setup.TOOLS["openspec"]["probe"] = original_probe
+            setup.TOOLS["openspec"]["needs"] = ["npm"]
+        res = report["results"]["openspec"]
+        self.assertFalse(res["ok"], "an install leaving no binary must not report ok")
+        self.assertTrue(any("not on PATH" in s.get("output", "") for s in res["steps"]))

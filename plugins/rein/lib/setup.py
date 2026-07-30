@@ -113,7 +113,12 @@ TOOLS = {
         "why": "Richer plan source than tasks.md: proposal / specs / design "
                "artifacts the loop reads as intent. Optional — tasks-md is the default.",
         "probe": ["openspec"],
-        "install": ["npm", "install", "-g", "openspec"],
+        # The SCOPED name. `openspec` unscoped is a 0.0.0 placeholder on npm
+        # with no description and NO binaries: installing it exits 0, so a
+        # provisioner trusting the exit code reports success and leaves the
+        # operator with nothing on PATH. (Same trap on PyPI, where bare
+        # `serena` is an AMQP client and the tool is `serena-agent`.)
+        "install": ["npm", "install", "-g", "@fission-ai/openspec"],
         "needs": ["npm"],
     },
 }
@@ -222,6 +227,20 @@ def install(names: list[str] | None = None, root: str = ".") -> dict:
 
         ok, out = _run(spec["install"])
         steps = [{"cmd": " ".join(spec["install"]), "ok": ok, "output": out}]
+        # An installer's exit code says the REGISTRY accepted the request, not
+        # that the operator got a tool. npm exits 0 for an empty placeholder
+        # package; a renamed or yanked package can do the same. The only proof
+        # is the binary this entry is probed by, so ask for it -- the same
+        # installed-vs-usable split this module draws everywhere else, applied
+        # to the moment of installing.
+        if ok and not _which(spec["probe"][0]):
+            ok = False
+            steps.append({
+                "cmd": f"which {spec['probe'][0]}",
+                "ok": False,
+                "output": f"install reported success but '{spec['probe'][0]}' is still not on PATH — "
+                          f"wrong package name, or the package ships no binary",
+            })
         # Post-steps only run if the install itself worked -- initialising a
         # package that is not there produces a confusing error, not a fix.
         if ok:
