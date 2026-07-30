@@ -248,9 +248,12 @@ def cmd_setup(argv: list[str]) -> int:
     if "--install" not in argv:
         return 0 if not state["missing"] else 1
 
-    if not state["missing"]:
-        return 0
-    print(f"\ninstalling: {', '.join(state['missing'])}\n")
+    # Even with nothing "missing" there may still be work: a repo can carry
+    # every binary and still not be activated for serena (D4/T004) -- so
+    # --install always runs, it just has less to do when truly nothing
+    # needs it.
+    if state["missing"]:
+        print(f"\ninstalling: {', '.join(state['missing'])}\n")
     report = _setup.install(root=root)
     failed = False
     for name, res in report["results"].items():
