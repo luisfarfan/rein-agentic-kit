@@ -6,6 +6,7 @@ network. Covers: a server that comes up, a command that exits immediately
 terminate() really kills the whole process group (no listener survives).
 """
 
+import json
 import os
 import socket
 import subprocess
@@ -13,6 +14,7 @@ import sys
 import tempfile
 import time
 import unittest
+import warnings
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 REIN_BIN = os.path.join(REPO_ROOT, "plugins", "rein", "bin", "rein")
@@ -20,6 +22,44 @@ REIN_BIN = os.path.join(REPO_ROOT, "plugins", "rein", "bin", "rein")
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "plugins", "rein", "lib"))
 
 import serve  # noqa: E402
+
+_warn_ctx = None
+
+
+def setUpModule():
+    # serve.start() deliberately returns without retaining its Popen object:
+    # the server process must outlive the launching call for a cross-process
+    # --start/--stop split to work at all (see
+    # TestServeProbeCliStartStopSurvivesLauncherExit). Once that Popen is
+    # garbage-collected, its __del__ fires a ResourceWarning ("subprocess N
+    # is still running") -- an expected consequence of the design this
+    # module exercises, not a leak. Scope the filter to this module and this
+    # warning class only, so it can never mask a real ResourceWarning (or
+    # any other warning class) elsewhere.
+    #
+    # This has to run as setUpModule (not a bare module-level statement) --
+    # unittest's own TextTestRunner wraps the whole run in
+    # `warnings.catch_warnings()` and calls `warnings.simplefilter('default')`
+    # by default, which would blow away a filter registered at import time,
+    # before that context even starts.
+    #
+    # `warnings.filterwarnings` mutates the process-global `warnings.filters`
+    # list, and unittest only restores it at the end of the WHOLE run, not
+    # per module -- so without an explicit save/restore here, this filter
+    # would leak into every module that runs after this one. Open our own
+    # `catch_warnings()` context around the module (entered here, exited in
+    # tearDownModule) so the filter is genuinely undone when this module's
+    # tests finish, not just when the whole suite finishes.
+    global _warn_ctx
+    _warn_ctx = warnings.catch_warnings()
+    _warn_ctx.__enter__()
+    warnings.filterwarnings(
+        "ignore", message=r"subprocess \d+ is still running", category=ResourceWarning
+    )
+
+
+def tearDownModule():
+    _warn_ctx.__exit__(None, None, None)
 
 
 def _free_port() -> int:
@@ -302,6 +342,130 @@ class TestNoTempFileLeak(unittest.TestCase):
             stopped, err = serve.stop(pidfile)
             self.assertTrue(stopped, err)
             self.assertFalse(_listening(port), "legacy pidfile must still kill the group")
+
+
+class TestServeStopReportsActualFailure(unittest.TestCase):
+    """T001: stop() must report the failure it actually hit, not fall through
+    to a generic int() parse error for every malformed pidfile shape."""
+
+    def test_malformed_json_pidfile_reports_json_error_not_int_error(self):
+        with tempfile.TemporaryDirectory() as d:
+            pidfile = os.path.join(d, "broken.pid")
+            with open(pidfile, "w") as f:
+                f.write("{not json")
+            stopped, err = serve.stop(pidfile)
+            self.assertFalse(stopped)
+            self.assertIn("as JSON", err)
+            self.assertNotIn("invalid literal for int", err)
+
+    def test_valid_json_with_non_integer_pgid_reports_pgid_shape(self):
+        with tempfile.TemporaryDirectory() as d:
+            pidfile = os.path.join(d, "badpgid.pid")
+            with open(pidfile, "w") as f:
+                f.write(json.dumps({"pgid": "not-a-number"}))
+            stopped, err = serve.stop(pidfile)
+            self.assertFalse(stopped)
+            self.assertIn("invalid pgid", err)
+            self.assertIn("not-a-number", err)
+            self.assertNotIn("as JSON", err)
+
+    def test_valid_json_non_dict_reports_wrong_shape_not_int_or_json_error(self):
+        # finding 2: `null` is valid JSON, but the wrong shape -- it must get
+        # its own distinguishing message, not the "invalid literal for int()"
+        # text that misdirects the operator toward the wrong problem, and not
+        # the JSON-parse-error message either (parsing succeeded).
+        with tempfile.TemporaryDirectory() as d:
+            pidfile = os.path.join(d, "nullshape.pid")
+            with open(pidfile, "w") as f:
+                f.write("null")
+            stopped, err = serve.stop(pidfile)
+            self.assertFalse(stopped)
+            self.assertIn("not a pgid record or a bare pgid", err)
+            self.assertNotIn("invalid literal for int", err)
+            self.assertNotIn("as JSON", err)
+
+    def test_valid_json_list_reports_wrong_shape_not_int_or_json_error(self):
+        with tempfile.TemporaryDirectory() as d:
+            pidfile = os.path.join(d, "listshape.pid")
+            with open(pidfile, "w") as f:
+                f.write("[]")
+            stopped, err = serve.stop(pidfile)
+            self.assertFalse(stopped)
+            self.assertIn("not a pgid record or a bare pgid", err)
+            self.assertNotIn("invalid literal for int", err)
+            self.assertNotIn("as JSON", err)
+
+    def test_missing_pgid_field_reports_missing_not_invalid(self):
+        # finding 3: a record with no 'pgid' key at all must not be reported
+        # as an "invalid pgid None" -- that implies the key exists and holds
+        # null, when really the key is simply absent.
+        with tempfile.TemporaryDirectory() as d:
+            pidfile = os.path.join(d, "nopgid.pid")
+            with open(pidfile, "w") as f:
+                f.write(json.dumps({"stderrPath": "/x"}))
+            stopped, err = serve.stop(pidfile)
+            self.assertFalse(stopped)
+            self.assertIn("missing its 'pgid' field", err)
+            self.assertNotIn("invalid pgid", err)
+            self.assertNotIn("None", err)
+
+
+class TestResourceWarningFilterStaysScoped(unittest.TestCase):
+    """T002: the filter installed in setUpModule() targets exactly the
+    Popen-still-running ResourceWarning it names in its comment -- it must
+    not become a blanket suppression that could hide a real one."""
+
+    def test_other_warning_classes_still_surface(self):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.warn("this must still surface", UserWarning)
+            self.assertTrue(
+                any(isinstance(w.message, UserWarning) for w in caught),
+                "a UserWarning must not be silenced by the ResourceWarning filter",
+            )
+
+    def test_differently_worded_resourcewarning_still_surfaces(self):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.warn("totally unrelated resource leak", ResourceWarning)
+            self.assertTrue(
+                any(isinstance(w.message, ResourceWarning) for w in caught),
+                "a ResourceWarning that isn't the known subprocess-still-running "
+                "one must not be silenced",
+            )
+
+    def test_teardown_module_restores_warnings_filters(self):
+        """The filter must not leak past this module: run setUpModule() then
+        tearDownModule() in a clean subprocess and confirm warnings.filters
+        ends up exactly as it started -- not just "some filter got removed".
+
+        This runs out-of-process (rather than calling setUpModule()/
+        tearDownModule() again on top of this already-running suite) so the
+        round-trip is verified against a pristine `warnings.filters`, with no
+        risk of disturbing the filter this module's own tests still rely on.
+        """
+        script = (
+            "import sys, warnings, json\n"
+            f"sys.path.insert(0, {json.dumps(os.path.dirname(os.path.abspath(__file__)))})\n"
+            "pre = list(warnings.filters)\n"
+            "import test_serve_probe as m\n"
+            "m.setUpModule()\n"
+            "m.tearDownModule()\n"
+            "post = list(warnings.filters)\n"
+            "print(json.dumps(pre == post))\n"
+        )
+        with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as f:
+            f.write(script)
+            script_path = f.name
+        try:
+            result = subprocess.run(
+                [sys.executable, script_path], capture_output=True, text=True, timeout=30
+            )
+        finally:
+            os.remove(script_path)
+        self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
+        self.assertEqual(
+            result.stdout.strip(), "true",
+            msg=f"warnings.filters was not restored: {result.stdout!r} {result.stderr!r}",
+        )
 
 
 if __name__ == "__main__":
