@@ -175,6 +175,77 @@ def _from_task_runner(runner: str, targets: list[str]) -> dict[str, str]:
     return found
 
 
+# ---------------------------------------------------------------- monorepo --
+
+_SUBPROJECT_MARKERS = ("pyproject.toml", "setup.py", "requirements.txt", "Cargo.toml", "go.mod", "package.json")
+
+
+def _find_subprojects(root: str) -> list[str]:
+    """Directories one or two levels down that carry their own language
+    manifest -- only consulted when `root` itself has none.
+
+    Bounded and dir-skipped the same way `_infra_files` is, and for the same
+    reason: an unbounded walk would make every `rein detect` pay for a
+    recursive scan of the whole tree. A directory that matches is not
+    descended into further -- its own subdirectories belong to THAT
+    sub-project, not to this scan.
+    """
+
+    found: list[str] = []
+
+    def scan(rel: str, depth: int):
+        path = os.path.join(root, rel)
+        if _exists(path, *_SUBPROJECT_MARKERS):
+            found.append(rel)
+            return
+        if depth <= 0:
+            return
+        try:
+            entries = sorted(os.listdir(path))
+        except OSError:
+            return
+        for entry in entries:
+            if entry in _INFRA_SKIP_DIRS or entry.startswith("."):
+                continue
+            child = os.path.join(path, entry)
+            if os.path.isdir(child):
+                scan(f"{rel}/{entry}" if rel else entry, depth - 1)
+
+    try:
+        top_entries = sorted(os.listdir(root))
+    except OSError:
+        return []
+    for entry in top_entries:
+        if entry in _INFRA_SKIP_DIRS or entry.startswith("."):
+            continue
+        child = os.path.join(root, entry)
+        if os.path.isdir(child):
+            scan(entry, _INFRA_MAX_DEPTH - 1)
+
+    return found
+
+
+def _resolve_subproject(root: str, rel: str) -> dict:
+    """A sub-project's own stack + commands, resolved the same way a
+    single-project repo is -- without the root-only extras (capabilities,
+    verify policy, worktree, ...) that make no sense per sub-project and
+    would just repeat themselves N times in `subprojects`.
+    """
+    sub_root = os.path.join(root, rel)
+    auto = _autodetect(sub_root)
+    runner, targets = _task_runner(sub_root)
+    runner_cmds = _from_task_runner(runner, targets) if runner else {}
+    cfg = _read_json(os.path.join(sub_root, CONFIG_NAME))
+    cfg_cmds = cfg.get("commands") or {}
+    commands = {**auto.get("commands", {}), **runner_cmds, **cfg_cmds}
+    return {
+        "path": rel,
+        "stack": cfg.get("stack") or auto["stack"],
+        "packageManager": auto.get("packageManager", ""),
+        "commands": commands,
+    }
+
+
 # --------------------------------------------------------------- autodetect --
 
 
@@ -647,14 +718,45 @@ def resolve(root: str = ".") -> dict:
     cfg = _read_json(os.path.join(root, CONFIG_NAME))
     cfg_cmds = cfg.get("commands") or {}
 
-    # Precedence: config > task runner > autodetect.
-    commands = {**auto.get("commands", {}), **runner_cmds, **cfg_cmds}
+    # A monorepo is a root with no language manifest of its own but real
+    # projects one or two levels down (see the "monorepo" section above).
+    # "unknown" would send the operator to the wrong problem (D1); reporting
+    # what is actually there does not.
+    subprojects: list[dict] = []
+    subproject_choice = ""
+    stack_override = ""
+    auto_cmds = auto.get("commands", {})
+    if auto["stack"] == "unknown":
+        found = _find_subprojects(root)
+        if found:
+            subprojects = [_resolve_subproject(root, rel) for rel in found]
+            stack_override = "monorepo"
+            subproject_choice = str(cfg.get("subproject") or "").strip()
+            if subproject_choice:
+                chosen = next((s for s in subprojects if s["path"] == subproject_choice), None)
+                if chosen is None:
+                    chosen = _resolve_subproject(root, subproject_choice)
+                # Carry the path so the command runs from the repo root, not
+                # from inside the sub-project.
+                auto_cmds = {slot: f"cd {subproject_choice} && {cmd}" for slot, cmd in chosen["commands"].items()}
+            else:
+                # The kit must not pick a sub-project, even a single
+                # candidate (D1) -- no commands resolve at the root until
+                # told which one.
+                auto_cmds = {}
+
+    # Precedence: config > task runner > autodetect (a chosen sub-project
+    # stands in for "autodetect" here -- it IS the root's resolution once a
+    # sub-project has been named).
+    commands = {**auto_cmds, **runner_cmds, **cfg_cmds}
     sources = {}
     for slot in commands:
         if slot in cfg_cmds:
             sources[slot] = "flow.config.json"
         elif slot in runner_cmds:
             sources[slot] = runner or "task-runner"
+        elif subproject_choice:
+            sources[slot] = "subproject"
         else:
             sources[slot] = "autodetect"
 
@@ -669,6 +771,10 @@ def resolve(root: str = ".") -> dict:
     verify_warnings = serve_warnings + verify_warnings
 
     missing_commands = [s for s in ("test", "testOne", "lint", "typecheck") if not _is_set(commands, s)]
+    if subprojects and not subproject_choice:
+        missing_commands.append(
+            'choose a sub-project: set "subproject" in flow.config.json to one of subprojects[].path'
+        )
     if serve is not None and not serve["command"]:
         missing_commands.append("serve")
 
@@ -677,7 +783,7 @@ def resolve(root: str = ".") -> dict:
         "root": root,
         "configFound": bool(cfg),
         "configPath": os.path.join(root, CONFIG_NAME) if cfg else "",
-        "stack": cfg.get("stack") or auto["stack"],
+        "stack": cfg.get("stack") or stack_override or auto["stack"],
         "subtypes": subtypes,
         "packageManager": auto.get("packageManager", ""),
         "taskRunner": runner,
@@ -692,6 +798,8 @@ def resolve(root: str = ".") -> dict:
         "capabilities": _capabilities(root),
         "verifyPolicy": verify_policy,
     }
+    if subprojects:
+        result["subprojects"] = subprojects
     if serve is not None:
         result["serve"] = serve
     if verify_warnings:
