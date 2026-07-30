@@ -62,8 +62,11 @@ TOOLS = {
                "an index exists.",
         "probe": ["graphify"],
         "install": None,  # distributed as a skill, not a package this can fetch
-        "manual": "install the graphify skill, then build this repo's index once "
-                  "(it is an agent-driven pass, not a CLI command)",
+        "manual": "install the graphify skill, then run "
+                  "`graphify update . --no-cluster` in this repo once -- no LLM, "
+                  "no API key, ~1-2s. Without an index every graph command "
+                  "answers 'graph file not found', which is how this capability "
+                  "stayed inert across seven runs.",
         "index": "graphify-out/graph.json",
         "gitignore": "graphify-out/",
     },

@@ -864,9 +864,11 @@ function buildIsolatePrompt(root, base, wd, branch, rein) {
     `5. Build the code graph index IN THE WORKTREE (no LLM, ~1-2s). First make its output path ` +
     `worktree-locally excluded so it can never end up staged from here, even in a repo whose own ` +
     `.gitignore lacks the entry: run 'f="$(git -C ${wd} rev-parse --git-path info/exclude)"; ` +
-    `grep -qxF "graphify-out/" "$f" 2>/dev/null || printf "graphify-out/\\n" >> "$f"' — info/exclude is ` +
-    `per-worktree state that is itself never committed, so this needs no change to ${root}'s tracked ` +
-    `files. This step is non-blocking too (D4): if it fails, continue anyway. Then run ` +
+    `grep -qxF "graphify-out/" "$f" 2>/dev/null || printf "\\ngraphify-out/\\n" >> "$f"' — info/exclude is ` +
+    `the repository's SHARED exclude file (git keeps 'info' in its common directory, so a worktree's ` +
+    `rev-parse resolves to ${root}'s own .git/info/exclude, and the entry outlives 'git worktree remove'). ` +
+    `It is never committed, so no tracked file changes; the grep makes the one entry idempotent and it ` +
+    `covers this worktree and every other. This step is non-blocking too (D4): if it fails, continue anyway. Then run ` +
     `'cd ${wd} && graphify update . --no-cluster' ` +
     `(cwd MUST be ${wd} itself — 'graphify update ${wd}' from a different cwd splits the index, writing ` +
     `manifest.json into the WRONG directory and corrupting that directory's own incrementality). ` +

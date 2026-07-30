@@ -132,15 +132,21 @@ class GraphIndexPolicyTestCase(unittest.TestCase):
 
     def test_isolate_prompt_excludes_graphify_out_worktree_locally(self):
         # round-2 finding: every worktree the loop cuts, in every repo, must
-        # have graphify-out/ excluded from ITS OWN git state -- not rely on
-        # the target repo's tracked .gitignore (which this change does not
-        # control and does not modify). info/exclude is per-worktree and is
-        # itself never committed, so no target-repo file needs to change.
+        # have graphify-out/ excluded from git, without relying on the target
+        # repo's tracked .gitignore (which this change does not control and
+        # does not modify). info/exclude is NOT per-worktree -- git keeps
+        # `info` in its common directory, so a worktree's rev-parse resolves
+        # to the base repo's own .git/info/exclude and the entry outlives
+        # `git worktree remove`. That file is never committed, so no tracked
+        # file changes; the grep keeps the single shared entry idempotent.
         out = self._run([{"worktreeMode": True, "capabilities": [], "isolate": None}])
         prompt = out["prompt"]
         self.assertIn("git -C /base-wt-x rev-parse --git-path info/exclude", prompt)
         self.assertIn('grep -qxF "graphify-out/" "$f"', prompt)
-        self.assertIn('printf "graphify-out/\\n" >> "$f"', prompt)
+        # leading \n: an exclude file with no trailing newline would otherwise
+        # get the entry concatenated onto its last line, and grep -qxF would
+        # then never match it again -- appending once per run, forever.
+        self.assertIn('printf "\\ngraphify-out/\\n" >> "$f"', prompt)
         # must happen before the index build, and must itself be non-blocking
         exclude_pos = prompt.index("rev-parse --git-path info/exclude")
         build_pos = prompt.index("cd /base-wt-x && graphify update . --no-cluster")
