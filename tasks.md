@@ -61,14 +61,15 @@ for the first person who tries.
   - Type: implementation
   - Depends on: T002
   - Human review: false
-  - Verification: `python3 -m unittest tests.test_verify_commands`
+  - Verification: `python3 -m unittest tests.test_gate_precheck`
   - Acceptance:
     - the Prepare agent runs `rein verify` and reports each command's invocability into `CONTEXT_SCHEMA`, in the same "report it literally, do not re-derive it" style as the existing fields
     - a `test` command that is not invocable STOPS the run before Isolate with that fact in the return value — no implementer is paid to work toward a gate that cannot pass (D3)
     - a command that is invocable but currently failing does NOT stop the run: that is the normal state of a repo mid-change, and stopping for it would make the loop unusable
     - `lint` or `typecheck` not being invocable is a warning carried to the reviewer, not a stop — neither is required for a verdict
-    - the stop decision is a pure function extracted and executed by tests, like `decideRound` and `decidePlanCheck`
-    - `node --check plugins/rein/workflows/loop.js` passes, and a repo whose commands all verify produces a Prepare phase indistinguishable from today
+    - the stop decision is a pure function extracted from the SHIPPED `loop.js` and executed by a new `tests/test_gate_precheck.py`, the same way `tests/test_render_policy.py` executes `decideRound` — a source-substring assertion does not count
+    - that file covers every branch above: test not invocable -> stop, test invocable but failing -> continue, lint/typecheck not invocable -> warning only, all verified -> continue
+    - `node --check plugins/rein/workflows/loop.js` passes, and a test asserts `CONTEXT_SCHEMA` carries the verification field so the Prepare agent can report it
 
 - [ ] T004 Unattended setup means unattended
   - Type: implementation
