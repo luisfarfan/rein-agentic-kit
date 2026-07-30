@@ -43,7 +43,7 @@ for the first person who tries.
     - a single-project repo produces byte-identical output to today: no `subprojects` key, and `tests/test_detect.py` passes unchanged
     - a new `tests/test_monorepo.py` covers a `firecrawl`-shaped fixture (`apps/api`, `apps/web`, no root manifest), a single-candidate monorepo, the `subproject` override, and a plain repo
 
-- [ ] T002 A resolved command is an inference until something runs it
+- [x] T002 A resolved command is an inference until something runs it
   - Type: implementation
   - Depends on: T001
   - Human review: false
