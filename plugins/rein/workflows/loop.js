@@ -1074,19 +1074,26 @@ const hasSerena = (ctx.capabilities || []).includes('serena-project')
 // it returns, NEVER 'codegraph explore' (D4: at 3,701 tokens on this repo it is
 // a whole-file Read in disguise, and this block's entire point is bounded
 // orientation).
-function buildRetrievalBlock(hasSerena, hasGraph) {
+function buildRetrievalBlock(hasSerena, hasGraph, wd) {
   return (
     `RETRIEVAL — do not burn context. The real cost is cache_read: every turn re-reads everything ` +
     `accumulated so far, so cost ≈ context-size × turns.\n` +
     (hasGraph
-      ? `  · SYMBOL-LEVEL FIRST — this project has codegraph. Before any whole-file read:\n` +
-        `      codegraph query "<concept>"   symbols matching a concept, with file:line\n` +
-        `      codegraph callers <symbol>    every function/method that calls it\n` +
-        `      codegraph callees <symbol>    every function/method it calls\n` +
-        `      codegraph node <symbol>       its source plus its callers, instead of reading the file\n` +
-        `      codegraph impact <symbol>     what breaks if you change it — run before an edit\n` +
-        `      codegraph sync .              refresh after your own edits — the four above answer from ` +
-        `the last sync, not from disk (the index was built once at run start)\n` +
+      ? // EVERY command carries -p ${wd}. codegraph resolves its index from cwd
+        // ALONE -- no parent-directory walk -- and your shell starts at the base
+        // repo and resets between calls. Without -p, a call made from the base
+        // repo does not error: it answers from the BASE index, silently, with
+        // the wrong branch's content. A confident wrong subgraph is the one
+        // thing this block exists to prevent.
+        `  · SYMBOL-LEVEL FIRST — this project has codegraph. Before any whole-file read ` +
+        `(always with -p ${wd}, or the answer comes from the wrong index):\n` +
+        `      codegraph query "<concept>" -p ${wd}   symbols matching a concept, with file:line\n` +
+        `      codegraph callers <symbol> -p ${wd}    every function/method that calls it\n` +
+        `      codegraph callees <symbol> -p ${wd}    every function/method it calls\n` +
+        `      codegraph node <symbol> -p ${wd}       its source plus its callers, instead of reading the file\n` +
+        `      codegraph impact <symbol> -p ${wd}     what breaks if you change it — run before an edit\n` +
+        `      codegraph sync ${wd}                   refresh after your own edits — the five above answer ` +
+        `from the last sync, not from disk (the index was built once at run start)\n` +
         `    Read with offset/limit only for what these cannot answer.\n`
       : '') +
     // serena keeps only what codegraph does NOT do when the graph is present:
@@ -1122,7 +1129,7 @@ function buildRetrievalBlock(hasSerena, hasGraph) {
     `  · Aim to finish in FEW turns with precise reads, not to explore incrementally.`
   )
 }
-const RETRIEVAL = buildRetrievalBlock(hasSerena, hasGraph)
+const RETRIEVAL = buildRetrievalBlock(hasSerena, hasGraph, WD)
 
 const artifactList = (ctx.artifacts || []).length
   ? `Read these first — they are the source of truth for intent:\n` + ctx.artifacts.map((a) => `  - ${a}\n`).join('')
@@ -1165,8 +1172,10 @@ function buildScoutPrompt(wd, planPath, artifactList, taskIds) {
     `exploration = fewer turns.\n` +
     (artifactList || `Read ${planPath} ONCE.\n`) +
     `For EACH of [${taskIds.join(', ')}] use THE GRAPH, not grep or whole-file reads: ` +
-    `'codegraph query "<concept>"' returns symbols matching a concept, with file:line; ` +
-    `'codegraph node <symbol>' returns its source plus its callers, instead of reading the file.\n` +
+    `'codegraph query "<concept>" -p ${wd}' returns symbols matching a concept, with file:line; ` +
+    `'codegraph node <symbol> -p ${wd}' returns its source plus its callers, instead of reading the file. ` +
+    `The -p is NOT optional: codegraph resolves its index from cwd alone, so without it you get the base ` +
+    `repo's index answering for the wrong branch, with no error.\n` +
     `Return per task: 'touchpoints' (a SHORT list of "path:symbol" — a hint, not a dump) and 'orientation' ` +
     `(one line: where to start). If unsure about a task, return empty touchpoints and say so — it is a ` +
     `STARTING POINT, not a contract.`

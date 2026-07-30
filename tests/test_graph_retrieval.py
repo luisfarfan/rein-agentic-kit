@@ -32,15 +32,15 @@ function extract(name, params) {
   return m[1];
 }
 const buildRetrievalBlock = new Function(
-  'hasSerena', 'hasGraph',
-  extract('buildRetrievalBlock', 'hasSerena, hasGraph')
+  'hasSerena', 'hasGraph', 'wd',
+  extract('buildRetrievalBlock', 'hasSerena, hasGraph, wd')
 );
 const buildScoutPrompt = new Function(
   'wd', 'planPath', 'artifactList', 'taskIds',
   extract('buildScoutPrompt', 'wd, planPath, artifactList, taskIds')
 );
 const cases = JSON.parse(casesJson);
-const retrieval = cases.retrieval.map((c) => buildRetrievalBlock(c.hasSerena, c.hasGraph));
+const retrieval = cases.retrieval.map((c) => buildRetrievalBlock(c.hasSerena, c.hasGraph, '/worktree-path'));
 const scout = buildScoutPrompt('/worktree-path', '/root/tasks.md', '', ['T001', 'T002']);
 process.stdout.write(JSON.stringify({ retrieval, scout }));
 """
@@ -118,15 +118,55 @@ class GraphRetrievalPromptTestCase(unittest.TestCase):
     # ── the index is a run-start snapshot, not auto-synced (codegraph has no
     # daemon and does not watch disk) -- every graph-on block must teach the
     # one command that refreshes it after the agent's own edits, and say so
-    # plainly, so the four read-only commands are never mistaken for reading
+    # plainly, so the five read-only commands are never mistaken for reading
     # live disk state.
 
     def test_graph_cases_teach_sync_as_the_refresh_after_edits(self):
         out = self._run()
         for block in (out["retrieval"][self.GRAPH_ONLY], out["retrieval"][self.BOTH]):
-            self.assertIn("codegraph sync .", block)
+            self.assertIn("codegraph sync /worktree-path", block)
             self.assertIn("refresh after your own edits", block)
             self.assertIn("last sync, not from disk", block)
+            # the count must name the set it means: query, callers, callees,
+            # node, impact. "the four above" left the agent guessing which one
+            # reads live disk -- and the natural wrong guess was `query`.
+            self.assertIn("the five above", block)
+
+    def test_every_taught_graph_command_is_anchored_to_the_worktree(self):
+        """The round-3 BLOCKING finding.
+
+        codegraph resolves its index from cwd ALONE -- there is no parent
+        walk. An agent's shell starts at the base repo and resets between
+        calls, and a call made from there does NOT error: it answers from the
+        BASE index, silently, with the wrong branch's content. Every taught
+        command must therefore carry the worktree path, or the block hands
+        agents a confidently wrong subgraph -- the one failure it exists to
+        prevent.
+        """
+        import re
+        # Every actual INVOCATION, not every line that says the word: the
+        # block also explains in prose why the anchor is there.
+        invocation = re.compile(r"codegraph (query|callers|callees|node|impact|sync)\b([^\n']*)")
+        out = self._run()
+        for name, text in (
+            ("retrieval/graph-only", out["retrieval"][self.GRAPH_ONLY]),
+            ("retrieval/both", out["retrieval"][self.BOTH]),
+            ("scout", out["scout"]),
+        ):
+            found = invocation.findall(text)
+            self.assertTrue(found, f"{name} teaches no codegraph command at all")
+            for sub, rest in found:
+                self.assertIn(
+                    "/worktree-path", rest,
+                    f"{name}: unanchored 'codegraph {sub}' answers from the BASE index — {rest.strip()!r}",
+                )
+
+    def test_the_worktree_path_reaches_the_block_from_its_real_call_site(self):
+        """Threading `wd` through is worthless if the shipped call site does
+        not pass it -- the defect would survive with every assertion green."""
+        with open(LOOP_JS, encoding="utf-8") as fh:
+            src = fh.read()
+        self.assertIn("buildRetrievalBlock(hasSerena, hasGraph, WD)", src)
 
     def test_no_tool_and_serena_only_cases_never_mention_sync(self):
         out = self._run()
