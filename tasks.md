@@ -17,7 +17,7 @@ is the cheapest way to find out — and if it does not move, that is the answer.
 
 ---
 
-- [ ] T001 `serve.stop` must report the failure it actually hit
+- [x] T001 `serve.stop` must report the failure it actually hit
   - Type: implementation
   - Depends on: none
   - Human review: false
