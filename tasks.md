@@ -46,7 +46,7 @@ Measured on `plugins/rein/lib/verify.py`:
 
 ---
 
-- [ ] T001 The graph exists where the agents work
+- [x] T001 The graph exists where the agents work
   - Type: implementation
   - Depends on: none
   - Human review: false
