@@ -366,30 +366,35 @@ def stop(pidfile: str) -> tuple[bool, str]:
     # still tear down rather than leaving a group alive on an upgrade.
     # These are distinct failure modes and must not collapse into one
     # generic "invalid literal for int()" message: malformed JSON, a valid
-    # JSON record with a bad pgid shape, and a genuinely unparseable pidfile
-    # each point the operator somewhere different.
-    json_error: Exception | None = None
+    # JSON record missing/misshaping pgid, a valid-JSON-but-wrong-shape
+    # payload (e.g. null, a list, a bare string), and an I/O failure each
+    # point the operator somewhere different.
     try:
         record = json.loads(raw)
     except json.JSONDecodeError as e:
-        record = None
-        json_error = e
+        return False, f"could not parse pidfile {pidfile!r} as JSON: {e}"
 
     if isinstance(record, dict):
+        if "pgid" not in record:
+            return False, f"pidfile {pidfile!r} is missing its 'pgid' field"
         try:
             pgid = int(record["pgid"])
-        except (ValueError, TypeError, KeyError) as e:
+        except (ValueError, TypeError) as e:
             return False, (
-                f"pidfile {pidfile!r} has an invalid pgid {record.get('pgid')!r}: {e}"
+                f"pidfile {pidfile!r} has an invalid pgid {record['pgid']!r}: {e}"
             )
         stderr_path = str(record.get("stderrPath") or "")
     else:
+        # Not a dict: either the older bare-pgid-integer shape (valid JSON,
+        # an int) or a wrong-shape payload (null, a list, a quoted string, a
+        # float, a bool). Try the legacy bare-integer read; anything else is
+        # its own distinct failure, never the generic int() parse message.
         try:
             pgid = int(raw)
-        except ValueError as e:
-            if json_error is not None:
-                return False, f"could not parse pidfile {pidfile!r} as JSON: {json_error}"
-            return False, f"could not read pidfile {pidfile!r}: {e}"
+        except ValueError:
+            return False, (
+                f"pidfile {pidfile!r} is not a pgid record or a bare pgid: got {raw!r}"
+            )
     # The pidfile lives in a shared temp dir under a predictable name, so its
     # contents are not fully trusted: pgid 0 signals the CALLER's own group
     # (the agent's bash, and the loop with it), and an arbitrary stderrPath
