@@ -71,7 +71,7 @@ for the first person who tries.
     - that file covers every branch above: test not invocable -> stop, test invocable but failing -> continue, lint/typecheck not invocable -> warning only, all verified -> continue
     - `node --check plugins/rein/workflows/loop.js` passes, and a test asserts `CONTEXT_SCHEMA` carries the verification field so the Prepare agent can report it
 
-- [ ] T004 Unattended setup means unattended
+- [x] T004 Unattended setup means unattended
   - Type: implementation
   - Depends on: none
   - Human review: false
