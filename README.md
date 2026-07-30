@@ -193,8 +193,15 @@ autodetection. A project that already declares how it is built is never second-g
 | 🎨 **Frontend** *(Next, Vite, Astro, SvelteKit, Nuxt, Remix)* | dependencies | **rendered verification** — unit tests alone don't catch "the tests pass but the UI is broken" |
 | ☁️ Serverless / infra | `serverless.yml`, `sst.config.ts`, `*.tf` | `plan` / `validate` — **never deploy** |
 
-Optional tools (`graphify`, `openspec`, `serena`) are **probed, never required**: if one is
-absent the flow degrades, it does not break.
+Optional tools (`serena`, `graphify`, `openspec`) are **probed, never required**: if one is
+absent the flow degrades, it does not break. `rein setup` reports what is missing and
+installs it on request — and distinguishes *installed* from *usable*, because graphify
+without an index and a just-registered MCP server are both present and inert.
+
+> **No retrieval speedup is claimed.** `serena get_symbols_overview` maps a 697-line file
+> in 178 tokens where reading it costs 7,097 — 40× per call, measured. Whether that reduces
+> the turns an agent spends orienting is **unmeasured**, and the one control available points
+> the other way. See [docs/decisions.md](docs/decisions.md) D2.
 
 ## 📊 Measure
 
