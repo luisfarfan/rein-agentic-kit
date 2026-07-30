@@ -417,7 +417,7 @@ def _detect_plan_source(root: str) -> str:
 def _capabilities(root: str) -> list[str]:
     import shutil
 
-    caps = [c for c in ("graphify", "openspec", "bd", "just", "git", "node", "python3") if shutil.which(c)]
+    caps = [c for c in ("graphify", "openspec", "codegraph", "bd", "just", "git", "node", "python3") if shutil.which(c)]
     # serena installs into ~/.local/bin, which a non-login shell may not have on
     # PATH -- probing only shutil.which would report it absent when it is there.
     if shutil.which("serena") or os.access(os.path.expanduser("~/.local/bin/serena"), os.X_OK):

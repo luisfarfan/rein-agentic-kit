@@ -97,6 +97,25 @@ class TestInstalledIsNotUsable(unittest.TestCase):
         self.assertTrue(entry["indexed"])
         self.assertNotIn("inert", entry)
 
+    def test_codegraph_without_an_index_is_reported_inert(self):
+        with Tree({"README.md": "x"}) as root:
+            entry = setup.probe(root)["tools"]["codegraph"]
+        if not entry["present"]:
+            self.skipTest("codegraph not installed on this machine")
+        self.assertFalse(entry["indexed"])
+        self.assertIn("inert", entry)
+        self.assertIn("no index", entry["inert"])
+        # its own one-command fix, named -- not just the generic message
+        self.assertIn("codegraph init", entry["inert"])
+
+    def test_codegraph_with_an_index_is_not_inert(self):
+        with Tree({".codegraph/marker": "x"}) as root:
+            entry = setup.probe(root)["tools"]["codegraph"]
+        if not entry["present"]:
+            self.skipTest("codegraph not installed on this machine")
+        self.assertTrue(entry["indexed"])
+        self.assertNotIn("inert", entry)
+
     def test_the_inert_list_is_separate_from_the_missing_list(self):
         """Present-but-useless and absent are different problems with different
         fixes; collapsing them would send the operator to the wrong one."""
@@ -135,6 +154,11 @@ class TestInstallDiscipline(unittest.TestCase):
         self.assertIsNone(setup.TOOLS["graphify"]["install"])
         self.assertTrue(setup.TOOLS["graphify"]["manual"])
 
+    def test_codegraph_is_installed_via_npm_by_name(self):
+        spec = setup.TOOLS["codegraph"]
+        self.assertEqual(spec["install"], ["npm", "i", "-g", "@colbymchenry/codegraph"])
+        self.assertEqual(spec["needs"], ["npm"])
+
     def test_missing_prerequisite_is_named_not_swallowed(self):
         original = setup.TOOLS["openspec"]["needs"]
         setup.TOOLS["openspec"]["needs"] = ["definitely-not-on-path"]
@@ -153,9 +177,10 @@ class TestGitignoreAdvice(unittest.TestCase):
             missing = setup.gitignore_lines(root)
         self.assertIn(".serena/", missing)
         self.assertIn("graphify-out/", missing)
+        self.assertIn(".codegraph/", missing)
 
     def test_already_ignored_entries_are_not_repeated(self):
-        with Tree({".gitignore": ".serena/\ngraphify-out/\n"}) as root:
+        with Tree({".gitignore": ".serena/\ngraphify-out/\n.codegraph/\n"}) as root:
             self.assertEqual(setup.gitignore_lines(root), [])
 
     def test_a_repo_with_no_gitignore_does_not_raise(self):
@@ -278,6 +303,56 @@ class TestActivateSerena(unittest.TestCase):
                 report = setup.install(names=["definitely-not-a-tool"], root=root)
         self.assertFalse(report["results"]["definitely-not-a-tool"]["ok"])
         self.assertFalse(report["results"]["serena-activate"]["ok"])
+
+
+class TestActivateCodegraph(unittest.TestCase):
+    """T002 AC3 (D5): telemetry defaults to ON in codegraph; `--install` must
+    turn it off as part of activation and report that it did."""
+
+    def test_absent_binary_is_reported_as_missing_prerequisite_not_attempted(self):
+        with mock.patch.object(setup, "_which", return_value=""):
+            result = setup.activate_codegraph(".")
+        self.assertFalse(result["ok"])
+        self.assertFalse(result["attempted"])
+        self.assertIn("missing prerequisite", result["reason"])
+        self.assertIn("codegraph", result["reason"])
+
+    def test_disables_telemetry_and_reports_it(self):
+        if not setup._which("codegraph"):
+            self.skipTest("codegraph not installed on this machine")
+        result = setup.activate_codegraph(".")
+        self.assertTrue(result["ok"], result)
+        self.assertTrue(result["attempted"])
+        self.assertIn("telemetry off", result["cmd"])
+        self.assertTrue(result["reason"])
+
+    def test_running_it_twice_stays_ok(self):
+        """Idempotent: already-off is a success, not an error, on the second run."""
+        if not setup._which("codegraph"):
+            self.skipTest("codegraph not installed on this machine")
+        setup.activate_codegraph(".")
+        second = setup.activate_codegraph(".")
+        self.assertTrue(second["ok"], second)
+
+    def test_install_always_attempts_it_even_when_nothing_is_missing(self):
+        with Tree({"README.md": "x"}) as root:
+            report = setup.install(names=[], root=root)
+        self.assertIn("codegraph-telemetry", report["results"])
+        entry = report["results"]["codegraph-telemetry"]
+        if setup._which("codegraph"):
+            self.assertTrue(entry["ok"], entry)
+            self.assertTrue(entry["attempted"])
+        else:
+            self.assertFalse(entry["ok"])
+            self.assertFalse(entry["attempted"])
+
+    def test_a_failed_telemetry_call_never_stops_other_tools_installing(self):
+        with Tree({"README.md": "x"}) as root:
+            with mock.patch.object(setup, "activate_codegraph",
+                                    return_value={"ok": False, "attempted": True, "reason": "boom"}):
+                report = setup.install(names=["definitely-not-a-tool"], root=root)
+        self.assertFalse(report["results"]["definitely-not-a-tool"]["ok"])
+        self.assertFalse(report["results"]["codegraph-telemetry"]["ok"])
 
 
 class TestSetupInstallIsUnattended(unittest.TestCase):

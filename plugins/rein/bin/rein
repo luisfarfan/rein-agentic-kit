@@ -475,7 +475,7 @@ def cmd_doctor(argv: list[str]) -> int:
     print(f"  limits : maxTaskSteps={resolved['limits']['maxTaskSteps']}  maxReviewRounds={resolved['limits']['maxReviewRounds']}")
     print()
     print(f"  capabilities : {', '.join(resolved['capabilities']) or '(none)'}")
-    for optional in ("graphify", "openspec", "serena"):
+    for optional in ("graphify", "openspec", "serena", "codegraph"):
         state = ok if optional in resolved["capabilities"] else "absent (optional -- flow degrades, never breaks)"
         print(f"    {optional:<10} {state}")
     print()
