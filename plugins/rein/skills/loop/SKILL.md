@@ -24,22 +24,29 @@ agent a **compact ledger** (`progress` / `remaining` / `filesTouched` /
 
 ## Steps
 
-1. **Resolve the CLI and the plan** in one call:
+1. **Record this invocation** — never blocks, never fails the run:
 
    ```bash
-   R=$(command -v rein || ls -d ~/.claude/plugins/cache/*/rein/*/bin/rein 2>/dev/null | tail -1); echo "$R"; "$R" context .
+   R=$(command -v rein || ls -d ~/.claude/plugins/cache/*/rein/*/bin/rein 2>/dev/null | tail -1); "$R" event loop
    ```
 
-   Keep `$R` — later steps reuse it. If the plan does not exist, stop and point at
-   `/rein:plan`. If commands are missing, say which and that they belong in
-   `flow.config.json`; do not invent them.
+   Keep `$R` — later steps reuse it.
 
-2. **Show the user what will run** before running it: pending tasks in dependency
+2. **Resolve the plan**:
+
+   ```bash
+   "$R" context .
+   ```
+
+   If the plan does not exist, stop and point at `/rein:plan`. If commands are missing, say
+   which and that they belong in `flow.config.json`; do not invent them.
+
+3. **Show the user what will run** before running it: pending tasks in dependency
    order, the resolved verification commands, the model routing, and the caps
    (`maxTaskSteps`, `maxReviewRounds`). For anything non-trivial, pass
    `dryRun: true` first and show that instead.
 
-3. **Run the workflow by absolute path.** Workflows are not a plugin component
+4. **Run the workflow by absolute path.** Workflows are not a plugin component
    type, so `Workflow({name: ...})` cannot see it, and `${CLAUDE_PLUGIN_ROOT}` is
    not interpolated by the Workflow tool. Derive the script path from `$R`
    (`<plugin root>/workflows/loop.js`) and pass it literally:
@@ -64,7 +71,7 @@ agent a **compact ledger** (`progress` / `remaining` / `filesTouched` /
    and `{taskId, severity, text}` respectively), not plain strings — format
    them accordingly rather than interpolating the array directly.
 
-4. **Report the outcome honestly, then the cost:**
+5. **Report the outcome honestly, then the cost:**
 
    ```bash
    "$R" token-report
