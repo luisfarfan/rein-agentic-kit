@@ -62,7 +62,7 @@ against the baseline. The instrument works. It is starved of data.
     - the decision of what to record is a pure function extracted from the SHIPPED `loop.js` and EXECUTED, the same discipline as `decideRound` and `decideGraphAvailable`; a source-substring assertion does not count
     - a test asserts the step runs LAST — after Review and Integrate — since a measurement taken before the expensive phases would understate the run it claims to describe
 
-- [ ] T002 A skill invocation leaves a trace
+- [x] T002 A skill invocation leaves a trace
   - Type: implementation
   - Depends on: T001
   - Human review: false
