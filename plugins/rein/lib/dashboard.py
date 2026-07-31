@@ -124,6 +124,108 @@ def _run_view(row: dict, project: str, baseline: dict | None) -> dict:
     }
 
 
+# ------------------------------------------------------ plain-english summary --
+
+# Human-readable name for each metric, plus the word to use on either side of
+# its delta ("12.3% fewer turns per agent" / "8.1% more context per turn") --
+# never a bare signed number (D2/T001).
+_METRIC_WORDS: dict[str, dict[str, str]] = {
+    "turns_per_agent": {"noun": "turns per agent", "more": "more", "less": "fewer"},
+    "ctx_max": {"noun": "context per turn", "more": "more", "less": "less"},
+    "opus_share": {"noun": "of the Opus quota", "more": "more", "less": "less"},
+}
+
+# Whether a LOWER value is better, per metric. A lookup table, not a blanket
+# rule -- `direction()` reads this instead of assuming "negative is always
+# better" for every key, so the day a metric is added where higher is the
+# win (a cache-hit rate, say), only this table changes, not every call site
+# that currently hardcodes the opposite.
+METRIC_DIRECTION: dict[str, bool] = {
+    "turns_per_agent": True,
+    "ctx_max": True,
+    "opus_share": True,
+}
+
+_WHY_SENTENCE = (
+    "Cost is turns multiplied by the context re-read every turn, so these "
+    "three numbers are what predict it."
+)
+
+
+def direction(metric_key: str, delta: float | None, table: dict[str, bool] | None = None) -> str | None:
+    """"better" / "worse" / "unchanged" for `delta` on `metric_key`, or `None`
+    when there is nothing to compare (`delta is None`).
+
+    Pure: the lower-is-better table is an explicit input (defaulting to
+    `METRIC_DIRECTION`), not a closed-over assumption -- so a future metric
+    where a higher value is the win can be exercised in a test by passing a
+    table where that key maps to `False`, without touching module state or
+    every other caller.
+    """
+    if delta is None:
+        return None
+    lower_is_better = (METRIC_DIRECTION if table is None else table)[metric_key]
+    if delta == 0:
+        return "unchanged"
+    improved = (delta < 0) if lower_is_better else (delta > 0)
+    return "better" if improved else "worse"
+
+
+def _metric_phrase(metric_key: str, pct: float | None) -> str:
+    """Plain words for one metric's change, percentage beside the word that
+    gives it meaning -- never a bare signed number."""
+    words = _METRIC_WORDS[metric_key]
+    if pct is None:
+        return f"no comparable {words['noun']} recorded"
+    if pct == 0:
+        return f"the same {words['noun']}"
+    word = words["more"] if pct > 0 else words["less"]
+    return f"{abs(pct):.1f}% {word} {words['noun']}"
+
+
+def _project_summary(runs: list[dict], baseline: dict | None) -> dict:
+    """The plain-language answer for one project's section (D1): how the
+    latest run compares to baseline on the three cost-predicting metrics, or
+    -- per D2 -- a stated LIMIT and no comparison when the ledger does not
+    actually prove one. `runs` must already be ordered ascending by
+    timestamp and carry the `is_baseline`/`deltas` fields `_run_view`
+    computes -- this reuses that join instead of re-deriving it, so there is
+    exactly one place deciding whether a baseline applies to a run.
+
+    Never raises, never fabricates a comparison.
+    """
+    if len(runs) < 2:
+        limit = "only one run has been recorded for this project -- nothing to compare it to yet"
+        return {"limit": limit, "comparison": None, "metrics": [], "text": f"{limit.capitalize()}. {_WHY_SENTENCE}"}
+
+    if not baseline or not baseline.get("wf_id"):
+        limit = "no baseline is marked for this project -- run `rein baseline mark` after a change to compare future runs against it"
+        return {"limit": limit, "comparison": None, "metrics": [], "text": f"{limit.capitalize()}. {_WHY_SENTENCE}"}
+
+    latest = runs[-1]
+    deltas = latest.get("deltas")
+    if deltas is None:
+        # Covers every reason `_run_view` can decline to compute a delta for
+        # the latest run: baseline predates project tracking, belongs to a
+        # different project, is the latest run itself, or is not older than
+        # it -- any of those means there is no later run to hold the
+        # baseline up against.
+        limit = (
+            "the marked baseline does not apply to the latest run shown here -- "
+            "it predates project tracking, belongs to a different project, or is "
+            "not older than this run -- so no comparison is shown"
+        )
+        return {"limit": limit, "comparison": None, "metrics": [], "text": f"{limit.capitalize()}. {_WHY_SENTENCE}"}
+
+    metrics = [
+        {"key": key, "pct": deltas.get(key), "direction": direction(key, deltas.get(key)), "phrase": _metric_phrase(key, deltas.get(key))}
+        for key in ("turns_per_agent", "ctx_max", "opus_share")
+    ]
+    phrases = [m["phrase"] if m["direction"] is None else f"{m['phrase']} ({m['direction']})" for m in metrics]
+    comparison = "Since the baseline, this run took " + ", ".join(phrases[:-1]) + f", and {phrases[-1]}."
+    return {"limit": None, "comparison": comparison, "metrics": metrics, "text": f"{comparison} {_WHY_SENTENCE}"}
+
+
 def build_view(ledger_path: str = LEDGER_PATH, baseline_path: str = BASELINE_PATH) -> dict:
     """Runs grouped by project, baseline marked, later-same-project runs deltad.
 
@@ -145,12 +247,14 @@ def build_view(ledger_path: str = LEDGER_PATH, baseline_path: str = BASELINE_PAT
     for project, project_rows in sorted(by_project.items()):
         ordered = sorted(project_rows, key=lambda r: r.get("ts", ""))
         root = _unmangle_project(project)
+        runs = [_run_view(r, project, baseline) for r in ordered]
         projects.append(
             {
                 "project": project,
                 "root": root,
                 "models": _resolve_models(root),
-                "runs": [_run_view(r, project, baseline) for r in ordered],
+                "runs": runs,
+                "summary": _project_summary(runs, baseline),
             }
         )
 
@@ -552,8 +656,11 @@ def _project_section(project: dict) -> str:
     body = "".join(_run_row(r, show_deltas) for r in runs)
     models = project.get("models") or {}
     models_html = _models_summary(models) + _models_form(project.get("root"), models)
+    summary_text = (project.get("summary") or {}).get("text", "")
+    summary_html = f'<p class="summary">{html.escape(summary_text)}</p>'
     return (
         f"<section><h2>{html.escape(project['project'])}</h2>"
+        f"{summary_html}"
         f"{models_html}"
         f"<table><thead>{header}</thead><tbody>{body}</tbody></table></section>"
     )
