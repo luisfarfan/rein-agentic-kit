@@ -151,6 +151,70 @@ _WHY_SENTENCE = (
     "three numbers are what predict it."
 )
 
+# --------------------------------------------------------------- glossary --
+
+# D3: one glossary, one source. Every metric key the page renders anywhere
+# (the per-run table, the per-agent detail table, and each Δ column) must
+# have an entry here -- `test_dashboard_glossary.py` asserts that directly
+# against this dict, and `_glossary_html` below raises a `KeyError` naming
+# the missing key the moment a header tries to use one that isn't. Each
+# entry is a one-line `meaning` (what the number is) plus a one-line `why`
+# (why it predicts cost) -- never just a definition floating free of the
+# thing it is supposed to help someone decide.
+GLOSSARY: dict[str, dict[str, str]] = {
+    "turns": {
+        "meaning": "How many turns this agent took to finish its work.",
+        "why": "Every turn is a full model call billed on the context sent with it, so turns is the base unit of cost.",
+    },
+    "turns_per_agent": {
+        "meaning": "Average turns per agent across the whole run.",
+        "why": "It is the single biggest lever on total cost: half the turns is roughly half the calls.",
+    },
+    "ctx_max": {
+        "meaning": "The largest context size sent in any single turn.",
+        "why": "Every turn resends the full context, so a bigger max multiplies the price of every turn that reaches it.",
+    },
+    "opus_share": {
+        "meaning": "Share of turns that ran on the Opus model instead of a cheaper one.",
+        "why": "Opus costs far more per token than Sonnet or Haiku, so this share drives a large part of total spend.",
+    },
+    "total": {
+        "meaning": "Total tokens (input plus output) this agent used.",
+        "why": "Tokens are what is actually billed, so this is the cost itself, not a proxy for it.",
+    },
+    "delta_turns_per_agent": {
+        "meaning": "Percent change in turns/agent versus the marked baseline run.",
+        "why": "Shows whether a change made the biggest cost lever better or worse, not just what it is now.",
+    },
+    "delta_ctx_max": {
+        "meaning": "Percent change in ctx_max/turn versus the marked baseline run.",
+        "why": "Shows whether a change grew or shrank the context every turn re-reads, a direct cost multiplier.",
+    },
+    "delta_opus_share": {
+        "meaning": "Percent change in opus share versus the marked baseline run.",
+        "why": "Shows whether a change moved work onto or off of the most expensive model.",
+    },
+}
+
+
+def _baseline_identity_text(baseline: dict | None, project: str) -> str:
+    """The baseline identified where it is used (D4/T002): which run and
+    when it was marked for a project that has one applying to it, or --
+    honestly -- what to run to mark one for a project that does not.
+
+    A baseline only "belongs" to a project if it was marked with that
+    project recorded on it (mirrors the staleness/mismatch checks
+    `_run_view` already applies to individual deltas) -- a baseline for a
+    different project, or one predating project tracking, is not this
+    project's baseline and must not be presented as if it were.
+    """
+    applies = bool(baseline) and baseline.get("project") == project and bool(baseline.get("wf_id"))
+    if not applies:
+        return "No baseline is marked for this project -- run `rein baseline mark` after a change to compare future runs against it."
+    wf_id = baseline.get("wf_id", "")
+    ts = baseline.get("ts", "")
+    return f"Baseline: run {wf_id}, marked {ts}."
+
 
 def direction(metric_key: str, delta: float | None, table: dict[str, bool] | None = None) -> str | None:
     """"better" / "worse" / "unchanged" for `delta` on `metric_key`, or `None`
@@ -255,6 +319,7 @@ def build_view(ledger_path: str = LEDGER_PATH, baseline_path: str = BASELINE_PAT
                 "models": _resolve_models(root),
                 "runs": runs,
                 "summary": _project_summary(runs, baseline),
+                "baseline_info": _baseline_identity_text(baseline, project),
             }
         )
 
@@ -533,7 +598,38 @@ pre.diff{background:#f7f7f7;border:1px solid #ddd;border-radius:.3rem;padding:.7
 .notice{padding:.5rem;border-radius:.3rem;margin:.5rem 0}
 .notice.error{background:#fdecea;color:#611a15}
 .notice.ok{background:#e9f7ee;color:#0a4a20}
+p.baseline-info{color:#555;font-size:.9em;margin:.25rem 0 .75rem}
+th small{font-weight:400;color:#777;display:block}
+.glossary-toggle{position:relative;margin-left:.3rem;font:inherit;font-weight:700;font-size:.75em;
+  width:1.2em;height:1.2em;line-height:1;border-radius:50%;border:1px solid #888;background:#f5f5f5;
+  color:#555;cursor:pointer;padding:0;vertical-align:middle}
+.glossary-toggle .glossary-text{position:absolute;right:0;top:120%;z-index:5;display:none;width:16rem;
+  max-width:70vw;text-align:left;font-weight:400;font-size:1.1em;background:#fff;color:#1a1a1a;
+  border:1px solid #ccc;border-radius:.3rem;padding:.5rem;box-shadow:0 2px 6px rgba(0,0,0,.15);white-space:normal}
+.glossary-toggle:hover .glossary-text,.glossary-toggle:focus .glossary-text{display:block}
+.glossary-toggle:focus{outline:2px solid #1a73e8}
 """
+
+
+def _glossary_html(key: str) -> str:
+    """The '?' affordance for one metric header (D3/D4): text pulled from
+    the single `GLOSSARY` (raises `KeyError` naming `key` if it is missing
+    an entry, rather than rendering a header that explains nothing), on a
+    native `<button>` so it is reachable by keyboard focus with no
+    JavaScript (D5) -- `:focus` alone reveals `.glossary-text` in place, the
+    same CSS rule that handles `:hover`. The explanation is also wired in as
+    an accessible description via `aria-describedby`, not a hover-only
+    `title` attribute, so it reaches people who use a screen reader as
+    reliably as people who use a mouse.
+    """
+    entry = GLOSSARY[key]
+    desc_id = f"glossary-{key}"
+    text = html.escape(f"{entry['meaning']} {entry['why']}")
+    return (
+        f'<button type="button" class="glossary-toggle" aria-describedby="{desc_id}" aria-label="What does this mean?">?'
+        f'<span id="{desc_id}" class="glossary-text" role="tooltip">{text}</span>'
+        "</button>"
+    )
 
 
 def _fmt_num(value, digits: int = 1) -> str:
@@ -582,8 +678,11 @@ def _agents_detail(agents: list[dict]) -> str:
     )
     return (
         f"<details><summary>{len(agents)} agent(s)</summary>"
-        '<table class="agents"><thead><tr><th>file</th><th>model</th><th>turns</th>'
-        f"<th>total</th><th>ctx_max</th></tr></thead><tbody>{rows}</tbody></table></details>"
+        '<table class="agents"><thead><tr><th>file</th><th>model</th>'
+        f"<th>turns{_glossary_html('turns')}</th>"
+        f"<th>total{_glossary_html('total')}</th>"
+        f"<th>ctx_max{_glossary_html('ctx_max')}</th>"
+        f"</tr></thead><tbody>{rows}</tbody></table></details>"
     )
 
 
@@ -648,9 +747,21 @@ def _project_section(project: dict) -> str:
     # plain trend table, protecting D4 (no baseline -> no savings figure).
     show_deltas = any(r["is_baseline"] or r["deltas"] is not None for r in runs)
 
-    header = "<tr><th>run</th><th>turns/agent</th><th>ctx_max/turn</th><th>opus share</th>"
+    header = (
+        "<tr><th>run</th>"
+        f"<th>turns/agent{_glossary_html('turns_per_agent')}</th>"
+        f"<th>ctx_max/turn{_glossary_html('ctx_max')}</th>"
+        f"<th>opus share{_glossary_html('opus_share')}</th>"
+    )
     if show_deltas:
-        header += "<th>Δ turns/agent</th><th>Δ ctx_max</th><th>Δ opus share</th>"
+        # "negative = better" sits inside the same header cell as the delta
+        # column it labels -- the same section as the delta values it
+        # describes, not merely somewhere else on the page (T002 #3).
+        header += (
+            f"<th>Δ turns/agent <small>(negative = better)</small>{_glossary_html('delta_turns_per_agent')}</th>"
+            f"<th>Δ ctx_max <small>(negative = better)</small>{_glossary_html('delta_ctx_max')}</th>"
+            f"<th>Δ opus share <small>(negative = better)</small>{_glossary_html('delta_opus_share')}</th>"
+        )
     header += "<th>agents</th></tr>"
 
     body = "".join(_run_row(r, show_deltas) for r in runs)
@@ -658,10 +769,12 @@ def _project_section(project: dict) -> str:
     models_html = _models_summary(models) + _models_form(project.get("root"), models)
     summary_text = (project.get("summary") or {}).get("text", "")
     summary_html = f'<p class="summary">{html.escape(summary_text)}</p>'
+    baseline_html = f'<p class="baseline-info">{html.escape(project.get("baseline_info", ""))}</p>'
     return (
         f"<section><h2>{html.escape(project['project'])}</h2>"
         f"{summary_html}"
         f"{models_html}"
+        f"{baseline_html}"
         f"<table><thead>{header}</thead><tbody>{body}</tbody></table></section>"
     )
 
