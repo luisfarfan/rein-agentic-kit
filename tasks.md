@@ -49,7 +49,7 @@ are getting better over time.
 
 ---
 
-- [ ] T001 The page opens with the answer
+- [x] T001 The page opens with the answer
   - Type: implementation
   - Depends on: none
   - Human review: false
