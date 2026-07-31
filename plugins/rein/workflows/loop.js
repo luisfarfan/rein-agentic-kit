@@ -1488,6 +1488,20 @@ function decideMeasureOutcome(result, threw) {
   return { recorded: true, wfId: result.wfId, error: '' }
 }
 
+// Extracted so the empty-CHANGE case is testable without spinning up an
+// agent. D2: a ledger row names its change, or the history is unreadable --
+// a run started without a `change` arg (the ordinary tasks.md path the skill
+// documents) must NOT record the literal placeholder string 'change'; that
+// is strictly worse than no change at all. LABEL defaults to 'change' only
+// for worktree/branch naming, which needs a non-empty string -- it must
+// never leak into the recorded change name. Omitting --change entirely lets
+// token_report.py's own "no change key" path (covered by
+// test_token_report.py) read back cleanly, exactly as it was built to do.
+function buildMeasureCommand(wd, rein, change) {
+  const changeFlag = change ? ` --change ${change}` : ''
+  return `cd ${wd} && ${rein} token-report --record${changeFlag} --json`
+}
+
 // D1: the loop records ITSELF -- the only mention of token-report used to be
 // a suggested string in the return value, and the measured result of relying
 // on a human to run it by hand was a 2-in-3 loss rate. Modeled on runRender's
@@ -1501,7 +1515,7 @@ async function runMeasureStep() {
   try {
     result = await agentRetry(
       `Run EXACTLY this one command and report its JSON output; do NOT interpret, fix, retry, or run anything ` +
-        `else: 'cd ${WD} && ${REIN} token-report --record --change ${LABEL} --json'.\n` +
+        `else: '${buildMeasureCommand(WD, REIN, CHANGE)}'.\n` +
         `Parse the JSON it prints. If the command exited 0 and the JSON has a non-empty "wf_id", report ok=true, ` +
         `wfId=<that wf_id>, error=''.\n` +
         `Otherwise report ok=false, wfId='' and error=<a short reason: e.g. "command not found", a non-zero exit ` +
@@ -1513,7 +1527,7 @@ async function runMeasureStep() {
     threw = e && e.message ? e.message : String(e)
   }
   const outcome = decideMeasureOutcome(result, threw)
-  if (outcome.recorded) log(`✔ measured: recorded ${outcome.wfId} (${LABEL})`)
+  if (outcome.recorded) log(`✔ measured: recorded ${outcome.wfId} (${CHANGE || 'unlabelled'})`)
   else log(`⚠️ measure step did not record (${outcome.error}) -- ok/approved/merged are unaffected (D4)`)
   return outcome
 }

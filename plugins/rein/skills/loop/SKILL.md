@@ -24,29 +24,26 @@ agent a **compact ledger** (`progress` / `remaining` / `filesTouched` /
 
 ## Steps
 
-1. **Record this invocation** — never blocks, never fails the run:
+1. **Record this invocation, then resolve the plan — in one call** (shell state does
+   not persist between tool calls, so `$R` must be resolved and used in the same
+   bash block):
 
    ```bash
-   R=$(command -v rein || ls -d ~/.claude/plugins/cache/*/rein/*/bin/rein 2>/dev/null | tail -1); "$R" event loop
+   R=$(command -v rein || ls -d ~/.claude/plugins/cache/*/rein/*/bin/rein 2>/dev/null | tail -1); echo "$R"; "$R" event loop; "$R" context .
    ```
 
-   Keep `$R` — later steps reuse it.
-
-2. **Resolve the plan**:
-
-   ```bash
-   "$R" context .
-   ```
+   The event records first and never blocks. Keep `$R` — later steps reuse it
+   literally (it was printed above).
 
    If the plan does not exist, stop and point at `/rein:plan`. If commands are missing, say
    which and that they belong in `flow.config.json`; do not invent them.
 
-3. **Show the user what will run** before running it: pending tasks in dependency
+2. **Show the user what will run** before running it: pending tasks in dependency
    order, the resolved verification commands, the model routing, and the caps
    (`maxTaskSteps`, `maxReviewRounds`). For anything non-trivial, pass
    `dryRun: true` first and show that instead.
 
-4. **Run the workflow by absolute path.** Workflows are not a plugin component
+3. **Run the workflow by absolute path.** Workflows are not a plugin component
    type, so `Workflow({name: ...})` cannot see it, and `${CLAUDE_PLUGIN_ROOT}` is
    not interpolated by the Workflow tool. Derive the script path from `$R`
    (`<plugin root>/workflows/loop.js`) and pass it literally:
@@ -71,7 +68,7 @@ agent a **compact ledger** (`progress` / `remaining` / `filesTouched` /
    and `{taskId, severity, text}` respectively), not plain strings — format
    them accordingly rather than interpolating the array directly.
 
-5. **Report the outcome honestly, then the cost:**
+4. **Report the outcome honestly, then the cost:**
 
    ```bash
    "$R" token-report

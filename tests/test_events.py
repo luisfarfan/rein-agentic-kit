@@ -97,6 +97,38 @@ class TestReadEventsSkipsCorruptLines(unittest.TestCase):
     def test_missing_file_returns_empty_list(self):
         self.assertEqual(ev.read_events("/nonexistent/path/events.jsonl"), [])
 
+    def test_invalid_utf8_bytes_are_skipped_not_raised(self):
+        # Reviewer finding #1 (round 1): only json.JSONDecodeError was caught,
+        # and the decode itself happens in `for line in fh`, outside any
+        # guard -- a line truncated mid multi-byte character (the
+        # concurrent/killed-append case this module's docstring names) raised
+        # UnicodeDecodeError straight out of the iterator, taking `rein
+        # ledger` down with it. Reproduce the exact byte sequence: one good
+        # line, then a line with a truncated UTF-8 continuation byte.
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = os.path.join(tmp.name, "events.jsonl")
+        with open(path, "wb") as fh:
+            fh.write(json.dumps({"name": "run", "ts": "2026-01-01T00:00:00+00:00", "project": "/p"}).encode("utf-8") + b"\n")
+            fh.write(b'{"name": "pl\xc3\n')  # truncated mid multi-byte char -- invalid UTF-8
+            fh.write(json.dumps({"name": "review", "ts": "2026-01-01T00:00:02+00:00", "project": "/p"}).encode("utf-8") + b"\n")
+
+        rows = ev.read_events(path)  # must not raise
+        self.assertEqual([r["name"] for r in rows], ["run", "review"])
+
+    def test_unreadable_file_degrades_to_no_events(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = os.path.join(tmp.name, "events.jsonl")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps({"name": "run", "ts": "2026-01-01T00:00:00+00:00", "project": "/p"}) + "\n")
+        os.chmod(path, 0)
+        self.addCleanup(lambda: os.chmod(path, stat.S_IREAD | stat.S_IWRITE))
+
+        if os.geteuid() == 0:
+            self.skipTest("root ignores file permission bits")
+        self.assertEqual(ev.read_events(path), [])
+
 
 class TestCountByProject(unittest.TestCase):
     def test_counts_grouped_by_project(self):
@@ -208,11 +240,78 @@ class TestLedgerCountsEventsSeparately(EventCliFixture):
 
         self.assertEqual(before, after, "recording/reading events must never touch runs.jsonl")
 
+    def test_json_shape_is_pinned_to_runs_and_events_by_project(self):
+        # Reviewer finding #4 (round 1): `rein ledger --json` moved from a
+        # top-level array of run rows to an object -- a silent breaking
+        # change to the only machine-readable output of the command. Pin the
+        # new shape so it cannot drift again unnoticed: top-level object with
+        # exactly "runs" (the unchanged array of run rows) and
+        # "events_by_project" (D3 -- counted separately, never folded in).
+        run_row = self._write_run_row()
+        self._run("event", "run", "--root", "/some/project")
+
+        result = self._run("ledger", "--json")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        payload = json.loads(result.stdout)
+
+        self.assertEqual(set(payload.keys()), {"runs", "events_by_project"})
+        self.assertIsInstance(payload["runs"], list)
+        self.assertEqual(payload["runs"], [run_row])
+        self.assertIsInstance(payload["events_by_project"], dict)
+        self.assertEqual(payload["events_by_project"], {os.path.realpath("/some/project"): 1})
+
+    def test_a_broken_events_file_does_not_take_down_the_runs_report(self):
+        # Finding #4's second half: guard the events read so an events-side
+        # failure can never take the runs report down with it.
+        self._write_run_row()
+        os.makedirs(self.rein_dir, exist_ok=True)
+        with open(self.events_path, "wb") as fh:
+            fh.write(b'{"name": "run", "ts": "2026-01-01T00:00:00+00:00", "project": "/p"}\n')
+            fh.write(b'{"name": "pl\xc3\n')  # invalid UTF-8, truncated
+
+        result = self._run("ledger", "--json")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(len(payload["runs"]), 1)
+
 
 # ------------------------------------------------------------- shipped skills --
 
 
 SKILL_FILES = sorted(glob.glob(os.path.join(SKILLS_DIR, "*", "SKILL.md")))
+
+
+def _skill_recording_failure(path: str) -> str | None:
+    """Return a failure message if `path`'s first step does not record the
+    skill's OWN name via `event {name}`, else None. Shared by the shipped-skill
+    sweep and the negative-fixture test so both exercise the same check."""
+    with open(path, encoding="utf-8") as fh:
+        text = fh.read()
+
+    name_match = re.search(r'^name:\s*(\S+)\s*$', text, re.MULTILINE)
+    if not name_match:
+        return f"{path}: no `name:` in front matter"
+    name = name_match.group(1).strip('"\'')
+
+    steps_match = re.search(r'^## (?:Steps|Loop)\s*$', text, re.MULTILINE)
+    if not steps_match:
+        return f"{path}: no '## Steps' / '## Loop' section"
+
+    rest = text[steps_match.end():]
+    # Step 1's full body: everything from '1.' up to the next numbered item
+    # ('2.') -- the recording command may sit on a later line (e.g. inside a
+    # fenced code block), not the same line as the '1.' marker.
+    first_step_match = re.search(r'^1\.\s+(.*?)(?=^\d+\.\s|\Z)', rest, re.MULTILINE | re.DOTALL)
+    if not first_step_match:
+        return f"{path}: no numbered step 1 under Steps/Loop"
+    first_step = first_step_match.group(1)
+
+    if f'event {name}' not in first_step:
+        return (
+            f"{path}: first step does not record its own invocation "
+            f"(expected 'event {name}'): {first_step!r}"
+        )
+    return None
 
 
 class TestShippedSkillsRecordOwnInvocation(unittest.TestCase):
@@ -224,40 +323,30 @@ class TestShippedSkillsRecordOwnInvocation(unittest.TestCase):
         self.assertTrue(expected.issubset(names), f"missing skill dirs: {expected - names}")
 
     def test_every_shipped_skill_records_its_own_invocation_as_its_first_step(self):
-        failures = []
-        for path in SKILL_FILES:
-            with open(path, encoding="utf-8") as fh:
-                text = fh.read()
-
-            name_match = re.search(r'^name:\s*(\S+)\s*$', text, re.MULTILINE)
-            if not name_match:
-                failures.append(f"{path}: no `name:` in front matter")
-                continue
-            name = name_match.group(1).strip('"\'')
-
-            steps_match = re.search(r'^## (?:Steps|Loop)\s*$', text, re.MULTILINE)
-            if not steps_match:
-                failures.append(f"{path}: no '## Steps' / '## Loop' section")
-                continue
-
-            rest = text[steps_match.end():]
-            # Step 1's full body: everything from '1.' up to the next
-            # numbered item ('2.') -- the recording command may sit on a
-            # later line (e.g. inside a fenced code block), not the same
-            # line as the '1.' marker.
-            first_step_match = re.search(r'^1\.\s+(.*?)(?=^\d+\.\s|\Z)', rest, re.MULTILINE | re.DOTALL)
-            if not first_step_match:
-                failures.append(f"{path}: no numbered step 1 under Steps/Loop")
-                continue
-            first_step = first_step_match.group(1)
-
-            if "rein event" not in first_step and f'event {name}' not in first_step:
-                failures.append(
-                    f"{path}: first step does not record its own invocation "
-                    f"(expected 'event {name}'): {first_step!r}"
-                )
-
+        failures = [f for f in (_skill_recording_failure(p) for p in SKILL_FILES) if f]
         self.assertFalse(failures, "\n".join(failures))
+
+    def test_a_skill_recording_under_another_skills_name_fails_the_check(self):
+        # Reviewer finding #3 (round 1): the guard OR-ed in a "rein event"
+        # alternative, so a skill whose first step records `event loop` passed
+        # even when its own front-matter name is `run` -- the OR made either
+        # alternative satisfy the check instead of requiring the skill's own
+        # name. Only `event {name}` may satisfy the guard.
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        skill_dir = os.path.join(tmp.name, "run")
+        os.makedirs(skill_dir)
+        bad_path = os.path.join(skill_dir, "SKILL.md")
+        with open(bad_path, "w", encoding="utf-8") as fh:
+            fh.write(
+                "---\nname: run\n---\n\n## Steps\n\n"
+                "1. Record this invocation:\n\n   ```bash\n   rein event loop\n   ```\n\n"
+                "2. Do the rest.\n"
+            )
+
+        failure = _skill_recording_failure(bad_path)
+        self.assertIsNotNone(failure, "a skill recording under another skill's name must fail the check")
+        self.assertIn("expected 'event run'", failure)
 
 
 if __name__ == "__main__":

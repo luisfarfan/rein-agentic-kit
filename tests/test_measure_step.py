@@ -146,19 +146,28 @@ class TestMeasureStepRunsLast(unittest.TestCase):
 
 
 class TestMeasureStepCommand(unittest.TestCase):
-    """AC1: the final step actually EXECUTES `rein token-report --record --change
-    <label>` -- not just a string sitting in the return value."""
+    """AC1: the final step actually EXECUTES `rein token-report --record
+    [--change <label>]` -- not just a string sitting in the return value.
+
+    Command construction lives in `buildMeasureCommand` (extracted in round 1
+    so the empty-CHANGE case is testable -- see test_loop_policy.py's
+    TestBuildMeasureCommandPolicy for the actual command values); this test
+    only proves runMeasureStep calls it and hands the result to a real
+    agentRetry(), not a suggestion string."""
 
     def setUp(self):
         with open(LOOP_JS, encoding="utf-8") as f:
             self.src = f.read()
 
-    def test_run_measure_step_executes_token_report_record_change(self):
+    def test_run_measure_step_executes_the_built_command_via_agent_retry(self):
         start = self.src.index("async function runMeasureStep()")
         end = self.src.index("\n}\n", start)
         body = self.src[start:end]
-        self.assertIn("token-report --record --change", body)
+        self.assertIn("buildMeasureCommand(WD, REIN, CHANGE)", body)
         self.assertIn("agentRetry(", body)
+
+    def test_build_measure_command_itself_shells_out_to_token_report_record(self):
+        self.assertIn("token-report --record${changeFlag} --json", self.src)
 
 
 if __name__ == "__main__":

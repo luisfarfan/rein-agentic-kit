@@ -49,23 +49,31 @@ def read_events(events_path: str = EVENTS_PATH) -> list[dict]:
 
     `events.jsonl` is append-only from concurrent sessions -- a reader that
     raises on one bad line would lose the whole history, so a line that is
-    not valid JSON, or not a JSON object, is silently skipped.
+    not valid JSON, or not a JSON object, is silently skipped. A line with
+    invalid UTF-8 bytes (e.g. truncated mid multi-byte character by a
+    concurrent/killed append) is decoded with replacement characters so it
+    simply fails the JSON parse instead of raising `UnicodeDecodeError` out
+    of the file iterator. An unreadable file (missing, permission denied)
+    degrades to no events rather than a traceback (D4).
     """
-    if not os.path.exists(events_path):
-        return []
     rows: list[dict] = []
-    with open(events_path, encoding="utf-8") as fh:
-        for line in fh:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                row = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if not isinstance(row, dict):
-                continue
-            rows.append(row)
+    try:
+        if not os.path.exists(events_path):
+            return []
+        with open(events_path, encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(row, dict):
+                    continue
+                rows.append(row)
+    except OSError:
+        return rows
     return rows
 
 

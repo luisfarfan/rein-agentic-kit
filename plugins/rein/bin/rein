@@ -13,7 +13,11 @@ Subcommands:
   rein review         record / check a review episode (approval is state-bound)
   rein token-report   real per-model token accounting for the last agent run
   rein event <name>   record a skill invocation as an event (D3, never a run)
-  rein ledger         summary of recorded runs (per project / per session)
+  rein ledger         summary of recorded runs (per project / per session);
+                      --json returns {"runs": [...], "events_by_project": {...}} --
+                      runs is the unchanged array of run rows, events_by_project is
+                      skill-invocation counts (D3), counted separately and never
+                      folded into a run
   rein baseline       mark/show/clear the reference run compared against
   rein dashboard      serve (or --json print) the ledger as a view model
 
@@ -311,8 +315,15 @@ def cmd_event(argv: list[str]) -> int:
 
 def cmd_ledger(argv: list[str]) -> int:
     rows = _tr.read_ledger()
-    events = _events.read_events()
-    event_counts = _events.count_by_project(events)
+    # Events are counted separately (D3) and must never take the runs report
+    # down with them: read_events() already degrades OSError/bad-JSON/bad-UTF8
+    # to [], but guard the call itself too so ANY unexpected events-side
+    # failure still leaves `rein ledger` reporting runs.
+    try:
+        events = _events.read_events()
+        event_counts = _events.count_by_project(events)
+    except Exception:
+        event_counts = {}
 
     if not rows and not event_counts:
         print(f"ledger is empty ({_tr.LEDGER_PATH})")
