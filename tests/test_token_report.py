@@ -5,6 +5,8 @@ on. If the accounting is wrong, so is everything else -- hence real assertions o
 hand-built transcripts rather than smoke tests.
 """
 
+import contextlib
+import io
 import json
 import os
 import shutil
@@ -182,7 +184,10 @@ class TestChangeFlag(unittest.TestCase):
         ledger = os.path.join(tempfile.mkdtemp(), "runs.jsonl")
         self.addCleanup(lambda: shutil.rmtree(os.path.dirname(ledger), ignore_errors=True))
         with Run({"a": [turn("claude-opus-5", out=1)]}, wf_id="wf_ch1") as d:
-            code = tr.main([d, "--change", "measure-itself", "--ledger", ledger, "--json"])
+            with contextlib.redirect_stdout(io.StringIO()) as buf:
+                code = tr.main([d, "--change", "measure-itself", "--ledger", ledger, "--json"])
+        # asserted, not just silenced: the report the caller sees carries the label
+        self.assertEqual(json.loads(buf.getvalue())["change"], "measure-itself")
         self.assertEqual(code, 0)
         rows = tr.read_ledger(ledger)
         self.assertEqual(rows[0]["change"], "measure-itself")
@@ -191,7 +196,8 @@ class TestChangeFlag(unittest.TestCase):
         ledger = os.path.join(tempfile.mkdtemp(), "runs.jsonl")
         self.addCleanup(lambda: shutil.rmtree(os.path.dirname(ledger), ignore_errors=True))
         with Run({"a": [turn("claude-opus-5", out=1)]}, wf_id="wf_nolabel") as d:
-            code = tr.main([d, "--ledger", ledger, "--json"])
+            with contextlib.redirect_stdout(io.StringIO()):
+                code = tr.main([d, "--ledger", ledger, "--json"])
         self.assertEqual(code, 0)
         rows = tr.read_ledger(ledger)
         self.assertNotIn("change", rows[0])

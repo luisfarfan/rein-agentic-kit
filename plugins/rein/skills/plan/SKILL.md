@@ -18,7 +18,12 @@ R=$(command -v rein || ls -d ~/.claude/plugins/cache/*/rein/*/bin/rein 2>/dev/nu
 
 ## Steps
 
-1. **Record this invocation** — never blocks, never fails the run: `"$R" event plan`.
+1. **Record this invocation** — never blocks, never fails the run. Shell state does NOT
+   persist between tool calls, so `R` is resolved and used in the SAME block or it is
+   empty and nothing is recorded:
+   ```bash
+   R=$(command -v rein || ls -d ~/.claude/plugins/cache/*/rein/*/bin/rein 2>/dev/null | tail -1); "$R" event plan
+   ```
 2. Resolve the project so the plan lands where the loop will look for it and the verification
    commands are real: `"$R" context .` — note `plan.source`, `plan.path`,
    `config.commands` and `verifyPolicy.mode`.

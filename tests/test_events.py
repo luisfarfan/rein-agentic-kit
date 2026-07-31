@@ -306,10 +306,23 @@ def _skill_recording_failure(path: str) -> str | None:
         return f"{path}: no numbered step 1 under Steps/Loop"
     first_step = first_step_match.group(1)
 
-    if f'event {name}' not in first_step:
+    # Anchored, not a bare substring: this repo ships both `run` and
+    # `run-auto`, so `event run-auto` would satisfy an unanchored check for
+    # the skill named `run` -- the skill would pass while recording under
+    # another skill's name, which is exactly the miscount the guard exists
+    # to prevent.
+    if not re.search(rf'event {re.escape(name)}(?![\w.-])', first_step):
         return (
             f"{path}: first step does not record its own invocation "
             f"(expected 'event {name}'): {first_step!r}"
+        )
+    # Shell state does NOT persist between tool calls, so a step that uses
+    # `$R` without resolving it in the same block records nothing: the
+    # guarantee would hold in the SKILL.md text and fail in effect.
+    if '"$R" event' in first_step and 'command -v rein' not in first_step:
+        return (
+            f"{path}: step 1 uses $R without resolving it in the same block — "
+            f"$R is empty in a fresh tool call, so nothing is recorded"
         )
     return None
 
@@ -351,3 +364,46 @@ class TestShippedSkillsRecordOwnInvocation(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestTheGuardCatchesTheTwoWaysItWasFooled(unittest.TestCase):
+    """Both found by review after the guard shipped, both real in this repo."""
+
+    def _skill(self, body: str) -> str:
+        import tempfile
+        d = tempfile.mkdtemp()
+        p = os.path.join(d, "SKILL.md")
+        with open(p, "w", encoding="utf-8") as fh:
+            fh.write(body)
+        return p
+
+    def test_a_prefix_of_another_skills_name_does_not_satisfy_the_check(self):
+        """`run` and `run-auto` both ship here: an unanchored substring check
+        let the `run` skill pass while recording as `run-auto`."""
+        path = self._skill(
+            "---\nname: run\n---\n\n## Steps\n\n"
+            '1. Record: `R=$(command -v rein); "$R" event run-auto`.\n\n'
+            "2. Next.\n"
+        )
+        self.assertIsNotNone(_skill_recording_failure(path))
+
+    def test_the_exact_name_still_passes(self):
+        path = self._skill(
+            "---\nname: run\n---\n\n## Steps\n\n"
+            '1. Record: `R=$(command -v rein); "$R" event run`.\n\n'
+            "2. Next.\n"
+        )
+        self.assertIsNone(_skill_recording_failure(path))
+
+    def test_an_unresolved_R_is_rejected(self):
+        """Shell state does not persist between tool calls -- verified: a var
+        exported in one call reads empty in the next. A step that only says
+        `"$R" event x` records nothing at all."""
+        path = self._skill(
+            "---\nname: plan\n---\n\n## Steps\n\n"
+            '1. Record: `"$R" event plan`.\n\n'
+            "2. Next.\n"
+        )
+        err = _skill_recording_failure(path)
+        self.assertIsNotNone(err)
+        self.assertIn("$R is empty", err)

@@ -222,9 +222,22 @@ class TestEarlyAbortsAreMeasured(unittest.TestCase):
         self.assertIn("return await measuredAbort(", segment)
         self.assertIn("phase: 'Isolate'", segment)
 
+    def test_the_no_pending_tasks_exit_is_measured(self):
+        """Round-3 finding: this was the one early return below phase('Measure')
+        that skipped it, while measuredAbort's own comment claimed 'every such
+        return now measures itself first'. Prepare's agent and `rein verify`
+        have both been paid for by the time it fires."""
+        start = self.src.index("if (!tasks.length) {")
+        end = self.src.index("\n}\n", start)
+        self.assertIn("measuredAbort", self.src[start:end])
+
     def test_dry_run_return_is_deliberately_unmeasured(self):
-        # AC5/reviewer note: the DRY_RUN return must NOT be routed through
-        # measuredAbort -- it does no agent work and inflates nothing.
+        # DRY_RUN is the ONE deliberately unmeasured exit. Not because it is
+        # free -- Prepare's agentRetry has already run by here, so it is not
+        # (the round-3 review corrected that claim). It is unmeasured because
+        # a dry run is an inspection of the plan, not an attempt at the work:
+        # recording it would put rows in the ledger for runs nobody asked to
+        # execute, and every delta is computed over that ledger.
         start = self.src.index("if (DRY_RUN) {")
         end = self.src.index("\n}\n", start)
         body = self.src[start:end]

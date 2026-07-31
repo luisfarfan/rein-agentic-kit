@@ -19,7 +19,12 @@ R=$(command -v rein || ls -d ~/.claude/plugins/cache/*/rein/*/bin/rein 2>/dev/nu
 
 ## Steps
 
-1. **Record this invocation** — never blocks, never fails the run: `"$R" event run`.
+1. **Record this invocation** — never blocks, never fails the run. Shell state does NOT
+   persist between tool calls, so `R` is resolved and used in the SAME block or it is
+   empty and nothing is recorded:
+   ```bash
+   R=$(command -v rein || ls -d ~/.claude/plugins/cache/*/rein/*/bin/rein 2>/dev/null | tail -1); "$R" event run
+   ```
 2. **Ask the gate, do not choose yourself**: `"$R" next .` — it returns
    `{ready, taskId, humanReview, verification, reason}` and exits non-zero when nothing is
    claimable. If `ready` is false, report `reason` and **stop**.
