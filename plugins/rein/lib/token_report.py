@@ -20,6 +20,7 @@ Usage:
     rein token-report --json             # machine-readable
     rein token-report --record           # also append to the ledger
     rein token-report --no-record        # never touch the ledger
+    rein token-report --record --change measure-itself  # label the row (D2)
 
 The ledger (~/.claude/rein/runs.jsonl) is what makes cross-project, cross-session
 history possible: raw transcripts get rotated away, a summarized record does not.
@@ -421,8 +422,13 @@ def render_ledger(rows: list[dict], ledger_path: str = LEDGER_PATH, baseline: di
             window = sorted([baseline_row, *window], key=lambda r: r.get("ts", ""))
 
         for r in window:
+            # D2: a row recorded without --change (all 13 pre-existing rows,
+            # and anyone who still runs token-report bare) has no "change" key
+            # at all -- `.get` returns None, the tag is simply omitted, and the
+            # row reads back exactly as it always did.
+            change_tag = f"  [{r['change']}]" if r.get("change") else ""
             line = (
-                f"    {r.get('ts',''):<21} {r.get('wf_id','')[:14]:<14} "
+                f"    {r.get('ts',''):<21} {r.get('wf_id','')[:14]:<14}{change_tag} "
                 f"turns={r.get('turns',0):>4}  turns/agent={r.get('turns_per_agent',0):>5}  "
                 f"ctx_max={r.get('ctx_max',0):>8,}  opus={r.get('opus_share',0):>5}%"
             )
@@ -555,6 +561,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--record", action="store_true", help="force append to the ledger")
     p.add_argument("--no-record", action="store_true", help="never touch the ledger")
     p.add_argument("--ledger", default=LEDGER_PATH, help=f"ledger path (default: {LEDGER_PATH})")
+    p.add_argument("--change", default="", help="label this run with a change name (D2) -- printed next to wf_id by `rein ledger`")
     return p
 
 
@@ -573,6 +580,13 @@ def main(argv: list[str] | None = None) -> int:
     if not summary["agents_counted"]:
         print(f"no transcripts with usage data in {target}")
         return 1
+
+    # D2: a ledger row names its change, or the history is unreadable. Absent
+    # entirely (not even an empty string) when --change is not passed, so the
+    # 13 existing rows -- and any row recorded without a label -- stay exactly
+    # as they were: `.get("change")` reads back `None` on them, never "".
+    if args.change:
+        summary["change"] = args.change
 
     # Recording is the default: the ledger is only useful if it is complete.
     should_record = not args.no_record

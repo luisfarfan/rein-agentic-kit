@@ -128,6 +128,9 @@ rein close T001  # tick a checkbox deterministically — no agent hand-edits the
 rein review      # record / check a verdict bound to a code state
 rein token-report# what a run really cost, per agent and per model
 rein ledger      # history across projects, with deltas vs a marked baseline
+                 # --json: {"runs": [...], "events_by_project": {...}} -- runs are
+                 # unchanged row objects; events (D3) are counted separately, never
+                 # folded into a run total
 rein baseline    # mark the run everything is compared against
 rein dashboard   # 📊 serve it all as a local page
 ```

@@ -24,15 +24,19 @@ agent a **compact ledger** (`progress` / `remaining` / `filesTouched` /
 
 ## Steps
 
-1. **Resolve the CLI and the plan** in one call:
+1. **Record this invocation, then resolve the plan — in one call** (shell state does
+   not persist between tool calls, so `$R` must be resolved and used in the same
+   bash block):
 
    ```bash
-   R=$(command -v rein || ls -d ~/.claude/plugins/cache/*/rein/*/bin/rein 2>/dev/null | tail -1); echo "$R"; "$R" context .
+   R=$(command -v rein || ls -d ~/.claude/plugins/cache/*/rein/*/bin/rein 2>/dev/null | tail -1); echo "$R"; "$R" event loop; "$R" context .
    ```
 
-   Keep `$R` — later steps reuse it. If the plan does not exist, stop and point at
-   `/rein:plan`. If commands are missing, say which and that they belong in
-   `flow.config.json`; do not invent them.
+   The event records first and never blocks. Keep `$R` — later steps reuse it
+   literally (it was printed above).
+
+   If the plan does not exist, stop and point at `/rein:plan`. If commands are missing, say
+   which and that they belong in `flow.config.json`; do not invent them.
 
 2. **Show the user what will run** before running it: pending tasks in dependency
    order, the resolved verification commands, the model routing, and the caps

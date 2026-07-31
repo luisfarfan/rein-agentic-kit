@@ -18,13 +18,14 @@ R=$(command -v rein || ls -d ~/.claude/plugins/cache/*/rein/*/bin/rein 2>/dev/nu
 
 ## Steps
 
-1. Resolve the project so the plan lands where the loop will look for it and the verification
+1. **Record this invocation** — never blocks, never fails the run: `"$R" event plan`.
+2. Resolve the project so the plan lands where the loop will look for it and the verification
    commands are real: `"$R" context .` — note `plan.source`, `plan.path`,
    `config.commands` and `verifyPolicy.mode`.
-2. Understand the request before decomposing it. Use bounded search and precise reads, not
+3. Understand the request before decomposing it. Use bounded search and precise reads, not
    whole files. If scope, an interface or a trade-off is genuinely ambiguous, **ask now** — a
    wrong assumption here is paid for by every implementation step after it.
-3. Draft the plan. It opens with a **short header** and then the tasks:
+4. Draft the plan. It opens with a **short header** and then the tasks:
 
    ```markdown
    # Change: add-widget
@@ -70,10 +71,10 @@ R=$(command -v rein || ls -d ~/.claude/plugins/cache/*/rein/*/bin/rein 2>/dev/nu
    choice an implementer could plausibly reverse without noticing. A two-task change
    usually has none, and inventing them is ceremony.
 
-4. **Dry run.** Show the user the full draft: tasks in dependency order, each verification
+5. **Dry run.** Show the user the full draft: tasks in dependency order, each verification
    command, which tasks are gated on human review, and anything the plan assumes.
-5. **Ask for explicit confirmation.** Never write the plan into the project without it.
-6. On confirmation, write it to `plan.path`, then verify it parses the way the loop will read
+6. **Ask for explicit confirmation.** Never write the plan into the project without it.
+7. On confirmation, write it to `plan.path`, then verify it parses the way the loop will read
    it: `"$R" tasks .` and `"$R" next .`. Report the resolved order.
 
 ## What makes a task good here

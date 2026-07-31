@@ -7,6 +7,7 @@ hand-built transcripts rather than smoke tests.
 
 import json
 import os
+import shutil
 import sys
 import tempfile
 import unittest
@@ -146,6 +147,76 @@ class TestLedger(unittest.TestCase):
         with open(path, "w", encoding="utf-8") as fh:
             fh.write('{"wf_id": "wf_old", "total": 1}\n{ corrupt\n')
         self.assertEqual(len(tr.read_ledger(path)), 1)
+
+    def test_change_label_is_recorded_when_present_in_summary(self):
+        """append_to_ledger copies every summary key except 'agents' verbatim --
+        a 'change' key set by the CLI's --change flag rides along for free."""
+        path = self._ledger()
+        with Run({"a": [turn("claude-opus-5", out=1)]}, wf_id="wf_1") as d:
+            summary = tr.summarize(d)
+            summary["change"] = "measure-itself"
+            tr.append_to_ledger(summary, path)
+        self.assertEqual(tr.read_ledger(path)[0]["change"], "measure-itself")
+
+    def test_row_without_change_reads_back_cleanly(self):
+        """D2: the 13 pre-existing rows (and any row recorded without --change)
+        must not be invalidated -- no 'change' key at all, not even empty string."""
+        path = self._ledger()
+        with Run({"a": [turn("claude-opus-5", out=1)]}, wf_id="wf_old") as d:
+            tr.append_to_ledger(tr.summarize(d), path)
+        row = tr.read_ledger(path)[0]
+        self.assertNotIn("change", row)
+        self.assertIsNone(row.get("change"))
+
+
+class TestChangeFlag(unittest.TestCase):
+    def test_build_parser_accepts_change(self):
+        args = tr.build_parser().parse_args(["--change", "measure-itself"])
+        self.assertEqual(args.change, "measure-itself")
+
+    def test_change_defaults_to_empty(self):
+        args = tr.build_parser().parse_args([])
+        self.assertEqual(args.change, "")
+
+    def test_main_records_change_label_into_the_ledger(self):
+        ledger = os.path.join(tempfile.mkdtemp(), "runs.jsonl")
+        self.addCleanup(lambda: shutil.rmtree(os.path.dirname(ledger), ignore_errors=True))
+        with Run({"a": [turn("claude-opus-5", out=1)]}, wf_id="wf_ch1") as d:
+            code = tr.main([d, "--change", "measure-itself", "--ledger", ledger, "--json"])
+        self.assertEqual(code, 0)
+        rows = tr.read_ledger(ledger)
+        self.assertEqual(rows[0]["change"], "measure-itself")
+
+    def test_main_without_change_still_records_and_reads_back(self):
+        ledger = os.path.join(tempfile.mkdtemp(), "runs.jsonl")
+        self.addCleanup(lambda: shutil.rmtree(os.path.dirname(ledger), ignore_errors=True))
+        with Run({"a": [turn("claude-opus-5", out=1)]}, wf_id="wf_nolabel") as d:
+            code = tr.main([d, "--ledger", ledger, "--json"])
+        self.assertEqual(code, 0)
+        rows = tr.read_ledger(ledger)
+        self.assertNotIn("change", rows[0])
+
+
+class TestRenderLedgerShowsChange(unittest.TestCase):
+    def test_change_label_appears_next_to_wf_id(self):
+        rows = [{
+            "wf_id": "wf_labeled", "project": "-proj", "ts": "2026-07-31T00:00:00Z",
+            "turns": 10, "turns_per_agent": 5.0, "ctx_max": 1000, "opus_share": 0.0,
+            "total": 100, "opus_tokens": 0, "change": "measure-itself",
+        }]
+        out = tr.render_ledger(rows, "/tmp/runs.jsonl", None)
+        self.assertIn("wf_labeled", out)
+        self.assertIn("[measure-itself]", out)
+
+    def test_row_without_change_renders_without_a_tag(self):
+        rows = [{
+            "wf_id": "wf_ca4b1e78", "project": "-proj", "ts": "2026-07-30T00:00:00Z",
+            "turns": 242, "turns_per_agent": 30.0, "ctx_max": 5000, "opus_share": 10.0,
+            "total": 100, "opus_tokens": 0,
+        }]
+        out = tr.render_ledger(rows, "/tmp/runs.jsonl", None)
+        self.assertIn("wf_ca4b1e78", out)
+        self.assertNotIn("[", out.split("wf_ca4b1e78")[1].split("\n")[0])
 
 
 if __name__ == "__main__":

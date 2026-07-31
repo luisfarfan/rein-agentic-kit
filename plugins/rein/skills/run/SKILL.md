@@ -19,24 +19,25 @@ R=$(command -v rein || ls -d ~/.claude/plugins/cache/*/rein/*/bin/rein 2>/dev/nu
 
 ## Steps
 
-1. **Ask the gate, do not choose yourself**: `"$R" next .` — it returns
+1. **Record this invocation** — never blocks, never fails the run: `"$R" event run`.
+2. **Ask the gate, do not choose yourself**: `"$R" next .` — it returns
    `{ready, taskId, humanReview, verification, reason}` and exits non-zero when nothing is
    claimable. If `ready` is false, report `reason` and **stop**.
-2. If `humanReview` is true, **stop before claiming it** and tell the user this task needs
+3. If `humanReview` is true, **stop before claiming it** and tell the user this task needs
    their judgement.
-3. Show the selected task and its acceptance criteria (`"$R" tasks .`). Load **only** what
+4. Show the selected task and its acceptance criteria (`"$R" tasks .`). Load **only** what
    that task needs — the criteria, the relevant design notes, and the files it touches. Read
    symbols and regions, never whole files speculatively: every file you pull in is re-read on
    every later turn.
-4. State a brief implementation plan, then implement **strictly within scope**.
-5. Run the task's own `Verification` command, then the project's configured checks
+5. State a brief implementation plan, then implement **strictly within scope**.
+6. Run the task's own `Verification` command, then the project's configured checks
    (`"$R" detect .` → `commands.lint`, `commands.typecheck`). Keep output small.
-6. Compare the result against the acceptance criteria, one by one. A criterion you cannot
+7. Compare the result against the acceptance criteria, one by one. A criterion you cannot
    demonstrate is not met.
-7. Tick the checkbox **only if** all of: implementation complete, verification passes,
+8. Tick the checkbox **only if** all of: implementation complete, verification passes,
    configured checks pass, and — when `humanReview` is true — a human approved:
    `"$R" close <taskId>`. Never hand-edit the plan.
-8. Report what landed and **stop**.
+9. Report what landed and **stop**.
 
 ## Limits (per invocation)
 

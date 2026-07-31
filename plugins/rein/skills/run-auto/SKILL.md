@@ -21,13 +21,14 @@ R=$(command -v rein || ls -d ~/.claude/plugins/cache/*/rein/*/bin/rein 2>/dev/nu
 
 ## Loop
 
-1. Set `done = 0`, `cap = max-tasks or 3`.
-2. **Check the deterministic gate before each iteration**: `"$R" next .`
-3. **Stop now, without claiming anything**, if any stop condition below holds.
-4. Otherwise run **one full iteration of `/rein:run`**, unabridged: select, load only what the
+1. **Record this invocation** — never blocks, never fails the run: `"$R" event run-auto`.
+2. Set `done = 0`, `cap = max-tasks or 3`.
+3. **Check the deterministic gate before each iteration**: `"$R" next .`
+4. **Stop now, without claiming anything**, if any stop condition below holds.
+5. Otherwise run **one full iteration of `/rein:run`**, unabridged: select, load only what the
    task needs, plan, implement in scope, run its verification plus the configured checks,
    compare against acceptance, close only with evidence.
-5. Increment `done`. Re-check the conditions. Otherwise go to 2.
+6. Increment `done`. Re-check the conditions. Otherwise go to 3.
 
 ## Stop conditions — deterministic, not model judgement
 

@@ -559,5 +559,91 @@ class TestBoundedVerificationTargetBase(unittest.TestCase):
         self.assertIn("no verification command is configured", result)
 
 
+# ── buildMeasureCommand: D2 says a ledger row names its change or the ──────
+# history is unreadable. Reviewer finding #2 (round 1): the measure step used
+# to pass `--change ${LABEL}` unconditionally, where LABEL defaults to the
+# literal string 'change' when no --change arg was given (the ordinary
+# tasks.md path). That recorded a fake change name, strictly worse than none.
+# Extracted the same way decideRound/buildFixFindings are above -- straight
+# regex pull of the shipped source, run with `new Function` -- so this proves
+# the actual command the workflow builds, not a reimplementation.
+
+_EXTRACT_BUILD_MEASURE_COMMAND_JS = r"""
+const fs = require('fs');
+const [, , loopPath, scenariosJson] = process.argv;
+const src = fs.readFileSync(loopPath, 'utf8');
+function extract(name, params) {
+  const re = new RegExp(`function ${name}\\(${params}\\) \\{\\n([\\s\\S]*?)\\n\\}\\n`);
+  const m = src.match(re);
+  if (!m) throw new Error('not found in loop.js: ' + name);
+  return m[1];
+}
+const buildMeasureCommand = new Function(
+  'rein', 'change',
+  extract('buildMeasureCommand', 'rein, change')
+);
+const scenarios = JSON.parse(scenariosJson);
+const out = scenarios.map((s) => buildMeasureCommand(s.rein, s.change));
+process.stdout.write(JSON.stringify(out));
+"""
+
+
+@unittest.skipUnless(_NODE, "node not on PATH -- loop.js is a node workflow script")
+class TestBuildMeasureCommandIsExtractable(unittest.TestCase):
+    def test_function_exists_with_expected_signature(self):
+        with open(LOOP_JS, encoding="utf-8") as f:
+            src = f.read()
+        self.assertIn("function buildMeasureCommand(rein, change)", src)
+
+
+@unittest.skipUnless(_NODE, "node not on PATH -- loop.js is a node workflow script")
+class TestBuildMeasureCommandPolicy(unittest.TestCase):
+    def _run(self, scenarios: list[dict]) -> list[str]:
+        with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False, encoding="utf-8") as f:
+            f.write(_EXTRACT_BUILD_MEASURE_COMMAND_JS)
+            script_path = f.name
+        try:
+            proc = subprocess.run(
+                [_NODE, script_path, LOOP_JS, json.dumps(scenarios)],
+                capture_output=True, text=True, check=True,
+            )
+        finally:
+            os.unlink(script_path)
+        return json.loads(proc.stdout)
+
+    def test_empty_change_omits_the_flag_entirely(self):
+        # The tasks.md path: no --change arg was given. The command must NOT
+        # contain the literal placeholder 'change' anywhere as a flag value.
+        [result] = self._run([{"rein": "rein", "change": ""}])
+        self.assertEqual(result, "'rein' token-report --record --json")
+        self.assertNotIn("--change", result)
+
+    def test_non_empty_change_is_passed_through(self):
+        [result] = self._run([{"rein": "rein", "change": "add-thing"}])
+        self.assertEqual(result, "'rein' token-report --record --change 'add-thing' --json")
+
+    def test_no_cd_into_the_worktree_the_command_does_not_depend_on_it(self):
+        # Round 2 finding #1: Integrate can remove the worktree (WD) before
+        # Measure ever runs on the approved+merged happy path. The recorded
+        # command must not reference a path Integrate deletes -- only `rein`
+        # and `--change`, never a `cd` or the worktree directory at all.
+        [result] = self._run([{"rein": "/repo/.bin/rein", "change": ""}])
+        self.assertNotIn("cd ", result)
+        self.assertNotIn("&&", result)
+
+    def test_change_with_a_space_is_not_truncated_or_split(self):
+        # Round 2 finding #3: unquoted interpolation let a space in --change
+        # silently truncate the recorded change name.
+        [result] = self._run([{"rein": "rein", "change": "my change"}])
+        self.assertEqual(result, "'rein' token-report --record --change 'my change' --json")
+
+    def test_change_with_a_single_quote_cannot_break_out_of_the_command(self):
+        [result] = self._run([{"rein": "rein", "change": "it's here; rm -rf /"}])
+        self.assertEqual(
+            result,
+            "'rein' token-report --record --change 'it'\\''s here; rm -rf /' --json",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
