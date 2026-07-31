@@ -1,75 +1,86 @@
-# Change: measure-itself
+# Change: the-dashboard-answers-the-question
 
 ## Why
-The kit exists to measure agent cost, and its own history has holes.
+The dashboard renders correct numbers and answers nothing. Generated from this
+machine's real ledger, the page is a table dump with **0 tooltips and 0 `aria-`
+attributes**, whose columns are jargon this project invented:
 
-Three loop runs happened in this repo today. When the ledger was checked,
-**none of them was there** — the last entry was from the previous day. Running
-`rein token-report` by hand recovered exactly one (the most recent); the other
-two are gone for good, ~2.1M agent tokens that will never appear in any
-history.
-
-The cause is one line. `loop.js` ends with:
-
-```js
-measure: `${REIN} token-report`,   // a suggested STRING, not an execution
+```
+run · turns/agent · ctx_max/turn · opus share · Δ turns/agent · Δ ctx_max · Δ opus share
 ```
 
-That is the only mention of `token-report` in the whole workflow. The
-machinery underneath is fine — per-model parsing, ledger, baseline, signed
-deltas, dashboard — it is simply never triggered. Instrumentation that depends
-on a human remembering is not instrumentation.
+The single question a user has — *is this helping me?* — is answered nowhere,
+and the one place it could be inferred is actively misleading: the deltas are
+signed so **negative means better**, the opposite of the reflex a minus sign
+triggers, and nothing on the page says so. Someone reading
+`Δ turns/agent -42.4%` as "42% worse" concludes the kit is hurting them.
 
-Two more gaps found in the same check:
-
-- **No skill invocation is observed at all.** `/rein:plan`, `/rein:run`,
-  `/rein:run-auto`, `/rein:review` leave zero trace, so the review rounds and
-  manual passes that cost real money make runs look cheaper than they were.
-- **No ledger row says which change it was.** `wf_ca4b1e78 · 242 turns` is
-  unreadable a week later.
-
-The dashboard already renders signed deltas against a marked baseline, and it
-is honest: the latest run reads `turns_per_agent +62.8%`, `ctx_max +83.9%`
-against the baseline. The instrument works. It is starved of data.
+The page also does not show what the ledger now knows. `rein event` records
+every `/rein:*` invocation and `rein ledger` counts them; `dashboard.py` has
+**zero mentions of events**. Runs carry a `change` label since the last
+change; the page shows `wf_ca4b1e78` and no name. So there is no usage
+history: no sense of which skills a person actually uses, or whether things
+are getting better over time.
 
 ## Scope
-- In: the loop recording its own run, labelled with the change
-- In: skill invocations recorded as events, and surfaced
-- Out: hooks — rejected earlier in this project and not reopened; the skill
-  records its own invocation, visibly, in the transcript
-- Out: backfilling the two lost runs — their transcripts are gone
-- Out: any new metric; this change makes the EXISTING ones arrive, and adds
-  no claim about what they will show
+- In: a plain-language answer to "is this helping?", stated only as far as the
+  data supports it
+- In: every metric explained in place, keyboard-reachable
+- In: usage history — which skills get invoked, which changes ran, and the
+  trend across runs
+- Out: SQLite. Measured: 1.9 KB per run, so a thousand runs is 1.9 MB. The
+  stdlib ships `sqlite3` so it would add no dependency, but it buys nothing at
+  this volume and costs a failure mode the text log does not have — a torn
+  JSONL line is skipped (already handled), a torn database page is not
+- Out: external CSS, fonts, JS or charting libraries. The page is served from
+  127.0.0.1 and stays a single self-contained offline document
+- Out: any NEW metric, and any claim the data does not support — no "you
+  saved X%" anywhere
+- Out: visual art direction. Legible, scannable and honest is the target;
+  taste is not a testable criterion and is not claimed here
 
 ## Decisions
-- D1 The loop records itself. A string in a return value is a suggestion, and the measured result of relying on it is a 2-in-3 loss rate
-- D2 A ledger row names its change, or the history is unreadable — `wf_ca4b1e78` is not an answer to "what did that cost"
-- D3 A skill invocation is an EVENT, not a run: it is counted separately and never mixed into run totals, which would corrupt every existing delta
-- D4 Recording never fails anything. A run whose measurement step dies is still a merged, approved run — the same non-blocking rule the graph index and the render server already follow
-- D5 Recording reads only what Claude Code already wrote to disk locally, and adds no network call and no new file outside `~/.claude/rein/`
+- D1 The page leads with the answer, not the data. The summary comes first and the tables support it, because a user who has to derive the conclusion from a table will not
+- D2 The summary never claims more than the ledger proves. No baseline, one run, or runs of different shapes each produce a stated LIMIT — "not enough history to compare" is a valid and required answer, and is the difference between a dashboard and a sales page
+- D3 One glossary, one source. Every rendered metric is defined in a single structure, and a test fails on the first metric with no entry — a new metric cannot ship unexplained
+- D4 A tooltip that needs a mouse is decoration. Keyboard focus and an accessible description, or the explanation does not exist for the people most likely to need it
+- D5 Self-contained and offline. Trends are drawn as inline SVG; a dashboard that phones out to render is not one this kit would recommend
+- D6 Files, not a database. Bounded reads are the fix for growth
 
 ---
 
-- [x] T001 The loop records its own run
+- [ ] T001 The page opens with the answer
   - Type: implementation
   - Depends on: none
   - Human review: false
-  - Verification: `python3 -m unittest tests.test_measure_step`
+  - Verification: `python3 -m unittest tests.test_dashboard_summary`
   - Acceptance:
-    - a final cheap step runs `rein token-report --record --change <the change name>` after every other phase, so the run lands in the ledger without anyone remembering — and the returned `measure` field reports what was RECORDED, not a command to go run
-    - `token-report` accepts `--change <label>`, writes it into the ledger row, and `rein ledger` prints it next to the `wf_id`; a row written without one still reads back cleanly, so the 13 existing rows are not invalidated (D2)
-    - the step is non-blocking (D4): a missing CLI, a failed parse or a dead agent is reported into the result and never changes `ok`, `approved` or `merged` — covered by a test that executes the decision function with the failure shapes
-    - the decision of what to record is a pure function extracted from the SHIPPED `loop.js` and EXECUTED, the same discipline as `decideRound` and `decideGraphAvailable`; a source-substring assertion does not count
-    - a test asserts the step runs LAST — after Review and Integrate — since a measurement taken before the expensive phases would understate the run it claims to describe
+    - each project section opens with a summary stating, in plain words and before any table, how the latest run compares to the baseline on the three numbers that predict cost — "fewer turns per agent", "more context per turn", "less of the Opus quota" — with the percentage beside each, never a bare signed number
+    - the summary states its own LIMIT whenever one applies and shows NO comparison in that case (D2): no baseline marked, only one run, or a baseline older than every run shown; a test covers each of those three shapes and asserts no comparative wording is emitted
+    - a `direction` helper decides better/worse/unchanged from a metric key and a delta, is a pure function, and is unit-tested per metric including the sign inversion — `opus share` down is better, and a helper that hardcodes "negative is better" for every metric would be wrong the day a metric is added where it is not
+    - the summary says what the numbers are FOR in one sentence — cost is turns × context re-read every turn — so a first-time reader knows why these three and not others
+    - `python3 -m unittest tests.test_dashboard` passes unchanged, and `rein dashboard --json` keeps every key it has today with the summary added alongside; a test pins the pre-existing keys
 
-- [x] T002 A skill invocation leaves a trace
+- [ ] T002 Every number says what it means
   - Type: implementation
   - Depends on: T001
   - Human review: false
-  - Verification: `python3 -m unittest tests.test_events`
+  - Verification: `python3 -m unittest tests.test_dashboard_glossary`
   - Acceptance:
-    - `rein event <name>` appends a JSON line to `~/.claude/rein/events.jsonl` with the name, an ISO timestamp and the project, creating nothing outside `~/.claude/rein/` (D5), and exits 0 even when the file or directory does not yet exist
-    - each of the six `SKILL.md` files records its own invocation as its first step, with the skill's own name — and a test reads the shipped SKILL.md files and fails if one of them lacks it, so a new skill cannot ship unobserved
-    - events are counted SEPARATELY from runs (D3): `rein ledger` shows an invocation count per project without any event entering a run total, and a test asserts the existing per-run fields are byte-identical before and after events exist
-    - a corrupt or truncated line in `events.jsonl` is skipped rather than raising — the file is append-only from concurrent sessions, and a reader that dies on one bad line loses the whole history
-    - `rein event` never fails a caller: an unwritable directory is reported on stderr and still exits 0, because a metrics write must never break the flow it is measuring (D4)
+    - a single `GLOSSARY` defines every metric the page renders — `turns`, `turns/agent`, `ctx_max/turn`, `opus share`, `total`, and each `Δ` column — each with a one-line meaning and a one-line "why it predicts cost"; a test asserts every rendered metric key has an entry and fails naming the first that does not (D3)
+    - each metric header carries a `?` that reveals its glossary text in place, reachable by keyboard focus and exposed as an accessible description rather than a hover-only `title`; a test asserts both for every one (D4)
+    - the delta columns state `negative = better` inside the same section as the delta values, and a test asserts the proximity rather than the mere presence of the text
+    - the baseline is identified where it is used: which run, when it was marked, and — for a project with none — what to run to mark one
+    - a test asserts the rendered HTML contains no `src`/`href` to an external host and no `@import`, so the page stays offline and self-contained (D5)
+
+- [ ] T003 Usage history: what was run, with what, and whether it is improving
+  - Type: implementation
+  - Depends on: T002
+  - Human review: false
+  - Verification: `python3 -m unittest tests.test_dashboard_history`
+  - Acceptance:
+    - each project shows its skill-invocation counts per skill name from `events.jsonl`, visually separated from run metrics and never summed into a run total or delta; a test asserts run rows are byte-identical with and without an events file
+    - each run row shows its `change` label beside the `wf_id`, and a run recorded before labels existed renders as unlabelled rather than as `None` or a bare empty cell
+    - the trend across a project's runs is drawn for `turns/agent` as inline SVG with no external asset, showing at least the last 10 runs, with the baseline marked on it; a project with fewer than 3 runs shows the reason instead of a misleading two-point line
+    - reading events is bounded to the most recent N, N is a named constant with its reason in a comment, and a test writes more than N and asserts the render neither reads all of them nor crashes (D6)
+    - an absent, empty or corrupt `events.jsonl` renders the page with runs and summary intact and the history section stating why it is empty — never a traceback, never a silently missing section
