@@ -61,7 +61,7 @@ are getting better over time.
     - the summary says what the numbers are FOR in one sentence — cost is turns × context re-read every turn — so a first-time reader knows why these three and not others
     - `python3 -m unittest tests.test_dashboard` passes unchanged, and `rein dashboard --json` keeps every key it has today with the summary added alongside; a test pins the pre-existing keys
 
-- [ ] T002 Every number says what it means
+- [x] T002 Every number says what it means
   - Type: implementation
   - Depends on: T001
   - Human review: false
