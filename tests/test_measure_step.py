@@ -125,7 +125,11 @@ class TestMeasureStepRunsLast(unittest.TestCase):
     def test_measure_call_is_after_review_and_integrate_phases(self):
         review_idx = self.src.index("phase('Review')")
         integrate_idx = self.src.index("phase('Integrate')")
-        measure_phase_idx = self.src.index("phase('Measure')")
+        # Round 2 finding #2 added earlier `phase('Measure')` calls inside
+        # measuredAbort (Prepare/PlanCheck/Isolate aborts, all before Review),
+        # so `phase('Measure')` is no longer unique in the source -- find the
+        # occurrence that follows Integrate specifically, i.e. Phase 5 itself.
+        measure_phase_idx = self.src.index("phase('Measure')", integrate_idx)
         measure_call_idx = self.src.index("await runMeasureStep()")
         self.assertGreater(measure_phase_idx, review_idx)
         self.assertGreater(measure_phase_idx, integrate_idx)
@@ -160,14 +164,72 @@ class TestMeasureStepCommand(unittest.TestCase):
             self.src = f.read()
 
     def test_run_measure_step_executes_the_built_command_via_agent_retry(self):
-        start = self.src.index("async function runMeasureStep()")
+        start = self.src.index("async function runMeasureStep(reinOverride)")
         end = self.src.index("\n}\n", start)
         body = self.src[start:end]
-        self.assertIn("buildMeasureCommand(WD, REIN, CHANGE)", body)
+        self.assertIn("buildMeasureCommand(reinOverride || REIN, CHANGE)", body)
         self.assertIn("agentRetry(", body)
 
     def test_build_measure_command_itself_shells_out_to_token_report_record(self):
         self.assertIn("token-report --record${changeFlag} --json", self.src)
+
+
+class TestEarlyAbortsAreMeasured(unittest.TestCase):
+    """Round 2 finding #2: Prepare/PlanCheck/Isolate can all abort the run
+    AFTER already paying an agent (PlanCheck's agentRetry in particular runs
+    to completion before it can decide to stop), and every such early return
+    used to skip Measure entirely -- the same 2-in-3 loss D1 exists to end,
+    just moved earlier in the phase list. `measuredAbort` wraps
+    `runMeasureStep` and every early-exit `return` below phase('Measure')
+    must go through it."""
+
+    def setUp(self):
+        with open(LOOP_JS, encoding="utf-8") as f:
+            self.src = f.read()
+
+    def test_measured_abort_helper_exists_and_calls_run_measure_step(self):
+        start = self.src.index("async function measuredAbort(returnObj, reinOverride)")
+        end = self.src.index("\n}\n", start)
+        body = self.src[start:end]
+        self.assertIn("await runMeasureStep(reinOverride)", body)
+        self.assertIn("...returnObj", body)
+
+    def test_prepare_dead_ctx_abort_routes_through_measured_abort(self):
+        # loop.js:405 (pre-fix): `return { ok: false, phase: 'Prepare', ... }`
+        # fires before REIN exists, so it must pass an explicit override.
+        idx = self.src.index("cannot start: ${why}")
+        segment = self.src[idx : idx + 400]
+        self.assertIn("return await measuredAbort(", segment)
+        self.assertIn("'rein'", segment)
+
+    def test_prepare_gate_precheck_abort_routes_through_measured_abort(self):
+        idx = self.src.index("gate precheck: ${gatePrecheck.reason}")
+        segment = self.src[idx : idx + 200]
+        self.assertIn("return await measuredAbort(", segment)
+
+    def test_plan_check_stop_abort_routes_through_measured_abort(self):
+        # The specific case the reviewer named: an aborted-but-expensive run
+        # (a full plan-check agentRetry already ran) must still land in the
+        # ledger.
+        idx = self.src.index("plan check: ${verdict.reason}")
+        segment = self.src[idx : idx + 200]
+        self.assertIn("return await measuredAbort(", segment)
+        self.assertIn("phase: 'PlanCheck'", segment)
+
+    def test_isolate_failure_abort_routes_through_measured_abort(self):
+        idx = self.src.index("could not create worktree")
+        segment = self.src[idx : idx + 300]
+        self.assertIn("return await measuredAbort(", segment)
+        self.assertIn("phase: 'Isolate'", segment)
+
+    def test_dry_run_return_is_deliberately_unmeasured(self):
+        # AC5/reviewer note: the DRY_RUN return must NOT be routed through
+        # measuredAbort -- it does no agent work and inflates nothing.
+        start = self.src.index("if (DRY_RUN) {")
+        end = self.src.index("\n}\n", start)
+        body = self.src[start:end]
+        self.assertNotIn("measuredAbort", body)
+        self.assertIn("dryRun: true", body)
 
 
 if __name__ == "__main__":

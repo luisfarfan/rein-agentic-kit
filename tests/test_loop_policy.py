@@ -579,11 +579,11 @@ function extract(name, params) {
   return m[1];
 }
 const buildMeasureCommand = new Function(
-  'wd', 'rein', 'change',
-  extract('buildMeasureCommand', 'wd, rein, change')
+  'rein', 'change',
+  extract('buildMeasureCommand', 'rein, change')
 );
 const scenarios = JSON.parse(scenariosJson);
-const out = scenarios.map((s) => buildMeasureCommand(s.wd, s.rein, s.change));
+const out = scenarios.map((s) => buildMeasureCommand(s.rein, s.change));
 process.stdout.write(JSON.stringify(out));
 """
 
@@ -593,7 +593,7 @@ class TestBuildMeasureCommandIsExtractable(unittest.TestCase):
     def test_function_exists_with_expected_signature(self):
         with open(LOOP_JS, encoding="utf-8") as f:
             src = f.read()
-        self.assertIn("function buildMeasureCommand(wd, rein, change)", src)
+        self.assertIn("function buildMeasureCommand(rein, change)", src)
 
 
 @unittest.skipUnless(_NODE, "node not on PATH -- loop.js is a node workflow script")
@@ -614,13 +614,35 @@ class TestBuildMeasureCommandPolicy(unittest.TestCase):
     def test_empty_change_omits_the_flag_entirely(self):
         # The tasks.md path: no --change arg was given. The command must NOT
         # contain the literal placeholder 'change' anywhere as a flag value.
-        [result] = self._run([{"wd": "/repo", "rein": "rein", "change": ""}])
-        self.assertEqual(result, "cd /repo && rein token-report --record --json")
+        [result] = self._run([{"rein": "rein", "change": ""}])
+        self.assertEqual(result, "'rein' token-report --record --json")
         self.assertNotIn("--change", result)
 
     def test_non_empty_change_is_passed_through(self):
-        [result] = self._run([{"wd": "/repo", "rein": "rein", "change": "add-thing"}])
-        self.assertEqual(result, "cd /repo && rein token-report --record --change add-thing --json")
+        [result] = self._run([{"rein": "rein", "change": "add-thing"}])
+        self.assertEqual(result, "'rein' token-report --record --change 'add-thing' --json")
+
+    def test_no_cd_into_the_worktree_the_command_does_not_depend_on_it(self):
+        # Round 2 finding #1: Integrate can remove the worktree (WD) before
+        # Measure ever runs on the approved+merged happy path. The recorded
+        # command must not reference a path Integrate deletes -- only `rein`
+        # and `--change`, never a `cd` or the worktree directory at all.
+        [result] = self._run([{"rein": "/repo/.bin/rein", "change": ""}])
+        self.assertNotIn("cd ", result)
+        self.assertNotIn("&&", result)
+
+    def test_change_with_a_space_is_not_truncated_or_split(self):
+        # Round 2 finding #3: unquoted interpolation let a space in --change
+        # silently truncate the recorded change name.
+        [result] = self._run([{"rein": "rein", "change": "my change"}])
+        self.assertEqual(result, "'rein' token-report --record --change 'my change' --json")
+
+    def test_change_with_a_single_quote_cannot_break_out_of_the_command(self):
+        [result] = self._run([{"rein": "rein", "change": "it's here; rm -rf /"}])
+        self.assertEqual(
+            result,
+            "'rein' token-report --record --change 'it'\\''s here; rm -rf /' --json",
+        )
 
 
 if __name__ == "__main__":

@@ -402,7 +402,10 @@ const ctx = await agentRetry(
 if (!ctx || !ctx.ok) {
   const why = ctx ? ctx.problem : 'the prepare agent died'
   log(`⛔ cannot start: ${why}`)
-  return { ok: false, phase: 'Prepare', problem: why }
+  // ctx died before REIN could be resolved from it -- fall back to the same
+  // bare 'rein' that a working Prepare would have defaulted to (loop.js's own
+  // `REIN = ctx.reinPath || 'rein'` below).
+  return await measuredAbort({ ok: false, phase: 'Prepare', problem: why }, 'rein')
 }
 
 const REIN = ctx.reinPath || 'rein'
@@ -445,7 +448,7 @@ const gatePrecheck = decideGatePrecheck(VERIFY_GATE, !!ctx.monorepoUnconfigured)
 for (const w of gatePrecheck.warnings) log(`⚠️ ${w}`)
 if (gatePrecheck.decision === 'stop') {
   log(`⛔ gate precheck: ${gatePrecheck.reason}`)
-  return { ok: false, phase: 'Prepare', problem: gatePrecheck.reason, verifyGate: VERIFY_GATE }
+  return await measuredAbort({ ok: false, phase: 'Prepare', problem: gatePrecheck.reason, verifyGate: VERIFY_GATE })
 }
 
 if (!tasks.length) {
@@ -1003,7 +1006,7 @@ if (shouldRunPlanCheck(ARGS)) {
     }
     if (verdict.decision === 'stop') {
       log(`⛔ plan check: ${verdict.reason}`)
-      return { ok: false, phase: 'PlanCheck', problem: verdict.reason, findings: verdict.findings }
+      return await measuredAbort({ ok: false, phase: 'PlanCheck', problem: verdict.reason, findings: verdict.findings })
     }
     // Non-blocking plan-check findings are carried, not dropped — symmetric to
     // how review's non-blocking observations survive into openFindings below.
@@ -1026,7 +1029,7 @@ if (WORKTREE_MODE) {
   if (!setup || setup.blocked || !setup.done) {
     const why = setup ? setup.blockedReason || setup.summary : 'the agent died'
     log(`⛔ could not create worktree ${WD}: ${why} — aborting`)
-    return { ok: false, phase: 'Isolate', problem: why, worktree: WD, branch: BRANCH }
+    return await measuredAbort({ ok: false, phase: 'Isolate', problem: why, worktree: WD, branch: BRANCH })
   }
   log(`🌿 isolated in ${WD} (branch ${BRANCH})`)
   // D4: indexing failure never stops the run — only logged, never a gate.
@@ -1497,9 +1500,18 @@ function decideMeasureOutcome(result, threw) {
 // never leak into the recorded change name. Omitting --change entirely lets
 // token_report.py's own "no change key" path (covered by
 // test_token_report.py) read back cleanly, exactly as it was built to do.
-function buildMeasureCommand(wd, rein, change) {
-  const changeFlag = change ? ` --change ${change}` : ''
-  return `cd ${wd} && ${rein} token-report --record${changeFlag} --json`
+//
+// No `cd` here (round 2 finding #1): token_report.main defaults its target to
+// latest_workflow_dir(), which globs ~/.claude/projects/*/*/subagents/workflows/
+// across ALL projects -- cwd never affected what got measured, it only made the
+// command fail whenever Integrate had already removed the worktree (the exact
+// success-path loss D1 exists to end). `rein` and `change` are single-quoted
+// (finding #3) because CHANGE is user input and a repo path/change name with a
+// space or shell metacharacter would otherwise truncate or inject.
+function buildMeasureCommand(rein, change) {
+  const q = (s) => `'${String(s).replace(/'/g, "'\\''")}'`
+  const changeFlag = change ? ` --change ${q(change)}` : ''
+  return `${q(rein)} token-report --record${changeFlag} --json`
 }
 
 // D1: the loop records ITSELF -- the only mention of token-report used to be
@@ -1509,13 +1521,18 @@ function buildMeasureCommand(wd, rein, change) {
 // throw on the FINAL attempt or a null (agent died without throwing) reach
 // here, and both are non-blocking (D4) -- caught, decided, logged, returned.
 // Never called from inside a try/catch upstream because it never throws.
-async function runMeasureStep() {
+//
+// `reinOverride` (round 2 finding #2) lets this run from an abort that fires
+// before REIN is assigned -- the very first Prepare abort, when ctx itself is
+// still null -- without touching the not-yet-initialized REIN binding at all
+// (the `||` short-circuits before evaluating it).
+async function runMeasureStep(reinOverride) {
   let result = null
   let threw = ''
   try {
     result = await agentRetry(
       `Run EXACTLY this one command and report its JSON output; do NOT interpret, fix, retry, or run anything ` +
-        `else: '${buildMeasureCommand(WD, REIN, CHANGE)}'.\n` +
+        `else: '${buildMeasureCommand(reinOverride || REIN, CHANGE)}'.\n` +
         `Parse the JSON it prints. If the command exited 0 and the JSON has a non-empty "wf_id", report ok=true, ` +
         `wfId=<that wf_id>, error=''.\n` +
         `Otherwise report ok=false, wfId='' and error=<a short reason: e.g. "command not found", a non-zero exit ` +
@@ -1530,6 +1547,20 @@ async function runMeasureStep() {
   if (outcome.recorded) log(`✔ measured: recorded ${outcome.wfId} (${CHANGE || 'unlabelled'})`)
   else log(`⚠️ measure step did not record (${outcome.error}) -- ok/approved/merged are unaffected (D4)`)
   return outcome
+}
+
+// Round 2 finding #2: every early-abort return ABOVE phase('Measure') used to
+// skip measurement entirely -- Prepare/PlanCheck/Isolate can all die or stop
+// the run after already paying an agent (PlanCheck in particular runs a full
+// agentRetry before it can decide to stop), and that spend was silently
+// dropped from the ledger -- the exact 2-in-3 loss D1 exists to end, just
+// moved earlier in the phase list. Every such return now measures itself
+// first. `reinOverride` is only needed for the very first Prepare abort
+// (ctx died before REIN could be resolved from it) -- see runMeasureStep.
+async function measuredAbort(returnObj, reinOverride) {
+  phase('Measure')
+  const measure = await runMeasureStep(reinOverride)
+  return { ...returnObj, measure }
 }
 
 let gateContradiction = ''
