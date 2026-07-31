@@ -12,6 +12,7 @@ export const meta = {
     { title: 'Verify' },
     { title: 'Review' },
     { title: 'Integrate' },
+    { title: 'Measure' },
   ],
 }
 
@@ -1368,6 +1369,21 @@ const RENDER_SCHEMA = {
   additionalProperties: false,
 }
 
+// D1/D2: the ONE fact the measure agent reports back -- whether token-report
+// recorded a row, and under what wf_id. Everything else (turns, ctx_max,
+// opus_share...) already lives in the ledger row itself; re-reporting it here
+// through an agent's JSON would be a second, driftable copy of the truth.
+const MEASURE_SCHEMA = {
+  type: 'object',
+  properties: {
+    ok: { type: 'boolean' },
+    wfId: { type: 'string' },
+    error: { type: 'string' },
+  },
+  required: ['ok', 'wfId', 'error'],
+  additionalProperties: false,
+}
+
 // Finding 5: teardown is the LOOP's job, never left to an agent's memory. A
 // render agent that dies mid-step, or simply stops after starting the server,
 // leaves a process group holding the port for the rest of this run and every
@@ -1455,6 +1471,51 @@ async function runRender() {
   if (outcome.failed) log(`⛔ render failed: ${outcome.reason}`)
   else log(`✔ render observed: HTTP ${render.httpStatus}, ${render.evidence.length} fact(s)`)
   return { status: outcome.failed ? 'failed' : 'passed', reason: outcome.reason, ...render }
+}
+
+// D1/D4 as executable policy, not just prose in the prompt -- same discipline
+// as decideRound/decideGraphAvailable: measurement input in, one outcome out,
+// pure so a test can extract and run it (T001 acceptance) instead of trusting
+// a source-substring match. This function has no access to ok/approved/merged
+// at all -- structurally it CANNOT flip them, whatever shape the agent failed
+// in: a missing CLI, a JSON parse failure, or a dead/thrown agent all fall
+// through to the same non-blocking { recorded: false, error } shape.
+function decideMeasureOutcome(result, threw) {
+  if (threw) return { recorded: false, wfId: '', error: `the measure agent threw: ${threw}` }
+  if (!result) return { recorded: false, wfId: '', error: 'the measure agent died' }
+  if (!result.ok) return { recorded: false, wfId: '', error: result.error || 'token-report did not report ok' }
+  if (!result.wfId) return { recorded: false, wfId: '', error: 'token-report reported ok with no wf_id' }
+  return { recorded: true, wfId: result.wfId, error: '' }
+}
+
+// D1: the loop records ITSELF -- the only mention of token-report used to be
+// a suggested string in the return value, and the measured result of relying
+// on a human to run it by hand was a 2-in-3 loss rate. Modeled on runRender's
+// shape above: agentRetry already retries a transient death once, so only a
+// throw on the FINAL attempt or a null (agent died without throwing) reach
+// here, and both are non-blocking (D4) -- caught, decided, logged, returned.
+// Never called from inside a try/catch upstream because it never throws.
+async function runMeasureStep() {
+  let result = null
+  let threw = ''
+  try {
+    result = await agentRetry(
+      `Run EXACTLY this one command and report its JSON output; do NOT interpret, fix, retry, or run anything ` +
+        `else: 'cd ${WD} && ${REIN} token-report --record --change ${LABEL} --json'.\n` +
+        `Parse the JSON it prints. If the command exited 0 and the JSON has a non-empty "wf_id", report ok=true, ` +
+        `wfId=<that wf_id>, error=''.\n` +
+        `Otherwise report ok=false, wfId='' and error=<a short reason: e.g. "command not found", a non-zero exit ` +
+        `with its message, or "invalid JSON" if the output did not parse>. Do NOT retry a failure yourself and do ` +
+        `NOT let one stop you from reporting -- this step must never block the run.`,
+      { schema: MEASURE_SCHEMA, label: 'measure', phase: 'Measure', agentType: 'general-purpose', effort: 'low', model: MODEL_AUX }
+    )
+  } catch (e) {
+    threw = e && e.message ? e.message : String(e)
+  }
+  const outcome = decideMeasureOutcome(result, threw)
+  if (outcome.recorded) log(`✔ measured: recorded ${outcome.wfId} (${LABEL})`)
+  else log(`⚠️ measure step did not record (${outcome.error}) -- ok/approved/merged are unaffected (D4)`)
+  return outcome
 }
 
 let gateContradiction = ''
@@ -1718,6 +1779,14 @@ if (WORKTREE_MODE) {
   }
 }
 
+// ── Phase 5: MEASURE — the loop records itself, LAST ────────────────────────
+// D1: computed only after Review AND Integrate, never before -- a measurement
+// taken earlier would describe a fraction of the run and understate what it
+// actually cost. D4: non-blocking, so a dead CLI or agent here can never
+// unwind approved/merged above -- they are already decided by this point.
+phase('Measure')
+const measure = await runMeasureStep()
+
 return {
   ok: true,
   change: CHANGE,
@@ -1746,6 +1815,7 @@ return {
   // D3/AC4: facts the loop can check, carried whatever the verdict — null in
   // every mode other than 'rendered'.
   renderEvidence,
-  // Measure the run: turns/agent, ctx_max/turn and Opus share are what predict cost.
-  measure: `${REIN} token-report`,
+  // Measure the run: turns/agent, ctx_max/turn and Opus share are what predict
+  // cost. This reports what WAS recorded (or why not), never a suggestion.
+  measure,
 }

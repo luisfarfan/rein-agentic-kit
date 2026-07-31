@@ -50,7 +50,7 @@ against the baseline. The instrument works. It is starved of data.
 
 ---
 
-- [ ] T001 The loop records its own run
+- [x] T001 The loop records its own run
   - Type: implementation
   - Depends on: none
   - Human review: false
