@@ -1,73 +1,75 @@
-# Change: one-owner-for-retrieval
+# Change: measure-itself
 
 ## Why
-Three tools now answer "who calls X": serena `find_referencing_symbols`,
-graphify `explain`, codegraph `callers`. Measured on this repo, same questions,
-same index cost (graphify 1.4s/1179 nodes; codegraph 1.5s/1227 nodes; neither
-needs an LLM or an API key for code):
+The kit exists to measure agent cost, and its own history has holes.
 
-| the question an implementer actually asks | graphify | codegraph |
-|---|---:|---:|
-| "where is it decided that a command is not invocable?" | 546 tok of `flow.config.example.json` — the JSON key `verify` matched | 258 tok: `NOT_INVOCABLE_EXIT_CODES = (126,127)` at `verify.py:71` |
-| who calls / is called by `run_one` | 158 tok, both directions, 1 turn | 22 + 75 tok, 2 turns |
-| chain between two named symbols | 19 tok | no direct equivalent |
-| which tests cover this symbol | no such concept | `⚠️ no covering tests found`, per symbol |
+Three loop runs happened in this repo today. When the ledger was checked,
+**none of them was there** — the last entry was from the previous day. Running
+`rein token-report` by hand recovered exactly one (the most recent); the other
+two are gone for good, ~2.1M agent tokens that will never appear in any
+history.
 
-The prompt-surface argument for cutting tools was checked and does NOT hold:
-the whole RETRIEVAL block costs 314 tokens with everything on against 149 with
-nothing, so ~16.5k over a 100-turn agent — 2% of an 808k run. The cost of a
-menu is not bytes, it is turns spent choosing. The only signal we have on that
-is D2's control (the agent that used serena most oriented in 29 turns, the one
-that used none in 12; n=3, weak, and pointing at choice cost).
+The cause is one line. `loop.js` ends with:
 
-So: one owner per question, and a tool with no exclusive question does not
-appear in an agent-facing prompt at all. That is the same installed-vs-usable
-discipline `setup.py` already enforces, applied to recommendations.
+```js
+measure: `${REIN} token-report`,   // a suggested STRING, not an execution
+```
+
+That is the only mention of `token-report` in the whole workflow. The
+machinery underneath is fine — per-model parsing, ledger, baseline, signed
+deltas, dashboard — it is simply never triggered. Instrumentation that depends
+on a human remembering is not instrumentation.
+
+Two more gaps found in the same check:
+
+- **No skill invocation is observed at all.** `/rein:plan`, `/rein:run`,
+  `/rein:run-auto`, `/rein:review` leave zero trace, so the review rounds and
+  manual passes that cost real money make runs look cheaper than they were.
+- **No ledger row says which change it was.** `wf_ca4b1e78 · 242 turns` is
+  unreadable a week later.
+
+The dashboard already renders signed deltas against a marked baseline, and it
+is honest: the latest run reads `turns_per_agent +62.8%`, `ctx_max +83.9%`
+against the baseline. The instrument works. It is starved of data.
 
 ## Scope
-- In: codegraph as the single owner of code retrieval, in the worktree where
-  agents work; serena's block narrowed to what only it does; graphify removed
-  from every agent-facing prompt
-- In: the provisioner learns codegraph, its gitignore entry and its telemetry
-- Out: any run-level savings claim — this is a per-call result, and D2 is the
-  standing record of how that inference failed before
-- Out: wiring or measuring serena's editing half; its retrieval overlap is
-  removed here, its own value is a separate measurement
-- Out: uninstalling graphify — it stays as the `/graphify` skill for non-code
-  corpora (docs, papers, images), which is the half only it has
-- Out: codegraph's MCP server — 9 tools registered in every session is real
-  surface, where the CLI costs nothing
+- In: the loop recording its own run, labelled with the change
+- In: skill invocations recorded as events, and surfaced
+- Out: hooks — rejected earlier in this project and not reopened; the skill
+  records its own invocation, visibly, in the transcript
+- Out: backfilling the two lost runs — their transcripts are gone
+- Out: any new metric; this change makes the EXISTING ones arrive, and adds
+  no claim about what they will show
 
 ## Decisions
-- D1 CLI, never MCP: `codegraph install` registers 9 tools into every session whether or not a run uses them; the CLI is invoked only when an agent chooses to
-- D2 One owner per question. codegraph answers "what is this / who touches it / what breaks if I change it"; serena answers "edit this symbol" and "what are the type errors without running a build"; graphify answers nothing inside the loop
-- D3 A tool is removed from the prompt for having no EXCLUSIVE question, not for being bad — graphify's `path` is genuinely cheaper, and implementers still ask the concept question far more often than the two-named-symbols question
-- D4 `explore` is not taught: at 3,701 tokens it is a whole-file Read in disguise, and the block's entire point is bounded orientation
-- D5 Defaults are the operator's, not the vendor's: telemetry is disabled and the index directory is excluded before anything is indexed
+- D1 The loop records itself. A string in a return value is a suggestion, and the measured result of relying on it is a 2-in-3 loss rate
+- D2 A ledger row names its change, or the history is unreadable — `wf_ca4b1e78` is not an answer to "what did that cost"
+- D3 A skill invocation is an EVENT, not a run: it is counted separately and never mixed into run totals, which would corrupt every existing delta
+- D4 Recording never fails anything. A run whose measurement step dies is still a merged, approved run — the same non-blocking rule the graph index and the render server already follow
+- D5 Recording reads only what Claude Code already wrote to disk locally, and adds no network call and no new file outside `~/.claude/rein/`
 
 ---
 
-- [x] T001 codegraph owns retrieval, where the agents work
+- [ ] T001 The loop records its own run
   - Type: implementation
   - Depends on: none
   - Human review: false
-  - Verification: `python3 -m unittest tests.test_graph_index tests.test_graph_retrieval`
+  - Verification: `python3 -m unittest tests.test_measure_step`
   - Acceptance:
-    - the Isolate step builds codegraph's index inside the worktree (`codegraph init`, ~1.5s, no LLM) and excludes `.codegraph/` the same shared-`info/exclude` way `graphify-out/` is excluded today, reporting the outcome into `ISOLATE_SCHEMA` as a literal fact; the graphify index build is removed from that prompt
-    - the availability decision keeps its current shape and tests — derived from what the Isolate step REPORTED about the worktree, never from `ctx.capabilities` of the base repo (the standing D2 of `graph-reaches-the-agents`) — and now answers for codegraph
-    - with the graph on, the RETRIEVAL block teaches `codegraph query "<concept>"` (symbols matching a concept, with file:line), `codegraph callers`/`callees <symbol>`, `codegraph node <symbol>` (source plus callers, instead of reading the file) and `codegraph impact <symbol>` before an edit — each with a one-line statement of what it returns, and NOT `codegraph explore` (D4)
-    - serena's part of the block no longer teaches retrieval that codegraph now owns: it keeps `get_diagnostics_for_file` (type errors without a build) and the symbol-level EDIT operations, and a test asserts `find_referencing_symbols` is no longer taught as the way to find callers (D2)
-    - no agent-facing prompt in `loop.js` mentions `graphify` in any form — the Map scout included — and a test scanning the shipped source fails if one reappears, the same guard that today catches `graphify query`
-    - the pure functions stay extracted from the SHIPPED `loop.js` and EXECUTED (never asserted by source substring), all four serena/graph combinations remain covered, and the no-tool branch is proven byte-identical to today
+    - a final cheap step runs `rein token-report --record --change <the change name>` after every other phase, so the run lands in the ledger without anyone remembering — and the returned `measure` field reports what was RECORDED, not a command to go run
+    - `token-report` accepts `--change <label>`, writes it into the ledger row, and `rein ledger` prints it next to the `wf_id`; a row written without one still reads back cleanly, so the 13 existing rows are not invalidated (D2)
+    - the step is non-blocking (D4): a missing CLI, a failed parse or a dead agent is reported into the result and never changes `ok`, `approved` or `merged` — covered by a test that executes the decision function with the failure shapes
+    - the decision of what to record is a pure function extracted from the SHIPPED `loop.js` and EXECUTED, the same discipline as `decideRound` and `decideGraphAvailable`; a source-substring assertion does not count
+    - a test asserts the step runs LAST — after Review and Integrate — since a measurement taken before the expensive phases would understate the run it claims to describe
 
-- [x] T002 The provisioner recommends what the loop actually uses
+- [ ] T002 A skill invocation leaves a trace
   - Type: implementation
   - Depends on: T001
   - Human review: false
-  - Verification: `python3 -m unittest tests.test_setup`
+  - Verification: `python3 -m unittest tests.test_events`
   - Acceptance:
-    - `setup.py` gains a `codegraph` entry: probed by binary, installable with `npm i -g @colbymchenry/codegraph` (needing `npm`), index marker `.codegraph/`, gitignore entry `.codegraph/`, and a `why` that states its exclusive question rather than a generic benefit — the existing test that every tool states one must pass unchanged
-    - installed-but-no-index is reported `inert` exactly as graphify is today, with its own one-command fix named; a test covers indexed and not-indexed
-    - `--install` disables telemetry as part of activation (`codegraph telemetry off`) and reports that it did — it is on by default, and a provisioner that silently accepts a vendor default is not provisioning (D5)
-    - graphify's entry is re-scoped in `why` and `manual` to non-code corpora, and no longer claims a role in the loop's retrieval; nothing about it is uninstalled or removed from `TOOLS`
-    - `rein doctor` and `rein setup` render codegraph alongside the others with no change to their output contract, and `python3 -m unittest discover -s tests -q` stays green
+    - `rein event <name>` appends a JSON line to `~/.claude/rein/events.jsonl` with the name, an ISO timestamp and the project, creating nothing outside `~/.claude/rein/` (D5), and exits 0 even when the file or directory does not yet exist
+    - each of the six `SKILL.md` files records its own invocation as its first step, with the skill's own name — and a test reads the shipped SKILL.md files and fails if one of them lacks it, so a new skill cannot ship unobserved
+    - events are counted SEPARATELY from runs (D3): `rein ledger` shows an invocation count per project without any event entering a run total, and a test asserts the existing per-run fields are byte-identical before and after events exist
+    - a corrupt or truncated line in `events.jsonl` is skipped rather than raising — the file is append-only from concurrent sessions, and a reader that dies on one bad line loses the whole history
+    - `rein event` never fails a caller: an unwritable directory is reported on stderr and still exits 0, because a metrics write must never break the flow it is measuring (D4)
