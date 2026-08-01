@@ -42,7 +42,7 @@ changing scope still costs nothing.
 
 ---
 
-- [ ] T001 The plan is criticised before it is written
+- [x] T001 The plan is criticised before it is written
   - Type: implementation
   - Depends on: none
   - Human review: false
