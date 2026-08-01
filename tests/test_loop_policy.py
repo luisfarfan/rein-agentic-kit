@@ -579,11 +579,11 @@ function extract(name, params) {
   return m[1];
 }
 const buildMeasureCommand = new Function(
-  'rein', 'change',
-  extract('buildMeasureCommand', 'rein, change')
+  'rein', 'change', 'groups', 'parallel',
+  extract('buildMeasureCommand', 'rein, change, groups, parallel')
 );
 const scenarios = JSON.parse(scenariosJson);
-const out = scenarios.map((s) => buildMeasureCommand(s.rein, s.change));
+const out = scenarios.map((s) => buildMeasureCommand(s.rein, s.change, s.groups, s.parallel));
 process.stdout.write(JSON.stringify(out));
 """
 
@@ -593,7 +593,7 @@ class TestBuildMeasureCommandIsExtractable(unittest.TestCase):
     def test_function_exists_with_expected_signature(self):
         with open(LOOP_JS, encoding="utf-8") as f:
             src = f.read()
-        self.assertIn("function buildMeasureCommand(rein, change)", src)
+        self.assertIn("function buildMeasureCommand(rein, change, groups, parallel)", src)
 
 
 @unittest.skipUnless(_NODE, "node not on PATH -- loop.js is a node workflow script")
@@ -636,6 +636,53 @@ class TestBuildMeasureCommandPolicy(unittest.TestCase):
         # silently truncate the recorded change name.
         [result] = self._run([{"rein": "rein", "change": "my change"}])
         self.assertEqual(result, "'rein' token-report --record --change 'my change' --json")
+
+    # ── T001/AC4: groups -- the loop's own grouping decision rides through ──
+
+    def test_absent_groups_omits_the_flag_entirely(self):
+        # No "groups" key in the scenario at all -- the two-arg call shape,
+        # preserved so nothing upstream that never learned about groups breaks.
+        [result] = self._run([{"rein": "rein", "change": ""}])
+        self.assertNotIn("--groups", result)
+
+    def test_empty_groups_array_omits_the_flag(self):
+        # An early abort before Phase 2 ever computed groups: no grouping was
+        # ever decided, so nothing is claimed (mirrors the empty-change case).
+        [result] = self._run([{"rein": "rein", "change": "", "groups": []}])
+        self.assertNotIn("--groups", result)
+
+    def test_non_empty_groups_is_passed_through_as_json(self):
+        [result] = self._run([{"rein": "rein", "change": "", "groups": [["T001"], ["T002", "T003"]], "parallel": True}])
+        self.assertEqual(
+            result,
+            '\'rein\' token-report --record --groups \'[["T001"],["T002","T003"]]\' --parallel-path true --json',
+        )
+
+    def test_groups_of_one_for_a_fully_serial_plan_are_still_recorded(self):
+        [result] = self._run([{"rein": "rein", "change": "", "groups": [["T001"], ["T002"]]}])
+        self.assertIn('--groups \'[["T001"],["T002"]]\'', result)
+
+    # ── round 1, finding #3: parallelSummary.concurrent must ride alongside ──
+    # parallelGroups, not evaporate -- otherwise groups=[[T1,T2]] overlap~1.00
+    # is ambiguous between "the parallel path never fired" and "it fired and
+    # the runtime serialised the agents".
+
+    def test_absent_groups_omits_parallel_path_too(self):
+        # No groups decided (early abort) means no parallel-path verdict
+        # either -- both are decided together by summarizeConcurrency.
+        [result] = self._run([{"rein": "rein", "change": "", "groups": [], "parallel": False}])
+        self.assertNotIn("--parallel-path", result)
+
+    def test_groups_with_parallel_path_taken_records_true(self):
+        [result] = self._run([{"rein": "rein", "change": "", "groups": [["T001", "T002"]], "parallel": True}])
+        self.assertIn("--parallel-path true", result)
+
+    def test_groups_with_parallel_path_not_taken_records_false(self):
+        # The exact ambiguous case the finding names: a group that HAD two
+        # tasks but fell back to serial -- overlap will read ~1.00, but the
+        # flag says plainly the path never fired.
+        [result] = self._run([{"rein": "rein", "change": "", "groups": [["T001", "T002"]], "parallel": False}])
+        self.assertIn("--parallel-path false", result)
 
     def test_change_with_a_single_quote_cannot_break_out_of_the_command(self):
         [result] = self._run([{"rein": "rein", "change": "it's here; rm -rf /"}])

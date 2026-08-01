@@ -29,6 +29,7 @@ history possible: raw transcripts get rotated away, a summarized record does not
 from __future__ import annotations
 
 import argparse
+import datetime
 import glob
 import json
 import os
@@ -107,12 +108,39 @@ def _short_model(model: str) -> str:
 # ------------------------------------------------------------------ analysis --
 
 
+def _parse_iso_ts(raw) -> datetime.datetime | None:
+    """Parse a transcript record's `timestamp` field (e.g.
+    '2026-07-31T00:00:00.037Z') into an aware `datetime`, or `None` if it is
+    missing or not a valid ISO-8601 string (D2: unparseable is absent, never
+    a crash and never a fabricated time)."""
+    if not isinstance(raw, str) or not raw:
+        return None
+    s = raw[:-1] + "+00:00" if raw.endswith("Z") else raw
+    try:
+        dt = datetime.datetime.fromisoformat(s)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        # A zone-less stamp is not comparable to the aware datetimes the rest
+        # of this module works with. Assume UTC rather than crash (D2's
+        # "absent is absent" governs missing/unparseable timestamps, not
+        # ones that merely lack an explicit offset).
+        dt = dt.replace(tzinfo=datetime.timezone.utc)
+    return dt
+
+
 def analyze(path: str) -> dict:
     """Token accounting for a single transcript (one agent)."""
     turns = 0
     totals: dict[str, int] = defaultdict(int)
     by_model: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
     ctx_max = 0
+    # First and last record IN FILE ORDER that carry a parseable `timestamp`
+    # -- deliberately not min()/max(), so a transcript whose timestamps are
+    # genuinely out of order (last-seen earlier than first-seen) surfaces as
+    # exactly that, rather than being silently corrected into a valid span.
+    start_ts: datetime.datetime | None = None
+    end_ts: datetime.datetime | None = None
 
     with open(path, encoding="utf-8") as fh:
         for line in fh:
@@ -120,6 +148,11 @@ def analyze(path: str) -> dict:
                 rec = json.loads(line)
             except json.JSONDecodeError:
                 continue
+            ts = _parse_iso_ts(rec.get("timestamp"))
+            if ts is not None:
+                if start_ts is None:
+                    start_ts = ts
+                end_ts = ts
             msg = rec.get("message") or {}
             usage = msg.get("usage") or rec.get("usage")
             if not usage:
@@ -154,6 +187,11 @@ def analyze(path: str) -> dict:
         "ctx_max": ctx_max,
         "model": dominant,
         "by_model": {m: dict(v) for m, v in by_model.items()},
+        # ISO strings (not datetimes) so this dict stays JSON-safe; `summarize`
+        # re-parses them. `None` when no line in this transcript carried a
+        # parseable `timestamp` (D2).
+        "start_ts": start_ts.isoformat() if start_ts is not None else None,
+        "end_ts": end_ts.isoformat() if end_ts is not None else None,
     }
 
 
@@ -168,6 +206,16 @@ def summarize(target: str, limit: int | None = None) -> dict:
     grand_by_model: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
     turns = 0
     ctx_max = 0
+    # D1/D2: overlap is measured from each agent's own transcript timestamps,
+    # never claimed from a status flag. `agent_min` is a SUM of per-agent
+    # spans, so one agent with no usable span (missing, unparseable, or
+    # last-seen-before-first-seen timestamps) invalidates the whole run's
+    # duration figures -- summing a fabricated 0 alongside real spans would
+    # understate the total and poison the overlap ratio computed from it.
+    agent_spans_min: list[float] = []
+    run_start: datetime.datetime | None = None
+    run_end: datetime.datetime | None = None
+    spans_valid = True
 
     for path in files:
         a = analyze(path)
@@ -191,6 +239,17 @@ def summarize(target: str, limit: int | None = None) -> dict:
             for key, val in mv.items():
                 grand_by_model[model][key] += val
 
+        start_dt = _parse_iso_ts(a["start_ts"])
+        end_dt = _parse_iso_ts(a["end_ts"])
+        if start_dt is None or end_dt is None or end_dt < start_dt:
+            spans_valid = False
+        else:
+            agent_spans_min.append((end_dt - start_dt).total_seconds() / 60.0)
+            if run_start is None or start_dt < run_start:
+                run_start = start_dt
+            if run_end is None or end_dt > run_end:
+                run_end = end_dt
+
     total = sum(grand.values())
     opus_total = sum(v["total"] for m, v in grand_by_model.items() if "opus" in m)
 
@@ -198,7 +257,7 @@ def summarize(target: str, limit: int | None = None) -> dict:
     agents.sort(key=lambda a: -a["total"])
 
     prov = _provenance(target)
-    return {
+    summary = {
         "schema": 1,
         "project": prov["project"],
         "session": prov["session"],
@@ -218,10 +277,23 @@ def summarize(target: str, limit: int | None = None) -> dict:
         "agents": agents,
     }
 
+    # D2: absent is absent. Only set when EVERY counted agent yielded a real,
+    # non-negative span, run_start/run_end were seen, and the wall clock is
+    # actually positive -- otherwise these three keys are omitted entirely
+    # rather than persisting a fabricated 0m/1.00x that would read as an
+    # instant run and poison every average derived from the ledger.
+    if spans_valid and agent_spans_min and run_start is not None and run_end is not None:
+        wall_clock_min = (run_end - run_start).total_seconds() / 60.0
+        if wall_clock_min > 0:
+            agent_min = sum(agent_spans_min)
+            summary["wall_clock_min"] = round(wall_clock_min, 2)
+            summary["agent_min"] = round(agent_min, 2)
+            summary["overlap"] = round(agent_min / wall_clock_min, 2)
+
+    return summary
+
 
 def _mtime_iso(target: str) -> str:
-    import datetime
-
     try:
         ts = os.path.getmtime(target)
     except OSError:
@@ -427,10 +499,20 @@ def render_ledger(rows: list[dict], ledger_path: str = LEDGER_PATH, baseline: di
             # at all -- `.get` returns None, the tag is simply omitted, and the
             # row reads back exactly as it always did.
             change_tag = f"  [{r['change']}]" if r.get("change") else ""
+            # D2/D3: a row recorded before this task (or one whose transcripts
+            # had no usable timestamps) has no "wall_clock_min" key at all --
+            # `.get` reads back `None`, and the duration/overlap tag is simply
+            # omitted, exactly like the "change" tag above.
+            duration_tag = (
+                f"  wall={r['wall_clock_min']}m"
+                f"  agent={r.get('agent_min', '?')}m"
+                f"  overlap={r.get('overlap', '?')}x"
+                if r.get("wall_clock_min") is not None else ""
+            )
             line = (
                 f"    {r.get('ts',''):<21} {r.get('wf_id','')[:14]:<14}{change_tag} "
                 f"turns={r.get('turns',0):>4}  turns/agent={r.get('turns_per_agent',0):>5}  "
-                f"ctx_max={r.get('ctx_max',0):>8,}  opus={r.get('opus_share',0):>5}%"
+                f"ctx_max={r.get('ctx_max',0):>8,}  opus={r.get('opus_share',0):>5}%{duration_tag}"
             )
             is_baseline_row = bool(baseline_wf_id) and r.get("wf_id") == baseline_wf_id and project == baseline_project
             if is_baseline_row:
@@ -562,6 +644,18 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-record", action="store_true", help="never touch the ledger")
     p.add_argument("--ledger", default=LEDGER_PATH, help=f"ledger path (default: {LEDGER_PATH})")
     p.add_argument("--change", default="", help="label this run with a change name (D2) -- printed next to wf_id by `rein ledger`")
+    p.add_argument(
+        "--groups", default="",
+        help="JSON-encoded task grouping for this run (e.g. '[[\"T001\"],[\"T002\"]]'), as the loop decided it -- "
+             "recorded verbatim, never re-derived",
+    )
+    p.add_argument(
+        "--parallel-path", default=None, choices=["true", "false"], dest="parallel_path",
+        help="whether the loop's parallel path actually ran for this run (its own didTakeParallelPath verdict), "
+             "as it decided it -- recorded verbatim, never re-derived. Omitted entirely when not passed, so a "
+             "'groups=[[...]] overlap=1.00' row never reads as ambiguous between the path never firing and it "
+             "firing but the runtime serialising the agents.",
+    )
     return p
 
 
@@ -587,6 +681,25 @@ def main(argv: list[str] | None = None) -> int:
     # as they were: `.get("change")` reads back `None` on them, never "".
     if args.change:
         summary["change"] = args.change
+
+    # AC4: the run's task grouping rides in from the loop's own decision
+    # (parallelSummary.parallelGroups) rather than being re-derived here --
+    # this module has no way to know how tasks were grouped, only that they
+    # were. Malformed JSON is treated like an absent flag (D2): the row reads
+    # back with no "groups" key rather than a garbage value.
+    if args.groups:
+        try:
+            summary["groups"] = json.loads(args.groups)
+        except json.JSONDecodeError:
+            pass
+
+    # Finding #3 (round 1): the loop's own didTakeParallelPath verdict, rides
+    # through the same way `groups` does -- recorded exactly as the loop
+    # decided it, never re-derived (this module has no way to tell "the
+    # parallel path never fired" from "it fired and serialised" on its own).
+    # Absent entirely when not passed, same D2 shape as `change`/`groups`.
+    if args.parallel_path is not None:
+        summary["parallel_path"] = args.parallel_path == "true"
 
     # Recording is the default: the ledger is only useful if it is complete.
     should_record = not args.no_record

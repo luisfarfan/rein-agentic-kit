@@ -44,7 +44,7 @@ agents anyway — a question that cannot be answered today.
 
 ---
 
-- [ ] T001 A run records how long it took, and whether anything overlapped
+- [x] T001 A run records how long it took, and whether anything overlapped
   - Type: implementation
   - Depends on: none
   - Human review: false
