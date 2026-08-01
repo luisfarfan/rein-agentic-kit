@@ -54,7 +54,7 @@ So the fix is not longer names. It is three different verbs, still short.
 
 ---
 
-- [ ] T001 The colliding verbs are renamed, everywhere
+- [x] T001 The colliding verbs are renamed, everywhere
   - Type: implementation
   - Depends on: none
   - Human review: false
