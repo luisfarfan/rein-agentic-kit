@@ -1,0 +1,84 @@
+# Publishes to PyPI when a release tag is pushed.
+#
+# NO API TOKEN IS STORED ANYWHERE. This uses PyPI's Trusted Publishing
+# (OpenID Connect): GitHub proves this workflow's identity to PyPI directly,
+# and PyPI issues a short-lived credential for that one upload. There is no
+# secret in the repository, none in Actions secrets, and nothing to leak,
+# rotate or accidentally commit.
+#
+# One-time setup on PyPI (Publishing -> Add a pending publisher):
+#   PyPI project name : rein-agentic-kit
+#   Owner             : luisfarfan
+#   Repository        : rein-agentic-kit
+#   Workflow name     : publish.yml
+#   Environment       : pypi
+name: publish
+
+on:
+  push:
+    tags:
+      # The tag `claude plugin tag` creates, so one command releases both
+      # channels: the marketplace reads the repo, PyPI reads this workflow.
+      - "rein--v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    # Never publish something the suite has not passed. The version lock in
+    # tests/test_version_lock.py is what stops the two channels drifting, and
+    # tests/test_packaging.py builds and runs the wheel itself.
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.9", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: python -m pip install --quiet build
+      - run: python -m unittest discover -s tests -q
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --quiet build
+      - run: python -m build
+      - name: the tag must match the version being published
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#rein--v}"
+          PKG_VERSION="$(python -c 'import re;print(re.search(r"^version\s*=\s*\"([^\"]+)\"", open("pyproject.toml").read(), re.M).group(1))')"
+          echo "tag=$TAG_VERSION package=$PKG_VERSION"
+          [ "$TAG_VERSION" = "$PKG_VERSION" ] || {
+            echo "::error::tag $TAG_VERSION does not match pyproject version $PKG_VERSION"
+            exit 1
+          }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      # The whole mechanism: this is what lets GitHub mint the OIDC token
+      # PyPI trusts. Without it the upload has no credential at all.
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1

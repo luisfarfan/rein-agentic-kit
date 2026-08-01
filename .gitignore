@@ -21,3 +21,8 @@ graphify-out/
 
 # CodeGraph's local index: tree-sitter -> SQLite, regenerated, never committed.
 .codegraph/
+
+# Never committed, and never written by this project: secrets belong in
+# the tool that owns them, not in the repo.
+.env
+.env.*

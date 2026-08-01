@@ -1,0 +1,2 @@
+[console_scripts]
+rein = rein_kit._entry:main

@@ -1,0 +1,53 @@
+# The SECOND distribution channel, and the reason there are two:
+#
+# A Claude Code plugin cannot put anything on the user's shell PATH -- its
+# `bin/` is only on the path of Claude Code's own sessions. Every tool this
+# kit integrates (serena, graphify via uv; codegraph, openspec via npm) ships
+# its binary through a package registry for exactly that reason.
+#
+# So: the plugin ships the skills, the commands and the workflow; PyPI ships
+# the `rein` CLI for a terminal. Same repository, same code, same version --
+# tests/test_version_lock.py fails the build if the four version strings ever
+# disagree.
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rein-agentic-kit"
+version = "0.7.0"
+description = "Rein — keep your Claude Code agents lean and in control. Token-lean, stack-aware agentic dev flow."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Luis Farfan" }]
+keywords = ["claude", "claude-code", "agents", "tokens", "cost", "review", "planning"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Software Development :: Quality Assurance",
+]
+# Zero runtime dependencies is a property, not an accident: this runs inside
+# other people's projects and must never fight their environment.
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/luisfarfan/rein-agentic-kit"
+Source = "https://github.com/luisfarfan/rein-agentic-kit"
+
+[project.scripts]
+rein = "rein_kit._entry:main"
+
+[tool.setuptools]
+# EXPLICIT, not `packages.find`: with a package-dir remap, auto-discovery
+# scans `where` and finds nothing to map, producing a wheel with metadata
+# and no package -- which installs cleanly and then fails at first run with
+# ModuleNotFoundError. Verified by building it.
+packages = ["rein_kit"]
+package-dir = { rein_kit = "plugins/rein" }
+
+[tool.setuptools.package-data]
+rein_kit = ["bin/rein", "lib/*.py", "workflows/*.js", "commands/*.md", "skills/*/SKILL.md", "flow.config.example.json", ".claude-plugin/*.json"]

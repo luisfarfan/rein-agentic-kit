@@ -1,3 +1,23 @@
+Metadata-Version: 2.4
+Name: rein-agentic-kit
+Version: 0.7.0
+Summary: Rein — keep your Claude Code agents lean and in control. Token-lean, stack-aware agentic dev flow.
+Author: Luis Farfan
+License: MIT
+Project-URL: Homepage, https://github.com/luisfarfan/rein-agentic-kit
+Project-URL: Source, https://github.com/luisfarfan/rein-agentic-kit
+Keywords: claude,claude-code,agents,tokens,cost,review,planning
+Classifier: Development Status :: 4 - Beta
+Classifier: Intended Audience :: Developers
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Programming Language :: Python :: 3.9
+Classifier: Programming Language :: Python :: 3.12
+Classifier: Topic :: Software Development :: Quality Assurance
+Requires-Python: >=3.9
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Dynamic: license-file
+
 <div align="center">
 
 # 🐎 Rein
@@ -99,20 +119,6 @@ came from. **If it got everything right, you configure nothing.**
 > where the skills, the commands and the agents call `rein`. In a plain terminal
 > `rein` will *not* be found, and that is expected: the CLI exists to be called by
 > the flow, and the two commands a person runs by hand have slash commands above.
-### Want `rein` in your own terminal too?
-
-The plugin's `bin/` is only on the path of Claude Code's own sessions — a plugin
-cannot add anything to your shell. For `rein dashboard`, `rein ledger` or
-`rein doctor` from a terminal, install the CLI the way every tool this kit
-integrates ships (serena and graphify via `uv`, codegraph and openspec via `npm`):
-
-```bash
-uv tool install rein-agentic-kit    # or: pipx install rein-agentic-kit
-```
-
-Same code, same version, zero dependencies. The two channels cannot drift: a
-test fails the build if their version strings ever disagree.
-
 > To update: `claude plugin marketplace update rein-agentic-kit` then
 > `claude plugin update rein@rein-agentic-kit` — qualified with the marketplace,
 > or it reports `Plugin "rein" not found`.
