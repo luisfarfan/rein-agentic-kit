@@ -530,3 +530,61 @@ class TestAnInstallIsProvenByTheBinaryNotTheExitCode(unittest.TestCase):
         res = report["results"]["openspec"]
         self.assertFalse(res["ok"], "an install leaving no binary must not report ok")
         self.assertTrue(any("not on PATH" in s.get("output", "") for s in res["steps"]))
+
+
+class TestSerenaDashboardIsQuieted(unittest.TestCase):
+    """D5 was applied to codegraph's telemetry and not to this one.
+
+    `web_dashboard_open_on_launch` defaults to true and serena's MCP server
+    starts with every Claude Code session, so the dashboard opened over and
+    over. Reported by the operator, not by a test -- nothing here could have
+    seen it.
+    """
+
+    def _config(self, body: str) -> str:
+        d = tempfile.mkdtemp()
+        p = os.path.join(d, "serena_config.yml")
+        with open(p, "w", encoding="utf-8") as fh:
+            fh.write(body)
+        return p
+
+    def test_it_flips_the_launch_flag_and_leaves_the_rest_alone(self):
+        p = self._config(
+            "# a comment the operator wrote\n"
+            "gui_log_window: false\n"
+            "web_dashboard: true\n"
+            "web_dashboard_open_on_launch: true\n"
+            "other: value\n"
+        )
+        res = setup.quiet_serena_dashboard(p)
+        self.assertTrue(res["ok"])
+        self.assertTrue(res["attempted"])
+        body = open(p, encoding="utf-8").read()
+        self.assertIn("web_dashboard_open_on_launch: false", body)
+        # The feature stays available -- only the interruption is removed.
+        self.assertIn("web_dashboard: true", body)
+        self.assertIn("# a comment the operator wrote", body)
+        self.assertIn("other: value", body)
+
+    def test_an_already_quiet_config_is_left_untouched(self):
+        p = self._config("web_dashboard_open_on_launch: false\n")
+        before = open(p, encoding="utf-8").read()
+        res = setup.quiet_serena_dashboard(p)
+        self.assertTrue(res["ok"])
+        self.assertFalse(res["attempted"])
+        self.assertEqual(open(p, encoding="utf-8").read(), before)
+
+    def test_a_missing_config_is_reported_not_created(self):
+        res = setup.quiet_serena_dashboard("/no/such/serena_config.yml")
+        self.assertFalse(res["attempted"])
+        self.assertFalse(os.path.exists("/no/such/serena_config.yml"))
+
+    def test_a_config_without_the_key_is_left_alone(self):
+        """Never invent a key: a future serena may have renamed or removed it,
+        and appending one we guessed would be worse than doing nothing."""
+        p = self._config("web_dashboard: true\n")
+        before = open(p, encoding="utf-8").read()
+        res = setup.quiet_serena_dashboard(p)
+        self.assertFalse(res["attempted"])
+        self.assertEqual(open(p, encoding="utf-8").read(), before)
+        self.assertIn("not present", res["reason"])

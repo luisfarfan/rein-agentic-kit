@@ -268,6 +268,9 @@ def install(names: list[str] | None = None, root: str = ".") -> dict:
     # buys nothing here until THIS repo has an index. Reporting the fix
     # instead of applying it left every freshly provisioned repo inert.
     results["codegraph-index"] = index_codegraph(root)
+    # Same rule as the telemetry above, one vendor over: a default that
+    # interrupts the operator on every session is the vendor's choice, not theirs.
+    results["serena-dashboard"] = quiet_serena_dashboard()
     # A tracked-file write, so it belongs to --install and nowhere else.
     results["gitignore"] = write_gitignore(root)
     return {"root": state["root"], "results": results}
@@ -308,6 +311,65 @@ def activate_serena(root: str = ".") -> dict:
     if not ok:
         result["reason"] = out
     return result
+
+
+SERENA_CONFIG = os.path.expanduser("~/.serena/serena_config.yml")
+_DASHBOARD_KEY = "web_dashboard_open_on_launch"
+
+
+def quiet_serena_dashboard(config_path: str = SERENA_CONFIG) -> dict:
+    """Stop serena opening a browser tab on every session start (D5).
+
+    `web_dashboard_open_on_launch` defaults to true, and serena's MCP server
+    starts with every Claude Code session -- so the dashboard opens over and
+    over, unasked. D5 already says defaults are the operator's, not the
+    vendor's; it was applied to codegraph's telemetry and not to this.
+
+    Only `open_on_launch` is flipped, never `web_dashboard` itself: the
+    dashboard stays reachable by hand or from the tray. Turning the feature
+    off would take something away; turning off the interruption is the
+    smallest honest change.
+
+    Line-oriented on purpose -- this kit has zero dependencies, so there is
+    no YAML parser here, and rewriting a config file through a parser would
+    reformat comments the operator wrote. Idempotent: an already-false value
+    is reported and left alone.
+    """
+    if not os.path.exists(config_path):
+        return {"ok": False, "attempted": False,
+                "reason": f"no serena config at {config_path} — nothing to quiet"}
+    try:
+        with open(config_path, encoding="utf-8") as fh:
+            lines = fh.read().splitlines(keepends=True)
+    except OSError as exc:
+        return {"ok": False, "attempted": False, "reason": f"could not read {config_path}: {exc}"}
+
+    changed = False
+    found = False
+    for i, line in enumerate(lines):
+        if line.lstrip().startswith(f"{_DASHBOARD_KEY}:"):
+            found = True
+            value = line.split(":", 1)[1].strip()
+            if value == "false":
+                return {"ok": True, "attempted": False,
+                        "reason": "serena already opens no dashboard on launch"}
+            indent = line[: len(line) - len(line.lstrip())]
+            end = "\n" if line.endswith("\n") else ""
+            lines[i] = f"{indent}{_DASHBOARD_KEY}: false{end}"
+            changed = True
+            break
+    if not found:
+        return {"ok": False, "attempted": False,
+                "reason": f"{_DASHBOARD_KEY} not present in {config_path} — left untouched"}
+    if not changed:
+        return {"ok": True, "attempted": False, "reason": "nothing to change"}
+    try:
+        with open(config_path, "w", encoding="utf-8") as fh:
+            fh.writelines(lines)
+    except OSError as exc:
+        return {"ok": False, "attempted": True, "reason": f"could not write {config_path}: {exc}"}
+    return {"ok": True, "attempted": True,
+            "reason": "serena will no longer open its dashboard on every session start"}
 
 
 def activate_codegraph(root: str = ".") -> dict:

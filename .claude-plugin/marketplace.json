@@ -6,14 +6,14 @@
   },
   "metadata": {
     "description": "Rein \u2014 keep your Claude Code agents lean and in control.",
-    "version": "0.9.0"
+    "version": "0.9.1"
   },
   "plugins": [
     {
       "name": "rein",
       "source": "./plugins/rein",
       "description": "Token-lean, stack-aware agentic dev flow: bounded fresh-agent loops, per-agent model routing, and per-model token measurement.",
-      "version": "0.9.0",
+      "version": "0.9.1",
       "category": "workflow",
       "keywords": [
         "workflow",
