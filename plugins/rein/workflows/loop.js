@@ -1282,7 +1282,13 @@ function planParallelGroups(tasks, codeMap) {
     const entry = map[id]
     if (!entry) return null // no map entry: unknown
     const tp = entry.touchpoints || []
-    return tp.length ? tp : null // empty touchpoints: also unknown
+    if (!tp.length) return null // empty touchpoints: also unknown
+    // The scout returns "path:symbol" (buildScoutPrompt), not bare paths --
+    // normalise to the file path before comparing, or two touchpoints in the
+    // SAME FILE at different symbols/lines never overlap (D1's exact case:
+    // two independent tasks editing one file).
+    const files = tp.map((t) => String(t).split(':')[0].trim()).filter(Boolean)
+    return files.length ? files : null
   }
   const declaresDependency = (a, b) =>
     (a.dependsOn || []).includes(b.id) || (b.dependsOn || []).includes(a.id)
@@ -1327,6 +1333,18 @@ function decideParallelFallback(outcome) {
   const implemented = o.status === 'implemented' || o.status === 'implemented-proxy'
   const ok = implemented && !o.worktreeFailed && !o.mergeConflict
   return { fallbackToSerial: !ok, reason: ok ? '' : o.detail || 'parallel path failed' }
+}
+
+// D5: a group only ACTUALLY ran in parallel if at least two of its tasks got
+// past worktree creation (worktreeFailed=true never entered the parallel
+// implementation path at all) AND at least one of them landed. `landed.length
+// > 0` alone is not enough: a group of two where one task's worktree fails
+// immediately and only the other ever implements has landed.length === 1,
+// which is one task running, not concurrency. Pure so the claim is executed
+// by a test, not asserted by comment.
+function didRunConcurrently(outcomes, landed) {
+  const attempted = (outcomes || []).filter((o) => !o.worktreeFailed).length
+  return (landed || []).length > 0 && attempted >= 2
 }
 
 // D5: "it merits" is a claim until it is measured. `concurrent` is true only
@@ -1536,6 +1554,7 @@ async function implementTaskInOwnWorktree(task) {
     }
   }
   const proxied = task.humanReview && AUTO_HUMAN
+  if (proxied) log(`🤖 ${task.id} supervised, but delegated (autoHumanReview): the agent does the real verification`)
   const r = await implementTaskBounded(task, proxied, { wd: taskWd, branch: taskBranch })
   return { ...r, taskWd, taskBranch, worktreeFailed: false }
 }
@@ -1664,7 +1683,7 @@ for (const group of groups) {
 
     for (const o of landed) {
       results.push({ id: o.id, status: o.status, detail: o.detail, commits: o.commits || [] })
-      log(`✔ ${o.id} implemented in its own worktree, merged into ${BRANCH}`)
+      log(`✔ ${o.id} implemented in its own worktree, merged into ${BRANCH}${o.status === 'implemented-proxy' ? ' (real verification by proxy)' : ''}`)
     }
     if (needsSerial.length) {
       const reasons = needsSerial.map((o) => `${o.id} (${decideParallelFallback(o).reason})`).join(', ')
@@ -1675,7 +1694,7 @@ for (const group of groups) {
         await runSerially(task)
       }
     }
-    ranParallel = landed.length > 0
+    ranParallel = didRunConcurrently(implementedInWorktrees, landed)
   } catch (e) {
     log(`⚠️ parallel path for ${runnable.map((t) => t.id).join(', ')} threw (${e && e.message ? e.message : e}) — retrying all serially (D3)`)
     for (const task of runnable) await runSerially(task)

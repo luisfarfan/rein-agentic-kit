@@ -97,6 +97,30 @@ class PlanParallelGroupsTestCase(unittest.TestCase):
         [groups] = self._run([{"tasks": tasks, "codeMap": codeMap}])
         self.assertEqual(groups, [["T001"], ["T004"]])
 
+    def test_scout_format_touchpoints_in_same_file_different_symbols_stay_serial(self):
+        # The scout never emits bare paths (buildScoutPrompt: "path:symbol").
+        # Two touchpoints in the SAME FILE at different symbols/lines must
+        # still collide -- this is D1's exact target case: two independent
+        # tasks editing one file.
+        tasks = [self._task("T001"), self._task("T004")]
+        codeMap = {
+            "T001": self._map_entry(["plugins/rein/workflows/loop.js:planParallelGroups"]),
+            "T004": self._map_entry(["plugins/rein/workflows/loop.js:mergeOrderOf"]),
+        }
+        [groups] = self._run([{"tasks": tasks, "codeMap": codeMap}])
+        self.assertEqual(groups, [["T001"], ["T004"]])
+
+    def test_scout_format_touchpoints_in_disjoint_files_still_group(self):
+        # Normalising "path:symbol" to its file must not be over-applied --
+        # genuinely disjoint files still group together.
+        tasks = [self._task("T001"), self._task("T004")]
+        codeMap = {
+            "T001": self._map_entry(["a.js:foo"]),
+            "T004": self._map_entry(["b.js:bar"]),
+        }
+        [groups] = self._run([{"tasks": tasks, "codeMap": codeMap}])
+        self.assertEqual(groups, [["T001", "T004"]])
+
     def test_empty_code_map_places_every_task_in_its_own_group(self):
         tasks = [self._task("T001"), self._task("T004")]
         [groups] = self._run([{"tasks": tasks, "codeMap": {}}])
@@ -268,6 +292,37 @@ class ParallelWorktreeHelpersTestCase(unittest.TestCase):
         groups = [[{"id": "T001"}, {"id": "T004"}]]
         result = self._call("summarizeConcurrency", "groups,ranParallelFlags", [groups, [False]])
         self.assertFalse(result["concurrent"])
+
+    # -- acceptance 7: `ranParallel` must reflect that at least TWO tasks
+    # actually entered the parallel path, not merely that one of them landed --
+
+    def test_only_one_of_two_reaching_worktree_creation_is_not_concurrency(self):
+        # T004's worktree-creation agent fails immediately (worktreeFailed);
+        # only T001 ever implements and lands. One task ran -- not concurrent.
+        outcomes = [
+            {"id": "T001", "worktreeFailed": False},
+            {"id": "T004", "worktreeFailed": True},
+        ]
+        landed = [{"id": "T001"}]
+        result = self._call("didRunConcurrently", "outcomes,landed", [outcomes, landed])
+        self.assertFalse(result)
+
+    def test_both_reaching_worktree_creation_and_one_landing_is_concurrency(self):
+        outcomes = [
+            {"id": "T001", "worktreeFailed": False},
+            {"id": "T004", "worktreeFailed": False},
+        ]
+        landed = [{"id": "T001"}]
+        result = self._call("didRunConcurrently", "outcomes,landed", [outcomes, landed])
+        self.assertTrue(result)
+
+    def test_nothing_landed_is_not_concurrency_even_if_both_attempted(self):
+        outcomes = [
+            {"id": "T001", "worktreeFailed": False},
+            {"id": "T004", "worktreeFailed": False},
+        ]
+        result = self._call("didRunConcurrently", "outcomes,landed", [outcomes, []])
+        self.assertFalse(result)
 
 
 if __name__ == "__main__":
