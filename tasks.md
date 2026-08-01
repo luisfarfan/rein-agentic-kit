@@ -76,7 +76,7 @@ indexed it and wrote the file — a summary of the state before its own work.
     - a malformed or unreadable mise file degrades to autodetection with the reason recorded, never a traceback — the same rule every other runner already follows
     - `tests/test_detect.py` passes unchanged, so no existing stack changes its resolution
 
-- [ ] T002 Never report a problem that does not exist
+- [x] T002 Never report a problem that does not exist
   - Type: implementation
   - Depends on: T001
   - Human review: false
