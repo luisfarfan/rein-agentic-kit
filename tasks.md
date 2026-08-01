@@ -1,67 +1,102 @@
-# Change: doctor-knows-it-is-stale
+# Change: fits-a-real-ecosystem
 
 ## Why
-A project that installs this kit has no way to learn that a newer version
-exists. Verified on this machine, which is the author's own:
+Installed into two real repositories, the kit reported the wrong problem
+three times and was hard to read once.
+
+**`proxima-engineering`** governs nine repositories (`proxima-api`,
+`proxima-admin`, `proxima-builder`, `proxima-storefront-v2`,
+`proxima-intelligence-v2`, `proxima-pos`, `proxima-app`, `proxima-infra`,
+`proxima-runtime`) and provisions each one. Its own CI runs `mise run ci`,
+and its README documents `mise run setup` / `mise run doctor`. **`mise` is
+that ecosystem's task runner**, and `detect` knows only justfile, Makefile
+and Taskfile — so it found no runner, found no root manifest, and fell
+through to the monorepo branch:
 
 ```
-installed  (installed_plugins.json)                     0.4.0
-available  (marketplaces/rein-agentic-kit/…json)        0.4.0
-repository                                              0.6.2
+stack      : monorepo
+subproject : (none chosen)
+commands   : (none)
+MISSING    : test, testOne, lint, typecheck
 ```
 
-Two versions behind on the installed plugin, and the local marketplace clone
-is stale too — so even `claude plugin update rein` would have installed 0.4.0
-again. The author of the kit did not notice for eight changes; nobody else
-stands a better chance.
+That repository is not a monorepo. It has governance content at the root and
+**exactly one** directory carrying a manifest (`harness/pyproject.toml`).
+Reporting "choose a sub-project" over a list of one sends the operator to a
+problem that does not exist — the mirror of the mistake D1 was written to
+prevent.
 
-The mechanism to fix it already exists and needs no network. Both facts are
-files on disk that Claude Code itself maintains:
+**`make-montages`**, with everything resolved correctly, still printed:
 
-- `~/.claude/plugins/installed_plugins.json` → what is installed, per scope
-- `~/.claude/plugins/marketplaces/<name>/.claude-plugin/marketplace.json` →
-  what that marketplace offers, from a git clone Claude Code refreshes
+```
+plan : NOT FOUND at /…/openspec/changes/tasks.md
+```
 
-Comparing them is a string comparison over two JSON reads. The repository's
-own version is a THIRD fact and is NOT local — nothing on disk can prove the
-clone is current, so the check reports what it knows and names what it does
-not. `rein doctor` is
-already the command that says "here is what I detected"; it is the honest
-place to also say "and you are running an old me".
+That path can never exist: openspec plans live at
+`openspec/changes/<change>/tasks.md`, and with no change named the join
+produces a file nobody could create. Six real changes sit in that directory,
+unmentioned.
+
+And the output itself: **not one colour code in the entire CLI**, columns
+that break alignment on a longer command name, and `setup --install` printing
+`present but inert: codegraph` and `add to .gitignore` in the same run that
+indexed it and wrote the file — a summary of the state before its own work.
 
 ## Scope
-- In: `rein doctor` reporting the installed version against the available
-  one, and printing the exact commands when they differ
-- In: the stale-marketplace case, because it is the one that actually
-  happened: the clone said 0.4.0 while the repository was at 0.6.2, so
-  updating the plugin alone would have changed nothing
-- Out: any network call. `setup.py` states the kit adds none, and a version
-  check that phones home would be the first — the data is already local
-- Out: auto-updating anything. Reporting is the job; installing is the
-  operator's decision, exactly as `--install` is opt-in
-- Out: notifying from inside the loop or the skills. `doctor` is where a
-  person looks; adding a nag to every agent prompt is prompt surface for
-  something a human reads once
+- In: `mise` as a task runner, in the tier where task runners already live
+- In: the two "reports a problem that does not exist" defects — a single
+  sub-project, and an openspec plan with no change named
+- In: making the CLI readable — colour, alignment, and a summary that
+  describes the end state
+- Out: changing anything in proxima-engineering or make-montages. rein is the
+  guest; a kit that needs nine repositories to change their task runner has
+  the adaptation backwards
+- Out: colour in machine-facing output. Agents parse this; see D4
+- Out: the monorepo behaviour itself for a genuine monorepo — reporting
+  sub-projects and refusing to pick one stays exactly as it is
 
 ## Decisions
-- D1 Local files only. Both facts are on disk; a version check is not a reason to make this kit's first outbound request
-- D2 Report, never act. `doctor` prints the two commands and returns; nothing is installed, updated or written
-- D3 Unknown is not stale. A missing file, an unreadable one, a plugin installed from a path rather than a marketplace — each reports "cannot tell" with the reason, never a false "up to date" and never a false alarm
-- D4 Never a failure. `doctor`'s exit code keeps meaning what it means today; being out of date is information, not a broken environment
+- D1 rein adapts to the ecosystem, never the reverse. `mise` is the standard across nine repositories and it works; teaching rein means zero `flow.config.json` per repo, and refusing to means nine hand-maintained files that will drift
+- D2 One is not many. A root with a single manifest-bearing directory is a project in a subdirectory, not a monorepo — resolve its commands with the path rather than demanding a choice between one option
+- D3 Never report a problem at a location that cannot exist. When a plan source needs a name nobody gave, say which names are available; a NOT FOUND at an impossible path is worse than silence
+- D4 Colour is for humans only, and never changes a byte anyone parses. `--json`, a pipe, a redirect and `NO_COLOR` all produce exactly what they produce today — the loop's own agents read this output
+- D5 A summary describes the state after the work, not before it
 
 ---
 
-- [x] T001 doctor says when it is out of date, and how to fix it
+- [ ] T001 mise is a task runner like the others
   - Type: implementation
   - Depends on: none
   - Human review: false
-  - Verification: `python3 -m unittest tests.test_version_staleness`
+  - Verification: `python3 -m unittest tests.test_mise_runner`
   - Acceptance:
-    - a pure function takes the two parsed JSON documents and returns one of `up-to-date`, `stale`, or `unknown` with a reason, comparing the running plugin's version against the version its marketplace offers; a test drives every branch from fixtures, including equal, newer-available, and newer-installed (which is `unknown`, not `stale` — that is a developer running from a checkout)
-    - `rein doctor` prints the verdict, and when stale prints BOTH commands in order — refreshing the marketplace before updating the plugin — because the measured failure was a stale clone that made the update a no-op
-    - a marketplace whose clone offers the SAME version that is installed is still reported as `up-to-date`, and the fix line for refreshing the clone is printed anyway with the reason — the clone can be stale and nothing local can prove it is, so the check says what it does not know instead of implying the pair is current (D3)
-    - the pure function returns `unknown` with a named reason for every SHAPE it cannot read — the plugin absent from the installed list, no `version` key, a version that is not a string — while missing files and malformed JSON belong to the loader below, not to it (D3)
-    - the reading half is separate from the deciding half: a loader resolves the two known paths under `~/.claude/plugins` and parses them, and the pure function above never touches the filesystem — a test asserts the loader returns `unknown` rather than raising when either path is absent
-    - the module imports no network capability at all: a test parses its imports and fails on `socket`, `urllib`, `http`, `ssl` or `requests`, which is mechanically checkable where "makes no network call" is not (D1)
-    - `doctor`'s exit code is unchanged whether the verdict is stale, up-to-date or unknown, and nothing is written anywhere: a test runs it against a stale fixture and asserts both (D2/D4)
-    - `rein doctor --json` gains the verdict alongside its existing keys, and a test pins the keys it had before so nothing that reads it breaks
+    - a `mise.toml`, `.mise.toml` or `.config/mise/config.toml` at the root is detected as the task runner, its `[tasks]` are parsed, and a task named `test` / `lint` / `typecheck` / `check` resolves the matching command as `mise run <task>` with `commandSources` attributing it to `mise`
+    - precedence is unchanged and asserted: `flow.config.json` still wins over mise, and mise still wins over autodetection — a fixture with both a config and a mise file resolves to the config
+    - a repo with a mise file that declares none of the slots resolves what it can and leaves the rest to autodetection, rather than reporting the runner and no commands
+    - a malformed or unreadable mise file degrades to autodetection with the reason recorded, never a traceback — the same rule every other runner already follows
+    - `tests/test_detect.py` passes unchanged, so no existing stack changes its resolution
+
+- [ ] T002 Never report a problem that does not exist
+  - Type: implementation
+  - Depends on: T001
+  - Human review: false
+  - Verification: `python3 -m unittest tests.test_single_subproject`
+  - Acceptance:
+    - a root with no manifest and exactly ONE manifest-bearing directory resolves that directory's commands, carrying its path so they run from the root, with `commandSources` naming it — and `stack` reports that project's own stack, not `monorepo` (D2)
+    - two or more manifest-bearing directories keep today's behaviour exactly: `stack: monorepo`, no root commands, and the "choose a sub-project" entry — covered by a test using the `proxima-engineering` shape (one) and a two-subproject shape side by side
+    - with `source: openspec` and no change named, `plan.path` is NOT a join that produces `openspec/changes/tasks.md`; the report names the changes that exist and says a change must be chosen, and a test asserts the impossible path never appears (D3)
+    - an openspec directory with no changes at all reports that, distinctly from "you did not name one"
+    - `rein detect` on `proxima-engineering`'s real shape resolves `harness`'s commands, and a fixture reproducing that shape is checked in
+
+- [ ] T003 The CLI is readable, and still machine-safe
+  - Type: implementation
+  - Depends on: T002
+  - Human review: false
+  - Verification: `python3 -m unittest tests.test_cli_presentation`
+  - Acceptance:
+    - `doctor` and `setup` colour their output — status markers, headings and the source attribution — through ONE helper, and a test asserts every colour in the output comes from it rather than from an inline escape
+    - colour is emitted only when stdout is a TTY, and never when `NO_COLOR` is set, `--json` is passed, or the output is piped; a test captures piped output and asserts it contains no escape byte at all (D4)
+    - a test asserts the piped text output is byte-identical to what the previous version produced for the same fixture, so nothing that greps this breaks
+    - the resolved-commands table aligns on the longest slot name actually present, so a long name like `harnessTest` cannot break the columns — asserted with a fixture containing one
+    - `setup --install` prints its summary AFTER its work: a repo whose index it just built is not listed as inert, and a `.gitignore` it just wrote is not still being suggested (D5)
+    - `rein doctor --json` keeps every key unchanged, asserted against the pinned set
