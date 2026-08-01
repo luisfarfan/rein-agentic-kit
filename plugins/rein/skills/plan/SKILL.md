@@ -76,10 +76,40 @@ R=$(command -v rein || ls -d ~/.claude/plugins/cache/*/rein/*/bin/rein 2>/dev/nu
    choice an implementer could plausibly reverse without noticing. A two-task change
    usually has none, and inventing them is ceremony.
 
-5. **Dry run.** Show the user the full draft: tasks in dependency order, each verification
+5. **Critique the draft before it is shown or written — every single time.** This step is
+   UNCONDITIONAL: it runs on every invocation of this skill, never behind a flag, never skipped
+   because the request looked simple, and never only when the user asks for it (D1). Skipping it
+   is exactly how the defect below reached the loop in the first place.
+
+   a. If `plan.source` is `openspec` and an `openspec` binary is on `PATH`
+      (`command -v openspec`), run `openspec validate --strict` FIRST and report its output
+      VERBATIM, labeled as openspec's own — this skill reimplements none of openspec's structural
+      checks (compose, missing sections, malformed delta headers); that is openspec's job, not
+      re-derived here (D4). A missing `openspec` binary skips this half silently — that is not a
+      failure, just a fact stated beside the plan (D5).
+   b. Critique every task against exactly these four BLOCKING classes — the SAME four the loop's
+      own PlanCheck applies before Isolate (D3), so the two gates cannot drift:
+      1. a verification that cannot mechanically confirm the criteria it is attached to
+      2. a criterion no command can check
+      3. a dependency that is circular or names a task that does not exist
+      4. a criterion that contradicts a stated decision
+
+      Only these four may BLOCK. Everything else — style, wording, taste, a criterion that could
+      be worded better — is at most a SUGGESTION: shown beside the plan for the author to accept
+      or ignore, never a reason to stop (D2). A check that always finds something stops being
+      read, and the plan goes back to being unreviewed in practice.
+   c. If the critique itself cannot run — no critique agent is available, it times out, or its
+      response is malformed — do NOT skip it silently and do NOT hard-stop the skill: proceed to
+      write the plan anyway, with that failure named plainly beside it, e.g. "critique agent timed
+      out — plan written unreviewed" (D5). A gate meant to save money must never itself become the
+      reason nothing gets written.
+   d. Report any BLOCKING finding to the user before the dry run, naming which of the four classes
+      it violates and which criterion it fails to prove. Fix the plan before continuing — never
+      show a dry run, and never write, with an open BLOCKING finding still standing.
+6. **Dry run.** Show the user the full draft: tasks in dependency order, each verification
    command, which tasks are gated on human review, and anything the plan assumes.
-6. **Ask for explicit confirmation.** Never write the plan into the project without it.
-7. On confirmation, write it to `plan.path`, then verify it parses the way the loop will read
+7. **Ask for explicit confirmation.** Never write the plan into the project without it.
+8. On confirmation, write it to `plan.path`, then verify it parses the way the loop will read
    it: `"$R" tasks .` and `"$R" next .`. Report the resolved order.
 
 ## What makes a task good here
