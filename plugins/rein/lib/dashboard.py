@@ -22,14 +22,22 @@ import difflib
 import hashlib
 import html
 import http.server
+import itertools
 import json
 import os
 import sys
 import time
 import urllib.parse
 
+from typing import Iterator
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from events import (  # noqa: E402
+    EVENTS_PATH,
+    MAX_EVENTS_READ,
+    read_recent_events,
+)
 from token_report import (  # noqa: E402
     BASELINE_PATH,
     LEDGER_PATH,
@@ -111,6 +119,12 @@ def _run_view(row: dict, project: str, baseline: dict | None) -> dict:
 
     return {
         "wf_id": row.get("wf_id", ""),
+        # D2: a row recorded before `--change` existed (or by a caller that
+        # never passed one) has no "change" key at all -- `.get` reads back
+        # `None`, normalized here to "" so a run renders unlabelled rather
+        # than as the literal string "None" or a bare empty cell (mirrors
+        # `token_report.render_ledger`'s `r.get("change")` check).
+        "change": row.get("change") or "",
         "ts": row.get("ts", ""),
         "turns": row.get("turns", 0),
         "turns_per_agent": row.get("turns_per_agent", 0),
@@ -124,7 +138,296 @@ def _run_view(row: dict, project: str, baseline: dict | None) -> dict:
     }
 
 
-def build_view(ledger_path: str = LEDGER_PATH, baseline_path: str = BASELINE_PATH) -> dict:
+# ------------------------------------------------------ plain-english summary --
+
+# Human-readable name for each metric, plus the word to use on either side of
+# its delta ("12.3% fewer turns per agent" / "8.1% more context per turn") --
+# never a bare signed number (D2/T001).
+#
+# "noun" only composes grammatically after a more/less word ("more of the
+# Opus quota"); it does not stand on its own. "bare" is the phrase used when
+# there is no more/less word to precede it -- the pct==0 ("unchanged") and
+# pct is None ("no comparable ... recorded") branches of `_metric_phrase`.
+# For "turns_per_agent" and "ctx_max" the noun already reads fine bare, so
+# "bare" repeats it; "opus_share" needs a different phrase ("Opus quota
+# use") to stay grammatical in those two branches.
+_METRIC_WORDS: dict[str, dict[str, str]] = {
+    "turns_per_agent": {"noun": "turns per agent", "bare": "turns per agent", "more": "more", "less": "fewer"},
+    "ctx_max": {"noun": "context per turn", "bare": "context per turn", "more": "more", "less": "less"},
+    "opus_share": {"noun": "of the Opus quota", "bare": "Opus quota use", "more": "more", "less": "less"},
+}
+
+# Whether a LOWER value is better, per metric. A lookup table, not a blanket
+# rule -- `direction()` reads this instead of assuming "negative is always
+# better" for every key, so the day a metric is added where higher is the
+# win (a cache-hit rate, say), only this table changes, not every call site
+# that currently hardcodes the opposite.
+METRIC_DIRECTION: dict[str, bool] = {
+    "turns_per_agent": True,
+    "ctx_max": True,
+    "opus_share": True,
+}
+
+_WHY_SENTENCE = (
+    "Cost is turns multiplied by the context re-read every turn, so these "
+    "three numbers are what predict it."
+)
+
+# --------------------------------------------------------------- glossary --
+
+# D3: one glossary, one source. Every metric key the page renders anywhere
+# (the per-run table, the per-agent detail table, and each Δ column) must
+# have an entry here -- `test_dashboard_glossary.py` asserts that directly
+# against this dict, and `_glossary_html` below raises a `KeyError` naming
+# the missing key the moment a header tries to use one that isn't. Each
+# entry is a one-line `meaning` (what the number is) plus a one-line `why`
+# (why it predicts cost) -- never just a definition floating free of the
+# thing it is supposed to help someone decide.
+GLOSSARY: dict[str, dict[str, str]] = {
+    "invocations": {
+        "meaning": "How many times you invoked this skill, counted from events.jsonl.",
+        "why": "Usage, not cost: an invocation is an EVENT and never enters a run total or a delta, "
+               "so folding it in would corrupt every comparison against the baseline.",
+    },
+    "turns": {
+        "meaning": "How many turns this agent took to finish its work.",
+        "why": "Every turn is a full model call billed on the context sent with it, so turns is the base unit of cost.",
+    },
+    "turns_per_agent": {
+        "meaning": "Average turns per agent across the whole run.",
+        "why": "It is the single biggest lever on total cost: half the turns is roughly half the calls.",
+    },
+    "ctx_max": {
+        "meaning": "The largest context size sent in any single turn.",
+        "why": "Every turn resends the full context, so a bigger max multiplies the price of every turn that reaches it.",
+    },
+    "opus_share": {
+        "meaning": "Share of turns that ran on the Opus model instead of a cheaper one.",
+        "why": "Opus costs far more per token than Sonnet or Haiku, so this share drives a large part of total spend.",
+    },
+    "total": {
+        "meaning": "Total tokens (input plus output) this agent used.",
+        "why": "Tokens are what is actually billed, so this is the cost itself, not a proxy for it.",
+    },
+    "delta_turns_per_agent": {
+        "meaning": "Percent change in turns/agent versus the marked baseline run.",
+        "why": "Shows whether a change made the biggest cost lever better or worse, not just what it is now.",
+    },
+    "delta_ctx_max": {
+        "meaning": "Percent change in ctx_max/turn versus the marked baseline run.",
+        "why": "Shows whether a change grew or shrank the context every turn re-reads, a direct cost multiplier.",
+    },
+    "delta_opus_share": {
+        "meaning": "Percent change in opus share versus the marked baseline run.",
+        "why": "Shows whether a change moved work onto or off of the most expensive model.",
+    },
+}
+
+
+def _baseline_identity_text(baseline: dict | None, project: str) -> str:
+    """The baseline identified where it is used (D4/T002): which run and
+    when it was marked for a project that has one applying to it, or --
+    honestly -- what to run to mark one for a project that does not.
+
+    A baseline only "belongs" to a project if it was marked with that
+    project recorded on it (mirrors the staleness/mismatch checks
+    `_run_view` already applies to individual deltas) -- a baseline for a
+    different project, or one predating project tracking, is not this
+    project's baseline and must not be presented as if it were.
+    """
+    applies = bool(baseline) and baseline.get("project") == project and bool(baseline.get("wf_id"))
+    if not applies:
+        return "No baseline is marked for this project -- run `rein baseline mark` after a change to compare future runs against it."
+    wf_id = baseline.get("wf_id", "")
+    ts = baseline.get("ts", "")
+    return f"Baseline: run {wf_id}, marked {ts}."
+
+
+def direction(metric_key: str, delta: float | None, table: dict[str, bool] | None = None) -> str | None:
+    """"better" / "worse" / "unchanged" for `delta` on `metric_key`, or `None`
+    when there is nothing to compare (`delta is None`).
+
+    Pure: the lower-is-better table is an explicit input (defaulting to
+    `METRIC_DIRECTION`), not a closed-over assumption -- so a future metric
+    where a higher value is the win can be exercised in a test by passing a
+    table where that key maps to `False`, without touching module state or
+    every other caller.
+    """
+    if delta is None:
+        return None
+    lower_is_better = (METRIC_DIRECTION if table is None else table)[metric_key]
+    if delta == 0:
+        return "unchanged"
+    improved = (delta < 0) if lower_is_better else (delta > 0)
+    return "better" if improved else "worse"
+
+
+def _metric_phrase(metric_key: str, pct: float | None) -> str:
+    """Plain words for one metric's change, percentage beside the word that
+    gives it meaning -- never a bare signed number."""
+    words = _METRIC_WORDS[metric_key]
+    if pct is None:
+        return f"no comparable {words['bare']} recorded"
+    if pct == 0:
+        return f"the same {words['bare']}"
+    word = words["more"] if pct > 0 else words["less"]
+    return f"{abs(pct):.1f}% {word} {words['noun']}"
+
+
+def _project_summary(runs: list[dict], baseline: dict | None) -> dict:
+    """The plain-language answer for one project's section (D1): how the
+    latest run compares to baseline on the three cost-predicting metrics, or
+    -- per D2 -- a stated LIMIT and no comparison when the ledger does not
+    actually prove one. `runs` must already be ordered ascending by
+    timestamp and carry the `is_baseline`/`deltas` fields `_run_view`
+    computes -- this reuses that join instead of re-deriving it, so there is
+    exactly one place deciding whether a baseline applies to a run.
+
+    Never raises, never fabricates a comparison.
+    """
+    if len(runs) < 2:
+        limit = "only one run has been recorded for this project -- nothing to compare it to yet"
+        return {"limit": limit, "comparison": None, "metrics": [], "text": f"{limit.capitalize()}. {_WHY_SENTENCE}"}
+
+    if not baseline or not baseline.get("wf_id"):
+        limit = "no baseline is marked for this project -- run `rein baseline mark` after a change to compare future runs against it"
+        return {"limit": limit, "comparison": None, "metrics": [], "text": f"{limit.capitalize()}. {_WHY_SENTENCE}"}
+
+    latest = runs[-1]
+    deltas = latest.get("deltas")
+    if deltas is None:
+        # Covers every reason `_run_view` can decline to compute a delta for
+        # the latest run: baseline predates project tracking, belongs to a
+        # different project, is the latest run itself, or is not older than
+        # it -- any of those means there is no later run to hold the
+        # baseline up against.
+        limit = (
+            "the marked baseline does not apply to the latest run shown here -- "
+            "it predates project tracking, belongs to a different project, or is "
+            "not older than this run -- so no comparison is shown"
+        )
+        return {"limit": limit, "comparison": None, "metrics": [], "text": f"{limit.capitalize()}. {_WHY_SENTENCE}"}
+
+    metrics = [
+        {"key": key, "pct": deltas.get(key), "direction": direction(key, deltas.get(key)), "phrase": _metric_phrase(key, deltas.get(key))}
+        for key in ("turns_per_agent", "ctx_max", "opus_share")
+    ]
+    if all(m["pct"] is None for m in metrics):
+        # `deltas` is a dict (not None -- that's the branch above), but every
+        # value in it is None: `token_report._pct_change` returns None when
+        # the baseline is missing a metric or that metric is zero, which a
+        # `baseline.json` written by an older tool version or hand-edited
+        # file can produce. Nothing in `deltas` is actually comparable, so
+        # this must read as a LIMIT (D2), not a "0 metrics" comparison.
+        limit = (
+            "the marked baseline records no comparable numbers for this run -- "
+            "re-run `rein baseline mark` on a complete run"
+        )
+        return {"limit": limit, "comparison": None, "metrics": [], "text": f"{limit.capitalize()}. {_WHY_SENTENCE}"}
+    phrases = [m["phrase"] if m["direction"] is None else f"{m['phrase']} ({m['direction']})" for m in metrics]
+    comparison = "Since the baseline, this run took " + ", ".join(phrases[:-1]) + f", and {phrases[-1]}."
+    return {"limit": None, "comparison": comparison, "metrics": metrics, "text": f"{comparison} {_WHY_SENTENCE}"}
+
+
+# ------------------------------------------------------------- usage history --
+
+# T003: skill-invocation counts and the turns/agent trend, additive per
+# project (never merged into `_run_view`/`_run_row`'s fields, D3) so a run
+# row renders byte-identical whether `events.jsonl` exists or not.
+
+# Cap on how many runs feed the inline trend line -- large enough to always
+# cover "at least the last 10 runs" (AC3) while keeping the sparkline
+# legible; distinct from `events.MAX_EVENTS_READ`, which bounds *events*, not
+# the run rows `build_view` already holds in memory from the ledger.
+TREND_MAX_RUNS = 30
+
+# Two points is a straight line between two dots -- visually indistinguishable
+# from a real trend. Below this, state the reason instead of drawing one (AC3).
+MIN_RUNS_FOR_TREND = 3
+
+
+def _skill_counts_for_root(root: str | None, events_rows: list[dict], events_path: str) -> dict:
+    """`{"skill_counts": {name: count}, "events_note": str}` for one project
+    (AC1): counts are per skill *name*, kept entirely separate from run
+    metrics, and never summed into any run total or delta. `events_note`
+    explains an empty result -- no events file yet, vs. a file that exists
+    but has nothing (yet) for this project -- so the section always states
+    why it is empty rather than rendering nothing (AC5)."""
+    if root is None:
+        return {"skill_counts": {}, "events_note": "no resolvable project root -- skill-invocation history is unavailable here"}
+    matching = [e for e in events_rows if e.get("project") == root]
+    if not matching:
+        if not os.path.exists(events_path):
+            note = "no events.jsonl recorded yet -- skill invocations (/rein:plan, /rein:run, /rein:run-auto, /rein:review) will appear here once one runs"
+        else:
+            note = f"no skill invocations recorded yet for this project (among the most recent {MAX_EVENTS_READ} logged)"
+        return {"skill_counts": {}, "events_note": note}
+    counts: dict[str, int] = {}
+    for e in matching:
+        name = e.get("name") or "(unknown)"
+        counts[name] = counts.get(name, 0) + 1
+    return {"skill_counts": counts, "events_note": ""}
+
+
+def _trend_svg(runs: list[dict]) -> dict:
+    """`{"trend_svg": str|None, "trend_note": str|None}` for one project's
+    `turns/agent` trend (AC3): a self-contained inline `<svg>` polyline, no
+    external asset (D5), over at least the last 10 runs when that many are
+    recorded, with the baseline run (if any is in the window) marked
+    distinctly. Fewer than `MIN_RUNS_FOR_TREND` runs states the reason
+    instead of drawing a two-point line that would misleadingly look like one.
+    """
+    if len(runs) < MIN_RUNS_FOR_TREND:
+        return {
+            "trend_svg": None,
+            "trend_note": f"only {len(runs)} run(s) recorded for this project -- at least {MIN_RUNS_FOR_TREND} are needed to show a trend",
+        }
+
+    window = runs[-TREND_MAX_RUNS:]
+    values = [float(r.get("turns_per_agent") or 0) for r in window]
+    width, height, pad = 300, 80, 10
+    lo, hi = min(values), max(values)
+    span = (hi - lo) or 1.0
+    n = len(values)
+    step = (width - 2 * pad) / (n - 1) if n > 1 else 0
+
+    def _xy(i: int, v: float) -> tuple[float, float]:
+        x = pad + i * step
+        y = pad + (height - 2 * pad) * (1 - (v - lo) / span)
+        return x, y
+
+    points = [_xy(i, v) for i, v in enumerate(values)]
+    polyline = " ".join(f"{x:.1f},{y:.1f}" for x, y in points)
+    marks = []
+    for i, (x, y) in enumerate(points):
+        run = window[i]
+        if run.get("is_baseline"):
+            wf_id = html.escape(str(run.get("wf_id", "")))
+            marks.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="3.5" class="trend-baseline"><title>baseline: {wf_id}</title></circle>')
+        else:
+            marks.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="2" class="trend-point"/>')
+
+    svg = (
+        f'<svg viewBox="0 0 {width} {height}" width="{width}" height="{height}" role="img" '
+        f'aria-label="turns per agent over the last {n} run(s)">'
+        f'<polyline points="{polyline}" fill="none" class="trend-line"/>'
+        + "".join(marks)
+        + "</svg>"
+    )
+    return {"trend_svg": svg, "trend_note": None}
+
+
+def _project_history(root: str | None, runs: list[dict], events_rows: list[dict], events_path: str) -> dict:
+    """One additive dict, attached to a project alongside (never inside)
+    `runs`: skill-invocation counts plus the turns/agent trend."""
+    return {**_skill_counts_for_root(root, events_rows, events_path), **_trend_svg(runs)}
+
+
+def build_view(
+    ledger_path: str = LEDGER_PATH,
+    baseline_path: str = BASELINE_PATH,
+    events_path: str = EVENTS_PATH,
+) -> dict:
     """Runs grouped by project, baseline marked, later-same-project runs deltad.
 
     Never raises: a missing, empty, or unreadable ledger yields
@@ -136,6 +439,9 @@ def build_view(ledger_path: str = LEDGER_PATH, baseline_path: str = BASELINE_PAT
         return {"message": message, "projects": []}
 
     baseline = _read_baseline_safe(baseline_path)
+    # Bounded read (D6): at most `MAX_EVENTS_READ` events total, shared across
+    # every project below -- never re-read per project.
+    events_rows = read_recent_events(events_path)
 
     by_project: dict[str, list[dict]] = {}
     for row in rows:
@@ -145,12 +451,16 @@ def build_view(ledger_path: str = LEDGER_PATH, baseline_path: str = BASELINE_PAT
     for project, project_rows in sorted(by_project.items()):
         ordered = sorted(project_rows, key=lambda r: r.get("ts", ""))
         root = _unmangle_project(project)
+        runs = [_run_view(r, project, baseline) for r in ordered]
         projects.append(
             {
                 "project": project,
                 "root": root,
                 "models": _resolve_models(root),
-                "runs": [_run_view(r, project, baseline) for r in ordered],
+                "runs": runs,
+                "summary": _project_summary(runs, baseline),
+                "baseline_info": _baseline_identity_text(baseline, project),
+                "history": _project_history(root, runs, events_rows, events_path),
             }
         )
 
@@ -429,7 +739,76 @@ pre.diff{background:#f7f7f7;border:1px solid #ddd;border-radius:.3rem;padding:.7
 .notice{padding:.5rem;border-radius:.3rem;margin:.5rem 0}
 .notice.error{background:#fdecea;color:#611a15}
 .notice.ok{background:#e9f7ee;color:#0a4a20}
+p.baseline-info{color:#555;font-size:.9em;margin:.25rem 0 .75rem}
+th small{font-weight:400;color:#777;display:block}
+.glossary-toggle{position:relative;margin-left:.3rem;font:inherit;font-weight:700;font-size:.75em;
+  width:1.2em;height:1.2em;line-height:1;border-radius:50%;border:1px solid #888;background:#f5f5f5;
+  color:#555;cursor:pointer;padding:0;vertical-align:middle}
+.glossary-toggle .glossary-text{position:absolute;right:0;top:120%;z-index:5;display:none;width:16rem;
+  max-width:70vw;text-align:left;font-weight:400;font-size:1.1em;background:#fff;color:#1a1a1a;
+  border:1px solid #ccc;border-radius:.3rem;padding:.5rem;box-shadow:0 2px 6px rgba(0,0,0,.15);white-space:normal}
+.glossary-toggle:hover .glossary-text,.glossary-toggle:focus .glossary-text{display:block}
+.glossary-toggle:focus{outline:2px solid #1a73e8}
+.change-label{color:#555;font-weight:400}
+.history{margin:.75rem 0 1.5rem;padding-top:.6rem;border-top:1px dashed #ccc}
+.history h3{font-size:.85rem;margin:.6rem 0 .25rem;color:#444}
+table.skills{border-collapse:collapse;width:auto;margin:0}
+table.skills th,table.skills td{padding:.2rem .6rem;text-align:right;border-bottom:1px solid #eee}
+table.skills th:first-child,table.skills td:first-child{text-align:left}
+.events-note,.trend-note{color:#666;font-style:italic;margin:.25rem 0}
+.trend{display:flex;align-items:center;gap:.3rem}
+.trend-line{stroke:#1a73e8;stroke-width:1.5}
+.trend-point{fill:#1a73e8}
+.trend-baseline{fill:#f5a623;stroke:#1a1a1a;stroke-width:.5}
 """
+
+
+def _metric_label(key: str) -> str:
+    """Human wording for `key`, for an accessible name.
+
+    `_METRIC_WORDS` maps to a DICT of wordings (noun/bare/more/less), not a
+    string -- reading it directly renders `{'noun': ...}` into the label,
+    which is what shipped before the test below existed.
+    """
+    words = _METRIC_WORDS.get(key)
+    if isinstance(words, dict):
+        return words.get("bare") or words.get("noun") or key.replace("_", " ")
+    return key.replace("_", " ")
+
+
+def _glossary_html(key: str, uid: str = "") -> str:
+    """The '?' affordance for one metric header (D3/D4): text pulled from
+    the single `GLOSSARY` (raises `KeyError` naming `key` if it is missing
+    an entry, rather than rendering a header that explains nothing), on a
+    native `<button>` so it is reachable by keyboard focus with no
+    JavaScript (D5) -- `:focus` alone reveals `.glossary-text` in place, the
+    same CSS rule that handles `:hover`. The explanation is also wired in as
+    an accessible description via `aria-describedby`, not a hover-only
+    `title` attribute, so it reaches people who use a screen reader as
+    reliably as people who use a mouse.
+
+    `uid` disambiguates the id: the same metric key renders once per project
+    header and once per run's per-agent detail table, and HTML ids must be
+    unique document-wide or every `aria-describedby` past the first resolves
+    to whichever span happens to sit first in the DOM instead of the one
+    beside it. `render_html` threads a page-wide counter down as `uid` so
+    every occurrence gets its own id; it defaults to "" for callers (and
+    tests) that only ever render one glossary button in isolation.
+    """
+    entry = GLOSSARY[key]
+    desc_id = f"glossary-{key}-{uid}" if uid else f"glossary-{key}"
+    text = html.escape(f"{entry['meaning']} {entry['why']}")
+    return (
+        # The label names the METRIC. An identical "What does this mean?" on
+        # every button overrides the content as the accessible name, so a
+        # screen-reader user tabbing the header row hears the same six words
+        # six times with no idea which column each belongs to -- D4's intent
+        # inverted for exactly the people D4 names.
+        f'<button type="button" class="glossary-toggle" aria-describedby="{desc_id}" '
+        f'aria-label="What does {_metric_label(key)} mean?">?'
+        f'<span id="{desc_id}" class="glossary-text" role="tooltip">{text}</span>'
+        "</button>"
+    )
 
 
 def _fmt_num(value, digits: int = 1) -> str:
@@ -460,10 +839,11 @@ def _delta_cell(pct: float | None) -> str:
     return f'<span class="{cls}">{pct:+.1f}% ({word})</span>'
 
 
-def _agents_detail(agents: list[dict]) -> str:
+def _agents_detail(agents: list[dict], uid: str = "") -> str:
     """Per-agent rows, reachable without leaving the page (native disclosure,
     no JS). An empty `agents` list still renders -- never an empty <table>
-    that looks broken."""
+    that looks broken. `uid` (typically the owning run's wf_id) keeps this
+    table's glossary ids distinct from every other run's (see `_glossary_html`)."""
     if not agents:
         return "<details><summary>0 agents</summary><p>no agents recorded for this run</p></details>"
     rows = "".join(
@@ -478,16 +858,24 @@ def _agents_detail(agents: list[dict]) -> str:
     )
     return (
         f"<details><summary>{len(agents)} agent(s)</summary>"
-        '<table class="agents"><thead><tr><th>file</th><th>model</th><th>turns</th>'
-        f"<th>total</th><th>ctx_max</th></tr></thead><tbody>{rows}</tbody></table></details>"
+        '<table class="agents"><thead><tr><th>file</th><th>model</th>'
+        f"<th>turns{_glossary_html('turns', uid)}</th>"
+        f"<th>total{_glossary_html('total', uid)}</th>"
+        f"<th>ctx_max{_glossary_html('ctx_max', uid)}</th>"
+        f"</tr></thead><tbody>{rows}</tbody></table></details>"
     )
 
 
-def _run_row(run: dict, show_deltas: bool) -> str:
+def _run_row(run: dict, show_deltas: bool, uid: str = "") -> str:
     row_class = ' class="baseline"' if run["is_baseline"] else ""
     badge = ' <span class="badge">BASELINE</span>' if run["is_baseline"] else ""
+    # A run recorded before `change` labels existed carries "" here (see
+    # `_run_view`) -- rendered as simply no label, never the literal "None"
+    # or an empty `<span>` sitting beside the wf_id.
+    change = run.get("change") or ""
+    change_html = f' <span class="change-label">[{html.escape(change)}]</span>' if change else ""
     cells = (
-        f"<td>{html.escape(str(run.get('ts', '')))}<br><small>{html.escape(str(run.get('wf_id', '')))}</small>{badge}</td>"
+        f"<td>{html.escape(str(run.get('ts', '')))}<br><small>{html.escape(str(run.get('wf_id', '')))}{change_html}</small>{badge}</td>"
         f"<td>{_fmt_num(run.get('turns_per_agent'))}</td>"
         f"<td>{_fmt_num(run.get('ctx_max'), 0)}</td>"
         f"<td>{_fmt_num(run.get('opus_share'))}%</td>"
@@ -498,7 +886,7 @@ def _run_row(run: dict, show_deltas: bool) -> str:
             f"<td>{_delta_cell(deltas[key]) if deltas else '&mdash;'}</td>"
             for key in ("turns_per_agent", "ctx_max", "opus_share")
         )
-    cells += f"<td>{_agents_detail(run.get('agents') or [])}</td>"
+    cells += f"<td>{_agents_detail(run.get('agents') or [], uid)}</td>"
     return f"<tr{row_class}>{cells}</tr>"
 
 
@@ -537,25 +925,100 @@ def _models_form(root: str | None, models: dict) -> str:
     )
 
 
-def _project_section(project: dict) -> str:
+# Fallback notes for a project dict that carries no "history" key at all
+# (reachable via `_project_section`'s `project.get("history") or {}`, not
+# just through `_project_history`/`build_view`, which always populate one) --
+# AC5 requires the section to always state why it is empty, never render a
+# heading over a blank paragraph.
+_DEFAULT_EVENTS_NOTE = "no usage history recorded for this project"
+_DEFAULT_TREND_NOTE = "no turns/agent trend recorded for this project"
+
+
+def _skill_counts_html(skill_counts: dict, events_note: str, uid: str = "") -> str:
+    """AC1/AC5: counts per skill name, or -- with none -- the reason why,
+    always rendered, never a silently missing section."""
+    if not skill_counts:
+        return f'<p class="events-note">{html.escape(events_note or _DEFAULT_EVENTS_NOTE)}</p>'
+    rows = "".join(
+        f"<tr><td>{html.escape(str(name))}</td><td>{int(count)}</td></tr>"
+        for name, count in sorted(skill_counts.items())
+    )
+    return (
+        '<table class="skills"><thead><tr><th>skill</th>'
+        f'<th>invocations{_glossary_html("invocations", uid)}</th></tr></thead>'
+        f"<tbody>{rows}</tbody></table>"
+    )
+
+
+def _trend_html(trend_svg: str | None, trend_note: str | None, uid: str = "") -> str:
+    """AC3: the inline SVG trend, or -- for too few runs -- the stated
+    reason instead of a misleading two-point line."""
+    if trend_svg is None:
+        return f'<p class="trend-note">{html.escape(trend_note or _DEFAULT_TREND_NOTE)}</p>'
+    return f'<div class="trend">{trend_svg}{_glossary_html("turns_per_agent", uid)}</div>'
+
+
+def _project_history_html(history: dict, uid: str = "") -> str:
+    """AC1: visually separated from the run table above it -- its own
+    heading and CSS block, never mixed into the run rows or their totals."""
+    skills_html = _skill_counts_html(history.get("skill_counts") or {}, history.get("events_note") or "", uid)
+    trend_html = _trend_html(history.get("trend_svg"), history.get("trend_note"), uid)
+    return (
+        '<div class="history">'
+        "<h3>Skill invocations</h3>"
+        f"{skills_html}"
+        "<h3>Trend: turns/agent</h3>"
+        f"{trend_html}"
+        "</div>"
+    )
+
+
+def _project_section(project: dict, uid_seq: Iterator[int] | None = None) -> str:
+    """`uid_seq` hands out a fresh id suffix (see `_glossary_html`) to every
+    glossary occurrence this section renders -- its own header, each run's
+    per-agent detail table, and the trend -- so ids stay unique even though
+    the page has many projects and many runs, each repeating the same
+    metric keys. Defaults to a private counter when called on its own."""
+    if uid_seq is None:
+        uid_seq = itertools.count()
     runs = project["runs"]
     # Deltas (and therefore the whole "savings" column group) only appear for a
     # project that actually has a baseline in it -- with none, this stays a
     # plain trend table, protecting D4 (no baseline -> no savings figure).
     show_deltas = any(r["is_baseline"] or r["deltas"] is not None for r in runs)
 
-    header = "<tr><th>run</th><th>turns/agent</th><th>ctx_max/turn</th><th>opus share</th>"
+    header_uid = str(next(uid_seq))
+    header = (
+        "<tr><th>run</th>"
+        f"<th>turns/agent{_glossary_html('turns_per_agent', header_uid)}</th>"
+        f"<th>ctx_max/turn{_glossary_html('ctx_max', header_uid)}</th>"
+        f"<th>opus share{_glossary_html('opus_share', header_uid)}</th>"
+    )
     if show_deltas:
-        header += "<th>Δ turns/agent</th><th>Δ ctx_max</th><th>Δ opus share</th>"
+        # "negative = better" sits inside the same header cell as the delta
+        # column it labels -- the same section as the delta values it
+        # describes, not merely somewhere else on the page (T002 #3).
+        header += (
+            f"<th>Δ turns/agent <small>(negative = better)</small>{_glossary_html('delta_turns_per_agent', header_uid)}</th>"
+            f"<th>Δ ctx_max <small>(negative = better)</small>{_glossary_html('delta_ctx_max', header_uid)}</th>"
+            f"<th>Δ opus share <small>(negative = better)</small>{_glossary_html('delta_opus_share', header_uid)}</th>"
+        )
     header += "<th>agents</th></tr>"
 
-    body = "".join(_run_row(r, show_deltas) for r in runs)
+    body = "".join(_run_row(r, show_deltas, str(next(uid_seq))) for r in runs)
     models = project.get("models") or {}
     models_html = _models_summary(models) + _models_form(project.get("root"), models)
+    summary_text = (project.get("summary") or {}).get("text", "")
+    summary_html = f'<p class="summary">{html.escape(summary_text)}</p>'
+    baseline_html = f'<p class="baseline-info">{html.escape(project.get("baseline_info", ""))}</p>'
+    history_html = _project_history_html(project.get("history") or {}, str(next(uid_seq)))
     return (
         f"<section><h2>{html.escape(project['project'])}</h2>"
+        f"{summary_html}"
         f"{models_html}"
-        f"<table><thead>{header}</thead><tbody>{body}</tbody></table></section>"
+        f"{baseline_html}"
+        f"<table><thead>{header}</thead><tbody>{body}</tbody></table>"
+        f"{history_html}</section>"
     )
 
 
@@ -566,7 +1029,10 @@ def render_html(view: dict) -> str:
         message = view.get("message") or "no runs recorded yet"
         body = f'<p class="empty">{html.escape(message)}</p>'
     else:
-        body = "".join(_project_section(p) for p in view["projects"])
+        # One counter shared across every project's section so glossary ids
+        # stay unique document-wide, not just within a single project.
+        uid_seq = itertools.count()
+        body = "".join(_project_section(p, uid_seq) for p in view["projects"])
 
     return _page(body)
 
@@ -805,12 +1271,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--port", type=int, default=DEFAULT_PORT, help=f"port to bind on 127.0.0.1 (default: {DEFAULT_PORT})")
     p.add_argument("--ledger", default=LEDGER_PATH, help=f"ledger path (default: {LEDGER_PATH})")
     p.add_argument("--baseline", default=BASELINE_PATH, help=f"baseline path (default: {BASELINE_PATH})")
+    p.add_argument("--events", default=EVENTS_PATH, help=f"events path (default: {EVENTS_PATH})")
     return p
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    view = build_view(args.ledger, args.baseline)
+    view = build_view(args.ledger, args.baseline, args.events)
 
     if args.as_json:
         print(json.dumps(view, indent=2, ensure_ascii=False))

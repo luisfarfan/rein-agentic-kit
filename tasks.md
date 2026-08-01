@@ -49,7 +49,7 @@ are getting better over time.
 
 ---
 
-- [ ] T001 The page opens with the answer
+- [x] T001 The page opens with the answer
   - Type: implementation
   - Depends on: none
   - Human review: false
@@ -61,7 +61,7 @@ are getting better over time.
     - the summary says what the numbers are FOR in one sentence — cost is turns × context re-read every turn — so a first-time reader knows why these three and not others
     - `python3 -m unittest tests.test_dashboard` passes unchanged, and `rein dashboard --json` keeps every key it has today with the summary added alongside; a test pins the pre-existing keys
 
-- [ ] T002 Every number says what it means
+- [x] T002 Every number says what it means
   - Type: implementation
   - Depends on: T001
   - Human review: false
@@ -73,7 +73,7 @@ are getting better over time.
     - the baseline is identified where it is used: which run, when it was marked, and — for a project with none — what to run to mark one
     - a test asserts the rendered HTML contains no `src`/`href` to an external host and no `@import`, so the page stays offline and self-contained (D5)
 
-- [ ] T003 Usage history: what was run, with what, and whether it is improving
+- [x] T003 Usage history: what was run, with what, and whether it is improving
   - Type: implementation
   - Depends on: T002
   - Human review: false

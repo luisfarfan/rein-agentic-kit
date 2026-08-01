@@ -52,6 +52,11 @@ class LedgerFixture(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.ledger_path = os.path.join(self.tmp.name, "runs.jsonl")
         self.baseline_path = os.path.join(self.tmp.name, "baseline.json")
+        # A per-test path, never the developer's real `~/.claude/rein/events.jsonl`
+        # (`events.EVENTS_PATH`, `build_view`'s default) -- tests that call
+        # `build_view` must pass this explicitly (D6/D5: no dependence on
+        # real user state).
+        self.events_path = os.path.join(self.tmp.name, "events.jsonl")
 
     def _write_ledger(self, rows: list[dict]) -> None:
         with open(self.ledger_path, "w", encoding="utf-8") as fh:
@@ -67,7 +72,7 @@ class TestViewModelShape(LedgerFixture):
     def test_runs_grouped_by_project_with_key_metrics_and_agents(self):
         self._write_ledger([row("wf_1", "2026-01-01T00:00:00Z", project="proj-a"),
                              row("wf_2", "2026-01-02T00:00:00Z", project="proj-b")])
-        view = dash.build_view(self.ledger_path, self.baseline_path)
+        view = dash.build_view(self.ledger_path, self.baseline_path, self.events_path)
 
         self.assertEqual(view["message"], "")
         projects = {p["project"]: p for p in view["projects"]}
@@ -80,7 +85,7 @@ class TestViewModelShape(LedgerFixture):
 
     def test_runs_within_a_project_are_ordered_by_timestamp(self):
         self._write_ledger([row("wf_2", "2026-01-02T00:00:00Z"), row("wf_1", "2026-01-01T00:00:00Z")])
-        view = dash.build_view(self.ledger_path, self.baseline_path)
+        view = dash.build_view(self.ledger_path, self.baseline_path, self.events_path)
         wf_ids = [r["wf_id"] for r in view["projects"][0]["runs"]]
         self.assertEqual(wf_ids, ["wf_1", "wf_2"])
 
@@ -90,7 +95,7 @@ class TestBaselineAndDeltas(LedgerFixture):
         self._write_ledger([row("wf_1", "2026-01-01T00:00:00Z", project="proj-a")])
         self._write_baseline({"wf_id": "wf_1", "ts": "2026-01-01T00:00:00Z", "project": "proj-a",
                                "turns_per_agent": 5.0, "ctx_max": 1000, "opus_share": 10.0})
-        view = dash.build_view(self.ledger_path, self.baseline_path)
+        view = dash.build_view(self.ledger_path, self.baseline_path, self.events_path)
         run = view["projects"][0]["runs"][0]
         self.assertTrue(run["is_baseline"])
         self.assertIsNone(run["deltas"])
@@ -102,7 +107,7 @@ class TestBaselineAndDeltas(LedgerFixture):
         ])
         self._write_baseline({"wf_id": "wf_1", "ts": "2026-01-01T00:00:00Z", "project": "proj-a",
                                "turns_per_agent": 10.0, "ctx_max": 2000, "opus_share": 20.0})
-        view = dash.build_view(self.ledger_path, self.baseline_path)
+        view = dash.build_view(self.ledger_path, self.baseline_path, self.events_path)
         runs = {r["wf_id"]: r for r in view["projects"][0]["runs"]}
 
         later = runs["wf_2"]
@@ -120,7 +125,7 @@ class TestBaselineAndDeltas(LedgerFixture):
         ])
         self._write_baseline({"wf_id": "wf_1", "ts": "2026-01-01T00:00:00Z", "project": "proj-a",
                                "turns_per_agent": 5.0, "ctx_max": 1000, "opus_share": 10.0})
-        view = dash.build_view(self.ledger_path, self.baseline_path)
+        view = dash.build_view(self.ledger_path, self.baseline_path, self.events_path)
         runs = {r["wf_id"]: r for r in view["projects"][0]["runs"]}
         self.assertIsNone(runs["wf_0"]["deltas"])
 
@@ -131,7 +136,7 @@ class TestBaselineAndDeltas(LedgerFixture):
         ])
         self._write_baseline({"wf_id": "wf_1", "ts": "2026-01-01T00:00:00Z", "project": "proj-a",
                                "turns_per_agent": 5.0, "ctx_max": 1000, "opus_share": 10.0})
-        view = dash.build_view(self.ledger_path, self.baseline_path)
+        view = dash.build_view(self.ledger_path, self.baseline_path, self.events_path)
         other_project = next(p for p in view["projects"] if p["project"] == "proj-b")
         self.assertIsNone(other_project["runs"][0]["deltas"])
 
@@ -139,7 +144,7 @@ class TestBaselineAndDeltas(LedgerFixture):
         self._write_ledger([row("wf_1", "2026-01-01T00:00:00Z")])
         with open(self.baseline_path, "w", encoding="utf-8") as fh:
             fh.write("{ not json")
-        view = dash.build_view(self.ledger_path, self.baseline_path)
+        view = dash.build_view(self.ledger_path, self.baseline_path, self.events_path)
         run = view["projects"][0]["runs"][0]
         self.assertFalse(run["is_baseline"])
         self.assertIsNone(run["deltas"])
@@ -147,13 +152,13 @@ class TestBaselineAndDeltas(LedgerFixture):
 
 class TestEmptyAndCorruptLedger(LedgerFixture):
     def test_missing_ledger_yields_empty_view_with_message(self):
-        view = dash.build_view(self.ledger_path, self.baseline_path)
+        view = dash.build_view(self.ledger_path, self.baseline_path, self.events_path)
         self.assertEqual(view["projects"], [])
         self.assertTrue(view["message"])
 
     def test_empty_ledger_file_yields_empty_view_with_message(self):
         open(self.ledger_path, "w", encoding="utf-8").close()
-        view = dash.build_view(self.ledger_path, self.baseline_path)
+        view = dash.build_view(self.ledger_path, self.baseline_path, self.events_path)
         self.assertEqual(view["projects"], [])
         self.assertTrue(view["message"])
 
@@ -163,7 +168,7 @@ class TestEmptyAndCorruptLedger(LedgerFixture):
             fh.write("{ this is not valid json\n")
             fh.write(json.dumps(row("wf_2", "2026-01-02T00:00:00Z")) + "\n")
 
-        view = dash.build_view(self.ledger_path, self.baseline_path)
+        view = dash.build_view(self.ledger_path, self.baseline_path, self.events_path)
 
         self.assertEqual(view["message"], "")
         wf_ids = {r["wf_id"] for r in view["projects"][0]["runs"]}
@@ -179,7 +184,7 @@ class TestEmptyAndCorruptLedger(LedgerFixture):
             fh.write('"truncated-but-valid-json"\n')
             fh.write(json.dumps(row("wf_2", "2026-01-02T00:00:00Z")) + "\n")
 
-        view = dash.build_view(self.ledger_path, self.baseline_path)  # must not raise
+        view = dash.build_view(self.ledger_path, self.baseline_path, self.events_path)  # must not raise
 
         self.assertEqual(view["message"], "")
         wf_ids = {r["wf_id"] for r in view["projects"][0]["runs"]}
@@ -187,7 +192,7 @@ class TestEmptyAndCorruptLedger(LedgerFixture):
 
     def test_ledger_path_that_is_a_directory_does_not_raise(self):
         os.makedirs(self.ledger_path)  # a directory where a file was expected
-        view = dash.build_view(self.ledger_path, self.baseline_path)
+        view = dash.build_view(self.ledger_path, self.baseline_path, self.events_path)
         self.assertEqual(view["projects"], [])
         self.assertTrue(view["message"])
 
@@ -227,7 +232,7 @@ class TestRealServer(LedgerFixture):
         # not merely through a template that happens to compile.
         self._write_ledger([row("wf_http_1", "2026-01-01T00:00:00Z", project="proj-http-9182",
                                  turns_per_agent=7.25, ctx_max=54321, opus_share=33.3)])
-        view = dash.build_view(self.ledger_path, self.baseline_path)
+        view = dash.build_view(self.ledger_path, self.baseline_path, self.events_path)
 
         port = _free_port()
         httpd = dash.make_server(view, port)
@@ -412,7 +417,7 @@ class TestModelsResolutionInViewModel(LedgerFixture):
         project_key = dash._mangle_path(proj_dir)
         self._write_ledger([row("wf_1", "2026-01-01T00:00:00Z", project=project_key)])
 
-        view = dash.build_view(self.ledger_path, self.baseline_path)
+        view = dash.build_view(self.ledger_path, self.baseline_path, self.events_path)
         proj = view["projects"][0]
 
         self.assertEqual(proj["root"], os.path.realpath(proj_dir))
@@ -426,7 +431,7 @@ class TestModelsResolutionInViewModel(LedgerFixture):
         project_key = dash._mangle_path(proj_dir)
         self._write_ledger([row("wf_1", "2026-01-01T00:00:00Z", project=project_key)])
 
-        view = dash.build_view(self.ledger_path, self.baseline_path)
+        view = dash.build_view(self.ledger_path, self.baseline_path, self.events_path)
         proj = view["projects"][0]
 
         self.assertEqual(proj["root"], os.path.realpath(proj_dir))
@@ -439,7 +444,7 @@ class TestModelsResolutionInViewModel(LedgerFixture):
         # would contradict the page's own notice that the root is unresolved.
         self._write_ledger([row("wf_1", "2026-01-01T00:00:00Z", project="-nonexistent-path-does-not-exist-xyz")])
 
-        view = dash.build_view(self.ledger_path, self.baseline_path)
+        view = dash.build_view(self.ledger_path, self.baseline_path, self.events_path)
         proj = view["projects"][0]
 
         self.assertIsNone(proj["root"])
@@ -606,7 +611,7 @@ class TestModelsHttpEndpoint(LedgerFixture):
         self.addCleanup(shutil.rmtree, proj_dir, ignore_errors=True)
         project_key = dash._mangle_path(proj_dir)
         self._write_ledger([row("wf_1", "2026-01-01T00:00:00Z", project=project_key)])
-        view = dash.build_view(self.ledger_path, self.baseline_path)
+        view = dash.build_view(self.ledger_path, self.baseline_path, self.events_path)
         root = os.path.realpath(proj_dir)
 
         port = _free_port()
