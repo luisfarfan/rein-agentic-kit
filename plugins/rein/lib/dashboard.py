@@ -130,6 +130,11 @@ def _run_view(row: dict, project: str, baseline: dict | None) -> dict:
         "turns_per_agent": row.get("turns_per_agent", 0),
         "ctx_max": row.get("ctx_max", 0),
         "opus_share": row.get("opus_share", 0),
+        # T001/D2/D3: a row recorded before duration was tracked (or one whose
+        # transcripts had no usable timestamps) has no "wall_clock_min" key at
+        # all -- `.get` with no default reads back `None`, never a fabricated
+        # 0, so the cell renders as "not recorded" rather than an instant run.
+        "wall_clock_min": row.get("wall_clock_min"),
         "totals": row.get("totals", {}),
         "total": row.get("total", 0),
         "agents": row.get("agents", []),
@@ -220,6 +225,10 @@ GLOSSARY: dict[str, dict[str, str]] = {
     "delta_opus_share": {
         "meaning": "Percent change in opus share versus the marked baseline run.",
         "why": "Shows whether a change moved work onto or off of the most expensive model.",
+    },
+    "duration": {
+        "meaning": "Wall-clock time the run took, from the earliest agent timestamp to the latest.",
+        "why": "Turns and tokens say what a run cost; duration says how long you waited for it.",
     },
 }
 
@@ -726,7 +735,7 @@ tr.baseline{background:#fffbe6}
 .badge{display:inline-block;background:#f5a623;color:#1a1a1a;font-size:.65rem;font-weight:700;padding:.1rem .35rem;border-radius:.2rem}
 .delta-better{color:#0a7a2f;font-weight:600}
 .delta-worse{color:#b3261e;font-weight:600}
-.delta-same,.delta-na{color:#888}
+.delta-same,.delta-na,.duration-na{color:#888}
 details{text-align:left}
 summary{cursor:pointer;color:#555}
 table.agents{margin:.4rem 0 0;font-size:.85em}
@@ -823,6 +832,15 @@ def _fmt_num(value, digits: int = 1) -> str:
         return html.escape(str(value))
 
 
+def _duration_cell(wall_clock_min: float | None) -> str:
+    """D2/D3: a run recorded before duration tracking (or one whose
+    transcripts had no usable timestamps) renders as "not recorded", never a
+    fabricated 0.0m that would misread as an instant run."""
+    if wall_clock_min is None:
+        return '<span class="duration-na">not recorded</span>'
+    return f"{_fmt_num(wall_clock_min, 1)}m"
+
+
 def _delta_cell(pct: float | None) -> str:
     """Word the sign explicitly -- for these metrics lower is always better,
     so a bare signed number would not read unambiguously as an improvement.
@@ -879,6 +897,7 @@ def _run_row(run: dict, show_deltas: bool, uid: str = "") -> str:
         f"<td>{_fmt_num(run.get('turns_per_agent'))}</td>"
         f"<td>{_fmt_num(run.get('ctx_max'), 0)}</td>"
         f"<td>{_fmt_num(run.get('opus_share'))}%</td>"
+        f"<td>{_duration_cell(run.get('wall_clock_min'))}</td>"
     )
     if show_deltas:
         deltas = run.get("deltas")
@@ -993,6 +1012,7 @@ def _project_section(project: dict, uid_seq: Iterator[int] | None = None) -> str
         f"<th>turns/agent{_glossary_html('turns_per_agent', header_uid)}</th>"
         f"<th>ctx_max/turn{_glossary_html('ctx_max', header_uid)}</th>"
         f"<th>opus share{_glossary_html('opus_share', header_uid)}</th>"
+        f"<th>duration{_glossary_html('duration', header_uid)}</th>"
     )
     if show_deltas:
         # "negative = better" sits inside the same header cell as the delta

@@ -167,11 +167,11 @@ class TestMeasureStepCommand(unittest.TestCase):
         start = self.src.index("async function runMeasureStep(reinOverride)")
         end = self.src.index("\n}\n", start)
         body = self.src[start:end]
-        self.assertIn("buildMeasureCommand(reinOverride || REIN, CHANGE)", body)
+        self.assertIn("buildMeasureCommand(reinOverride || REIN, CHANGE, MEASURE_GROUPS)", body)
         self.assertIn("agentRetry(", body)
 
     def test_build_measure_command_itself_shells_out_to_token_report_record(self):
-        self.assertIn("token-report --record${changeFlag} --json", self.src)
+        self.assertIn("token-report --record${changeFlag}${groupsFlag} --json", self.src)
 
 
 class TestEarlyAbortsAreMeasured(unittest.TestCase):

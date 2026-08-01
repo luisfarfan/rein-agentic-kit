@@ -579,11 +579,11 @@ function extract(name, params) {
   return m[1];
 }
 const buildMeasureCommand = new Function(
-  'rein', 'change',
-  extract('buildMeasureCommand', 'rein, change')
+  'rein', 'change', 'groups',
+  extract('buildMeasureCommand', 'rein, change, groups')
 );
 const scenarios = JSON.parse(scenariosJson);
-const out = scenarios.map((s) => buildMeasureCommand(s.rein, s.change));
+const out = scenarios.map((s) => buildMeasureCommand(s.rein, s.change, s.groups));
 process.stdout.write(JSON.stringify(out));
 """
 
@@ -593,7 +593,7 @@ class TestBuildMeasureCommandIsExtractable(unittest.TestCase):
     def test_function_exists_with_expected_signature(self):
         with open(LOOP_JS, encoding="utf-8") as f:
             src = f.read()
-        self.assertIn("function buildMeasureCommand(rein, change)", src)
+        self.assertIn("function buildMeasureCommand(rein, change, groups)", src)
 
 
 @unittest.skipUnless(_NODE, "node not on PATH -- loop.js is a node workflow script")
@@ -636,6 +636,31 @@ class TestBuildMeasureCommandPolicy(unittest.TestCase):
         # silently truncate the recorded change name.
         [result] = self._run([{"rein": "rein", "change": "my change"}])
         self.assertEqual(result, "'rein' token-report --record --change 'my change' --json")
+
+    # ── T001/AC4: groups -- the loop's own grouping decision rides through ──
+
+    def test_absent_groups_omits_the_flag_entirely(self):
+        # No "groups" key in the scenario at all -- the two-arg call shape,
+        # preserved so nothing upstream that never learned about groups breaks.
+        [result] = self._run([{"rein": "rein", "change": ""}])
+        self.assertNotIn("--groups", result)
+
+    def test_empty_groups_array_omits_the_flag(self):
+        # An early abort before Phase 2 ever computed groups: no grouping was
+        # ever decided, so nothing is claimed (mirrors the empty-change case).
+        [result] = self._run([{"rein": "rein", "change": "", "groups": []}])
+        self.assertNotIn("--groups", result)
+
+    def test_non_empty_groups_is_passed_through_as_json(self):
+        [result] = self._run([{"rein": "rein", "change": "", "groups": [["T001"], ["T002", "T003"]]}])
+        self.assertEqual(
+            result,
+            '\'rein\' token-report --record --groups \'[["T001"],["T002","T003"]]\' --json',
+        )
+
+    def test_groups_of_one_for_a_fully_serial_plan_are_still_recorded(self):
+        [result] = self._run([{"rein": "rein", "change": "", "groups": [["T001"], ["T002"]]}])
+        self.assertIn('--groups \'[["T001"],["T002"]]\'', result)
 
     def test_change_with_a_single_quote_cannot_break_out_of_the_command(self):
         [result] = self._run([{"rein": "rein", "change": "it's here; rm -rf /"}])

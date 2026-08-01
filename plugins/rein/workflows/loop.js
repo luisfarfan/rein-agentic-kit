@@ -66,6 +66,16 @@ const WORKTREE_MODE = ARGS.worktree !== false
 const ONLY = (ARGS.taskIds || []).map((t) => String(t).toUpperCase())
 const DRY_RUN = !!ARGS.dryRun
 
+// T001/AC4: the task grouping to record alongside the run's duration ratio,
+// as an array of arrays of task ids (mirrors `parallelSummary.parallelGroups`
+// below). Declared here, mutable, and empty by default because a `const
+// parallelSummary = ...` does not exist yet at the point in the script where
+// the EARLIEST `measuredAbort` calls happen (Prepare can abort before Phase 2
+// ever computes groups) -- referencing `parallelSummary` itself from
+// `runMeasureStep` would throw on those paths (temporal dead zone). An early
+// abort correctly records no grouping: none was ever decided.
+let MEASURE_GROUPS = []
+
 // ── Schemas ──────────────────────────────────────────────────────────────────
 
 const CONTEXT_SCHEMA = {
@@ -1739,6 +1749,7 @@ for (const group of groups) {
 }
 
 const parallelSummary = summarizeConcurrency(groups, parallelGroupFlags)
+MEASURE_GROUPS = parallelSummary.parallelGroups
 
 // ── Phase 2.5: GATE — verify the claim instead of believing it ──────────────
 // Until here, "this task is done" is a boolean the implementing agent set on
@@ -1913,10 +1924,18 @@ function decideMeasureOutcome(result, threw) {
 // success-path loss D1 exists to end). `rein` and `change` are single-quoted
 // (finding #3) because CHANGE is user input and a repo path/change name with a
 // space or shell metacharacter would otherwise truncate or inject.
-function buildMeasureCommand(rein, change) {
+// `groups` (T001, AC4) is the loop's OWN grouping decision (parallelSummary.
+// parallelGroups, an array of arrays of task ids) -- passed through verbatim
+// so the ledger row records what the loop actually decided rather than
+// token-report re-deriving it from nothing (it has no other way to know).
+// Omitted like `change` when empty/absent, so a caller that passes neither
+// (or an older test exercising the two-arg form) gets the exact same command
+// string as before.
+function buildMeasureCommand(rein, change, groups) {
   const q = (s) => `'${String(s).replace(/'/g, "'\\''")}'`
   const changeFlag = change ? ` --change ${q(change)}` : ''
-  return `${q(rein)} token-report --record${changeFlag} --json`
+  const groupsFlag = groups && groups.length ? ` --groups ${q(JSON.stringify(groups))}` : ''
+  return `${q(rein)} token-report --record${changeFlag}${groupsFlag} --json`
 }
 
 // D1: the loop records ITSELF -- the only mention of token-report used to be
@@ -1937,7 +1956,7 @@ async function runMeasureStep(reinOverride) {
   try {
     result = await agentRetry(
       `Run EXACTLY this one command and report its JSON output; do NOT interpret, fix, retry, or run anything ` +
-        `else: '${buildMeasureCommand(reinOverride || REIN, CHANGE)}'.\n` +
+        `else: '${buildMeasureCommand(reinOverride || REIN, CHANGE, MEASURE_GROUPS)}'.\n` +
         `Parse the JSON it prints. If the command exited 0 and the JSON has a non-empty "wf_id", report ok=true, ` +
         `wfId=<that wf_id>, error=''.\n` +
         `Otherwise report ok=false, wfId='' and error=<a short reason: e.g. "command not found", a non-zero exit ` +
