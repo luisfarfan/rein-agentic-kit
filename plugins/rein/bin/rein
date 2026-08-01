@@ -37,7 +37,7 @@ import os
 import shutil
 import sys
 
-VERSION = "0.6.3"
+VERSION = "0.6.4"
 
 HERE = os.path.dirname(os.path.abspath(os.path.realpath(__file__)))
 PLUGIN_ROOT = os.path.dirname(HERE)
@@ -500,6 +500,33 @@ def cmd_dashboard(argv: list[str]) -> int:
     return _dash.main(argv)
 
 
+def _annotated_verify_state(verify_state, resolved):
+    """`verify_state` with each slot's freshness resolved, so `--json` says
+    what the text output says.
+
+    A persisted outcome is only about the command it was recorded against.
+    flow.config.json, a lockfile-driven autodetect change or a newly-set
+    `subproject` key can all rewrite the configured command out from under a
+    report that already ran, and the text path has annotated that since it
+    shipped. Emitting the raw report under --json made the two surfaces of
+    one report disagree.
+    """
+    if not verify_state:
+        return verify_state
+    out = dict(verify_state)
+    results = {}
+    for slot, vr in (verify_state.get("results") or {}).items():
+        cmd = (resolved.get("commands") or {}).get(slot)
+        fresh = bool(vr) and vr.get("command") == cmd
+        results[slot] = {
+            **vr,
+            "fresh": fresh,
+            "freshness": "fresh" if fresh else "stale -- the command changed since `rein verify` last ran",
+        }
+    out["results"] = results
+    return out
+
+
 def cmd_doctor(argv: list[str]) -> int:
     root = argv[0] if argv and not argv[0].startswith("-") else "."
     resolved = _detect.resolve(root)
@@ -544,13 +571,32 @@ def cmd_doctor(argv: list[str]) -> int:
             "pluginRoot": PLUGIN_ROOT,
             "project": resolved,
             "plan": {**plan, "state": plan_state},
-            "verifyState": verify_state,
+            # Annotated, not raw: the text path below compares each persisted
+            # command against the currently resolved one and says "stale" when
+            # they differ. Emitting the raw report here made the two surfaces
+            # of the same data disagree -- a machine consumer read `ok` for a
+            # command that had changed under it, the exact defect
+            # TestChangedCommandIsStale exists to prevent for the text output.
+            "verifyState": _annotated_verify_state(verify_state, resolved),
             "ledger": {
                 "path": _tr.LEDGER_PATH,
                 "runCount": len(runs),
                 "latestWorkflowRun": latest,
             },
-            "staleness": staleness.to_dict(),
+            "staleness": {
+                **staleness.to_dict(),
+                # The ORDER is the whole point of the change; a consumer that
+                # has to re-derive it can get it wrong. Omitted entirely when
+                # the names are unknown -- emitting `... update None` would be
+                # a copy-pasteable command that cannot work, which is worse
+                # than saying nothing (D3).
+                **(
+                    {"fixCommands": _staleness.fix_commands(
+                        staleness_loaded.marketplace_name, staleness_loaded.plugin_name)}
+                    if staleness_loaded.marketplace_name and staleness_loaded.plugin_name
+                    else {}
+                ),
+            },
         }
         print(json.dumps(report, indent=2))
         return 0
@@ -566,7 +612,12 @@ def cmd_doctor(argv: list[str]) -> int:
     elif staleness.verdict == _staleness.UP_TO_DATE:
         # D3: the clone offering the same version proves nothing about the
         # clone itself, so the refresh line is printed anyway.
-        print(f"    $ claude plugin marketplace update {staleness_loaded.marketplace_name}")
+        # fix_commands() is the ONE source of this string; spelling it out
+        # again here put the same user-facing command in two files, each
+        # pinned by a different test.
+        refresh = _staleness.fix_commands(
+            staleness_loaded.marketplace_name, staleness_loaded.plugin_name)[0]
+        print(f"    $ {refresh}")
     print()
     print(f"  project root : {resolved['root']}")
     print(f"  flow.config.json : {'found' if resolved['configFound'] else 'not found (using autodetect)'}")

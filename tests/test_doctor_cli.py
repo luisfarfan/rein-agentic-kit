@@ -287,8 +287,19 @@ class TestDoctorJsonKeysIntroducedByThisChange(DoctorStalenessFixture):
         )
         self.assertEqual(
             set(report["staleness"].keys()),
-            {"verdict", "reason", "installedVersion", "availableVersion"},
+            # `fixCommands` is present here because this fixture IS stale and
+            # both names resolved. It is omitted when they do not -- printing
+            # `claude plugin marketplace update None` would be a
+            # copy-pasteable command that cannot work.
+            {"verdict", "reason", "installedVersion", "availableVersion", "fixCommands"},
         )
+        self.assertEqual(
+            report["staleness"]["fixCommands"],
+            [c for c in report["staleness"]["fixCommands"]],
+        )
+        self.assertEqual(len(report["staleness"]["fixCommands"]), 2)
+        self.assertIn("marketplace update", report["staleness"]["fixCommands"][0])
+        self.assertIn("plugin update", report["staleness"]["fixCommands"][1])
         self.assertEqual(report["staleness"]["verdict"], "stale")
         self.assertEqual(report["staleness"]["installedVersion"], "0.4.0")
         self.assertEqual(report["staleness"]["availableVersion"], "0.6.3")

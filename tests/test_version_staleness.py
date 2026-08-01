@@ -269,3 +269,52 @@ class TestFixCommands(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestTheReviewsFourFindings(unittest.TestCase):
+    """All four verified before fixing, three by execution."""
+
+    def test_a_unicode_digit_version_returns_unknown_instead_of_raising(self):
+        """`'²'.isdigit()` is True and `int('²')` raises, so a version string
+        from external JSON escaped a function whose contract is "None for
+        anything I cannot read" -- and only doctor's blanket except kept the
+        CLI alive."""
+        self.assertIsNone(vs._parse_version("1.²"))
+        r = vs.decide_staleness(
+            {"plugins": {"p@m": [{"version": "1.²", "installPath": "/x"}]}},
+            {"plugins": [{"name": "p", "version": "1.0"}]},
+            "p@m", "p", "/x",
+        )
+        self.assertEqual(r.verdict, vs.UNKNOWN)
+
+    def test_two_spellings_of_one_version_are_not_stale(self):
+        """(0, 4) < (0, 4, 0) lexicographically; they are the same release."""
+        for a, b in (("0.4", "0.4.0"), ("1.2.0.0", "1.2")):
+            r = vs.decide_staleness(
+                {"plugins": {"p@m": [{"version": a, "installPath": "/x"}]}},
+                {"plugins": [{"name": "p", "version": b}]},
+                "p@m", "p", "/x",
+            )
+            self.assertEqual(r.verdict, vs.UP_TO_DATE, f"{a} vs {b}")
+
+    def test_a_single_entry_for_another_install_gives_no_verdict(self):
+        """Verified live: a copy of the plugin at another path reported
+        `up-to-date` against the one real entry, whose installPath pointed
+        somewhere else -- a verdict about an install that was not asking."""
+        r = vs.decide_staleness(
+            {"plugins": {"p@m": [{"version": "0.4.0", "installPath": "/somewhere/else"}]}},
+            {"plugins": [{"name": "p", "version": "9.9.9"}]},
+            "p@m", "p", "/the/running/one",
+        )
+        self.assertEqual(r.verdict, vs.UNKNOWN)
+        self.assertIn("not the install currently running", r.reason)
+
+    def test_a_single_entry_without_an_installpath_is_still_tolerated(self):
+        """Older records lack the key; refusing them would trade a wrong
+        answer for no answer."""
+        r = vs.decide_staleness(
+            {"plugins": {"p@m": [{"version": "0.4.0"}]}},
+            {"plugins": [{"name": "p", "version": "0.9.0"}]},
+            "p@m", "p", "/the/running/one",
+        )
+        self.assertEqual(r.verdict, vs.STALE)

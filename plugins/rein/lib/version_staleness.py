@@ -80,10 +80,22 @@ def _parse_version(value) -> tuple[int, ...] | None:
     parts = value.split(".")
     out = []
     for p in parts:
-        if not p.isdigit():
+        # `isascii()` first: '²'.isdigit() is True and int('²') raises, so
+        # isdigit alone let a ValueError escape a function whose whole
+        # contract is "None for anything I cannot read". Version strings come
+        # from external JSON, so the shape is reachable.
+        if not (p.isascii() and p.isdigit()):
             return None
         out.append(int(p))
     return tuple(out)
+
+
+def _pad(a: tuple, b: tuple) -> tuple:
+    """Equal-length tuples, so '0.4' and '0.4.0' compare as the same release.
+    Unpadded, (0, 4) < (0, 4, 0) reports STALE for two spellings of one
+    version -- and D3 prefers up-to-date or unknown over a false alarm."""
+    n = max(len(a), len(b))
+    return a + (0,) * (n - len(a)), b + (0,) * (n - len(b))
 
 
 def _select_installed_entry(entry_list: list, plugin_root: str | None) -> tuple[dict | None, str | None]:
@@ -99,7 +111,22 @@ def _select_installed_entry(entry_list: list, plugin_root: str | None) -> tuple[
     """
     if len(entry_list) == 1:
         entry = entry_list[0]
-        return (entry, None) if isinstance(entry, dict) else (None, "installed entry is not an object")
+        if not isinstance(entry, dict):
+            return None, "installed entry is not an object"
+        # A single entry is unambiguous about WHICH SCOPE, not about whether it
+        # describes the install actually running. Verified: a copy of this
+        # plugin at another path reported `up-to-date` against the one real
+        # entry, whose installPath pointed somewhere else entirely -- a verdict
+        # about an install that was not the one asking, which D3 forbids. An
+        # entry with no installPath key is still tolerated: older records lack
+        # it, and refusing them would trade a wrong answer for no answer.
+        path = entry.get("installPath")
+        if plugin_root and isinstance(path, str) and os.path.realpath(path) != os.path.realpath(plugin_root):
+            return None, (
+                f"is installed at {path}, not the install currently running "
+                f"({plugin_root}) -- no verdict can be given about a different install"
+            )
+        return entry, None
     if not plugin_root:
         return None, f"is installed at {len(entry_list)} scopes and no running plugin root was given to identify it"
     target = os.path.realpath(plugin_root)
@@ -180,6 +207,7 @@ def decide_staleness(
             available_version_raw,
         )
 
+    installed_v, available_v = _pad(installed_v, available_v)
     if installed_v == available_v:
         return StalenessResult(
             UP_TO_DATE,
