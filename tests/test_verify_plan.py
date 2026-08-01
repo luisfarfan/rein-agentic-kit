@@ -27,6 +27,31 @@ sys.path.insert(0, os.path.join(REPO, "plugins", "rein", "lib"))
 import verify  # noqa: E402
 
 
+# A stand-in that reproduces pytest's two real signals without needing pytest
+# installed. CI installs only `build`, so the original tests ran
+# `python3 -m pytest ...`, got ModuleNotFoundError, and read as `failed` --
+# they asserted OUR logic while depending on someone else's tool being there.
+# The filename carries "pytest" because the exit-5 rule is scoped to commands
+# that name it.
+_FAKE_PYTEST = """#!/bin/sh
+# $1 decides which real pytest behaviour to imitate.
+case "$1" in
+  nocollect) echo "ERROR: file or directory not found: tests/unit/test_nope.py"; exit 4 ;;
+  deselect)  echo "plugin warning noise"; echo "more noise"; exit 5 ;;
+  fail)      echo "1 failed"; exit 1 ;;
+  *)         echo "1 passed"; exit 0 ;;
+esac
+"""
+
+
+def _fake_pytest(root: str) -> str:
+    path = os.path.join(root, "fake_pytest.sh")
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(_FAKE_PYTEST)
+    os.chmod(path, 0o755)
+    return path
+
+
 class PlanTree:
     def __init__(self, tasks: str, files: dict | None = None):
         self.tasks, self.files = tasks, files or {}
@@ -65,19 +90,20 @@ class TestAVerificationThatProvesNothingIsCaught(unittest.TestCase):
         return verify.verify_plan(root, plan.read_plan(root, "")["tasks"])
 
     def test_a_missing_test_module_proves_nothing(self):
-        """The exact shape that cost three hours."""
-        with PlanTree(_task("T003", "python3 -m pytest tests/unit/test_nope.py -k rubric"),
-                      {"tests/test_real.py": "def test_ok():\n    assert True\n"}) as root:
+        """The exact shape that cost three hours: pytest says
+        `file or directory not found:` and exits 4."""
+        with PlanTree(_task("T003", "./fake_pytest.sh nocollect")) as root:
+            _fake_pytest(root)
             report = self._run(root)
         self.assertEqual(report["results"]["T003"]["outcome"], verify.OUTCOME_PROVES_NOTHING)
         self.assertEqual(report["unusable"], ["T003"])
         self.assertFalse(report["allUsable"])
 
     def test_a_selector_that_matches_nothing_proves_nothing(self):
-        """pytest exits 5 and buries the phrase under plugin warnings, so the
-        exit code carries this one, not the text."""
-        with PlanTree(_task("T005", "python3 -m pytest tests/ -k no_such_selector_anywhere"),
-                      {"tests/test_real.py": "def test_ok():\n    assert True\n"}) as root:
+        """pytest exits 5 with the phrase buried under plugin warnings, so the
+        EXIT CODE carries this one and the text cannot -- reproduced exactly."""
+        with PlanTree(_task("T005", "./fake_pytest.sh deselect")) as root:
+            _fake_pytest(root)
             report = self._run(root)
         self.assertEqual(report["results"]["T005"]["outcome"], verify.OUTCOME_PROVES_NOTHING)
 
@@ -121,16 +147,42 @@ class TestTheCliContract(unittest.TestCase):
     def test_exit_is_non_zero_only_for_unusable_never_for_failing(self):
         with PlanTree(_task("T007", 'python3 -c "raise SystemExit(1)"')) as root:
             failing = self._cli(root)
-        with PlanTree(_task("T003", "python3 -m pytest tests/unit/test_nope.py"),
-                      {"tests/test_real.py": "def test_ok():\n    assert True\n"}) as root:
+        with PlanTree(_task("T003", "./fake_pytest.sh nocollect")) as root:
+            _fake_pytest(root)
             unusable = self._cli(root)
         self.assertEqual(failing.returncode, 0, "a failing verification must not stop a run")
         self.assertEqual(unusable.returncode, 1, "one that proves nothing must")
 
     def test_json_names_what_cannot_prove_anything(self):
-        with PlanTree(_task("T003", "python3 -m pytest tests/unit/test_nope.py"),
-                      {"tests/test_real.py": "def test_ok():\n    assert True\n"}) as root:
+        with PlanTree(_task("T003", "./fake_pytest.sh nocollect")) as root:
+            _fake_pytest(root)
             proc = self._cli(root, "--json")
         report = json.loads(proc.stdout)
         self.assertEqual(report["unusable"], ["T003"])
         self.assertTrue(report["results"]["T003"]["provesNothing"])
+
+
+@unittest.skipUnless(
+    __import__("shutil").which("pytest")
+    or __import__("subprocess").run(
+        [sys.executable, "-c", "import pytest"], capture_output=True).returncode == 0,
+    "pytest not installed -- the deterministic tests above cover the logic",
+)
+class TestAgainstRealPytest(unittest.TestCase):
+    """One integration test, gated.
+
+    The tests above use a stand-in so CI (which installs only `build`) proves
+    OUR logic without needing someone else's tool. But a stand-in only proves
+    what its author believed pytest does -- so where pytest IS present, check
+    the belief itself.
+    """
+
+    def test_a_selector_matching_nothing_really_does_exit_5(self):
+        with PlanTree(_task("T005", "python3 -m pytest tests/ -k no_such_selector_anywhere"),
+                      {"tests/test_real.py": "def test_ok():\n    assert True\n"}) as root:
+            sys.path.insert(0, os.path.join(REPO, "plugins", "rein", "lib"))
+            import plan
+            report = verify.verify_plan(root, plan.read_plan(root, "")["tasks"])
+        self.assertEqual(report["results"]["T005"]["exitCode"], 5,
+                         "pytest no longer uses 5 for no-tests-collected — the rule needs revisiting")
+        self.assertEqual(report["results"]["T005"]["outcome"], verify.OUTCOME_PROVES_NOTHING)
