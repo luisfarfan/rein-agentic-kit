@@ -1,58 +1,56 @@
-# Change: the-ledger-knows-how-long
+# Change: the-plan-checks-itself
 
 ## Why
-The ledger cannot answer *how long did this run take*. Not approximately —
-at all. A row carries tokens, turns, `ctx_max`, Opus share and now a change
-label, and no duration of any kind. You can see that a run spent 50M tokens
-and not whether it took five minutes or three hours.
+A plan defect is the cheapest thing in this system to catch and the most
+expensive to miss. Measured here, once, on a defect the author actually
+wrote: task T003's `Verification` named `tests.test_verify_commands` — T002's
+test module — so the command could not mechanically confirm a single one of
+T003's six acceptance criteria. The loop's PlanCheck stopped the run for
+**81k tokens**. The same defect reaching Review would have cost a whole run,
+around 30M.
 
-The same gap swallowed the parallelism facts. The loop computes
-`parallelGroups` and `parallelPathTaken`, returns them in the workflow's
-result object, and nothing writes them down — the object reaches the
-notification and evaporates. That is precisely the failure `measure-itself`
-existed to end, one level in: a value that exists in a return nobody records.
+But PlanCheck fires **inside the loop**, after the plan is written and the
+human has confirmed it. The defect above was already committed and launched.
 
-The data is already on disk. Every agent transcript carries ISO timestamps,
-and 15 lines over the last four runs produced:
+The gap is what a person ends up doing by hand: asking for the proposal to be
+re-read, which reliably turns up something. That habit is not automated
+anywhere — not in this kit, and not in openspec, whose `validate` is
+structural by its own documentation ("check structure", "missing required
+sections or malformed delta headers"). It cannot judge whether a verification
+proves the criteria it is attached to; that is semantics, not format.
 
-| run | wall clock | agent minutes | overlap |
-|---|---:|---:|---:|
-| wf_cfb5c388 | 40.0m | 40.0m | 1.00× |
-| wf_d143bcf2 | 1.6m | 1.6m | 1.00× |
-| wf_eab342ad | 55.5m | 55.4m | 1.00× |
-| wf_f9c9e72d | 37.4m | 37.4m | 1.00× |
-
-**1.00× every time — perfectly serial.** That ratio is the number that will
-prove or disprove the parallel path: 1.8× means it worked, and a run that
-stays at 1.00× means either it never fired or the runtime serialised the
-agents anyway — a question that cannot be answered today.
+So the check moves one step earlier, to the moment the plan is written, where
+changing scope still costs nothing.
 
 ## Scope
-- In: run duration, agent time and their ratio, derived from the transcripts
-  `token-report` already walks, and persisted per run
-- In: recording how the run grouped its tasks, so the ratio has context
-- Out: any claim about what the numbers will show. This change makes the
-  question answerable; the answer is a later measurement
-- Out: changing how the loop parallelises. This measures it, nothing more
-- Out: a new storage engine — the same JSONL, the same append-only file
+- In: `/rein:plan` critiquing its own output before writing it
+- In: running openspec's own validator when openspec is the plan source, and
+  reporting its errors verbatim
+- Out: reimplementing any structural rule openspec already checks — compose,
+  never rebuild
+- Out: changing the loop's PlanCheck, which stays exactly as it is; this adds
+  an earlier gate, it does not move that one
+- Out: style, wording and taste findings. A check that always finds something
+  stops being read, and the plan goes back to being unreviewed in practice
 
 ## Decisions
-- D1 Overlap is measured from clocks, never claimed from status flags. `Date.now()` is unavailable inside a workflow script (it breaks resume), so the measurement belongs in `token-report`, where the transcripts' own ISO timestamps already are
-- D2 Absent is absent. A run whose timestamps cannot be read records NO duration fields rather than zeros — a fabricated 0m would read as an instant run and poison every average
-- D3 The 14 rows already written stay valid and readable. New fields are added, never required, exactly as the `change` label was
-- D4 A number the page shows is a number the page explains: anything surfaced in the dashboard needs its GLOSSARY entry, which the existing completeness ratchet already enforces
+- D1 Automatic, never a flag. Two mechanisms shipped in this project failed exactly this way — `measure: "<command>"` was a string nobody ran, and five skills recorded with an empty `$R`. Instrumentation that depends on remembering is not instrumentation
+- D2 BLOCKING has a closed definition, and only BLOCKING stops the write. Everything else is shown beside the plan for the author to accept or ignore
+- D3 One definition, two consumers. The loop's PlanCheck and this check must name the SAME defect classes, or the two gates drift and the earlier one starts contradicting the later one
+- D4 Structural checking belongs to openspec where openspec is in use. Its errors are reported as its own, not paraphrased and not re-derived
+- D5 Unavailable is not a stop. If the check cannot run, the plan is written with that fact stated — never silently skipped, and never a hard failure over a gate that is meant to save money
 
 ---
 
-- [x] T001 A run records how long it took, and whether anything overlapped
+- [ ] T001 The plan is criticised before it is written
   - Type: implementation
   - Depends on: none
   - Human review: false
-  - Verification: `python3 -m unittest tests.test_run_duration`
+  - Verification: `python3 -m unittest tests.test_plan_self_check`
   - Acceptance:
-    - `token_report` derives each agent's first and last ISO timestamp from its transcript and computes three run-level values: `wall_clock_min` (last end minus first start across all agents), `agent_min` (the sum of per-agent spans) and `overlap` (`agent_min / wall_clock_min`); a test builds synthetic transcripts with KNOWN timestamps — including one pair that genuinely overlaps and one that does not — and asserts the exact values, so a serial run reads 1.00× and an overlapping one reads above it
-    - the three values are persisted in the ledger row, and a row written without them still reads back and renders — a test loads a fixture row in the pre-existing shape and asserts no key error and no invented zero (D3)
-    - a transcript with missing, unparseable or out-of-order timestamps yields NO duration fields for that run rather than a zero or a negative span, and a test covers each of those three shapes (D2)
-    - the measure step passes the run's task grouping so the row records it beside the ratio; a fully serial plan records groups of one, and a test asserts the recorded grouping matches what the loop decided rather than being re-derived
-    - `rein ledger` prints the duration and the overlap next to each run, and prints neither for a row that has none — a test asserts the older rows render unchanged
-    - the dashboard shows run duration, with its GLOSSARY entry, and the existing completeness ratchet passes — a metric on the page that nothing explains must keep failing the build (D4)
+    - `plugins/rein/skills/plan/SKILL.md` runs a critique pass over the drafted plan BEFORE writing it, as an unconditional step and not behind any flag or user request; a test reads the SHIPPED skill and fails if the step is absent or made conditional (D1)
+    - the four BLOCKING classes are defined in ONE place — a verification that cannot mechanically confirm the criteria it is attached to, a criterion no command can check, a dependency that is circular or names a task that does not exist, and a criterion that contradicts a stated decision — and a test asserts the loop's existing PlanCheck prompt and the plan skill name the same four, so the two gates cannot drift (D2/D3)
+    - the REAL defect is the fixture: a plan whose T003 verification names T002's test module is rejected with a BLOCKING finding that says which criteria it fails to prove — the exact plan text that cost 81k tokens is checked in as the test input
+    - a healthy plan produces NO blocking findings: one of the plans already approved in this repo's history is checked in as a fixture and asserted to pass, because a check that always fires is a check nobody reads (D2)
+    - when the plan source is openspec AND the binary is present, `openspec validate --strict` runs first and its output is reported verbatim as openspec's own; a test asserts the kit implements no structural rule of its own, and that a missing openspec binary skips that half without failing anything (D4)
+    - a critique that cannot run — no agent, a timeout, a malformed response — results in the plan being WRITTEN with the failure stated beside it, never a silent skip and never a hard stop; a test covers each of those three shapes (D5)
