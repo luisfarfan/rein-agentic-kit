@@ -64,7 +64,7 @@ indexed it and wrote the file — a summary of the state before its own work.
 
 ---
 
-- [ ] T001 mise is a task runner like the others
+- [x] T001 mise is a task runner like the others
   - Type: implementation
   - Depends on: none
   - Human review: false
