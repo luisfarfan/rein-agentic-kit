@@ -59,6 +59,7 @@ tests/test_plan_self_check.py
 tests/test_python39_compat.py
 tests/test_readme_is_current.py
 tests/test_render_policy.py
+tests/test_reserved_names.py
 tests/test_run_duration.py
 tests/test_serena_worktree.py
 tests/test_serve_probe.py
