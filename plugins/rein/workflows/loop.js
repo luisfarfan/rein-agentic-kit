@@ -1168,28 +1168,51 @@ const artifactList = (ctx.artifacts || []).length
   ? `Read these first — they are the source of truth for intent:\n` + ctx.artifacts.map((a) => `  - ${a}\n`).join('')
   : ''
 
-const CTX =
+// Shared body (plan/scope/decisions/artifacts/retrieval): identical for the
+// run's own worktree and every per-task parallel worktree (T001, D4) — only
+// WHERE the agent works and WHAT branch it commits to (the `head`) differ.
+function buildCTX(head) {
+  return (
+    head +
+    `Plan: ${ctx.planPath}\n` +
+    // Deliberately NOT the "why": that is judgement context the reviewer needs and
+    // an implementer does not, and CTX is re-read on every turn of every agent.
+    // Only what an implementer could actually violate travels here.
+    ((ctx.scopeOut || []).length
+      ? `OUT OF SCOPE for this change — do not touch, even if it looks broken:\n` +
+        ctx.scopeOut.map((s) => `  - ${s}\n`).join('')
+      : '') +
+    ((ctx.decisions || []).length
+      ? `DECISIONS already made — respect them, do NOT re-open what was decided:\n` +
+        ctx.decisions.map((d) => `  - ${d}\n`).join('')
+      : '') +
+    artifactList +
+    `Conventional Commits.\n` +
+    RETRIEVAL
+  )
+}
+
+const CTX = buildCTX(
   `You work in ${WD}` +
-  (WORKTREE_MODE
-    ? ` (a git worktree on branch ${BRANCH}, already created). 'cd ${WD}' first and always use paths inside ` +
-      `${WD}; do NOT touch ${ctx.root} directly. Commit to ${BRANCH}, NOT ${BASE}: the loop merges only if the ` +
-      `change is approved.\n`
-    : ` (branch ${BASE}).\n`) +
-  `Plan: ${ctx.planPath}\n` +
-  // Deliberately NOT the "why": that is judgement context the reviewer needs and
-  // an implementer does not, and CTX is re-read on every turn of every agent.
-  // Only what an implementer could actually violate travels here.
-  ((ctx.scopeOut || []).length
-    ? `OUT OF SCOPE for this change — do not touch, even if it looks broken:\n` +
-      ctx.scopeOut.map((s) => `  - ${s}\n`).join('')
-    : '') +
-  ((ctx.decisions || []).length
-    ? `DECISIONS already made — respect them, do NOT re-open what was decided:\n` +
-      ctx.decisions.map((d) => `  - ${d}\n`).join('')
-    : '') +
-  artifactList +
-  `Conventional Commits.\n` +
-  RETRIEVAL
+    (WORKTREE_MODE
+      ? ` (a git worktree on branch ${BRANCH}, already created). 'cd ${WD}' first and always use paths inside ` +
+        `${WD}; do NOT touch ${ctx.root} directly. Commit to ${BRANCH}, NOT ${BASE}: the loop merges only if the ` +
+        `change is approved.\n`
+      : ` (branch ${BASE}).\n`)
+)
+
+// T001/D4: a task running in a multi-task parallel group commits to ITS OWN
+// worktree/branch (cut from the run's branch, not BASE) and is merged back
+// into the run's worktree once done — never straight into BASE, which only
+// ever receives the whole approved change via the existing Integrate phase.
+function buildTaskCTX(wd, branch) {
+  return buildCTX(
+    `You work in ${wd} (a private worktree on branch ${branch}, already created for THIS task, running ` +
+      `alongside others). 'cd ${wd}' first and always use paths inside ${wd}; do NOT touch ${ctx.root} or ${WD} ` +
+      `directly. Commit to ${branch}, NOT ${BRANCH}: this task's own worktree merges into the run's worktree, ` +
+      `in task-id order, once the task is done.\n`
+  )
+}
 
 // ── Phase 1.7: MAP — one cheap scout, so N implementers do not each explore ──
 // A HINT, never a contract: if the scout dies the map is empty and implementers
@@ -1278,9 +1301,81 @@ function planParallelGroups(tasks, codeMap) {
   return groups
 }
 
+// D4: a group's merge into the run's worktree happens in TASK-ID order,
+// never completion order — a fast task must not reorder history ahead of a
+// slower one that appears earlier in the plan. Pure so the actual sort a test
+// exercises is the one that ships; the caller (below) still runs the merges
+// themselves sequentially in this order, one agent call at a time.
+function mergeOrderOf(outcomes) {
+  return outcomes.slice().sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+}
+
+// D3: any failure anywhere in the parallel path — worktree creation, the
+// implementation itself, or the merge back into the run's worktree — must
+// fall back to a serial retry, never a lost or aborted task. `worktreeFailed`
+// / `mergeConflict` are checked separately from `status`: a task can
+// implement successfully (status: implemented) and still fail to land here
+// because ITS MERGE conflicted, which `status` alone would miss. Pure so the
+// conflict path is executed by a test, not asserted by comment.
+function decideParallelFallback(outcome) {
+  const o = outcome || {}
+  const implemented = o.status === 'implemented' || o.status === 'implemented-proxy'
+  const ok = implemented && !o.worktreeFailed && !o.mergeConflict
+  return { fallbackToSerial: !ok, reason: ok ? '' : o.detail || 'parallel path failed' }
+}
+
+// D5: "it merits" is a claim until it is measured. `concurrent` is true only
+// when a group of 2+ tasks ACTUALLY ran in parallel (ranParallelFlags[i]) —
+// not merely whenever planParallelGroups judged a group groupable, because
+// D3's fallback can still make every member of that group land serially.
+// Pure so a fully-serial plan's "no concurrency claim" is executed by a test.
+function summarizeConcurrency(groups, ranParallelFlags) {
+  const flags = ranParallelFlags || []
+  return {
+    parallelGroups: groups.map((g) => g.map((t) => t.id)),
+    concurrent: groups.some((g, i) => g.length > 1 && !!flags[i]),
+  }
+}
+
+// D4: mirrors buildIsolatePrompt's worktree-creation mechanism exactly (same
+// two-step git dance) for ONE task's private worktree, cut from the RUN's
+// branch (not BASE) so partial task work never reaches BASE except through
+// the normal Integrate phase once the whole change is approved.
+function buildTaskWorktreePrompt(root, runBranch, wd, branch) {
+  return (
+    `You work in ${root}. Prepare a PRIVATE worktree for ONE task that is running in PARALLEL with others. ` +
+    `Implement NOTHING here, only isolate.\n` +
+    `1. Create it: 'git -C ${root} worktree add ${wd} -b ${branch} ${runBranch} 2>/dev/null || ` +
+    `git -C ${root} worktree add ${wd} ${branch}' (reuse the branch if it already exists). If ${wd} already ` +
+    `exists and belongs to this task, reuse it — do not fail.\n` +
+    `2. Verify: 'git -C ${wd} rev-parse --abbrev-ref HEAD' reports ${branch}.\n` +
+    `Set done=true when both steps succeed; otherwise blocked=true with what literally happened.`
+  )
+}
+
+// D4: the counterpart merge — a task's branch INTO the run's own worktree,
+// never into BASE. On conflict, do not force a resolution: report it so
+// decideParallelFallback turns it into a serial retry (D3) instead of history
+// carrying a resolution nobody judged. Step 3 cleans up the task's now-merged
+// private worktree so a run that parallelises does not litter sibling
+// directories/branches on every pass — the same cleanup the Integrate phase
+// already does for the run's own worktree, non-blocking here too (D4).
+function buildTaskMergePrompt(wd, branch, runBranch, taskId, taskWd) {
+  return (
+    `Merge task ${taskId}'s worktree into ${runBranch}. You work in ${wd}.\n` +
+    `1. 'cd ${wd}' and 'git merge --no-ff ${branch} -m "merge(${taskId}): parallel task landed"'.\n` +
+    `2. On a conflict, do NOT force a resolution: run 'git merge --abort' and report blocked=true with the ` +
+    `conflicting paths in blockedReason, and skip step 3 (nothing merged, nothing to clean up). Otherwise ` +
+    `set done=true.\n` +
+    `3. Only after a clean merge: 'git -C ${wd} worktree remove ${taskWd} --force' then ` +
+    `'git -C ${wd} branch -D ${branch}'. Non-blocking: if either fails, mention it but keep done=true — a ` +
+    `leftover task worktree is a cleanup nit, not a failed merge.`
+  )
+}
+
 // ── One bounded step ────────────────────────────────────────────────────────
 
-function stepPrompt(task, proxied, ledger, step) {
+function stepPrompt(task, proxied, ledger, step, wtOverride) {
   const cont = ledger
     ? `CONTINUATION (step ${step}): a previous FRESH agent already advanced THIS SAME task. Do NOT re-explore ` +
       `or redo its work — continue from what is left.\n` +
@@ -1294,8 +1389,10 @@ function stepPrompt(task, proxied, ledger, step) {
     ? `Acceptance criteria (all of them must hold):\n` + task.acceptance.map((a, i) => `  ${i + 1}. ${a}\n`).join('')
     : `Acceptance criteria are in ${ctx.planPath} under ${task.id} — read that entry, nothing else.\n`
 
+  const ctxBlock = wtOverride ? buildTaskCTX(wtOverride.wd, wtOverride.branch) : CTX
+
   return (
-    `${CTX}\n\nYou are the IMPLEMENTER of task ${task.id} ("${task.title}").\n` +
+    `${ctxBlock}\n\nYou are the IMPLEMENTER of task ${task.id} ("${task.title}").\n` +
     criteria +
     mapHintFor(task.id) +
     cont +
@@ -1321,8 +1418,10 @@ function stepPrompt(task, proxied, ledger, step) {
 }
 
 // One task = a bounded loop of fresh agents. Context resets at every boundary;
-// only the compact ledger travels between them.
-async function implementTaskBounded(task, proxied) {
+// only the compact ledger travels between them. `wtOverride` ({wd, branch}) is
+// set ONLY for a task running in its own parallel worktree (T001) — omitted,
+// it behaves exactly as before, in the run's own worktree.
+async function implementTaskBounded(task, proxied, wtOverride) {
   let ledger = null
   const allCommits = []
   const touched = new Set()
@@ -1332,7 +1431,7 @@ async function implementTaskBounded(task, proxied) {
       // Retried: a step that dies transiently would otherwise block the task
       // permanently. Repeating it is safe — whatever it already committed is in
       // git, and the replacement agent is fresh with the same instructions.
-      res = await agentRetry(stepPrompt(task, proxied, ledger, step), {
+      res = await agentRetry(stepPrompt(task, proxied, ledger, step, wtOverride), {
         schema: STEP_SCHEMA,
         label: `impl:${task.id}#${step}`,
         phase: 'Implement',
@@ -1368,42 +1467,155 @@ async function implementTaskBounded(task, proxied) {
   }
 }
 
+// T001/D3/D4: the parallel counterpart of implementTaskBounded — creates a
+// PRIVATE worktree for this one task (cut from the run's own branch) and
+// implements it there, exactly like the serial path but scoped to that
+// worktree via wtOverride. NEVER throws: like implementTaskBounded, every
+// failure (including worktree creation) becomes a returned status so the
+// caller can fall back to serial (decideParallelFallback) instead of an
+// unhandled rejection aborting the whole group.
+async function implementTaskInOwnWorktree(task) {
+  const taskWd = `${WD}-${task.id.toLowerCase()}`
+  const taskBranch = `${BRANCH}/${task.id}`
+  let iso
+  try {
+    iso = await agent(buildTaskWorktreePrompt(ctx.root, BRANCH, taskWd, taskBranch), {
+      schema: TASK_SCHEMA,
+      label: `isolate:${task.id}`,
+      phase: 'Implement',
+      agentType: 'general-purpose',
+      effort: 'low',
+      model: MODEL_AUX,
+    })
+  } catch (e) {
+    return { id: task.id, status: 'error', detail: `worktree: ${e && e.message ? e.message : e}`, commits: [], worktreeFailed: true }
+  }
+  if (!iso || iso.blocked || !iso.done) {
+    return {
+      id: task.id,
+      status: 'blocked',
+      detail: `worktree: ${iso ? iso.blockedReason || iso.summary : 'the agent died'}`,
+      commits: [],
+      worktreeFailed: true,
+    }
+  }
+  const proxied = task.humanReview && AUTO_HUMAN
+  const r = await implementTaskBounded(task, proxied, { wd: taskWd, branch: taskBranch })
+  return { ...r, taskWd, taskBranch, worktreeFailed: false }
+}
+
+// T001/D4: merges ONE already-implemented task's worktree into the run's own
+// worktree/branch. Callers only invoke this AFTER all tasks in the group have
+// implemented, in mergeOrderOf's (task-id) order — never as each task
+// completes, or a fast task would reorder history ahead of a slower one.
+async function mergeTaskIntoRun(outcome) {
+  let merge
+  try {
+    merge = await agent(buildTaskMergePrompt(WD, outcome.taskBranch, BRANCH, outcome.id, outcome.taskWd), {
+      schema: TASK_SCHEMA,
+      label: `merge:${outcome.id}`,
+      phase: 'Implement',
+      agentType: 'general-purpose',
+      model: MODEL_IMPL,
+    })
+  } catch (e) {
+    return { ...outcome, mergeConflict: true, detail: `merge: ${e && e.message ? e.message : e}` }
+  }
+  if (!merge || merge.blocked || !merge.done) {
+    return { ...outcome, mergeConflict: true, detail: `merge: ${merge ? merge.blockedReason || merge.summary : 'the agent died'}` }
+  }
+  return outcome
+}
+
 // ── Phase 2: IMPLEMENT ───────────────────────────────────────────────────────
-// Sequential on purpose: every task writes to the same tree. Parallelism belongs
-// BETWEEN runs (each with its own worktree), where it does not cause git locks
-// and flaky tests.
+// Serial by default — every task writes to the same tree. T001/D1: a GROUP of
+// 2+ tasks that planParallelGroups judged non-colliding (no declared
+// dependency, no shared touchpoint) instead fans out to one private worktree
+// per task and merges them back in task-id order (D4). D3: any failure
+// anywhere in that path — worktree creation, the implementation itself, a
+// merge conflict — falls back to the exact serial call below for the
+// affected task(s), so the run is never worse than it was before this.
 phase('Implement')
 
 const results = []
 const failedIds = new Set()
+const groups = planParallelGroups(tasks, codeMapById)
+const parallelGroupFlags = []
 
-for (const task of tasks) {
-  const blockingDep = (task.dependsOn || []).find((d) => failedIds.has(d))
-  if (blockingDep) {
-    log(`⏸ ${task.id} skipped: depends on ${blockingDep}, which did not land`)
-    results.push({ id: task.id, status: 'waiting', detail: `depends on ${blockingDep}` })
-    failedIds.add(task.id)
+for (const group of groups) {
+  const runnable = []
+  for (const task of group) {
+    const blockingDep = (task.dependsOn || []).find((d) => failedIds.has(d))
+    if (blockingDep) {
+      log(`⏸ ${task.id} skipped: depends on ${blockingDep}, which did not land`)
+      results.push({ id: task.id, status: 'waiting', detail: `depends on ${blockingDep}` })
+      failedIds.add(task.id)
+      continue
+    }
+    if (task.humanReview && !AUTO_HUMAN) {
+      log(`✋ ${task.id} is supervised (Human review: true) — left for you`)
+      results.push({ id: task.id, status: 'needs-human', detail: 'requires the owner' })
+      failedIds.add(task.id)
+      continue
+    }
+    runnable.push(task)
+  }
+
+  const runSerially = async (task) => {
+    const proxied = task.humanReview && AUTO_HUMAN
+    if (proxied) log(`🤖 ${task.id} supervised, but delegated (autoHumanReview): the agent does the real verification`)
+    const r = await implementTaskBounded(task, proxied)
+    results.push({ id: task.id, status: r.status, detail: r.detail, commits: r.commits || [] })
+    if (r.status === 'implemented' || r.status === 'implemented-proxy') {
+      log(`✔ ${task.id} implemented in ${r.steps} bounded step(s)${proxied ? ' (real verification by proxy)' : ''}`)
+    } else {
+      log(`⛔ ${task.id} ${r.status}: ${r.detail}`)
+      failedIds.add(task.id)
+    }
+  }
+
+  // A group of 0-1 runnable tasks (or worktrees disabled entirely) is never
+  // worth the parallel machinery — it is just the serial call above.
+  if (!WORKTREE_MODE || runnable.length < 2) {
+    parallelGroupFlags.push(false)
+    for (const task of runnable) await runSerially(task)
     continue
   }
 
-  if (task.humanReview && !AUTO_HUMAN) {
-    log(`✋ ${task.id} is supervised (Human review: true) — left for you`)
-    results.push({ id: task.id, status: 'needs-human', detail: 'requires the owner' })
-    failedIds.add(task.id)
-    continue
-  }
-  const proxied = task.humanReview && AUTO_HUMAN
-  if (proxied) log(`🤖 ${task.id} supervised, but delegated (autoHumanReview): the agent does the real verification`)
+  let ranParallel = false
+  try {
+    const implementedInWorktrees = await Promise.all(runnable.map((task) => implementTaskInOwnWorktree(task)))
+    const needsSerial = implementedInWorktrees.filter((o) => decideParallelFallback(o).fallbackToSerial)
+    const ready = implementedInWorktrees.filter((o) => !needsSerial.includes(o))
 
-  const r = await implementTaskBounded(task, proxied)
-  results.push({ id: task.id, status: r.status, detail: r.detail, commits: r.commits || [] })
-  if (r.status === 'implemented' || r.status === 'implemented-proxy') {
-    log(`✔ ${task.id} implemented in ${r.steps} bounded step(s)${proxied ? ' (real verification by proxy)' : ''}`)
-  } else {
-    log(`⛔ ${task.id} ${r.status}: ${r.detail}`)
-    failedIds.add(task.id)
+    const landed = []
+    for (const outcome of mergeOrderOf(ready)) {
+      const merged = await mergeTaskIntoRun(outcome)
+      if (decideParallelFallback(merged).fallbackToSerial) needsSerial.push(merged)
+      else landed.push(merged)
+    }
+
+    for (const o of landed) {
+      results.push({ id: o.id, status: o.status, detail: o.detail, commits: o.commits || [] })
+      log(`✔ ${o.id} implemented in its own worktree, merged into ${BRANCH}`)
+    }
+    if (needsSerial.length) {
+      const reasons = needsSerial.map((o) => `${o.id} (${decideParallelFallback(o).reason})`).join(', ')
+      log(`⚠️ parallel path did not land for ${reasons} — retrying serially (D3)`)
+      for (const o of needsSerial) {
+        const task = runnable.find((t) => t.id === o.id)
+        await runSerially(task)
+      }
+    }
+    ranParallel = landed.length > 0
+  } catch (e) {
+    log(`⚠️ parallel path for ${runnable.map((t) => t.id).join(', ')} threw (${e && e.message ? e.message : e}) — retrying all serially (D3)`)
+    for (const task of runnable) await runSerially(task)
   }
+  parallelGroupFlags.push(ranParallel)
 }
+
+const parallelSummary = summarizeConcurrency(groups, parallelGroupFlags)
 
 // ── Phase 2.5: GATE — verify the claim instead of believing it ──────────────
 // Until here, "this task is done" is a boolean the implementing agent set on
@@ -1930,6 +2142,11 @@ return {
   // D3/AC4: facts the loop can check, carried whatever the verdict — null in
   // every mode other than 'rendered'.
   renderEvidence,
+  // T001/D5: how the plan was grouped, and whether any group actually ran
+  // concurrently (not merely COULD have) — the ledger's only honest answer to
+  // whether parallelising ever merits anything, measured rather than claimed.
+  parallelGroups: parallelSummary.parallelGroups,
+  parallelRanConcurrently: parallelSummary.concurrent,
   // Measure the run: turns/agent, ctx_max/turn and Opus share are what predict
   // cost. This reports what WAS recorded (or why not), never a suggestion.
   measure,
