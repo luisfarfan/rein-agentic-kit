@@ -1162,8 +1162,6 @@ function buildRetrievalBlock(hasSerena, hasGraph, wd) {
     `  · Aim to finish in FEW turns with precise reads, not to explore incrementally.`
   )
 }
-const RETRIEVAL = buildRetrievalBlock(hasSerena, hasGraph, WD)
-
 const artifactList = (ctx.artifacts || []).length
   ? `Read these first — they are the source of truth for intent:\n` + ctx.artifacts.map((a) => `  - ${a}\n`).join('')
   : ''
@@ -1171,7 +1169,12 @@ const artifactList = (ctx.artifacts || []).length
 // Shared body (plan/scope/decisions/artifacts/retrieval): identical for the
 // run's own worktree and every per-task parallel worktree (T001, D4) — only
 // WHERE the agent works and WHAT branch it commits to (the `head`) differ.
-function buildCTX(head) {
+// `wd` drives the retrieval block too (finding 2): a task's own worktree is a
+// DIFFERENT directory with its own (or no) codegraph index, so the `-p`/sync
+// paths it is taught must point at THAT worktree, never the run's WD — a task
+// agent building the run's own index from inside its private tree would be
+// answering from (and mutating) an index it was explicitly told not to touch.
+function buildCTX(head, wd) {
   return (
     head +
     `Plan: ${ctx.planPath}\n` +
@@ -1188,7 +1191,7 @@ function buildCTX(head) {
       : '') +
     artifactList +
     `Conventional Commits.\n` +
-    RETRIEVAL
+    buildRetrievalBlock(hasSerena, hasGraph, wd)
   )
 }
 
@@ -1198,7 +1201,8 @@ const CTX = buildCTX(
       ? ` (a git worktree on branch ${BRANCH}, already created). 'cd ${WD}' first and always use paths inside ` +
         `${WD}; do NOT touch ${ctx.root} directly. Commit to ${BRANCH}, NOT ${BASE}: the loop merges only if the ` +
         `change is approved.\n`
-      : ` (branch ${BASE}).\n`)
+      : ` (branch ${BASE}).\n`),
+  WD
 )
 
 // T001/D4: a task running in a multi-task parallel group commits to ITS OWN
@@ -1210,7 +1214,8 @@ function buildTaskCTX(wd, branch) {
     `You work in ${wd} (a private worktree on branch ${branch}, already created for THIS task, running ` +
       `alongside others). 'cd ${wd}' first and always use paths inside ${wd}; do NOT touch ${ctx.root} or ${WD} ` +
       `directly. Commit to ${branch}, NOT ${BRANCH}: this task's own worktree merges into the run's worktree, ` +
-      `in task-id order, once the task is done.\n`
+      `in task-id order, once the task is done.\n`,
+    wd
   )
 }
 
@@ -1340,8 +1345,16 @@ function summarizeConcurrency(groups, ranParallelFlags) {
 // D4: mirrors buildIsolatePrompt's worktree-creation mechanism exactly (same
 // two-step git dance) for ONE task's private worktree, cut from the RUN's
 // branch (not BASE) so partial task work never reaches BASE except through
-// the normal Integrate phase once the whole change is approved.
-function buildTaskWorktreePrompt(root, runBranch, wd, branch) {
+// the normal Integrate phase once the whole change is approved. Also mirrors
+// buildIsolatePrompt's steps 5-6 (finding 2): without its OWN codegraph index
+// and serena activation, this worktree has neither -- the retrieval block
+// (buildTaskCTX -> buildCTX -> buildRetrievalBlock) points every codegraph/
+// serena command at THIS wd, so if nothing ever builds an index or activates
+// serena here, that teaching answers from nothing (codegraph) or an unknown
+// project (serena). Steps 3-4 are non-blocking exactly like the run's own
+// isolation (D4): a missing/failed index or activation degrades the task's
+// retrieval, it never fails the task.
+function buildTaskWorktreePrompt(root, runBranch, wd, branch, rein) {
   return (
     `You work in ${root}. Prepare a PRIVATE worktree for ONE task that is running in PARALLEL with others. ` +
     `Implement NOTHING here, only isolate.\n` +
@@ -1349,7 +1362,18 @@ function buildTaskWorktreePrompt(root, runBranch, wd, branch) {
     `git -C ${root} worktree add ${wd} ${branch}' (reuse the branch if it already exists). If ${wd} already ` +
     `exists and belongs to this task, reuse it — do not fail.\n` +
     `2. Verify: 'git -C ${wd} rev-parse --abbrev-ref HEAD' reports ${branch}.\n` +
-    `Set done=true when both steps succeed; otherwise blocked=true with what literally happened.`
+    `3. Build the code graph index IN THIS WORKTREE, same as the run's own isolation (no LLM, ~1.5s): first make ` +
+    `its output path worktree-locally excluded so it can never end up staged from here, even in a repo whose own ` +
+    `.gitignore lacks the entry: run 'f="$(git -C ${wd} rev-parse --git-path info/exclude)"; ` +
+    `grep -qxF ".codegraph/" "$f" 2>/dev/null || printf "\\n.codegraph/\\n" >> "$f"'. Then run 'codegraph init ${wd}' ` +
+    `(the path argument decides where the index is written, not cwd). Non-blocking (D4): if the 'codegraph' binary ` +
+    `is missing, the command errors, or it hangs past your tool's own timeout, that is fine — do NOT retry it and ` +
+    `do NOT let it fail this step or block done.\n` +
+    `4. Activate serena FOR THIS WORKTREE: run '${rein} setup ${wd} --activate'. \`.serena/\` is gitignored, so ` +
+    `it never travels into a worktree cut from a committed HEAD. Non-blocking exactly like step 3 (D4): never ` +
+    `retry it, never let it fail this step or block done.\n` +
+    `Set done=true when steps 1-2 succeed — steps 3-4 never block done; otherwise blocked=true with what ` +
+    `literally happened.`
   )
 }
 
@@ -1476,10 +1500,17 @@ async function implementTaskBounded(task, proxied, wtOverride) {
 // unhandled rejection aborting the whole group.
 async function implementTaskInOwnWorktree(task) {
   const taskWd = `${WD}-${task.id.toLowerCase()}`
-  const taskBranch = `${BRANCH}/${task.id}`
+  // D4: NOT `${BRANCH}/${task.id}` -- BRANCH is already `<prefix>/<label>`, so a
+  // `/`-joined task branch would be `<prefix>/<label>/<id>`, and git cannot hold
+  // both refs/heads/<prefix>/<label> (the run branch) and refs/heads/<prefix>/
+  // <label>/<id> (one is a directory prefix of the other in the refs namespace).
+  // Reproduced: `git worktree add ../wt -b 'rein-wt/x/T001' 'rein-wt/x'` fails
+  // with "cannot lock ref ... 'refs/heads/rein-wt/x' exists; cannot create
+  // 'refs/heads/rein-wt/x/T001'". `-` cannot collide the same way.
+  const taskBranch = `${BRANCH}-${task.id}`
   let iso
   try {
-    iso = await agent(buildTaskWorktreePrompt(ctx.root, BRANCH, taskWd, taskBranch), {
+    iso = await agent(buildTaskWorktreePrompt(ctx.root, BRANCH, taskWd, taskBranch, REIN), {
       schema: TASK_SCHEMA,
       label: `isolate:${task.id}`,
       phase: 'Implement',
@@ -1488,7 +1519,10 @@ async function implementTaskInOwnWorktree(task) {
       model: MODEL_AUX,
     })
   } catch (e) {
-    return { id: task.id, status: 'error', detail: `worktree: ${e && e.message ? e.message : e}`, commits: [], worktreeFailed: true }
+    // taskWd/taskBranch travel even on failure (finding 3): the agent may have
+    // partially created the worktree before dying, and cleanupTaskWorktree must
+    // be able to try removing it rather than leaking it silently.
+    return { id: task.id, status: 'error', detail: `worktree: ${e && e.message ? e.message : e}`, commits: [], taskWd, taskBranch, worktreeFailed: true }
   }
   if (!iso || iso.blocked || !iso.done) {
     return {
@@ -1496,6 +1530,8 @@ async function implementTaskInOwnWorktree(task) {
       status: 'blocked',
       detail: `worktree: ${iso ? iso.blockedReason || iso.summary : 'the agent died'}`,
       commits: [],
+      taskWd,
+      taskBranch,
       worktreeFailed: true,
     }
   }
@@ -1525,6 +1561,37 @@ async function mergeTaskIntoRun(outcome) {
     return { ...outcome, mergeConflict: true, detail: `merge: ${merge ? merge.blockedReason || merge.summary : 'the agent died'}` }
   }
   return outcome
+}
+
+// T001/D3: the clean-merge path already removes the task worktree/branch
+// (buildTaskMergePrompt step 3). Every OTHER terminal path — worktree
+// creation failure, the implementation itself failing/timing out, or a merge
+// conflict — used to leave the worktree directory and its unmerged branch
+// behind, and buildTaskWorktreePrompt's own "reuse it — do not fail" then
+// told the NEXT run to resume on top of that abandoned, rejected work. Called
+// for every outcome that falls back to serial, right before the serial retry,
+// so the retry always starts from a clean run tree, not a stale sibling.
+// Non-blocking (log and continue) in the same spirit as merge step 3: a
+// leftover worktree is a cleanup nit, never a reason to fail the run.
+async function cleanupTaskWorktree(outcome) {
+  if (!outcome.taskWd || !outcome.taskBranch) return // never got far enough to create one
+  try {
+    const cleanup = await agent(
+      `Clean up task ${outcome.id}'s private worktree: its parallel attempt is falling back to a serial retry ` +
+        `(D3) and will NOT be merged. You work in ${WD}.\n` +
+        `1. Run 'git -C ${WD} worktree remove ${outcome.taskWd} --force' (fine if it never existed or was ` +
+        `already removed).\n` +
+        `2. Run 'git -C ${WD} branch -D ${outcome.taskBranch}' (fine if it never existed).\n` +
+        `Non-blocking: if either fails, mention it in summary but still set done=true — a leftover worktree or ` +
+        `branch here is a cleanup nit, not a failed run.`,
+      { schema: TASK_SCHEMA, label: `cleanup:${outcome.id}`, phase: 'Implement', agentType: 'general-purpose', effort: 'low', model: MODEL_AUX }
+    )
+    if (!cleanup || cleanup.blocked || !cleanup.done) {
+      log(`  (cleanup of ${outcome.taskWd} incomplete: ${cleanup ? cleanup.blockedReason || cleanup.summary : 'the agent died'} — leftover, non-blocking)`)
+    }
+  } catch (e) {
+    log(`  (cleanup of ${outcome.taskWd} failed: ${e && e.message ? e.message : e} — leftover, non-blocking)`)
+  }
 }
 
 // ── Phase 2: IMPLEMENT ───────────────────────────────────────────────────────
@@ -1603,6 +1670,7 @@ for (const group of groups) {
       const reasons = needsSerial.map((o) => `${o.id} (${decideParallelFallback(o).reason})`).join(', ')
       log(`⚠️ parallel path did not land for ${reasons} — retrying serially (D3)`)
       for (const o of needsSerial) {
+        await cleanupTaskWorktree(o) // finding 3: never leak the rejected attempt's worktree/branch
         const task = runnable.find((t) => t.id === o.id)
         await runSerially(task)
       }
