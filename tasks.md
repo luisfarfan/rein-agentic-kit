@@ -51,7 +51,7 @@ place to also say "and you are running an old me".
 
 ---
 
-- [ ] T001 doctor says when it is out of date, and how to fix it
+- [x] T001 doctor says when it is out of date, and how to fix it
   - Type: implementation
   - Depends on: none
   - Human review: false
