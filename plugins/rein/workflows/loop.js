@@ -1237,6 +1237,47 @@ function mapHintFor(id) {
   return `\nMAP (scout's starting point, NOT exhaustive — start here and verify; explore if it is not enough): ${tp}${m.orientation || ''}\n`
 }
 
+// ── Parallel grouping (T001) ─────────────────────────────────────────────────
+// Pure: no I/O, no agent, no git. D1 -- two tasks share a group only if
+// NEITHER declares a dependency on the other AND their scout touchpoints do
+// not overlap; dependencies alone are not enough (two independent tasks
+// editing one file is the conflict case). D2 -- a task with no codeMap entry,
+// or an entry with empty touchpoints, has UNKNOWN touchpoints and never joins
+// a group: unknown means serial, the behaviour we have today. Assumes `tasks`
+// arrives in the plan's own dependency order (as ctx.tasks does), so checking
+// a candidate only against the most-recently-opened group is enough to keep
+// that order intact end to end -- a later task can never be pulled in front
+// of one of its own dependencies.
+function planParallelGroups(tasks, codeMap) {
+  const map = codeMap || {}
+  const touchpointsOf = (id) => {
+    const entry = map[id]
+    if (!entry) return null // no map entry: unknown
+    const tp = entry.touchpoints || []
+    return tp.length ? tp : null // empty touchpoints: also unknown
+  }
+  const declaresDependency = (a, b) =>
+    (a.dependsOn || []).includes(b.id) || (b.dependsOn || []).includes(a.id)
+
+  const groups = []
+  for (const task of tasks) {
+    const tp = touchpointsOf(task.id)
+    const last = groups[groups.length - 1]
+    const canJoin =
+      !!tp &&
+      !!last &&
+      last.every((other) => {
+        const otherTp = touchpointsOf(other.id)
+        if (!otherTp) return false
+        if (declaresDependency(task, other)) return false
+        return !tp.some((f) => otherTp.includes(f))
+      })
+    if (canJoin) last.push(task)
+    else groups.push([task])
+  }
+  return groups
+}
+
 // ── One bounded step ────────────────────────────────────────────────────────
 
 function stepPrompt(task, proxied, ledger, step) {
