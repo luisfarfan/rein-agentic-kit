@@ -240,7 +240,7 @@ Everything is optional. Drop a `flow.config.json` at your project root to overri
 }
 ```
 
-**Precedence:** `flow.config.json` › task runner (`justfile` / `Makefile` / `Taskfile`) ›
+**Precedence:** `flow.config.json` › task runner (`justfile` / `Makefile` / `Taskfile` / `mise`) ›
 autodetection. A project that already declares how it is built is never second-guessed.
 
 ## 🧱 Supported stacks
@@ -253,7 +253,7 @@ autodetection. A project that already declares how it is built is never second-g
 | 🐹 Go | `go.mod` | go test · vet |
 | 🎨 **Frontend** *(Next, Vite, Astro, SvelteKit, Nuxt, Remix)* | dependencies | **rendered verification** — unit tests alone don't catch "the tests pass but the UI is broken" |
 | ☁️ Serverless / infra | `serverless.yml`, `sst.config.ts`, `*.tf` | `plan` / `validate` — **never deploy** |
-| 📦 Monorepo | sub-projects one or two levels down, no root manifest | reports each sub-project and its own commands — **it never picks one for you**, even when there is only one candidate |
+| 📦 Monorepo | sub-projects one or two levels down, no root manifest | two or more candidates are reported — **it never picks one for you**; exactly one candidate is not a choice, so it is resolved directly, reporting that project's own stack with its path carried (`cd <dir> && ...`) |
 
 > **A resolved command is an inference until something runs it.** `rein verify` executes each one
 > and reports what happened, distinguishing *"the binary is missing"* (a **setup** problem) from

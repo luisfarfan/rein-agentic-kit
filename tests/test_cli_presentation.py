@@ -359,6 +359,32 @@ class TestInstallSummaryDescribesAfterNotBefore(unittest.TestCase):
             )
         self.assertNotIn("serena", _inert_line(result.stdout))
 
+    def test_install_and_activate_together_is_not_reported_inert_for_serena(self):
+        """`setup --install --activate` differs from `--activate` alone only
+        by a no-op flag (this branch never actually runs an install -- see
+        the comment at the call site) -- so it must reach the identical D5
+        conclusion: activation IS work, and the `.serena/project.yml` this
+        run just wrote must not still be reported as "present but inert:
+        serena" in the SAME run's summary."""
+        if not setup._which("serena"):
+            self.skipTest("serena not installed on this machine")
+        with tempfile.TemporaryDirectory() as root:
+            with open(os.path.join(root, "README.md"), "w", encoding="utf-8") as fh:
+                fh.write("x")
+            result = subprocess.run(
+                [sys.executable, REIN_BIN, "setup", root, "--install", "--activate"],
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                timeout=120,
+                env=self._env(),
+            )
+            self.assertTrue(
+                os.path.exists(os.path.join(root, ".serena", "project.yml")),
+                "activation did not write .serena/project.yml -- " + result.stdout + result.stderr,
+            )
+        self.assertNotIn("serena", _inert_line(result.stdout))
+
 
 def _inert_line(stdout: str) -> str:
     for line in stdout.splitlines():

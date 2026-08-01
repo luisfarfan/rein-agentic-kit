@@ -333,12 +333,15 @@ def cmd_setup(argv: list[str]) -> int:
         print_summary(state)
         return 0 if not state["missing"] else 1
 
-    # `--activate` combined with `--install` keeps its old precedence: it
-    # never runs an install, so its summary is still the pre-work probe.
+    # `--activate` combined with `--install`: activation still runs before
+    # install, and the summary is STILL a fresh probe taken after activating
+    # -- the same ordering as the `--activate`-only branch above, so the two
+    # cannot disagree about whether D5 applies (activation IS work; this run
+    # can write `.serena/project.yml` and must not then report serena as
+    # "present but inert").
     if "--activate" in argv:
-        state = _setup.probe(root)
-        print_summary(state)
         res = _setup.activate_serena(root)
+        print_summary(_setup.probe(root))
         print(f"\n  serena-activate: {'ok' if res['ok'] else 'FAILED'} — {res.get('reason', '')}")
         return 0
 
