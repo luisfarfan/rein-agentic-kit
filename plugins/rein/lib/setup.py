@@ -27,6 +27,8 @@ import os
 import shutil
 import subprocess
 
+import ansi as _ansi
+
 # Each tool: what proves it is present, how to install it, and — the field that
 # keeps this honest — what it actually buys, in terms this kit can measure.
 TOOLS = {
@@ -423,10 +425,17 @@ def gitignore_lines(root: str = ".") -> list[str]:
     return missing
 
 
-def render(state: dict) -> str:
-    lines = [f"retrieval tools for {state['root']}", ""]
+def render(state: dict, *, color: bool = False) -> str:
+    """`color` gates every ANSI escape through `ansi.paint()` (T003, D4) --
+    the ONE helper doctor's text output also routes through, so a single
+    test can assert colour has exactly one source. Default False keeps the
+    plain-text callers (existing tests, `--json` callers that never reach
+    this) byte-identical to before this parameter existed.
+    """
+    lines = [_ansi.paint(f"retrieval tools for {state['root']}", "bold", on=color), ""]
     for name, e in state["tools"].items():
         mark = "ok     " if e["present"] else "MISSING"
+        mark = _ansi.paint(mark, "green" if e["present"] else "red", on=color)
         lines.append(f"  [{mark}] {name}")
         lines.append(f"            {e['why']}")
         if e["present"]:
