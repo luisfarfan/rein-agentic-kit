@@ -1,102 +1,78 @@
-# Change: fits-a-real-ecosystem
+# Change: names-that-do-not-collide
 
 ## Why
-Installed into two real repositories, the kit reported the wrong problem
-three times and was hard to read once.
-
-**`proxima-engineering`** governs nine repositories (`proxima-api`,
-`proxima-admin`, `proxima-builder`, `proxima-storefront-v2`,
-`proxima-intelligence-v2`, `proxima-pos`, `proxima-app`, `proxima-infra`,
-`proxima-runtime`) and provisions each one. Its own CI runs `mise run ci`,
-and its README documents `mise run setup` / `mise run doctor`. **`mise` is
-that ecosystem's task runner**, and `detect` knows only justfile, Makefile
-and Taskfile — so it found no runner, found no root manifest, and fell
-through to the monorepo branch:
+The kit registers eight skills under generic verbs:
 
 ```
-stack      : monorepo
-subproject : (none chosen)
-commands   : (none)
-MISSING    : test, testOne, lint, typecheck
+Skills (8)  loop, ping, plan, review, role, run, run-auto, setup
 ```
 
-That repository is not a monorepo. It has governance content at the root and
-**exactly one** directory carrying a manifest (`harness/pyproject.toml`).
-Reporting "choose a sub-project" over a list of one sends the operator to a
-problem that does not exist — the mirror of the mistake D1 was written to
-prevent.
+Three of them are names Claude Code already ships: **`loop`** (repeat a
+prompt every N minutes), **`run`** (launch and drive this project's app) and
+**`review`**. The namespace resolves the invocation correctly — `/rein:loop`
+loads this kit's skill — but the identifier is the bare verb, so from there on
+the session refers to it as `/loop`, and a later reference reaches the
+built-in scheduler instead. Observed, in a real session:
 
-**`make-montages`**, with everything resolved correctly, still printed:
+> `/loop` is the scheduling skill (repeat a prompt every N minutes), and the
+> argument you passed is an OpenSpec change. What did you want to run?
+
+Nothing failed loudly. The command was **reinterpreted**, which is worse: a
+crash would have been noticed immediately.
+
+How the tool that solves this best does it — openspec, on this machine:
 
 ```
-plan : NOT FOUND at /…/openspec/changes/tasks.md
+.claude/commands/opsx/
+  apply.md  archive.md  continue.md  explore.md  ff.md
+  new.md  onboard.md  propose.md  sync.md  verify.md
 ```
 
-That path can never exist: openspec plans live at
-`openspec/changes/<change>/tasks.md`, and with no change named the join
-produces a file nobody could create. Six real changes sit in that directory,
-unmentioned.
+Short unique namespace, short generic verbs, and `name:` used as a readable
+label rather than the identifier. That is the shape this kit already has —
+`rein:` plus a verb. The only difference is that openspec's verbs are not
+ones the host reserves, and three of ours are.
 
-And the output itself: **not one colour code in the entire CLI**, columns
-that break alignment on a longer command name, and `setup --install` printing
-`present but inert: codegraph` and `add to .gitignore` in the same run that
-indexed it and wrote the file — a summary of the state before its own work.
+So the fix is not longer names. It is three different verbs, still short.
 
 ## Scope
-- In: `mise` as a task runner, in the tier where task runners already live
-- In: the two "reports a problem that does not exist" defects — a single
-  sub-project, and an openspec plan with no change named
-- In: making the CLI readable — colour, alignment, and a summary that
-  describes the end state
-- Out: changing anything in proxima-engineering or make-montages. rein is the
-  guest; a kit that needs nine repositories to change their task runner has
-  the adaptation backwards
-- Out: colour in machine-facing output. Agents parse this; see D4
-- Out: the monorepo behaviour itself for a genuine monorepo — reporting
-  sub-projects and refusing to pick one stays exactly as it is
+- In: renaming the three colliding skills, and `run-auto` alongside them so
+  the family reads as one
+- In: a guard that fails the build when a skill takes a reserved name
+- Out: an alias that keeps `/rein:loop` working. A directory named `loop`
+  registers the colliding identifier — the alias would be the defect
+- Out: renaming `plan`, `role`, `ping` or `setup`, none of which collide
+- Out: the `name:` frontmatter becoming a prose label: this repo's own guard
+  reads it to prove each skill records its own invocation, so it stays the
+  identifier
 
 ## Decisions
-- D1 rein adapts to the ecosystem, never the reverse. `mise` is the standard across nine repositories and it works; teaching rein means zero `flow.config.json` per repo, and refusing to means nine hand-maintained files that will drift
-- D2 One is not many. A root with a single manifest-bearing directory is a project in a subdirectory, not a monorepo — resolve its commands with the path rather than demanding a choice between one option
-- D3 Never report a problem at a location that cannot exist. When a plan source needs a name nobody gave, say which names are available; a NOT FOUND at an impossible path is worse than silence
-- D4 Colour is for humans only, and never changes a byte anyone parses. `--json`, a pipe, a redirect and `NO_COLOR` all produce exactly what they produce today — the loop's own agents read this output
-- D5 A summary describes the state after the work, not before it
+- D1 The namespace carries uniqueness, the verb carries meaning — openspec's shape, and already this kit's. Long names like `change-loop` would fix the collision by making the interface worse
+- D2 No compatibility alias. A skill directory named `loop` re-registers the exact identifier that collides, so an alias would preserve the bug it is meant to soften
+- D3 The rename also fixes a real ambiguity: `loop` / `run` / `run-auto` do not distinguish themselves. `apply` (a whole plan), `step` (one task), `steps` (several, bounded) state the relation in the names
+- D4 A reserved name is checked mechanically, not remembered. The next short, pretty name will collide too, and nobody will notice until a user's command is reinterpreted
 
 ---
 
-- [x] T001 mise is a task runner like the others
+- [ ] T001 The colliding verbs are renamed, everywhere
   - Type: implementation
   - Depends on: none
   - Human review: false
-  - Verification: `python3 -m unittest tests.test_mise_runner`
+  - Verification: `python3 -m unittest tests.test_skill_names`
   - Acceptance:
-    - a `mise.toml`, `.mise.toml` or `.config/mise/config.toml` at the root is detected as the task runner, its `[tasks]` are parsed, and a task named `test` / `lint` / `typecheck` / `check` resolves the matching command as `mise run <task>` with `commandSources` attributing it to `mise`
-    - precedence is unchanged and asserted: `flow.config.json` still wins over mise, and mise still wins over autodetection — a fixture with both a config and a mise file resolves to the config
-    - a repo with a mise file that declares none of the slots resolves what it can and leaves the rest to autodetection, rather than reporting the runner and no commands
-    - a malformed or unreadable mise file degrades to autodetection with the reason recorded, never a traceback — the same rule every other runner already follows
-    - `tests/test_detect.py` passes unchanged, so no existing stack changes its resolution
+    - the skill directories become `apply` (was `loop`), `step` (was `run`), `steps` (was `run-auto`) and `audit` (was `review`); `plan`, `role` and the `ping` / `setup` commands are untouched, and `claude plugin details rein` would list eight skills with no name Claude Code reserves
+    - every in-repo reference to the old invocations is updated — `README.md`, `plugins/rein/README.md`, the workflow, the other skills' cross-references and `docs/` — and a test greps the whole repository for `/rein:loop`, `/rein:run`, `/rein:run-auto` and `/rein:review` and fails on any survivor outside a changelog or a plan's Why section
+    - each renamed skill records its OWN new name via `rein event`, and the existing shipped-skill guard in `tests/test_events.py` passes unchanged — it reads the frontmatter `name:`, so that field stays the bare identifier and stays equal to the directory (D3 of the Scope)
+    - no compatibility alias is left behind: a test asserts no skill directory named `loop`, `run`, `run-auto` or `review` exists, since such a directory would re-register the colliding identifier (D2)
+    - the workflow keeps working end to end: `node --check` passes and `python3 -m unittest discover -s tests -q` is green
 
-- [x] T002 Never report a problem that does not exist
+- [ ] T002 A reserved name cannot ship again
   - Type: implementation
   - Depends on: T001
   - Human review: false
-  - Verification: `python3 -m unittest tests.test_single_subproject`
+  - Verification: `python3 -m unittest tests.test_skill_names`
   - Acceptance:
-    - a root with no manifest and exactly ONE manifest-bearing directory resolves that directory's commands, carrying its path so they run from the root, with `commandSources` naming it — and `stack` reports that project's own stack, not `monorepo` (D2)
-    - two or more manifest-bearing directories keep today's behaviour exactly: `stack: monorepo`, no root commands, and the "choose a sub-project" entry — covered by a test using the `proxima-engineering` shape (one) and a two-subproject shape side by side
-    - with `source: openspec` and no change named, `plan.path` is NOT a join that produces `openspec/changes/tasks.md`; the report names the changes that exist and says a change must be chosen, and a test asserts the impossible path never appears (D3)
-    - an openspec directory with no changes at all reports that, distinctly from "you did not name one"
-    - `rein detect` on `proxima-engineering`'s real shape resolves `harness`'s commands, and a fixture reproducing that shape is checked in
-
-- [x] T003 The CLI is readable, and still machine-safe
-  - Type: implementation
-  - Depends on: T002
-  - Human review: false
-  - Verification: `python3 -m unittest tests.test_cli_presentation`
-  - Acceptance:
-    - `doctor` and `setup` colour their output — status markers, headings and the source attribution — through ONE helper, and a test asserts every colour in the output comes from it rather than from an inline escape
-    - colour is emitted only when stdout is a TTY, and never when `NO_COLOR` is set, `--json` is passed, or the output is piped; a test captures piped output and asserts it contains no escape byte at all (D4)
-    - a test asserts the piped text output is byte-identical to what the previous version produced for the same fixture, so nothing that greps this breaks
-    - the resolved-commands table aligns on the longest slot name actually present, so a long name like `harnessTest` cannot break the columns — asserted with a fixture containing one
-    - `setup --install` prints its summary AFTER its work: a repo whose index it just built is not listed as inert, and a `.gitignore` it just wrote is not still being suggested (D5)
-    - `rein doctor --json` keeps every key unchanged, asserted against the pinned set
+    - a checked-in list of identifiers Claude Code ships — including `loop`, `run`, `review`, `init`, `simplify`, `schedule` — carries a comment saying it is a snapshot, when it was taken, and how to refresh it from `claude plugin details` plus the session's own skill listing, because a list presented as complete would be a claim this repo cannot verify
+    - a test fails naming the offender when any skill directory or command file matches that list, and a second test asserts the list is non-empty and the sweep actually read the directories, so it cannot pass vacuously
+    - the guard covers commands as well as skills: `claude plugin details` counts both as skills, so `commands/loop.md` would collide exactly as a skill directory would
+    - a skill whose name merely CONTAINS a reserved word is allowed — `run-auto` was never the collision, `run` was — and a test pins that distinction so the guard does not start rejecting legitimate names
