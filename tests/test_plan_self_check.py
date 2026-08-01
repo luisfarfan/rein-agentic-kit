@@ -247,9 +247,9 @@ class TestPlanCheckIsShippedAndReachable(unittest.TestCase):
         agent_at = flat.index("Critique every task yourself against the two classes no command can decide")
         self.assertLess(mechanical_at, agent_at, "the mechanical command must run before the agent critique")
 
-    def test_cli_rejects_the_real_defect_fixture(self):
-        """End-to-end: the subprocess CLI, not plan_check.mechanical_findings()
-        called directly, must produce the BLOCKING T003 finding."""
+    def test_cli_reports_the_real_defect_fixture(self):
+        """End-to-end through the subprocess CLI: the defect must reach the
+        caller. IMPORTANT, not BLOCKING -- see TestRealDefectFixtureIsReported."""
         fixture = os.path.join(FIXTURES, "plan_defect_t003.md")
         proc = subprocess.run(
             [sys.executable, REIN_BIN, "plan-check", fixture],
@@ -257,9 +257,9 @@ class TestPlanCheckIsShippedAndReachable(unittest.TestCase):
         )
         self.assertEqual(proc.returncode, 0, "D5: plan-check never fails the caller")
         report = json.loads(proc.stdout)
-        blocking = [f for f in report["findings"] if f["severity"] == "BLOCKING"]
-        t003 = [f for f in blocking if f["taskId"] == "T003"]
-        self.assertTrue(t003, f"expected a BLOCKING finding on T003 from the CLI, got {report['findings']}")
+        t003 = [f for f in report["findings"] if f["taskId"] == "T003"]
+        self.assertTrue(t003, f"expected a finding on T003 from the CLI, got {report['findings']}")
+        self.assertEqual(t003[0]["severity"], "IMPORTANT")
 
     def test_cli_never_fails_on_a_missing_file(self):
         proc = subprocess.run(
@@ -272,40 +272,45 @@ class TestPlanCheckIsShippedAndReachable(unittest.TestCase):
         self.assertTrue(report["error"])
 
 
-class TestRealDefectFixtureIsRejected(unittest.TestCase):
-    """The REAL defect, checked in verbatim: T003's Verification named
-    tests.test_verify_commands -- T002's own test module. The commit that
-    fixed it (34c2cff) records the loop's PlanCheck catching this for 81k
-    tokens; this is that same plan text, unfixed."""
+class TestRealDefectFixtureIsReported(unittest.TestCase):
+    """The measured defect must SURFACE. It must not hold the write.
 
-    def setUp(self):
-        self.text = _read(os.path.join(FIXTURES, "plan_defect_t003.md"))
+    Three mechanical rules were tried and measured over this repo's own 50
+    historical plan texts:
 
-    def test_fixture_is_the_real_unfixed_plan(self):
-        # T003 and T002 share the exact verification command this defect is.
-        self.assertIn("tests.test_verify_commands", self.text)
+        bare reuse of a verification           -> blocked 26 of them
+        an earlier task's criteria name it     -> blocked 12
+        the task contradicts its own criteria  ->  0, and stopped catching
+                                                   the real defect too
 
-    def test_t003_is_rejected_blocking(self):
-        findings = plan_check.mechanical_findings(self.text)
-        blocking = [f for f in findings if f["severity"] == "BLOCKING"]
-        self.assertTrue(blocking, "the T003/T002 duplicate verification must produce a BLOCKING finding")
-        t003 = [f for f in blocking if f["taskId"] == "T003"]
-        self.assertTrue(t003, f"expected a BLOCKING finding on T003, got taskIds {[f['taskId'] for f in blocking]}")
+    Every rule that caught the defect also refused plans this project wrote,
+    approved, executed and merged. Two tasks sharing one test module by
+    convention and a task naming the WRONG module are indistinguishable in
+    the plan text; separating them means judging whether those criteria could
+    be proven by that module, which is semantics, not a regex.
 
-    def test_finding_names_the_class_and_the_criteria_it_fails_to_prove(self):
-        findings = plan_check.mechanical_findings(self.text)
-        t003 = next(f for f in findings if f["taskId"] == "T003" and f["severity"] == "BLOCKING")
-        self.assertEqual(t003["classId"], CANONICAL_CLASSES[0])
-        # T003's own acceptance criteria -- what the finding says it fails to prove.
-        self.assertIn("STOPS the run before Isolate", t003["text"])
-        self.assertIn("does NOT stop the run", t003["text"])
+    So the mechanical half reports IMPORTANT and the agent critique makes the
+    blocking call. A check that cannot decide must not decide.
+    """
 
-    def test_t002_itself_is_not_blamed(self):
-        findings = plan_check.mechanical_findings(self.text)
-        self.assertFalse(
-            [f for f in findings if f["taskId"] == "T002" and f["severity"] == "BLOCKING"],
-            "the first owner of a verification command is not the defect",
-        )
+    def _findings(self):
+        with open(os.path.join(FIXTURES, "plan_defect_t003.md"), encoding="utf-8") as fh:
+            return plan_check.mechanical_findings(fh.read())
+
+    def test_the_defect_is_reported_and_names_the_task(self):
+        fs = [f for f in self._findings() if f["taskId"] == "T003"]
+        self.assertTrue(fs, "the measured defect is no longer surfaced at all")
+        self.assertEqual(fs[0]["severity"], "IMPORTANT")
+
+    def test_the_finding_names_whose_verification_it_is(self):
+        f = [x for x in self._findings() if x["taskId"] == "T003"][0]
+        self.assertIn("T002", f["text"])
+
+    def test_the_mechanical_half_never_blocks_on_a_reused_verification(self):
+        """The property the whole change turns on: this cannot refuse a plan."""
+        for f in self._findings():
+            if f.get("classId") == plan_check.BLOCKING_CLASSES[0]:
+                self.assertNotEqual(f["severity"], "BLOCKING")
 
 
 class TestHealthyPlanHasNoBlockingFindings(unittest.TestCase):
@@ -378,61 +383,6 @@ class TestDependencyClassMechanics(unittest.TestCase):
         self.assertEqual(plan_check.mechanical_findings(text), [])
 
 
-class TestReusedVerificationSeverityIsNarrowed(unittest.TestCase):
-    """Round-1 finding 5: equating "two tasks share a verification command
-    string" with BLOCKING would fire on legitimate plans -- two tasks that
-    honestly verify through the same suite, with no way to accept the
-    finding (D2's own "a check that always fires is a check nobody reads"
-    failure, arriving through the mechanical half). A reused per-module
-    `python3 -m unittest <module>` command -- this repo's own task-scoped
-    convention, and the real T003/T002 shape -- stays BLOCKING. A reused
-    bare or filtered whole-suite command is reported IMPORTANT instead:
-    visible, but not unfixable."""
-
-    def test_reused_scoped_unittest_module_is_still_blocking(self):
-        text = (
-            "- [ ] T001 A\n"
-            "  - Verification: `python3 -m unittest tests.test_shared`\n"
-            "\n"
-            "- [ ] T002 B\n"
-            "  - Depends on: T001\n"
-            "  - Verification: `python3 -m unittest tests.test_shared`\n"
-        )
-        findings = plan_check.mechanical_findings(text)
-        self.assertEqual(len(findings), 1)
-        self.assertEqual(findings[0]["severity"], "BLOCKING")
-        self.assertEqual(findings[0]["classId"], CANONICAL_CLASSES[0])
-
-    def test_reused_generic_whole_suite_command_is_important_not_blocking(self):
-        text = (
-            "- [ ] T001 Widgets ship\n"
-            "  - Verification: `npm test -- widgets`\n"
-            "\n"
-            "- [ ] T002 Widgets ship faster\n"
-            "  - Depends on: T001\n"
-            "  - Verification: `npm test -- widgets`\n"
-        )
-        findings = plan_check.mechanical_findings(text)
-        self.assertEqual(len(findings), 1, f"a legitimately shared whole-suite command must still be reported: {findings}")
-        self.assertEqual(findings[0]["severity"], "IMPORTANT",
-                          "a reused generic/whole-suite command must not be an unfixable BLOCKING finding")
-        self.assertEqual(findings[0]["classId"], CANONICAL_CLASSES[0])
-
-    def test_reused_unittest_discover_is_important_not_blocking(self):
-        text = (
-            "- [ ] T001 A\n"
-            "  - Verification: `python3 -m unittest discover`\n"
-            "\n"
-            "- [ ] T002 B\n"
-            "  - Depends on: T001\n"
-            "  - Verification: `python3 -m unittest discover`\n"
-        )
-        findings = plan_check.mechanical_findings(text)
-        self.assertEqual(len(findings), 1)
-        self.assertEqual(findings[0]["severity"], "IMPORTANT")
-
-
-@unittest.skipUnless(_NODE, "node not on PATH -- loop.js is a node workflow script")
 class TestLoopLensAsymmetryIsRecorded(unittest.TestCase):
     """Round-1 finding 4: D3 ("the two gates cannot drift") was only checked
     in one direction -- both shipped texts contain the four canonical
@@ -457,3 +407,58 @@ class TestLoopLensAsymmetryIsRecorded(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestTheCheckIsQuietOnPlansThisRepoApproved(unittest.TestCase):
+    """The property two hand-picked fixtures cannot establish.
+
+    Criterion 4 said "a healthy plan produces NO blocking findings", and it
+    was satisfied by checking in the two plans that happened to pass. The
+    review replayed the rule over git history instead and found it blocking
+    the MAJORITY of the plans this project wrote, approved, executed and
+    merged -- an acceptance criterion met in letter by fixtures that avoid
+    the case, which is the exact failure this repo has named all along, here
+    committed by the check built to catch it.
+
+    So the corpus is the repo's own history, read at test time. It grows on
+    its own and cannot be curated to pass.
+    """
+
+    def _historical_plans(self) -> list:
+        repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        shas = subprocess.run(
+            ["git", "-C", repo, "log", "--format=%H", "--", "tasks.md"],
+            capture_output=True, text=True,
+        ).stdout.split()
+        seen, out = set(), []
+        for sha in shas:
+            body = subprocess.run(
+                ["git", "-C", repo, "show", f"{sha}:tasks.md"],
+                capture_output=True, text=True,
+            ).stdout
+            if body and body not in seen:
+                seen.add(body)
+                out.append((sha[:8], body))
+        return out
+
+    def test_no_plan_in_this_repos_history_is_refused(self):
+        plans = self._historical_plans()
+        if len(plans) < 5:
+            self.skipTest("not enough plan history in this checkout to be meaningful")
+        refused = []
+        for sha, body in plans:
+            blocking = [f for f in plan_check.mechanical_findings(body)
+                        if f.get("severity") == "BLOCKING"]
+            if blocking:
+                refused.append((sha, body.splitlines()[0][:40], [f["taskId"] for f in blocking]))
+        self.assertEqual(
+            refused, [],
+            f"the check would have refused to write {len(refused)} of {len(plans)} plans this "
+            f"project already approved and merged: {refused[:4]}",
+        )
+
+    def test_the_corpus_is_large_enough_to_mean_something(self):
+        """A guard on the guard: if history stops being read, the test above
+        passes vacuously and the property goes unproven again."""
+        plans = self._historical_plans()
+        self.assertGreater(len(plans), 20, "the historical corpus shrank — is git history reachable?")

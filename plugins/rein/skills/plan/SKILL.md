@@ -90,7 +90,19 @@ R=$(command -v rein || ls -d ~/.claude/plugins/cache/*/rein/*/bin/rein 2>/dev/nu
    b. Run the mechanical half as a concrete, named command — not a judgement call — BEFORE
       critiquing anything yourself. Write the drafted plan text to a scratch file and run:
       ```bash
-      "$R" plan-check /tmp/rein-plan-draft.md
+      # One block, because shell state does NOT persist between tool calls:
+      # `$R` or `$DRAFT` set in an earlier block arrive EMPTY here. Verified
+      # in this project — five skills once recorded with an empty `$R`.
+      # And mktemp, never a fixed path: two /rein:plan sessions (or one in a
+      # worktree while another runs in the main checkout, the normal mode of
+      # this kit) would write and read the SAME file, and one would critique
+      # the other's draft. A predictable name in a shared temp dir is also
+      # redirectable through a pre-created symlink.
+      R=$(command -v rein || ls -d ~/.claude/plugins/cache/*/rein/*/bin/rein 2>/dev/null | tail -1)
+      DRAFT=$(mktemp -t rein-plan-draft) && cat > "$DRAFT" <<'PLAN'
+      <the drafted plan text, verbatim>
+PLAN
+      "$R" plan-check "$DRAFT"; rm -f "$DRAFT"
       ```
       This deterministically decides two of the four BLOCKING classes against the plan's own text:
       1. a verification that cannot mechanically confirm the criteria it is attached to — a

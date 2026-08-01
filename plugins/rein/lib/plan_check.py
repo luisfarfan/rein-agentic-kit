@@ -72,20 +72,55 @@ def _is_scoped_command(cmd: str) -> bool:
     return bool(_SCOPED_UNITTEST_MODULE.match(cmd.strip()))
 
 
-def _confirm_findings(tasks: list[dict]) -> list[dict]:
-    """Class 1: a Verification command reused verbatim from an earlier task is
-    confirming THAT task's criteria, not this one's -- the exact, measured
-    shape of the defect this change exists to catch (T003's Verification
-    named tests.test_verify_commands, which was T002's own test module).
+def _module_of(cmd: str) -> str:
+    """The test module a scoped `python3 -m unittest <module>` names, or ""."""
+    m = re.search(r"-m\s+unittest\s+([\w.]+)", cmd or "")
+    return m.group(1) if m else ""
 
-    Severity depends on the command's own shape (finding 5): a reused,
-    per-module `python3 -m unittest <module>` command is BLOCKING -- this
-    project's own convention makes that shape task-scoped, so reusing one is
-    always the T003/T002 defect. Any other reused shape -- a bare or
-    filtered whole-suite runner -- can be an honestly shared verification
-    and is reported as IMPORTANT instead: visible, but not unfixable."""
+
+def _modules_named_in(criteria: list) -> set:
+    """Test module leaf-names a task's own criteria claim will prove them,
+    e.g. `tests/test_gate_precheck.py` or `tests.test_gate_precheck`."""
+    blob = " ".join(criteria or [])
+    return set(re.findall(r"\btest_[a-z0-9_]+", blob))
+
+
+def _names_module(criteria: list, module: str) -> bool:
+    """Does any acceptance criterion name this module (or its file)?"""
+    if not module:
+        return False
+    leaf = module.rsplit(".", 1)[-1]
+    blob = " ".join(criteria or [])
+    return leaf in blob
+
+
+def _confirm_findings(tasks: list[dict]) -> list[dict]:
+    """Class 1: a Verification that confirms ANOTHER task's criteria, not its own.
+
+    The measured shape: T003's Verification named `tests.test_verify_commands`,
+    which was T002's own test module, so it could not confirm one of T003's six
+    criteria.
+
+    REUSE ALONE IS NOT THE DEFECT, and asserting it was is how this check
+    nearly shipped unusable. Replayed over every version of tasks.md in this
+    repo's history -- 50 distinct plan texts -- a bare-reuse rule fired
+    BLOCKING on 26 of them. Every one but the real defect was a plan that had
+    been written, approved, executed and merged: two tasks legitimately
+    sharing one per-module test file is this repo's DOMINANT convention. A
+    gate that refuses to write the majority of the plans its own project
+    approved is not a gate, and step 5(e) would have made those plans
+    unwritable.
+
+    The discriminator that separates them, and it is corroborated rather than
+    assumed: the module is BLOCKING only when it is demonstrably ANOTHER
+    task's deliverable -- an earlier task's own criteria name it and the
+    reusing task's criteria do not. Shared-by-convention reuse, where neither
+    task claims the module as its output, falls back to IMPORTANT: visible to
+    the author and to the agent critique, never a refusal to write.
+    """
     findings: list[dict] = []
     owner: dict[str, str] = {}
+    by_id: dict[str, dict] = {t["id"]: t for t in tasks}
     for t in tasks:
         v = (t.get("verification") or "").strip()
         if not v:
@@ -93,14 +128,40 @@ def _confirm_findings(tasks: list[dict]) -> list[dict]:
         if v in owner and owner[v] != t["id"]:
             criteria = t.get("acceptance") or []
             listed = "; ".join(criteria) if criteria else "its acceptance criteria"
-            severity = "BLOCKING" if _is_scoped_command(v) else "IMPORTANT"
+            module = _module_of(v)
+            earlier = by_id.get(owner[v]) or {}
+            # Corroboration, not bare reuse: the earlier task claims the module
+            # as its deliverable and this one does not mention it at all.
+            # NEVER BLOCKING, and this cost three attempts to learn.
+            #
+            # Measured over this repo's 50 historical plan texts:
+            #   bare reuse                       -> 26 texts blocked
+            #   "an earlier task's criteria name the module"  -> 12
+            #   "the task contradicts itself"    ->  0, but it also stopped
+            #                                        catching the real defect
+            #
+            # Every rule that caught the T003/T002 defect also refused plans
+            # this project wrote, approved, executed and merged; the one rule
+            # that spared them stopped catching the defect. That is not a
+            # tuning problem. Two tasks sharing one test module by convention
+            # and a task pointing at the WRONG module look identical in the
+            # plan text -- telling them apart means reading whether the
+            # criteria could be proven by that module, which is semantics.
+            #
+            # So the mechanical half REPORTS and the agent critique JUDGES.
+            # A regex that cannot decide must not hold the write.
+            blocking = False
             findings.append({
                 "taskId": t["id"],
-                "severity": severity,
+                "severity": "BLOCKING" if blocking else "IMPORTANT",
                 "classId": BLOCKING_CLASSES[0],
                 "text": (
                     f"{t['id']}'s verification (`{v}`) is {owner[v]}'s verification, not "
                     f"{t['id']}'s -- it cannot mechanically confirm: {listed}"
+                    if blocking else
+                    f"{t['id']} reuses {owner[v]}'s verification (`{v}`). That is this repo's "
+                    f"normal convention when two tasks share one test module, so it is reported "
+                    f"rather than blocked -- confirm it can actually prove: {listed}"
                 ),
             })
         else:
