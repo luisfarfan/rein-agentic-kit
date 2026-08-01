@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import stat
 import subprocess
 import sys
@@ -23,6 +24,7 @@ import unittest
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 REIN_BIN = os.path.join(REPO_ROOT, "plugins", "rein", "bin", "rein")
+REIN_PLUGIN_DIR = os.path.join(REPO_ROOT, "plugins", "rein")
 
 
 class DoctorCliFixture(unittest.TestCase):
@@ -122,6 +124,131 @@ class TestTestOneStaysCurrentDespiteSyntheticTargetPath(DoctorCliFixture):
         line = self._doctor_line_for(doctor.stdout, "testOne")
         self.assertIn("verified: ok (exit=0)", line)
         self.assertNotIn("stale", line)
+
+
+class DoctorStalenessFixture(DoctorCliFixture):
+    """Puts a REAL copy of the rein plugin at a fake
+    .../cache/<marketplace>/<name>/<version> path, because
+    version_staleness's loader derives the marketplace/plugin identity from
+    PLUGIN_ROOT's own path shape -- REIN_BIN's real location (a repo
+    checkout, not a marketplace cache) would otherwise always report
+    'unknown' regardless of the fixtures below.
+    """
+
+    MARKETPLACE = "fixture-marketplace"
+    PLUGIN_NAME = "rein"
+
+    def setUp(self):
+        super().setUp()
+        self.plugin_version_dir = os.path.join(
+            self.home, ".claude", "plugins", "cache", self.MARKETPLACE, self.PLUGIN_NAME, "9.9.9"
+        )
+        shutil.copytree(os.path.join(REIN_PLUGIN_DIR, "bin"), os.path.join(self.plugin_version_dir, "bin"))
+        shutil.copytree(os.path.join(REIN_PLUGIN_DIR, "lib"), os.path.join(self.plugin_version_dir, "lib"))
+        self.fixture_bin = os.path.join(self.plugin_version_dir, "bin", "rein")
+
+    def _write_installed(self, version: str) -> None:
+        path = os.path.join(self.home, ".claude", "plugins", "installed_plugins.json")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        doc = {
+            "version": 2,
+            "plugins": {f"{self.PLUGIN_NAME}@{self.MARKETPLACE}": [{"scope": "user", "version": version}]},
+        }
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(doc, fh)
+
+    def _write_marketplace(self, version: str) -> None:
+        path = os.path.join(
+            self.home, ".claude", "plugins", "marketplaces", self.MARKETPLACE, ".claude-plugin", "marketplace.json"
+        )
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        doc = {"name": self.MARKETPLACE, "plugins": [{"name": self.PLUGIN_NAME, "version": version}]}
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(doc, fh)
+
+    def _snapshot_home(self) -> dict:
+        snap = {}
+        for dirpath, _dirnames, filenames in os.walk(self.home):
+            for name in filenames:
+                p = os.path.join(dirpath, name)
+                with open(p, "rb") as fh:
+                    snap[p] = fh.read()
+        return snap
+
+    def _run_fixture_doctor(self, *args: str) -> subprocess.CompletedProcess:
+        env = dict(os.environ)
+        env["HOME"] = self.home
+        return subprocess.run(
+            [sys.executable, self.fixture_bin, "doctor", self.root, *args],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=30,
+        )
+
+
+class TestStaleVerdictPrintsBothCommandsInOrder(DoctorStalenessFixture):
+    def test_stale_prints_marketplace_refresh_before_plugin_update(self):
+        self._write_installed("0.4.0")
+        self._write_marketplace("0.6.3")
+
+        doctor = self._run_fixture_doctor()
+        self.assertEqual(doctor.returncode, 0, doctor.stdout + doctor.stderr)
+        self.assertIn("version : stale", doctor.stdout)
+
+        marketplace_idx = doctor.stdout.index(f"claude plugin marketplace update {self.MARKETPLACE}")
+        update_idx = doctor.stdout.index(f"claude plugin update {self.PLUGIN_NAME}")
+        self.assertLess(marketplace_idx, update_idx, "must refresh the marketplace clone BEFORE updating the plugin")
+
+
+class TestUpToDateStillPrintsRefreshLine(DoctorStalenessFixture):
+    def test_same_version_is_up_to_date_but_refresh_line_still_shown(self):
+        self._write_installed("0.4.0")
+        self._write_marketplace("0.4.0")
+
+        doctor = self._run_fixture_doctor()
+        self.assertEqual(doctor.returncode, 0, doctor.stdout + doctor.stderr)
+        self.assertIn("version : up-to-date", doctor.stdout)
+        # D3: same version proves nothing about the clone itself -- the fix
+        # line for refreshing it is printed anyway, with the reason.
+        self.assertIn(f"$ claude plugin marketplace update {self.MARKETPLACE}", doctor.stdout)
+        self.assertIn("clone", doctor.stdout)
+        self.assertNotIn(f"$ claude plugin update {self.PLUGIN_NAME}", doctor.stdout)
+
+
+class TestStalenessNeverChangesExitCodeOrWritesAnything(DoctorStalenessFixture):
+    def test_stale_fixture_keeps_exit_zero_and_touches_nothing(self):
+        self._write_installed("0.4.0")
+        self._write_marketplace("0.6.3")
+
+        before = self._snapshot_home()
+        doctor = self._run_fixture_doctor()
+        after = self._snapshot_home()
+
+        self.assertEqual(doctor.returncode, 0, doctor.stdout + doctor.stderr)  # D4: never a failure
+        self.assertEqual(before, after)  # D2: report, never act -- nothing written
+
+
+class TestDoctorJsonGainsStalenessAlongsideExistingKeys(DoctorStalenessFixture):
+    def test_json_output_has_pinned_keys_plus_staleness(self):
+        self._write_installed("0.4.0")
+        self._write_marketplace("0.6.3")
+
+        doctor = self._run_fixture_doctor("--json")
+        self.assertEqual(doctor.returncode, 0, doctor.stdout + doctor.stderr)
+        report = json.loads(doctor.stdout)
+
+        self.assertEqual(
+            set(report.keys()),
+            {"version", "pluginRoot", "project", "plan", "verifyState", "ledger", "staleness"},
+        )
+        self.assertEqual(
+            set(report["staleness"].keys()),
+            {"verdict", "reason", "installedVersion", "availableVersion"},
+        )
+        self.assertEqual(report["staleness"]["verdict"], "stale")
+        self.assertEqual(report["staleness"]["installedVersion"], "0.4.0")
+        self.assertEqual(report["staleness"]["availableVersion"], "0.6.3")
 
 
 if __name__ == "__main__":

@@ -49,6 +49,7 @@ import setup as _setup  # noqa: E402
 import serve as _serve  # noqa: E402
 import token_report as _tr  # noqa: E402
 import verify as _verify  # noqa: E402
+import version_staleness as _staleness  # noqa: E402
 
 USAGE = __doc__
 
@@ -501,31 +502,65 @@ def cmd_doctor(argv: list[str]) -> int:
     ok = "ok"
     miss = "MISSING"
 
-    print(f"rein {VERSION}")
-    print(f"  plugin root : {PLUGIN_ROOT}")
-    print(f"  CLAUDE_PLUGIN_ROOT env : {os.environ.get('CLAUDE_PLUGIN_ROOT') or '(not set)'}")
-    print(f"  `rein` on PATH : {shutil.which('rein') or '(not on PATH -- call it via $CLAUDE_PLUGIN_ROOT/bin/rein)'}")
-    print()
-    print(f"  project root : {resolved['root']}")
-    print(f"  flow.config.json : {'found' if resolved['configFound'] else 'not found (using autodetect)'}")
-    print(f"  stack : {resolved['stack']}" + (f"  subtypes: {', '.join(resolved['subtypes'])}" if resolved["subtypes"] else ""))
-    print(f"  package manager : {resolved['packageManager'] or '-'}")
-    print(f"  task runner : {resolved['taskRunner'] or '-'}")
     plan = _plan.read_plan(root, source=resolved["plan"]["source"], configured=resolved["plan"].get("path", ""))
     plan_state = (
         f"{len(plan['pending'])} pending / {len(plan['tasks'])} tasks"
         if plan["exists"]
         else f"NOT FOUND at {plan['path']}"
     )
-    print(f"  plan source : {resolved['plan']['source']}   tracker: {resolved['tracker']['kind']}")
-    print(f"  plan        : {plan_state}")
-    print()
     # Last-known verification state, read-only -- doctor never runs a command
     # itself (that is `rein verify`'s job). "known" means a prior `rein
     # verify` ran and persisted a report; nothing here re-derives it.
     verify_state = _verify.read_state(resolved["root"])
     verify_results = (verify_state or {}).get("results", {})
+    runs = _tr.read_ledger()
+    latest = _tr.latest_workflow_dir()
 
+    # Is `rein` itself out of date? Local files only (D1): compares the
+    # installed plugin's version against what its marketplace clone offers.
+    # Never touches or even reads VERSION above -- the repo's own version is
+    # a third fact that proves nothing about the clone (D3). Report, never
+    # act (D2): doctor's exit code never reflects this verdict (D4).
+    staleness, staleness_loaded = _staleness.resolve_verdict(PLUGIN_ROOT)
+
+    if "--json" in argv:
+        report = {
+            "version": VERSION,
+            "pluginRoot": PLUGIN_ROOT,
+            "project": resolved,
+            "plan": {**plan, "state": plan_state},
+            "verifyState": verify_state,
+            "ledger": {
+                "path": _tr.LEDGER_PATH,
+                "runCount": len(runs),
+                "latestWorkflowRun": latest,
+            },
+            "staleness": staleness.to_dict(),
+        }
+        print(json.dumps(report, indent=2))
+        return 0
+
+    print(f"rein {VERSION}")
+    print(f"  plugin root : {PLUGIN_ROOT}")
+    print(f"  CLAUDE_PLUGIN_ROOT env : {os.environ.get('CLAUDE_PLUGIN_ROOT') or '(not set)'}")
+    print(f"  `rein` on PATH : {shutil.which('rein') or '(not on PATH -- call it via $CLAUDE_PLUGIN_ROOT/bin/rein)'}")
+    print(f"  version : {staleness.verdict} -- {staleness.reason}")
+    if staleness.verdict == _staleness.STALE:
+        for cmd in _staleness.fix_commands(staleness_loaded.marketplace_name, staleness_loaded.plugin_name):
+            print(f"    $ {cmd}")
+    elif staleness.verdict == _staleness.UP_TO_DATE:
+        # D3: the clone offering the same version proves nothing about the
+        # clone itself, so the refresh line is printed anyway.
+        print(f"    $ claude plugin marketplace update {staleness_loaded.marketplace_name}")
+    print()
+    print(f"  project root : {resolved['root']}")
+    print(f"  flow.config.json : {'found' if resolved['configFound'] else 'not found (using autodetect)'}")
+    print(f"  stack : {resolved['stack']}" + (f"  subtypes: {', '.join(resolved['subtypes'])}" if resolved["subtypes"] else ""))
+    print(f"  package manager : {resolved['packageManager'] or '-'}")
+    print(f"  task runner : {resolved['taskRunner'] or '-'}")
+    print(f"  plan source : {resolved['plan']['source']}   tracker: {resolved['tracker']['kind']}")
+    print(f"  plan        : {plan_state}")
+    print()
     print("  resolved commands:")
     if resolved["commands"]:
         for slot, cmd in sorted(resolved["commands"].items()):
@@ -571,9 +606,7 @@ def cmd_doctor(argv: list[str]) -> int:
         state = ok if optional in resolved["capabilities"] else "absent (optional -- flow degrades, never breaks)"
         print(f"    {optional:<10} {state}")
     print()
-    runs = _tr.read_ledger()
     print(f"  ledger : {_tr.LEDGER_PATH} ({len(runs)} run(s) recorded)")
-    latest = _tr.latest_workflow_dir()
     print(f"  latest workflow run : {latest or '(none found)'}")
     return 0
 
