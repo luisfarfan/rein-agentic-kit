@@ -1342,7 +1342,15 @@ function decideParallelFallback(outcome) {
 // immediately and only the other ever implements has landed.length === 1,
 // which is one task running, not concurrency. Pure so the claim is executed
 // by a test, not asserted by comment.
-function didRunConcurrently(outcomes, landed) {
+// RENAMED from didRunConcurrently, because that is not what it can know.
+// This counts that the parallel PATH was taken and something landed. Whether
+// wall-clock actually overlapped is a fact about clocks, and `Date.now()` is
+// unavailable in a workflow script (it would break resume). So the real
+// measurement is made where the timestamps already live: `rein token-report`
+// reads each agent transcript's own ISO timestamps and compares the sum of
+// agent durations against the run's wall clock. Claiming overlap from status
+// flags is exactly the "claim, not a measurement" this project refuses.
+function didTakeParallelPath(outcomes, landed) {
   const attempted = (outcomes || []).filter((o) => !o.worktreeFailed).length
   return (landed || []).length > 0 && attempted >= 2
 }
@@ -1417,7 +1425,7 @@ function buildTaskMergePrompt(wd, branch, runBranch, taskId, taskWd) {
 
 // ── One bounded step ────────────────────────────────────────────────────────
 
-function stepPrompt(task, proxied, ledger, step, wtOverride) {
+function stepPrompt(task, proxied, ledger, step, wtOverride, closesOwnTask = true) {
   const cont = ledger
     ? `CONTINUATION (step ${step}): a previous FRESH agent already advanced THIS SAME task. Do NOT re-explore ` +
       `or redo its work — continue from what is left.\n` +
@@ -1449,7 +1457,13 @@ function stepPrompt(task, proxied, ledger, step, wtOverride) {
     `what is expensive.\n` +
     `Return done=true ONLY when everything holds: all acceptance criteria + the task's verification green + ` +
     (gateCmds.length ? `${gateCmds.join(' and ')} green + ` : '') +
-    `committed + the task closed with ${closeCmd(task.id)}.\n` +
+    (closesOwnTask
+      ? `committed + the task closed with ${closeCmd(task.id)}.\n`
+      : `committed. Do NOT close the task — ${ctx.planPath} is the ONE file every task in a parallel ` +
+        `group would write, and the scout reports source touchpoints, never the plan, so the safety ` +
+        `check that grouped you CANNOT see that collision. Reproduced: two branches each ticking only ` +
+        `their own adjacent checkbox conflict on merge. The loop closes it in the run's worktree after ` +
+        `your work merges cleanly.\n`) +
     (proxied
       ? `This task is SUPERVISED and the owner delegated its real verification: when you reach done, do what ` +
         `they would do — exercise the REAL artifact and inspect the actual output — and judge against that ` +
@@ -1473,7 +1487,9 @@ async function implementTaskBounded(task, proxied, wtOverride) {
       // Retried: a step that dies transiently would otherwise block the task
       // permanently. Repeating it is safe — whatever it already committed is in
       // git, and the replacement agent is fresh with the same instructions.
-      res = await agentRetry(stepPrompt(task, proxied, ledger, step, wtOverride), {
+      // `!wtOverride`: only a task in its OWN parallel worktree skips the
+      // close. In the run's worktree (serial path) nothing changes.
+      res = await agentRetry(stepPrompt(task, proxied, ledger, step, wtOverride, !wtOverride), {
         schema: STEP_SCHEMA,
         label: `impl:${task.id}#${step}`,
         phase: 'Implement',
@@ -1578,6 +1594,26 @@ async function mergeTaskIntoRun(outcome) {
   }
   if (!merge || merge.blocked || !merge.done) {
     return { ...outcome, mergeConflict: true, detail: `merge: ${merge ? merge.blockedReason || merge.summary : 'the agent died'}` }
+  }
+  // The task was implemented WITHOUT closing itself, so the plan file is never
+  // written by two grouped tasks at once (the collision the touchpoint check
+  // structurally cannot see). Closing happens here, in the run's worktree,
+  // once and after a clean merge -- deterministically, by the same CLI the
+  // serial path uses.
+  try {
+    const closed = await agent(
+      `You work in ${WD}. Close exactly ONE task, nothing else. Implement NOTHING, edit no source file.\n` +
+        `Run: '${closeCmd(outcome.id)}' and then commit the plan file if it changed ` +
+        `('git -C ${WD} add -A && git -C ${WD} commit -m "chore: close ${outcome.id}" || true').\n` +
+        `The checkbox may ALREADY be ticked (a resumed run) — that is success, not a failure. ` +
+        `Report done=true unless the command itself errored.`,
+      { schema: TASK_SCHEMA, label: `close:${outcome.id}`, phase: 'Implement',
+        agentType: 'general-purpose', effort: 'low', model: MODEL_AUX }
+    )
+    if (!closed || !closed.done) log(`⚠️ ${outcome.id} merged but its checkbox may still be open — Verify will catch it`)
+  } catch (e) {
+    // D3: never worse than serial. Verify already catches "claimed but open".
+    log(`⚠️ close ${outcome.id} failed (${e && e.message ? e.message : e}) — Verify will catch it`)
   }
   return outcome
 }
@@ -1694,7 +1730,7 @@ for (const group of groups) {
         await runSerially(task)
       }
     }
-    ranParallel = didRunConcurrently(implementedInWorktrees, landed)
+    ranParallel = didTakeParallelPath(implementedInWorktrees, landed)
   } catch (e) {
     log(`⚠️ parallel path for ${runnable.map((t) => t.id).join(', ')} threw (${e && e.message ? e.message : e}) — retrying all serially (D3)`)
     for (const task of runnable) await runSerially(task)
@@ -2233,7 +2269,8 @@ return {
   // concurrently (not merely COULD have) — the ledger's only honest answer to
   // whether parallelising ever merits anything, measured rather than claimed.
   parallelGroups: parallelSummary.parallelGroups,
-  parallelRanConcurrently: parallelSummary.concurrent,
+  // The PATH taken, not a claim about clocks — see didTakeParallelPath.
+  parallelPathTaken: parallelSummary.concurrent,
   // Measure the run: turns/agent, ctx_max/turn and Opus share are what predict
   // cost. This reports what WAS recorded (or why not), never a suggestion.
   measure,

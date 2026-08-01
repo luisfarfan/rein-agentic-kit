@@ -10,6 +10,7 @@ that could silently drift from it.
 """
 
 import json
+import re
 import os
 import shutil
 import subprocess
@@ -296,7 +297,7 @@ class ParallelWorktreeHelpersTestCase(unittest.TestCase):
     # -- acceptance 7: `ranParallel` must reflect that at least TWO tasks
     # actually entered the parallel path, not merely that one of them landed --
 
-    def test_only_one_of_two_reaching_worktree_creation_is_not_concurrency(self):
+    def test_only_one_of_two_reaching_worktree_creation_is_not_the_parallel_path(self):
         # T004's worktree-creation agent fails immediately (worktreeFailed);
         # only T001 ever implements and lands. One task ran -- not concurrent.
         outcomes = [
@@ -304,26 +305,106 @@ class ParallelWorktreeHelpersTestCase(unittest.TestCase):
             {"id": "T004", "worktreeFailed": True},
         ]
         landed = [{"id": "T001"}]
-        result = self._call("didRunConcurrently", "outcomes,landed", [outcomes, landed])
+        result = self._call("didTakeParallelPath", "outcomes,landed", [outcomes, landed])
         self.assertFalse(result)
 
-    def test_both_reaching_worktree_creation_and_one_landing_is_concurrency(self):
+    def test_both_reaching_worktree_creation_and_one_landing_took_the_parallel_path(self):
         outcomes = [
             {"id": "T001", "worktreeFailed": False},
             {"id": "T004", "worktreeFailed": False},
         ]
         landed = [{"id": "T001"}]
-        result = self._call("didRunConcurrently", "outcomes,landed", [outcomes, landed])
+        result = self._call("didTakeParallelPath", "outcomes,landed", [outcomes, landed])
         self.assertTrue(result)
 
-    def test_nothing_landed_is_not_concurrency_even_if_both_attempted(self):
+    def test_nothing_landed_did_not_take_the_parallel_path(self):
         outcomes = [
             {"id": "T001", "worktreeFailed": False},
             {"id": "T004", "worktreeFailed": False},
         ]
-        result = self._call("didRunConcurrently", "outcomes,landed", [outcomes, []])
+        result = self._call("didTakeParallelPath", "outcomes,landed", [outcomes, []])
         self.assertFalse(result)
 
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TheParallelPathIsNotAConcurrencyClaim(unittest.TestCase):
+    """Round-3 finding, and the reviewer was right about the substance.
+
+    `didTakeParallelPath` counts that the parallel PATH was taken and
+    something landed. It cannot know whether wall-clock actually overlapped,
+    and the fix the review proposed -- `Date.now()` at entry and exit -- is
+    not available: a workflow script that calls it throws, because it would
+    break resume. So the claim is not made here at all; the measurement is
+    made from the agent transcripts' own ISO timestamps, where real clocks
+    already exist.
+    """
+
+    def test_the_shipped_source_makes_no_concurrency_claim_from_status_flags(self):
+        with open(LOOP_JS, encoding="utf-8") as fh:
+            src = fh.read()
+        # The DEFINITION and the CALLS, not any mention: the comment that
+        # explains the rename legitimately names the old symbol.
+        self.assertIsNone(
+            re.search(r"function\s+didRunConcurrently\s*\(", src), "the renamed claim is back")
+        self.assertIsNone(
+            re.search(r"^\s*(?!//).*\bdidRunConcurrently\s*\(", src, re.MULTILINE),
+            "the old claim is still being called")
+        self.assertIsNone(
+            re.search(r"^\s*parallelRanConcurrently\s*:", src, re.MULTILINE),
+            "the run result claims overlap it cannot know")
+        self.assertIn("parallelPathTaken", src)
+
+    def test_the_workflow_script_never_calls_date_now(self):
+        """It throws in this runtime. Asserting it keeps a future 'just time
+        it here' fix from shipping and failing only at run time."""
+        with open(LOOP_JS, encoding="utf-8") as fh:
+            src = fh.read()
+        # Executable code only: the comment above `didTakeParallelPath`
+        # legitimately names it while explaining why it is not used.
+        code = "\n".join(
+            ln for ln in src.splitlines() if not ln.lstrip().startswith("//"))
+        self.assertNotIn("Date.now()", code)
+
+
+class TheParallelPathDoesNotWriteThePlanFile(unittest.TestCase):
+    """Round-3 finding, and it was a real hole in D1.
+
+    Every implementer used to finish by running `rein close <id>`, which
+    edits and commits the plan file. So EVERY task in a parallel group wrote
+    the same file, while the scout reports source touchpoints and never the
+    plan -- D1's "no overlap" could not see it. Reproduced with real git:
+    two branches each ticking only their own checkbox merge cleanly when the
+    tasks are ~6 lines apart, and CONFLICT when the checkboxes are adjacent.
+    Clean-by-luck, not by design.
+
+    A task in its own worktree now implements WITHOUT closing itself; the
+    loop closes it in the run's worktree after the merge lands.
+    """
+
+    def test_the_close_is_skipped_exactly_when_the_task_has_its_own_worktree(self):
+        with open(LOOP_JS, encoding="utf-8") as fh:
+            src = fh.read()
+        # `wtOverride` is set only for a per-task parallel worktree, so it is
+        # precisely the condition. This pins the CALL SITE: threading the
+        # parameter through is worthless if the caller does not pass it.
+        self.assertIn(
+            "stepPrompt(task, proxied, ledger, step, wtOverride, !wtOverride)", src,
+            "the parallel implementer is closing its own task again — the plan file "
+            "becomes a cross-task write the touchpoint check cannot see",
+        )
+        self.assertIn("closesOwnTask = true", src, "the serial path must still close its own task")
+
+    def test_the_loop_closes_the_task_itself_after_a_clean_merge(self):
+        with open(LOOP_JS, encoding="utf-8") as fh:
+            src = fh.read()
+        merge_fn = src[src.index("async function mergeTaskIntoRun"):]
+        merge_fn = merge_fn[: merge_fn.index("\n}\n")]
+        self.assertIn("closeCmd(outcome.id)", merge_fn,
+                      "nothing closes the task once the implementer stopped doing it")
+        # D3: a failed close must not fail the run -- Verify already catches
+        # "claimed but open", and losing a merged task to a bookkeeping step
+        # would be strictly worse than the serial path.
+        self.assertIn("catch", merge_fn)
