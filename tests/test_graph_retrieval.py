@@ -163,10 +163,29 @@ class GraphRetrievalPromptTestCase(unittest.TestCase):
 
     def test_the_worktree_path_reaches_the_block_from_its_real_call_site(self):
         """Threading `wd` through is worthless if the shipped call site does
-        not pass it -- the defect would survive with every assertion green."""
+        not pass it -- the defect would survive with every assertion green.
+
+        Round-1 (parallel-when-it-merits) finding: buildCTX/RETRIEVAL used to be
+        built ONCE against the run's own WD and spliced verbatim into every
+        prompt, including a parallel task's own private worktree -- so a task
+        agent was taught to run `codegraph -p <the run's WD>` from inside a
+        DIFFERENT directory it was explicitly told not to touch. The fix makes
+        buildCTX take `wd` and forward it into buildRetrievalBlock, so each
+        caller (the run's own CTX, and every buildTaskCTX(wd, branch)) supplies
+        its OWN path -- this pins that shape, not just the fixed-WD call it
+        replaced."""
         with open(LOOP_JS, encoding="utf-8") as fh:
             src = fh.read()
-        self.assertIn("buildRetrievalBlock(hasSerena, hasGraph, WD)", src)
+        # The one real invocation lives inside buildCTX, parameterised by `wd`
+        # -- never re-hardcoded back to the run's own WD.
+        self.assertIn("buildRetrievalBlock(hasSerena, hasGraph, wd)", src)
+        self.assertNotIn("buildRetrievalBlock(hasSerena, hasGraph, WD)", src)
+        # buildCTX itself takes `wd` as a parameter (not closed over WD)...
+        self.assertIn("function buildCTX(head, wd)", src)
+        # ...and both real callers pass their OWN path: the run's own CTX
+        # passes WD, a task's own CTX passes its private `wd`.
+        self.assertIn("const CTX = buildCTX(", src)
+        self.assertIn("buildCTX(\n    `You work in ${wd}", src)
 
     def test_no_tool_and_serena_only_cases_never_mention_sync(self):
         out = self._run()
