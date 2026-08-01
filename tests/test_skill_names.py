@@ -16,6 +16,7 @@ from __future__ import annotations
 import glob
 import os
 import re
+import subprocess
 import unittest
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -42,9 +43,11 @@ OLD_INVOCATION_PATTERN = re.compile(
 #   - tasks.md IS this change's own plan -- its Why/Scope/Decisions sections
 #     document the rename by naming the old, colliding invocations on purpose.
 #   - anything named like a changelog records history, not current usage.
-# .git and *.egg-info are not hand-maintained references at all: the latter
-# is packaging metadata regenerated from the README by the build, already
-# observed drifted from it (different pinned versions) before this change.
+# .git itself is not a file the sweep can read as text and is excluded by
+# construction (git ls-files never reports it). Everything else that is
+# actually tracked -- including packaging metadata under *.egg-info -- is a
+# real reference a checkout ships, so it is held to the same bar: no
+# exemption for it here.
 EXEMPT_PATHS = {os.path.join(REPO_ROOT, "tasks.md")}
 
 
@@ -56,14 +59,21 @@ def _is_exempt(path: str) -> bool:
 
 
 def _iter_repo_files():
-    for root, dirs, files in os.walk(REPO_ROOT):
-        dirs[:] = [
-            d
-            for d in dirs
-            if d != ".git" and not d.endswith(".egg-info") and d != "node_modules"
-        ]
-        for f in files:
-            yield os.path.join(root, f)
+    """Tracked files only, exactly what a checkout ships, sourced from
+    ``git ls-files`` (works in a worktree). This deliberately does NOT walk
+    the working tree with os.walk: that would also sweep gitignored,
+    generated trees (build/, dist/, .venv/, .serena/, graphify-out/,
+    .codegraph/) whose staleness relative to the repo is not this repo's
+    problem to fix."""
+    out = subprocess.run(
+        ["git", "ls-files", "-z"],
+        cwd=REPO_ROOT,
+        check=True,
+        capture_output=True,
+    ).stdout
+    for rel in out.decode("utf-8").split("\0"):
+        if rel:
+            yield os.path.join(REPO_ROOT, rel)
 
 
 class TestSkillDirectorySet(unittest.TestCase):
