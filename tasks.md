@@ -60,11 +60,11 @@ So the fix is not longer names. It is three different verbs, still short.
   - Human review: false
   - Verification: `python3 -m unittest tests.test_skill_names tests.test_events`
   - Acceptance:
-    - the skill directories become `apply` (was `loop`), `step` (was `run`), `steps` (was `run-auto`) and `audit` (was `review`); `plan`, `role` and the `ping` / `setup` commands are untouched, and `claude plugin details rein` would list eight skills with no name Claude Code reserves
-    - every in-repo reference to the old invocations is updated — `README.md`, `plugins/rein/README.md`, the workflow, the other skills' cross-references and `docs/` — and a test greps the whole repository for `/rein:loop`, `/rein:run`, `/rein:run-auto` and `/rein:review` and fails on any survivor outside a changelog or a plan's Why section
+    - the skill directories become `apply` (was `loop`), `step` (was `run`), `steps` (was `run-auto`) and `audit` (was `review`), while `plan`, `role` and the `ping` / `setup` commands are untouched — `tests/test_skill_names.py` asserts the exact directory set on disk, since that set is what `claude plugin details` reports as the registered identifiers
+    - every in-repo reference to the old invocations is updated — `README.md`, `plugins/rein/README.md`, the workflow, the other skills' cross-references and `docs/` — and `tests/test_skill_names.py` greps the whole repository for `/rein:loop`, `/rein:run`, `/rein:run-auto` and `/rein:review` and fails on any survivor outside a changelog or a plan's Why section
     - each renamed skill records its OWN new name via `rein event`, and the existing shipped-skill guard in `tests/test_events.py` passes unchanged — it reads the frontmatter `name:`, so that field stays the bare identifier and stays equal to the directory (D3 of the Scope)
-    - no compatibility alias is left behind: a test asserts no skill directory named `loop`, `run`, `run-auto` or `review` exists, since such a directory would re-register the colliding identifier (D2)
-    - the loop's own prompts are updated with the renames — `buildIsolatePrompt`, the step prompts and the review prompts name no retired skill — asserted by extracting the shipped strings, not by reading the file
+    - no compatibility alias is left behind: `tests/test_skill_names.py` asserts no skill directory named `loop`, `run`, `run-auto` or `review` exists, since such a directory would re-register the colliding identifier (D2)
+    - the loop's own prompts are updated with the renames — `buildIsolatePrompt`, the step prompts and the review prompts name no retired skill — asserted in `tests/test_skill_names.py` by extracting the shipped strings, not by reading the file
 
 - [ ] T002 A reserved name cannot ship again
   - Type: implementation
@@ -73,7 +73,7 @@ So the fix is not longer names. It is three different verbs, still short.
   - Verification: `python3 -m unittest tests.test_reserved_names`
   - Acceptance:
     - `tests/test_reserved_names.py` is a new module holding this guard, so its verification confirms its own criteria rather than another task's
-    - a checked-in list of identifiers Claude Code ships — including `loop`, `run`, `review`, `init`, `simplify`, `schedule` — carries a comment saying it is a snapshot, when it was taken, and how to refresh it from `claude plugin details` plus the session's own skill listing, because a list presented as complete would be a claim this repo cannot verify
-    - a test fails naming the offender when any skill directory or command file matches that list, and a second test asserts the list is non-empty and the sweep actually read the directories, so it cannot pass vacuously
-    - the guard covers commands as well as skills: `claude plugin details` counts both as skills, so `commands/loop.md` would collide exactly as a skill directory would
-    - a skill whose name merely CONTAINS a reserved word is allowed — `run-auto` was never the collision, `run` was — and a test pins that distinction so the guard does not start rejecting legitimate names
+    - `tests/test_reserved_names.py` holds the list of identifiers Claude Code ships — including `loop`, `run`, `review`, `init`, `simplify`, `schedule` — and it carries a comment saying it is a snapshot, when it was taken, and how to refresh it from `claude plugin details` plus the session's own skill listing, because a list presented as complete would be a claim this repo cannot verify
+    - `tests/test_reserved_names.py` fails naming the offender when any skill directory or command file matches that list, and a second test in it asserts the list is non-empty and the sweep actually read the directories, so it cannot pass vacuously
+    - the guard covers commands as well as skills: `claude plugin details` counts both as skills, so `commands/loop.md` would collide exactly as a skill directory would — `tests/test_reserved_names.py` sweeps both directories and a test proves it by pointing the sweep at a fixture containing a reserved command file
+    - a skill whose name merely CONTAINS a reserved word is allowed — `run-auto` was never the collision, `run` was — and `tests/test_reserved_names.py` pins that distinction so the guard does not start rejecting legitimate names
