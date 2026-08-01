@@ -315,7 +315,16 @@ def fix_commands(marketplace_name: str, plugin_name: str) -> list[str]:
     first against a stale clone is a no-op (the measured failure this task
     exists for).
     """
+    # QUALIFIED, not the bare name. Observed on a real machine:
+    #
+    #   $ claude plugin update rein
+    #   ✘ Failed to update plugin "rein": Plugin "rein" not found
+    #
+    # installed_plugins.json keys the install as "rein@rein-agentic-kit",
+    # and `claude plugin install` documents the same `plugin@marketplace`
+    # form. Printing the bare name made this module emit, as its whole
+    # reason for existing, a copy-pasteable command that fails.
     return [
         f"claude plugin marketplace update {marketplace_name}",
-        f"claude plugin update {plugin_name}",
+        f"claude plugin update {plugin_name}@{marketplace_name}",
     ]

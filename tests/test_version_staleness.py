@@ -318,3 +318,34 @@ class TestTheReviewsFourFindings(unittest.TestCase):
             "p@m", "p", "/the/running/one",
         )
         self.assertEqual(r.verdict, vs.STALE)
+
+
+class TestTheFixCommandActuallyWorks(unittest.TestCase):
+    """This module's entire reason for existing is to print two commands a
+    person can paste. The second one did not work.
+
+    Observed on a real machine, after the first command had succeeded:
+
+        $ claude plugin update rein
+        ✘ Failed to update plugin "rein": Plugin "rein" not found
+
+    installed_plugins.json keys the install as `rein@rein-agentic-kit`, and
+    `claude plugin install` documents the same `plugin@marketplace` form.
+    """
+
+    def test_the_plugin_update_command_is_qualified_with_its_marketplace(self):
+        cmds = vs.fix_commands("rein-agentic-kit", "rein")
+        self.assertEqual(cmds[1], "claude plugin update rein@rein-agentic-kit")
+
+    def test_the_marketplace_refresh_still_comes_first(self):
+        """Order is the measured point: updating against a stale clone is a
+        no-op, which is how a machine sat two versions behind unnoticed."""
+        cmds = vs.fix_commands("mk", "pl")
+        self.assertIn("marketplace update", cmds[0])
+        self.assertIn("plugin update", cmds[1])
+        self.assertEqual(len(cmds), 2)
+
+    def test_the_bare_plugin_name_is_never_emitted(self):
+        """The exact string that failed must not come back."""
+        cmds = vs.fix_commands("rein-agentic-kit", "rein")
+        self.assertNotIn("claude plugin update rein", [c.strip() for c in cmds])

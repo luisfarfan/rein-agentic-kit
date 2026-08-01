@@ -92,7 +92,7 @@ rein doctor
 It also tells you whether the installed `rein` plugin itself is stale against its
 marketplace clone (comparing two files already on disk, no network call) — when it is,
 it prints the two commands to fix it (`claude plugin marketplace update ...` then
-`claude plugin update rein`) and stops there: `doctor` reports, it never installs,
+`claude plugin update rein@rein-agentic-kit`) and stops there: `doctor` reports, it never installs,
 updates, or writes anything, and being out of date never changes its exit code.
 **If it got everything right, you configure nothing.**
 
