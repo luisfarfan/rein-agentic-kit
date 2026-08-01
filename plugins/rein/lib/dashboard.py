@@ -30,6 +30,11 @@ import urllib.parse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from events import (  # noqa: E402
+    EVENTS_PATH,
+    MAX_EVENTS_READ,
+    read_recent_events,
+)
 from token_report import (  # noqa: E402
     BASELINE_PATH,
     LEDGER_PATH,
@@ -111,6 +116,12 @@ def _run_view(row: dict, project: str, baseline: dict | None) -> dict:
 
     return {
         "wf_id": row.get("wf_id", ""),
+        # D2: a row recorded before `--change` existed (or by a caller that
+        # never passed one) has no "change" key at all -- `.get` reads back
+        # `None`, normalized here to "" so a run renders unlabelled rather
+        # than as the literal string "None" or a bare empty cell (mirrors
+        # `token_report.render_ledger`'s `r.get("change")` check).
+        "change": row.get("change") or "",
         "ts": row.get("ts", ""),
         "turns": row.get("turns", 0),
         "turns_per_agent": row.get("turns_per_agent", 0),
@@ -290,7 +301,105 @@ def _project_summary(runs: list[dict], baseline: dict | None) -> dict:
     return {"limit": None, "comparison": comparison, "metrics": metrics, "text": f"{comparison} {_WHY_SENTENCE}"}
 
 
-def build_view(ledger_path: str = LEDGER_PATH, baseline_path: str = BASELINE_PATH) -> dict:
+# ------------------------------------------------------------- usage history --
+
+# T003: skill-invocation counts and the turns/agent trend, additive per
+# project (never merged into `_run_view`/`_run_row`'s fields, D3) so a run
+# row renders byte-identical whether `events.jsonl` exists or not.
+
+# Cap on how many runs feed the inline trend line -- large enough to always
+# cover "at least the last 10 runs" (AC3) while keeping the sparkline
+# legible; distinct from `events.MAX_EVENTS_READ`, which bounds *events*, not
+# the run rows `build_view` already holds in memory from the ledger.
+TREND_MAX_RUNS = 30
+
+# Two points is a straight line between two dots -- visually indistinguishable
+# from a real trend. Below this, state the reason instead of drawing one (AC3).
+MIN_RUNS_FOR_TREND = 3
+
+
+def _skill_counts_for_root(root: str | None, events_rows: list[dict], events_path: str) -> dict:
+    """`{"skill_counts": {name: count}, "events_note": str}` for one project
+    (AC1): counts are per skill *name*, kept entirely separate from run
+    metrics, and never summed into any run total or delta. `events_note`
+    explains an empty result -- no events file yet, vs. a file that exists
+    but has nothing (yet) for this project -- so the section always states
+    why it is empty rather than rendering nothing (AC5)."""
+    if root is None:
+        return {"skill_counts": {}, "events_note": "no resolvable project root -- skill-invocation history is unavailable here"}
+    matching = [e for e in events_rows if e.get("project") == root]
+    if not matching:
+        if not os.path.exists(events_path):
+            note = "no events.jsonl recorded yet -- skill invocations (/rein:plan, /rein:run, /rein:run-auto, /rein:review) will appear here once one runs"
+        else:
+            note = f"no skill invocations recorded yet for this project (among the most recent {MAX_EVENTS_READ} logged)"
+        return {"skill_counts": {}, "events_note": note}
+    counts: dict[str, int] = {}
+    for e in matching:
+        name = e.get("name") or "(unknown)"
+        counts[name] = counts.get(name, 0) + 1
+    return {"skill_counts": counts, "events_note": ""}
+
+
+def _trend_svg(runs: list[dict]) -> dict:
+    """`{"trend_svg": str|None, "trend_note": str|None}` for one project's
+    `turns/agent` trend (AC3): a self-contained inline `<svg>` polyline, no
+    external asset (D5), over at least the last 10 runs when that many are
+    recorded, with the baseline run (if any is in the window) marked
+    distinctly. Fewer than `MIN_RUNS_FOR_TREND` runs states the reason
+    instead of drawing a two-point line that would misleadingly look like one.
+    """
+    if len(runs) < MIN_RUNS_FOR_TREND:
+        return {
+            "trend_svg": None,
+            "trend_note": f"only {len(runs)} run(s) recorded for this project -- at least {MIN_RUNS_FOR_TREND} are needed to show a trend",
+        }
+
+    window = runs[-TREND_MAX_RUNS:]
+    values = [float(r.get("turns_per_agent") or 0) for r in window]
+    width, height, pad = 300, 80, 10
+    lo, hi = min(values), max(values)
+    span = (hi - lo) or 1.0
+    n = len(values)
+    step = (width - 2 * pad) / (n - 1) if n > 1 else 0
+
+    def _xy(i: int, v: float) -> tuple[float, float]:
+        x = pad + i * step
+        y = pad + (height - 2 * pad) * (1 - (v - lo) / span)
+        return x, y
+
+    points = [_xy(i, v) for i, v in enumerate(values)]
+    polyline = " ".join(f"{x:.1f},{y:.1f}" for x, y in points)
+    marks = []
+    for i, (x, y) in enumerate(points):
+        run = window[i]
+        if run.get("is_baseline"):
+            wf_id = html.escape(str(run.get("wf_id", "")))
+            marks.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="3.5" class="trend-baseline"><title>baseline: {wf_id}</title></circle>')
+        else:
+            marks.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="2" class="trend-point"/>')
+
+    svg = (
+        f'<svg viewBox="0 0 {width} {height}" width="{width}" height="{height}" role="img" '
+        f'aria-label="turns per agent over the last {n} run(s)">'
+        f'<polyline points="{polyline}" fill="none" class="trend-line"/>'
+        + "".join(marks)
+        + "</svg>"
+    )
+    return {"trend_svg": svg, "trend_note": None}
+
+
+def _project_history(root: str | None, runs: list[dict], events_rows: list[dict], events_path: str) -> dict:
+    """One additive dict, attached to a project alongside (never inside)
+    `runs`: skill-invocation counts plus the turns/agent trend."""
+    return {**_skill_counts_for_root(root, events_rows, events_path), **_trend_svg(runs)}
+
+
+def build_view(
+    ledger_path: str = LEDGER_PATH,
+    baseline_path: str = BASELINE_PATH,
+    events_path: str = EVENTS_PATH,
+) -> dict:
     """Runs grouped by project, baseline marked, later-same-project runs deltad.
 
     Never raises: a missing, empty, or unreadable ledger yields
@@ -302,6 +411,9 @@ def build_view(ledger_path: str = LEDGER_PATH, baseline_path: str = BASELINE_PAT
         return {"message": message, "projects": []}
 
     baseline = _read_baseline_safe(baseline_path)
+    # Bounded read (D6): at most `MAX_EVENTS_READ` events total, shared across
+    # every project below -- never re-read per project.
+    events_rows = read_recent_events(events_path)
 
     by_project: dict[str, list[dict]] = {}
     for row in rows:
@@ -320,6 +432,7 @@ def build_view(ledger_path: str = LEDGER_PATH, baseline_path: str = BASELINE_PAT
                 "runs": runs,
                 "summary": _project_summary(runs, baseline),
                 "baseline_info": _baseline_identity_text(baseline, project),
+                "history": _project_history(root, runs, events_rows, events_path),
             }
         )
 
@@ -608,6 +721,17 @@ th small{font-weight:400;color:#777;display:block}
   border:1px solid #ccc;border-radius:.3rem;padding:.5rem;box-shadow:0 2px 6px rgba(0,0,0,.15);white-space:normal}
 .glossary-toggle:hover .glossary-text,.glossary-toggle:focus .glossary-text{display:block}
 .glossary-toggle:focus{outline:2px solid #1a73e8}
+.change-label{color:#555;font-weight:400}
+.history{margin:.75rem 0 1.5rem;padding-top:.6rem;border-top:1px dashed #ccc}
+.history h3{font-size:.85rem;margin:.6rem 0 .25rem;color:#444}
+table.skills{border-collapse:collapse;width:auto;margin:0}
+table.skills th,table.skills td{padding:.2rem .6rem;text-align:right;border-bottom:1px solid #eee}
+table.skills th:first-child,table.skills td:first-child{text-align:left}
+.events-note,.trend-note{color:#666;font-style:italic;margin:.25rem 0}
+.trend{display:flex;align-items:center;gap:.3rem}
+.trend-line{stroke:#1a73e8;stroke-width:1.5}
+.trend-point{fill:#1a73e8}
+.trend-baseline{fill:#f5a623;stroke:#1a1a1a;stroke-width:.5}
 """
 
 
@@ -689,8 +813,13 @@ def _agents_detail(agents: list[dict]) -> str:
 def _run_row(run: dict, show_deltas: bool) -> str:
     row_class = ' class="baseline"' if run["is_baseline"] else ""
     badge = ' <span class="badge">BASELINE</span>' if run["is_baseline"] else ""
+    # A run recorded before `change` labels existed carries "" here (see
+    # `_run_view`) -- rendered as simply no label, never the literal "None"
+    # or an empty `<span>` sitting beside the wf_id.
+    change = run.get("change") or ""
+    change_html = f' <span class="change-label">[{html.escape(change)}]</span>' if change else ""
     cells = (
-        f"<td>{html.escape(str(run.get('ts', '')))}<br><small>{html.escape(str(run.get('wf_id', '')))}</small>{badge}</td>"
+        f"<td>{html.escape(str(run.get('ts', '')))}<br><small>{html.escape(str(run.get('wf_id', '')))}{change_html}</small>{badge}</td>"
         f"<td>{_fmt_num(run.get('turns_per_agent'))}</td>"
         f"<td>{_fmt_num(run.get('ctx_max'), 0)}</td>"
         f"<td>{_fmt_num(run.get('opus_share'))}%</td>"
@@ -740,6 +869,44 @@ def _models_form(root: str | None, models: dict) -> str:
     )
 
 
+def _skill_counts_html(skill_counts: dict, events_note: str) -> str:
+    """AC1/AC5: counts per skill name, or -- with none -- the reason why,
+    always rendered, never a silently missing section."""
+    if not skill_counts:
+        return f'<p class="events-note">{html.escape(events_note)}</p>'
+    rows = "".join(
+        f"<tr><td>{html.escape(str(name))}</td><td>{int(count)}</td></tr>"
+        for name, count in sorted(skill_counts.items())
+    )
+    return (
+        '<table class="skills"><thead><tr><th>skill</th><th>invocations</th></tr></thead>'
+        f"<tbody>{rows}</tbody></table>"
+    )
+
+
+def _trend_html(trend_svg: str | None, trend_note: str | None) -> str:
+    """AC3: the inline SVG trend, or -- for too few runs -- the stated
+    reason instead of a misleading two-point line."""
+    if trend_svg is None:
+        return f'<p class="trend-note">{html.escape(trend_note or "")}</p>'
+    return f'<div class="trend">{trend_svg}{_glossary_html("turns_per_agent")}</div>'
+
+
+def _project_history_html(history: dict) -> str:
+    """AC1: visually separated from the run table above it -- its own
+    heading and CSS block, never mixed into the run rows or their totals."""
+    skills_html = _skill_counts_html(history.get("skill_counts") or {}, history.get("events_note") or "")
+    trend_html = _trend_html(history.get("trend_svg"), history.get("trend_note"))
+    return (
+        '<div class="history">'
+        "<h3>Skill invocations</h3>"
+        f"{skills_html}"
+        "<h3>Trend: turns/agent</h3>"
+        f"{trend_html}"
+        "</div>"
+    )
+
+
 def _project_section(project: dict) -> str:
     runs = project["runs"]
     # Deltas (and therefore the whole "savings" column group) only appear for a
@@ -770,12 +937,14 @@ def _project_section(project: dict) -> str:
     summary_text = (project.get("summary") or {}).get("text", "")
     summary_html = f'<p class="summary">{html.escape(summary_text)}</p>'
     baseline_html = f'<p class="baseline-info">{html.escape(project.get("baseline_info", ""))}</p>'
+    history_html = _project_history_html(project.get("history") or {})
     return (
         f"<section><h2>{html.escape(project['project'])}</h2>"
         f"{summary_html}"
         f"{models_html}"
         f"{baseline_html}"
-        f"<table><thead>{header}</thead><tbody>{body}</tbody></table></section>"
+        f"<table><thead>{header}</thead><tbody>{body}</tbody></table>"
+        f"{history_html}</section>"
     )
 
 
@@ -1025,12 +1194,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--port", type=int, default=DEFAULT_PORT, help=f"port to bind on 127.0.0.1 (default: {DEFAULT_PORT})")
     p.add_argument("--ledger", default=LEDGER_PATH, help=f"ledger path (default: {LEDGER_PATH})")
     p.add_argument("--baseline", default=BASELINE_PATH, help=f"baseline path (default: {BASELINE_PATH})")
+    p.add_argument("--events", default=EVENTS_PATH, help=f"events path (default: {EVENTS_PATH})")
     return p
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    view = build_view(args.ledger, args.baseline)
+    view = build_view(args.ledger, args.baseline, args.events)
 
     if args.as_json:
         print(json.dumps(view, indent=2, ensure_ascii=False))
