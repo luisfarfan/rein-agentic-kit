@@ -768,6 +768,21 @@ function buildPlanCheckPrompt(planPath, taskIds) {
     `the failure this repo produced five times: a test that passes without ever exercising the real path.\n` +
     `  4. Tasks that contradict the plan's own Scope or dependency order — touching something the plan ` +
     `marks out of scope, or depending on a task that has not run yet.\n\n` +
+    // D3 names a SHARED VOCABULARY, and the first attempt at this sentence
+    // said "exactly these four are BLOCKING" -- which silently demoted lens 2
+    // and lens 3 out of blocking, including "a test whose fixture avoids the
+    // case", the defect this repo produced five times and the one this gate
+    // most reliably catches. The plan's own Scope said this gate "stays
+    // exactly as it is". So: the four classes are named as common ground with
+    // plan_check.py, and the operative rule stays the pre-existing one.
+    `These four class names are shared VERBATIM with plugins/rein/lib/plan_check.py's ` +
+    `BLOCKING_CLASSES, so the earlier gate and this one speak the same language (D3): ` +
+    `"a verification that cannot mechanically confirm the criteria it is attached to"; ` +
+    `"a criterion no command can check"; "a dependency that is circular or names a ` +
+    `task that does not exist"; "a criterion that contradicts a stated decision". ` +
+    `They are a shared vocabulary, NOT a ceiling: anything the four lenses above surface ` +
+    `that would waste an implementer's run is BLOCKING whether or not it has one of those ` +
+    `names — lenses 2 and 3 in particular.\n\n` +
     `For every issue found, report one finding with the offending task's id, a severity of BLOCKING, ` +
     `IMPORTANT, or SUGGESTION (BLOCKING only for something that would waste an implementer's run), and ` +
     `a one-sentence 'text'. Report zero findings if the plan holds up under all four lenses.\n` +

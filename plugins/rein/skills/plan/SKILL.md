@@ -76,10 +76,71 @@ R=$(command -v rein || ls -d ~/.claude/plugins/cache/*/rein/*/bin/rein 2>/dev/nu
    choice an implementer could plausibly reverse without noticing. A two-task change
    usually has none, and inventing them is ceremony.
 
-5. **Dry run.** Show the user the full draft: tasks in dependency order, each verification
+5. **Critique the draft before it is shown or written — every single time.** This step is
+   UNCONDITIONAL: it runs on every invocation of this skill, never behind a flag, never skipped
+   because the request looked simple, and never only when the user asks for it (D1). Skipping it
+   is exactly how the defect below reached the loop in the first place.
+
+   a. If `plan.source` is `openspec` and an `openspec` binary is on `PATH`
+      (`command -v openspec`), run `openspec validate --strict` FIRST and report its output
+      VERBATIM, labeled as openspec's own — this skill reimplements none of openspec's structural
+      checks (compose, missing sections, malformed delta headers); that is openspec's job, not
+      re-derived here (D4). A missing `openspec` binary skips this half silently — that is not a
+      failure, just a fact stated beside the plan (D5).
+   b. Run the mechanical half as a concrete, named command — not a judgement call — BEFORE
+      critiquing anything yourself. Write the drafted plan text to a scratch file and run:
+      ```bash
+      # One block, because shell state does NOT persist between tool calls:
+      # `$R` or `$DRAFT` set in an earlier block arrive EMPTY here. Verified
+      # in this project — five skills once recorded with an empty `$R`.
+      # And mktemp, never a fixed path: two /rein:plan sessions (or one in a
+      # worktree while another runs in the main checkout, the normal mode of
+      # this kit) would write and read the SAME file, and one would critique
+      # the other's draft. A predictable name in a shared temp dir is also
+      # redirectable through a pre-created symlink.
+      R=$(command -v rein || ls -d ~/.claude/plugins/cache/*/rein/*/bin/rein 2>/dev/null | tail -1)
+      DRAFT=$(mktemp -t rein-plan-draft) && cat > "$DRAFT" <<'PLAN'
+      <the drafted plan text, verbatim>
+PLAN
+      "$R" plan-check "$DRAFT"; rm -f "$DRAFT"
+      ```
+      This deterministically decides two of the four BLOCKING classes against the plan's own text:
+      1. a verification that cannot mechanically confirm the criteria it is attached to — a
+         Verification command reused verbatim from an earlier task
+      3. a dependency that is circular or names a task that does not exist
+
+      `rein plan-check` never fails this step (D5): a missing scratch file, an unreadable one, or
+      text that fails to parse each yield an empty `findings` list in its JSON output rather than a
+      nonzero exit — proceed to (c) regardless. Any `BLOCKING` finding it prints carries into (e)
+      exactly like an agent-found one. Any `IMPORTANT` finding it prints (e.g. a reused whole-suite
+      Verification command that is honestly shared rather than the BLOCKING per-module defect) is
+      reported beside the plan for the author to accept or ignore, same as (e) — visible, never a
+      reason by itself to stop (D2).
+   c. Critique every task yourself against the two classes no command can decide — semantic calls
+      only an agent can honestly make:
+      2. a criterion no command can check
+      4. a criterion that contradicts a stated decision
+
+      Together with (b)'s two, these are the ONLY four classes that may BLOCK — the SAME four the
+      loop's own PlanCheck applies before Isolate (D3), so the two gates cannot drift. Everything
+      else — style, wording, taste, a criterion that could be worded better — is at most a
+      SUGGESTION: shown beside the plan for the author to accept or ignore, never a reason to stop
+      (D2). A check that always finds something stops being read, and the plan goes back to being
+      unreviewed in practice.
+   d. If the agent critique in (c) cannot run — no critique agent is available, it times out, or
+      its response is malformed — do NOT skip it silently and do NOT hard-stop the skill: proceed
+      to write the plan anyway, with that failure named plainly beside it, e.g. "critique agent
+      timed out — plan written unreviewed" (D5). A gate meant to save money must never itself
+      become the reason nothing gets written.
+   e. Report any BLOCKING finding — from (b) or (c) — to the user before the dry run, naming which
+      of the four classes it violates and which criterion it fails to prove. Fix the plan before
+      continuing — never show a dry run, and never write, with an open BLOCKING finding still
+      standing. Also report any `IMPORTANT` finding from (b) beside the plan, distinct from
+      BLOCKING: it does not stop the write, it is for the author to accept or ignore (D2).
+6. **Dry run.** Show the user the full draft: tasks in dependency order, each verification
    command, which tasks are gated on human review, and anything the plan assumes.
-6. **Ask for explicit confirmation.** Never write the plan into the project without it.
-7. On confirmation, write it to `plan.path`, then verify it parses the way the loop will read
+7. **Ask for explicit confirmation.** Never write the plan into the project without it.
+8. On confirmation, write it to `plan.path`, then verify it parses the way the loop will read
    it: `"$R" tasks .` and `"$R" next .`. Report the resolved order.
 
 ## What makes a task good here
