@@ -11,6 +11,8 @@ added, never required.
 D4: anything the dashboard shows needs a GLOSSARY entry.
 """
 
+from __future__ import annotations
+
 import contextlib
 import io
 import json
