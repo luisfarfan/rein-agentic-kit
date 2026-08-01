@@ -1,86 +1,73 @@
-# Change: the-dashboard-answers-the-question
+# Change: parallel-when-it-merits
 
 ## Why
-The dashboard renders correct numbers and answers nothing. Generated from this
-machine's real ledger, the page is a table dump with **0 tooltips and 0 `aria-`
-attributes**, whose columns are jargon this project invented:
+The loop implements tasks with a plain `for (const task of tasks) { await ... }`
+— **strictly serial, always**, even for tasks that declare no dependency on
+each other. Measured on the last run: agent durations summed to 55 minutes
+against a 55.5 minute wall clock, so nothing overlapped at all. Implementation
+was 23.3 of those minutes across three tasks.
+
+The honest size of the prize, from the five changes run in this repo:
+
+| change | dependencies | parallelisable |
+|---|---|---|
+| works-in-any-repo | T001, T004 independent | **yes, 2 tasks** |
+| graph-reaches-the-agents | T002←T001 | no, a chain |
+| one-owner-for-retrieval | T002←T001 | no, a chain |
+| measure-itself | T002←T001 | no, a chain |
+| the-dashboard-answers-the-question | T003←T002←T001 | no, a chain |
+
+**One run in five.** This is a real but bounded win, and it must not be paid
+for with a new failure mode in the part of the system that produces the work.
+
+Sharing one worktree is not an option, and the reason is not file edits —
+it is the two things every task does besides editing. Reproduced directly:
+two concurrent commits in one worktree gave
 
 ```
-run · turns/agent · ctx_max/turn · opus share · Δ turns/agent · Δ ctx_max · Δ opus share
+fatal: Unable to create '.../worktrees/p1/index.lock': File exists.
+commits: B          <- only one landed
+?? file_a.txt       <- the other agent's work, absent from history
 ```
 
-The single question a user has — *is this helping me?* — is answered nowhere,
-and the one place it could be inferred is actively misleading: the deltas are
-signed so **negative means better**, the opposite of the reflex a minus sign
-triggers, and nothing on the page says so. Someone reading
-`Δ turns/agent -42.4%` as "42% worse" concludes the kit is hurting them.
+A worktree has exactly one git index. And the loop verifies per task by
+running the suite, so two agents in one tree run it over each other's
+half-finished edits: a failure from one reads as a defect in the other, and
+a reviewer gets sent after a bug that does not exist.
 
-The page also does not show what the ledger now knows. `rein event` records
-every `/rein:*` invocation and `rein ledger` counts them; `dashboard.py` has
-**zero mentions of events**. Runs carry a `change` label since the last
-change; the page shows `wf_ca4b1e78` and no name. So there is no usage
-history: no sense of which skills a person actually uses, or whether things
-are getting better over time.
+A per-task worktree costs **3.5s** (create + `codegraph init` + serena
+activation) and **5.4 MB**, against 7–8 minutes per task — 0.8% overhead.
 
 ## Scope
-- In: a plain-language answer to "is this helping?", stated only as far as the
-  data supports it
-- In: every metric explained in place, keyboard-reachable
-- In: usage history — which skills get invoked, which changes ran, and the
-  trend across runs
-- Out: SQLite. Measured: 1.9 KB per run, so a thousand runs is 1.9 MB. The
-  stdlib ships `sqlite3` so it would add no dependency, but it buys nothing at
-  this volume and costs a failure mode the text log does not have — a torn
-  JSONL line is skipped (already handled), a torn database page is not
-- Out: external CSS, fonts, JS or charting libraries. The page is served from
-  127.0.0.1 and stays a single self-contained offline document
-- Out: any NEW metric, and any claim the data does not support — no "you
-  saved X%" anywhere
-- Out: visual art direction. Legible, scannable and honest is the target;
-  taste is not a testable criterion and is not claimed here
+- In: running tasks concurrently when it is provably safe, each in its own
+  worktree, merged deterministically into the run's worktree
+- In: recording whether parallelism fired and what it actually saved
+- Out: resolving merge conflicts automatically. If the safety check passed
+  and a conflict happens anyway, the check was wrong and that must surface
+- Out: parallelising review rounds. Measured across five runs, the last round
+  produced a real BLOCKING three times; review depth is not a speed knob
+- Out: any `--fast` preset. The knob here is "run what is independent
+  concurrently", not "verify less"
+- Out: changing the bounded-step mechanism inside a task
 
 ## Decisions
-- D1 The page leads with the answer, not the data. The summary comes first and the tables support it, because a user who has to derive the conclusion from a table will not
-- D2 The summary never claims more than the ledger proves. No baseline, one run, or runs of different shapes each produce a stated LIMIT — "not enough history to compare" is a valid and required answer, and is the difference between a dashboard and a sales page
-- D3 One glossary, one source. Every rendered metric is defined in a single structure, and a test fails on the first metric with no entry — a new metric cannot ship unexplained
-- D4 A tooltip that needs a mouse is decoration. Keyboard focus and an accessible description, or the explanation does not exist for the people most likely to need it
-- D5 Self-contained and offline. Trends are drawn as inline SVG; a dashboard that phones out to render is not one this kit would recommend
-- D6 Files, not a database. Bounded reads are the fix for growth
+- D1 Two conditions, both required: no declared dependency AND no overlap in the scout's reported touchpoints. Dependencies alone are not enough — two independent tasks editing one file is the conflict case
+- D2 Unknown means serial. The scout's map is a HINT and may be empty or missing; a task whose touchpoints are unknown runs serially, because the safe default for missing information is the behaviour we have today
+- D3 Serial is the floor, never a regression. Every failure in the parallel path — worktree creation, merge, a dead agent — falls back to the serial behaviour that ships today; the loop must never be worse than it is now
+- D4 Merge order is deterministic (task id), so two runs of the same plan integrate in the same order and a bisect means something
+- D5 The saving is measured, not asserted. A run records whether it parallelised and the wall-clock it took; without that, "it merits" is a claim, and this project does not ship those
 
 ---
 
-- [x] T001 The page opens with the answer
+- [ ] T001 Tasks that cannot collide run at the same time
   - Type: implementation
   - Depends on: none
   - Human review: false
-  - Verification: `python3 -m unittest tests.test_dashboard_summary`
+  - Verification: `python3 -m unittest tests.test_parallel_groups`
   - Acceptance:
-    - each project section opens with a summary stating, in plain words and before any table, how the latest run compares to the baseline on the three numbers that predict cost — "fewer turns per agent", "more context per turn", "less of the Opus quota" — with the percentage beside each, never a bare signed number
-    - the summary states its own LIMIT whenever one applies and shows NO comparison in that case (D2): no baseline marked, only one run, or a baseline older than every run shown; a test covers each of those three shapes and asserts no comparative wording is emitted
-    - a `direction` helper decides better/worse/unchanged from a metric key and a delta, is a pure function, and is unit-tested per metric including the sign inversion — `opus share` down is better, and a helper that hardcodes "negative is better" for every metric would be wrong the day a metric is added where it is not
-    - the summary says what the numbers are FOR in one sentence — cost is turns × context re-read every turn — so a first-time reader knows why these three and not others
-    - `python3 -m unittest tests.test_dashboard` passes unchanged, and `rein dashboard --json` keeps every key it has today with the summary added alongside; a test pins the pre-existing keys
-
-- [x] T002 Every number says what it means
-  - Type: implementation
-  - Depends on: T001
-  - Human review: false
-  - Verification: `python3 -m unittest tests.test_dashboard_glossary`
-  - Acceptance:
-    - a single `GLOSSARY` defines every metric the page renders — `turns`, `turns/agent`, `ctx_max/turn`, `opus share`, `total`, and each `Δ` column — each with a one-line meaning and a one-line "why it predicts cost"; a test asserts every rendered metric key has an entry and fails naming the first that does not (D3)
-    - each metric header carries a `?` that reveals its glossary text in place, reachable by keyboard focus and exposed as an accessible description rather than a hover-only `title`; a test asserts both for every one (D4)
-    - the delta columns state `negative = better` inside the same section as the delta values, and a test asserts the proximity rather than the mere presence of the text
-    - the baseline is identified where it is used: which run, when it was marked, and — for a project with none — what to run to mark one
-    - a test asserts the rendered HTML contains no `src`/`href` to an external host and no `@import`, so the page stays offline and self-contained (D5)
-
-- [x] T003 Usage history: what was run, with what, and whether it is improving
-  - Type: implementation
-  - Depends on: T002
-  - Human review: false
-  - Verification: `python3 -m unittest tests.test_dashboard_history`
-  - Acceptance:
-    - each project shows its skill-invocation counts per skill name from `events.jsonl`, visually separated from run metrics and never summed into a run total or delta; a test asserts run rows are byte-identical with and without an events file
-    - each run row shows its `change` label beside the `wf_id`, and a run recorded before labels existed renders as unlabelled rather than as `None` or a bare empty cell
-    - the trend across a project's runs is drawn for `turns/agent` as inline SVG with no external asset, showing at least the last 10 runs, with the baseline marked on it; a project with fewer than 3 runs shows the reason instead of a misleading two-point line
-    - reading events is bounded to the most recent N, N is a named constant with its reason in a comment, and a test writes more than N and asserts the render neither reads all of them nor crashes (D6)
-    - an absent, empty or corrupt `events.jsonl` renders the page with runs and summary intact and the history section stating why it is empty — never a traceback, never a silently missing section
+    - a pure `planParallelGroups(tasks, codeMap)` in the SHIPPED `loop.js` returns an ordered list of groups, where every task in a group has no declared dependency on any other task in that group AND no touchpoint file in common with it; the function is extracted and EXECUTED by the test across a chain, two independent tasks, two independent tasks sharing a file, and an empty map — a source-substring assertion does not count (D1)
+    - a task with no entry in the code map, or an entry with empty touchpoints, is placed in a group of its own — unknown means serial (D2), asserted directly
+    - groups preserve the dependency order the plan declares: a test builds the five real dependency shapes from this repo's own history (four chains and the one two-independent case) and asserts the chains produce single-task groups and only that one case groups anything together
+    - each task in a multi-task group implements in its OWN worktree and its result is merged into the run's worktree in task-id order (D4); a test asserts the merge order is by id and not by completion time, so a fast task cannot reorder history
+    - any failure in the parallel path — worktree creation, a merge that conflicts, an agent that dies — is reported and the affected task is retried SERIALLY in the run's worktree, so the run's outcome is never worse than today's (D3); a test covers the conflict path and asserts the fallback rather than an aborted run
+    - the run result reports `parallelGroups` (how tasks were grouped) and whether any group actually ran concurrently, so the ledger can answer whether this ever merits anything (D5) — with a test asserting a fully serial plan reports groups of one and no concurrency claim
