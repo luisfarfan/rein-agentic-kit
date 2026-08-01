@@ -73,7 +73,7 @@ are getting better over time.
     - the baseline is identified where it is used: which run, when it was marked, and — for a project with none — what to run to mark one
     - a test asserts the rendered HTML contains no `src`/`href` to an external host and no `@import`, so the page stays offline and self-contained (D5)
 
-- [ ] T003 Usage history: what was run, with what, and whether it is improving
+- [x] T003 Usage history: what was run, with what, and whether it is improving
   - Type: implementation
   - Depends on: T002
   - Human review: false
