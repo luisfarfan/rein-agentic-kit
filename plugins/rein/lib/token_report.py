@@ -117,9 +117,16 @@ def _parse_iso_ts(raw) -> datetime.datetime | None:
         return None
     s = raw[:-1] + "+00:00" if raw.endswith("Z") else raw
     try:
-        return datetime.datetime.fromisoformat(s)
+        dt = datetime.datetime.fromisoformat(s)
     except ValueError:
         return None
+    if dt.tzinfo is None:
+        # A zone-less stamp is not comparable to the aware datetimes the rest
+        # of this module works with. Assume UTC rather than crash (D2's
+        # "absent is absent" governs missing/unparseable timestamps, not
+        # ones that merely lack an explicit offset).
+        dt = dt.replace(tzinfo=datetime.timezone.utc)
+    return dt
 
 
 def analyze(path: str) -> dict:
@@ -497,7 +504,9 @@ def render_ledger(rows: list[dict], ledger_path: str = LEDGER_PATH, baseline: di
             # `.get` reads back `None`, and the duration/overlap tag is simply
             # omitted, exactly like the "change" tag above.
             duration_tag = (
-                f"  wall={r['wall_clock_min']}m  agent={r['agent_min']}m  overlap={r['overlap']}x"
+                f"  wall={r['wall_clock_min']}m"
+                f"  agent={r.get('agent_min', '?')}m"
+                f"  overlap={r.get('overlap', '?')}x"
                 if r.get("wall_clock_min") is not None else ""
             )
             line = (
@@ -640,6 +649,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="JSON-encoded task grouping for this run (e.g. '[[\"T001\"],[\"T002\"]]'), as the loop decided it -- "
              "recorded verbatim, never re-derived",
     )
+    p.add_argument(
+        "--parallel-path", default=None, choices=["true", "false"], dest="parallel_path",
+        help="whether the loop's parallel path actually ran for this run (its own didTakeParallelPath verdict), "
+             "as it decided it -- recorded verbatim, never re-derived. Omitted entirely when not passed, so a "
+             "'groups=[[...]] overlap=1.00' row never reads as ambiguous between the path never firing and it "
+             "firing but the runtime serialising the agents.",
+    )
     return p
 
 
@@ -676,6 +692,14 @@ def main(argv: list[str] | None = None) -> int:
             summary["groups"] = json.loads(args.groups)
         except json.JSONDecodeError:
             pass
+
+    # Finding #3 (round 1): the loop's own didTakeParallelPath verdict, rides
+    # through the same way `groups` does -- recorded exactly as the loop
+    # decided it, never re-derived (this module has no way to tell "the
+    # parallel path never fired" from "it fired and serialised" on its own).
+    # Absent entirely when not passed, same D2 shape as `change`/`groups`.
+    if args.parallel_path is not None:
+        summary["parallel_path"] = args.parallel_path == "true"
 
     # Recording is the default: the ledger is only useful if it is complete.
     should_record = not args.no_record

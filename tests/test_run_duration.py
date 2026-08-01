@@ -167,6 +167,26 @@ class TestUnreadableTimestampsYieldNoDurationFields(unittest.TestCase):
             s = tr.summarize(d)
         self.assertNotIn("wall_clock_min", s)
 
+    def test_zone_less_timestamp_mixed_with_zoned_in_same_transcript_does_not_raise(self):
+        # A valid ISO-8601 stamp with no trailing Z/offset must not parse into
+        # a naive datetime that then blows up comparing against an aware one
+        # from the same transcript (end_dt < start_dt).
+        with Run({
+            "a": [turn(ts="2026-01-01T00:00:00"), turn(ts="2026-01-01T00:10:00Z")],
+        }) as d:
+            s = tr.summarize(d)  # must not raise TypeError
+        self.assertEqual(s["wall_clock_min"], 10.0)
+
+    def test_zone_less_timestamps_across_agents_does_not_raise(self):
+        # One agent entirely zone-less, another entirely zoned -- run_start/
+        # run_end comparisons across agents must not raise either.
+        with Run({
+            "naive": [turn(ts="2026-01-01T00:00:00"), turn(ts="2026-01-01T00:05:00")],
+            "zoned": [turn(ts="2026-01-01T00:10:00Z"), turn(ts="2026-01-01T00:20:00Z")],
+        }) as d:
+            s = tr.summarize(d)  # must not raise TypeError
+        self.assertEqual(s["wall_clock_min"], 20.0)
+
 
 class TestGroupsAreRecordedNotRederived(unittest.TestCase):
     """AC4: the measure step passes the run's task grouping; token-report
@@ -205,6 +225,49 @@ class TestGroupsAreRecordedNotRederived(unittest.TestCase):
                 tr.main([d, "--ledger", ledger, "--json"])
         self.assertNotIn("groups", tr.read_ledger(ledger)[0])
 
+    # ── round 1, finding #3: the loop's didTakeParallelPath verdict rides ──
+    # through as --parallel-path, recorded verbatim -- token-report has no
+    # way to re-derive it (it never sees worktrees, only transcripts).
+
+    def test_build_parser_accepts_parallel_path(self):
+        args = tr.build_parser().parse_args(["--parallel-path", "true"])
+        self.assertEqual(args.parallel_path, "true")
+
+    def test_parallel_path_true_is_recorded_as_the_loops_own_verdict(self):
+        ledger = os.path.join(tempfile.mkdtemp(), "runs.jsonl")
+        self.addCleanup(lambda: shutil.rmtree(os.path.dirname(ledger), ignore_errors=True))
+        with Run({"a": [turn(out=1)]}, wf_id="wf_par_true") as d:
+            with contextlib.redirect_stdout(io.StringIO()):
+                code = tr.main([d, "--parallel-path", "true", "--ledger", ledger, "--json"])
+        self.assertEqual(code, 0)
+        self.assertIs(tr.read_ledger(ledger)[0]["parallel_path"], True)
+
+    def test_parallel_path_false_is_recorded_verbatim_even_with_a_two_task_group(self):
+        # The exact ambiguous case the finding names: a group of two tasks
+        # that fell back to serial. token-report cannot see worktrees or
+        # runtimes, so it must record exactly what it was told, not infer
+        # "grouped" means "parallel happened".
+        ledger = os.path.join(tempfile.mkdtemp(), "runs.jsonl")
+        self.addCleanup(lambda: shutil.rmtree(os.path.dirname(ledger), ignore_errors=True))
+        with Run({"a": [turn(out=1)]}, wf_id="wf_par_false") as d:
+            with contextlib.redirect_stdout(io.StringIO()):
+                code = tr.main([
+                    d, "--groups", '[["T001","T002"]]', "--parallel-path", "false",
+                    "--ledger", ledger, "--json",
+                ])
+        self.assertEqual(code, 0)
+        row = tr.read_ledger(ledger)[0]
+        self.assertEqual(row["groups"], [["T001", "T002"]])
+        self.assertIs(row["parallel_path"], False)
+
+    def test_without_parallel_path_flag_no_key_is_recorded(self):
+        ledger = os.path.join(tempfile.mkdtemp(), "runs.jsonl")
+        self.addCleanup(lambda: shutil.rmtree(os.path.dirname(ledger), ignore_errors=True))
+        with Run({"a": [turn(out=1)]}, wf_id="wf_nopar") as d:
+            with contextlib.redirect_stdout(io.StringIO()):
+                tr.main([d, "--ledger", ledger, "--json"])
+        self.assertNotIn("parallel_path", tr.read_ledger(ledger)[0])
+
 
 class TestRenderLedgerShowsDurationAndOverlap(unittest.TestCase):
     """AC5: `rein ledger` prints duration and overlap next to each run, and
@@ -233,6 +296,20 @@ class TestRenderLedgerShowsDurationAndOverlap(unittest.TestCase):
         self.assertIn("wf_nodur", out)
         self.assertNotIn("wall=", out)
         self.assertNotIn("overlap=", out)
+
+    def test_row_with_only_wall_clock_min_renders_without_key_error(self):
+        # A hand-edited or partially-merged row can carry wall_clock_min
+        # without its two siblings -- render_ledger must not KeyError on
+        # r['agent_min'] / r['overlap'].
+        rows = [{
+            "wf_id": "wf_partial", "project": "-proj", "ts": "2026-01-01T00:00:00Z",
+            "turns": 10, "turns_per_agent": 5.0, "ctx_max": 1000, "opus_share": 0.0,
+            "total": 100, "opus_tokens": 0,
+            "wall_clock_min": 15.0,
+        }]
+        out = tr.render_ledger(rows, "/tmp/runs.jsonl", None)  # must not raise
+        self.assertIn("wf_partial", out)
+        self.assertIn("wall=15.0m", out)
 
     def test_older_rows_render_unchanged(self):
         # The exact 13-pre-existing-row shape (see test_token_report.py's
