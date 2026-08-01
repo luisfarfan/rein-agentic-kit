@@ -99,6 +99,53 @@ class TestSingleSubprojectResolvesDirectly(unittest.TestCase):
         self.assertFalse(any("subproject" in m for m in r["missingCommands"]), r["missingCommands"])
 
 
+# ------------------------------------- explicit config beats the lone find --
+
+
+class TestConfiguredSubprojectBeatsTheLoneCandidate(unittest.TestCase):
+    """D1: config beats autodetect, always -- discovering exactly one
+    candidate must not shortcut past an explicit `flow.config.json`
+    "subproject", whether that config names a different real directory or
+    names nothing real at all."""
+
+    def _project(self):
+        return Project(
+            {
+                "README.md": "x\n",
+                "services/only/package.json": PKG_TEST,
+                # depth 3 -- outside `_find_subprojects`'s depth-2 scan, so
+                # `found` here is exactly one candidate: services/only.
+                "deep/a/b/package.json": PKG_TEST,
+            }
+        )
+
+    def test_config_naming_a_different_real_subproject_wins(self):
+        with self._project() as root:
+            with open(os.path.join(root, "flow.config.json"), "w", encoding="utf-8") as fh:
+                json.dump({"subproject": "deep/a/b"}, fh)
+            r = detect.resolve(root)
+        self.assertEqual(r["commands"]["test"], "cd deep/a/b && npm run test")
+        self.assertEqual(r["commandSources"]["test"], "subproject")
+        self.assertFalse(any("subproject" in m for m in r["missingCommands"]), r["missingCommands"])
+
+    def test_config_naming_nothing_real_is_still_reported_invalid(self):
+        with self._project() as root:
+            with open(os.path.join(root, "flow.config.json"), "w", encoding="utf-8") as fh:
+                json.dump({"subproject": "does/not/exist"}, fh)
+            r = detect.resolve(root)
+        self.assertEqual(r["commands"], {})
+        self.assertTrue(
+            any("does/not/exist" in w and "subproject" in w for w in r.get("verifyWarnings", [])),
+            r.get("verifyWarnings"),
+        )
+        # D3: the one real candidate that DOES exist must be named as the
+        # available choice, not swallowed into "(none discovered)".
+        self.assertTrue(
+            any("services/only" in w for w in r.get("verifyWarnings", [])),
+            r.get("verifyWarnings"),
+        )
+
+
 # ------------------------------------------------- two or more candidates --
 
 
@@ -183,6 +230,43 @@ class TestOpenspecNoChangeNamed(unittest.TestCase):
         self.assertFalse(r["ready"])
         self.assertIn("add-widget", r["reason"])
         self.assertNotIn(os.path.join("changes", "tasks.md"), r["reason"])
+
+    def test_archived_change_is_not_offered_as_a_choosable_name(self):
+        """openspec's own archive convention nests completed changes under
+        `openspec/changes/archive/<change>/tasks.md` -- `archive` itself
+        carries no `tasks.md` and must not be listed as if it were a real
+        change (that sends the operator to `openspec/changes/archive/
+        tasks.md`, a NOT FOUND at a path nobody could create -- D3)."""
+        with self._project({"add-widget": "- [ ] T001 x\n"}) as root:
+            os.makedirs(os.path.join(root, "openspec", "changes", "archive", "old-one"))
+            with open(
+                os.path.join(root, "openspec", "changes", "archive", "old-one", "tasks.md"),
+                "w",
+                encoding="utf-8",
+            ) as fh:
+                fh.write("- [x] T001 x\n")
+            p = plan.read_plan(root, source="openspec")
+        self.assertEqual(sorted(p["availableChanges"]), ["add-widget"])
+        self.assertNotIn("archive", p["availableChanges"])
+        self.assertNotIn("archive", p["error"])
+
+    def test_only_archived_changes_reports_the_empty_directory_error(self):
+        """A repo whose changes have all been archived (`openspec/changes`
+        containing only `archive/`) must report the distinct empty-directory
+        error, not "choose one of: archive"."""
+        with Project({"README.md": "x\n"}) as root:
+            os.makedirs(os.path.join(root, "openspec", "changes", "archive", "old-one"))
+            with open(
+                os.path.join(root, "openspec", "changes", "archive", "old-one", "tasks.md"),
+                "w",
+                encoding="utf-8",
+            ) as fh:
+                fh.write("- [x] T001 x\n")
+            p = plan.read_plan(root, source="openspec")
+        self.assertFalse(p["exists"])
+        self.assertEqual(p["availableChanges"], [])
+        self.assertNotIn("choose", p["error"].lower())
+        self.assertIn("no changes", p["error"].lower())
 
 
 if __name__ == "__main__":

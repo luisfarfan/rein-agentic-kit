@@ -311,9 +311,6 @@ def cmd_setup(argv: list[str]) -> int:
             print(f"\n  these tools write local state into the repo — add to .gitignore: {', '.join(ignore)}")
 
     if "--install" not in argv:
-        state = _setup.probe(root)
-        print_summary(state)
-
         # --activate: the repo-scoped half ONLY -- no installs, and never a
         # write to a TRACKED file. It exists for the loop's worktree, which
         # is cut from a committed HEAD and therefore never carries
@@ -321,11 +318,19 @@ def cmd_setup(argv: list[str]) -> int:
         # worktree is unactivated while the base repo's capability says
         # otherwise, and agents are handed serena tools for a directory
         # serena does not know as a project.
+        #
+        # D5 applies here too: activation IS work. The summary must be the
+        # probe taken AFTER activating, not before -- otherwise this run
+        # prints "present but inert: serena" and then, in the same run,
+        # creates the marker that makes that statement false.
         if "--activate" in argv:
             res = _setup.activate_serena(root)
+            print_summary(_setup.probe(root))
             print(f"\n  serena-activate: {'ok' if res['ok'] else 'FAILED'} — {res.get('reason', '')}")
             return 0  # never blocks a caller (D4): activation is a capability, not a gate
 
+        state = _setup.probe(root)
+        print_summary(state)
         return 0 if not state["missing"] else 1
 
     # `--activate` combined with `--install` keeps its old precedence: it

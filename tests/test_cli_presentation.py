@@ -184,12 +184,28 @@ class TestPipedOutputIsByteIdenticalToBefore(DoctorFixture):
         result = self._run("doctor", self.root)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+        sys.path.insert(0, LIB_DIR)
+        import detect as _detect  # noqa: E402 -- deferred so LIB_DIR is on sys.path first
+
         plugin_root = os.path.join(REPO_ROOT, "plugins", "rein")
         rein_on_path = shutil.which("rein") or "(not on PATH -- call it via $CLAUDE_PLUGIN_ROOT/bin/rein)"
         ledger_path = os.path.join(self.home, ".claude", "rein", "runs.jsonl")
+        with open(REIN_BIN, encoding="utf-8") as fh:
+            rein_version = re.search(r'^VERSION\s*=\s*"([^"]+)"', fh.read(), re.M).group(1)
+        # The capabilities section reports what is actually on THIS machine's
+        # PATH (and in this throwaway root) -- hardcoding a literal tool list
+        # would pin this host's tooling into a portable test. Deriving it the
+        # same way `cmd_doctor` does keeps the assertion an exact-equality
+        # check on FORMAT (spacing, ordering, colour absence) rather than on
+        # which tools happen to be installed here.
+        caps = _detect._capabilities(self.root)
+        optional_lines = "".join(
+            f"    {name:<10} {'ok' if name in caps else 'absent (optional -- flow degrades, never breaks)'}\n"
+            for name in ("graphify", "openspec", "serena", "codegraph")
+        )
 
         expected = (
-            "rein 0.7.2\n"
+            f"rein {rein_version}\n"
             f"  plugin root : {plugin_root}\n"
             "  CLAUDE_PLUGIN_ROOT env : (not set)\n"
             f"  `rein` on PATH : {rein_on_path}\n"
@@ -215,9 +231,14 @@ class TestPipedOutputIsByteIdenticalToBefore(DoctorFixture):
             "  models : aux=haiku  impl=sonnet  review=opus\n"
             "  limits : maxTaskSteps=8  maxReviewRounds=3\n"
             "\n"
+            f"  capabilities : {', '.join(caps) or '(none)'}\n"
+            f"{optional_lines}"
+            "\n"
+            f"  ledger : {ledger_path} (0 run(s) recorded)\n"
+            "  latest workflow run : (none found)\n"
         )
-        self.assertTrue(
-            result.stdout.startswith(expected),
+        self.assertEqual(
+            result.stdout, expected,
             f"doctor output drifted from the pre-T003 fixture.\n--- got ---\n{result.stdout}",
         )
 
@@ -262,6 +283,22 @@ class TestInstallSummaryDescribesAfterNotBefore(unittest.TestCase):
         sys.path.insert(0, LIB_DIR)
         global setup
         import setup
+        # Same guard as tests/test_setup.py's TestSetupInstallIsUnattended:
+        # `--install` shells out to real network installs (npm/uv). On a
+        # host missing a tool it would really try to fetch, running it for
+        # real is unsafe -- skip instead of reaching the network.
+        state = setup.probe(".")
+        if state["missing"]:
+            self.skipTest("this host is missing a tool --install would really "
+                           "try to fetch (npm/uv) -- unsafe to run for real here")
+        self.home_tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.home_tmp.cleanup)
+        self.home = self.home_tmp.name
+
+    def _env(self) -> dict:
+        env = dict(os.environ)
+        env["HOME"] = self.home
+        return env
 
     def test_a_freshly_built_index_is_not_reported_inert_in_the_summary(self):
         if not setup._which("codegraph"):
@@ -275,6 +312,7 @@ class TestInstallSummaryDescribesAfterNotBefore(unittest.TestCase):
                 capture_output=True,
                 text=True,
                 timeout=120,
+                env=self._env(),
             )
         # The summary is whatever setup.render() printed LAST in this run;
         # by the time it printed, the index this same run built must
@@ -291,10 +329,35 @@ class TestInstallSummaryDescribesAfterNotBefore(unittest.TestCase):
                 capture_output=True,
                 text=True,
                 timeout=120,
+                env=self._env(),
             )
             gitignore_path = os.path.join(root, ".gitignore")
             self.assertTrue(os.path.exists(gitignore_path), "install did not write a .gitignore")
         self.assertNotIn("add to .gitignore", result.stdout)
+
+    def test_activate_alone_is_not_reported_inert_for_serena_in_the_summary(self):
+        """The `--activate`-without-`--install` path (the one the loop's
+        worktree actually runs, per loop.js) must apply D5 too: the
+        `.serena/project.yml` this run just wrote must not still be reported
+        as "present but inert: serena" in the SAME run's summary."""
+        if not setup._which("serena"):
+            self.skipTest("serena not installed on this machine")
+        with tempfile.TemporaryDirectory() as root:
+            with open(os.path.join(root, "README.md"), "w", encoding="utf-8") as fh:
+                fh.write("x")
+            result = subprocess.run(
+                [sys.executable, REIN_BIN, "setup", root, "--activate"],
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                timeout=120,
+                env=self._env(),
+            )
+            self.assertTrue(
+                os.path.exists(os.path.join(root, ".serena", "project.yml")),
+                "activation did not write .serena/project.yml -- " + result.stdout + result.stderr,
+            )
+        self.assertNotIn("serena", _inert_line(result.stdout))
 
 
 def _inert_line(stdout: str) -> str:

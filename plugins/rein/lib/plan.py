@@ -228,7 +228,8 @@ def _openspec_changes(root: str) -> list[str]:
         return []
     return sorted(
         name for name in entries
-        if os.path.isdir(os.path.join(changes_dir, name)) and not name.startswith(".")
+        if not name.startswith(".")
+        and os.path.isfile(os.path.join(changes_dir, name, "tasks.md"))
     )
 
 
