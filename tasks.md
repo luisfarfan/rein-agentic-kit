@@ -1,56 +1,62 @@
-# Change: the-plan-checks-itself
+# Change: doctor-knows-it-is-stale
 
 ## Why
-A plan defect is the cheapest thing in this system to catch and the most
-expensive to miss. Measured here, once, on a defect the author actually
-wrote: task T003's `Verification` named `tests.test_verify_commands` — T002's
-test module — so the command could not mechanically confirm a single one of
-T003's six acceptance criteria. The loop's PlanCheck stopped the run for
-**81k tokens**. The same defect reaching Review would have cost a whole run,
-around 30M.
+A project that installs this kit has no way to learn that a newer version
+exists. Verified on this machine, which is the author's own:
 
-But PlanCheck fires **inside the loop**, after the plan is written and the
-human has confirmed it. The defect above was already committed and launched.
+```
+installed  (installed_plugins.json)                     0.4.0
+available  (marketplaces/rein-agentic-kit/…json)        0.4.0
+repository                                              0.6.2
+```
 
-The gap is what a person ends up doing by hand: asking for the proposal to be
-re-read, which reliably turns up something. That habit is not automated
-anywhere — not in this kit, and not in openspec, whose `validate` is
-structural by its own documentation ("check structure", "missing required
-sections or malformed delta headers"). It cannot judge whether a verification
-proves the criteria it is attached to; that is semantics, not format.
+Two versions behind on the installed plugin, and the local marketplace clone
+is stale too — so even `claude plugin update rein` would have installed 0.4.0
+again. The author of the kit did not notice for eight changes; nobody else
+stands a better chance.
 
-So the check moves one step earlier, to the moment the plan is written, where
-changing scope still costs nothing.
+The mechanism to fix it already exists and needs no network. Both facts are
+files on disk that Claude Code itself maintains:
+
+- `~/.claude/plugins/installed_plugins.json` → what is installed, per scope
+- `~/.claude/plugins/marketplaces/<name>/.claude-plugin/marketplace.json` →
+  what that marketplace offers, from a git clone Claude Code refreshes
+
+Comparing them is a string comparison over two JSON reads. `rein doctor` is
+already the command that says "here is what I detected"; it is the honest
+place to also say "and you are running an old me".
 
 ## Scope
-- In: `/rein:plan` critiquing its own output before writing it
-- In: running openspec's own validator when openspec is the plan source, and
-  reporting its errors verbatim
-- Out: reimplementing any structural rule openspec already checks — compose,
-  never rebuild
-- Out: changing the loop's PlanCheck, which stays exactly as it is; this adds
-  an earlier gate, it does not move that one
-- Out: style, wording and taste findings. A check that always finds something
-  stops being read, and the plan goes back to being unreviewed in practice
+- In: `rein doctor` reporting the installed version against the available
+  one, and printing the exact commands when they differ
+- In: the stale-marketplace case, because it is the one that actually
+  happened: the clone said 0.4.0 while the repository was at 0.6.2, so
+  updating the plugin alone would have changed nothing
+- Out: any network call. `setup.py` states the kit adds none, and a version
+  check that phones home would be the first — the data is already local
+- Out: auto-updating anything. Reporting is the job; installing is the
+  operator's decision, exactly as `--install` is opt-in
+- Out: notifying from inside the loop or the skills. `doctor` is where a
+  person looks; adding a nag to every agent prompt is prompt surface for
+  something a human reads once
 
 ## Decisions
-- D1 Automatic, never a flag. Two mechanisms shipped in this project failed exactly this way — `measure: "<command>"` was a string nobody ran, and five skills recorded with an empty `$R`. Instrumentation that depends on remembering is not instrumentation
-- D2 BLOCKING has a closed definition, and only BLOCKING stops the write. Everything else is shown beside the plan for the author to accept or ignore
-- D3 One definition, two consumers. The loop's PlanCheck and this check must name the SAME defect classes, or the two gates drift and the earlier one starts contradicting the later one
-- D4 Structural checking belongs to openspec where openspec is in use. Its errors are reported as its own, not paraphrased and not re-derived
-- D5 Unavailable is not a stop. If the check cannot run, the plan is written with that fact stated — never silently skipped, and never a hard failure over a gate that is meant to save money
+- D1 Local files only. Both facts are on disk; a version check is not a reason to make this kit's first outbound request
+- D2 Report, never act. `doctor` prints the two commands and returns; nothing is installed, updated or written
+- D3 Unknown is not stale. A missing file, an unreadable one, a plugin installed from a path rather than a marketplace — each reports "cannot tell" with the reason, never a false "up to date" and never a false alarm
+- D4 Never a failure. `doctor`'s exit code keeps meaning what it means today; being out of date is information, not a broken environment
 
 ---
 
-- [x] T001 The plan is criticised before it is written
+- [ ] T001 doctor says when it is out of date, and how to fix it
   - Type: implementation
   - Depends on: none
   - Human review: false
-  - Verification: `python3 -m unittest tests.test_plan_self_check`
+  - Verification: `python3 -m unittest tests.test_version_staleness`
   - Acceptance:
-    - `plugins/rein/skills/plan/SKILL.md` runs a critique pass over the drafted plan BEFORE writing it, as an unconditional step and not behind any flag or user request; a test reads the SHIPPED skill and fails if the step is absent or made conditional (D1)
-    - the four BLOCKING classes are defined in ONE place — a verification that cannot mechanically confirm the criteria it is attached to, a criterion no command can check, a dependency that is circular or names a task that does not exist, and a criterion that contradicts a stated decision — and a test asserts the loop's existing PlanCheck prompt and the plan skill name the same four, so the two gates cannot drift (D2/D3)
-    - the REAL defect is the fixture: a plan whose T003 verification names T002's test module is rejected with a BLOCKING finding that says which criteria it fails to prove — the exact plan text that cost 81k tokens is checked in as the test input
-    - a healthy plan produces NO blocking findings: one of the plans already approved in this repo's history is checked in as a fixture and asserted to pass, because a check that always fires is a check nobody reads (D2)
-    - when the plan source is openspec AND the binary is present, `openspec validate --strict` runs first and its output is reported verbatim as openspec's own; a test asserts the kit implements no structural rule of its own, and that a missing openspec binary skips that half without failing anything (D4)
-    - a critique that cannot run — no agent, a timeout, a malformed response — results in the plan being WRITTEN with the failure stated beside it, never a silent skip and never a hard stop; a test covers each of those three shapes (D5)
+    - a pure function takes the two parsed JSON documents and returns one of `up-to-date`, `stale`, or `unknown` with a reason, comparing the running plugin's version against the version its marketplace offers; a test drives every branch from fixtures, including equal, newer-available, and newer-installed (which is `unknown`, not `stale` — that is a developer running from a checkout)
+    - `rein doctor` prints the verdict, and when stale prints BOTH commands in order — refreshing the marketplace before updating the plugin — because the measured failure was a stale clone that made the update a no-op
+    - the marketplace clone being older than the plugin's own repository is reported as its own case with its own fix, since that is the state this machine was actually in
+    - every unreadable, missing or unexpected-shape input yields `unknown` with the reason named, and a test covers a missing file, malformed JSON, and a plugin absent from the installed list (D3)
+    - the check makes no network call and writes nothing: a test asserts the function touches only paths under `~/.claude/plugins` and that `doctor`'s exit code is unchanged whether the verdict is stale or not (D1/D2/D4)
+    - `rein doctor --json` gains the verdict alongside its existing keys, and a test pins the keys it had before so nothing that reads it breaks
