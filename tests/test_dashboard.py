@@ -52,6 +52,11 @@ class LedgerFixture(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.ledger_path = os.path.join(self.tmp.name, "runs.jsonl")
         self.baseline_path = os.path.join(self.tmp.name, "baseline.json")
+        # A per-test path, never the developer's real `~/.claude/rein/events.jsonl`
+        # (`events.EVENTS_PATH`, `build_view`'s default) -- tests that call
+        # `build_view` must pass this explicitly (D6/D5: no dependence on
+        # real user state).
+        self.events_path = os.path.join(self.tmp.name, "events.jsonl")
 
     def _write_ledger(self, rows: list[dict]) -> None:
         with open(self.ledger_path, "w", encoding="utf-8") as fh:

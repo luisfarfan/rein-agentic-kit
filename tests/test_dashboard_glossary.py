@@ -295,7 +295,7 @@ class TestRenderedPageStaysSelfContained(LedgerFixture):
         ])
         self._write_baseline({"wf_id": "wf_a", "ts": "2026-01-01T00:00:00Z", "project": "proj-x",
                                "turns_per_agent": 10.0, "ctx_max": 2000, "opus_share": 20.0})
-        view = dash.build_view(self.ledger_path, self.baseline_path)
+        view = dash.build_view(self.ledger_path, self.baseline_path, self.events_path)
         html_out = dash.render_html(view)
 
         self.assertNotIn("@import", html_out)

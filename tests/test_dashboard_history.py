@@ -52,7 +52,16 @@ class TestRunRowsUnaffectedByEvents(HistoryFixture):
     """AC1: run rows must be byte-identical with and without an events file."""
 
     def _run_table_body(self, html_out: str) -> str:
-        match = re.search(r"<table><thead>.*?</thead><tbody>(.*?)</tbody></table>", html_out, re.DOTALL)
+        # Anchored on the section boundary (the `<div class="history">` that
+        # immediately follows the run table, see `_project_section`) rather
+        # than a bare non-greedy `.*?`, which would stop at the FIRST nested
+        # `</tbody></table>` -- the per-run `<table class="agents">` every
+        # run row embeds by default (see `row()` in tests/test_dashboard.py)
+        # -- and silently capture only a fragment of run row 1.
+        match = re.search(
+            r'<table><thead>.*?</thead><tbody>(.*?)</tbody></table>(?=<div class="history">)',
+            html_out, re.DOTALL,
+        )
         self.assertIsNotNone(match, "no run table found in rendered page")
         return match.group(1)
 
@@ -73,9 +82,23 @@ class TestRunRowsUnaffectedByEvents(HistoryFixture):
         view_with = dash.build_view(self.ledger_path, self.baseline_path, self.events_path)
         html_with = dash.render_html(view_with)
 
+        body_without = self._run_table_body(html_without)
+        body_with = self._run_table_body(html_with)
+        # Sanity guard: if the regex above ever regresses back to truncating
+        # at the first nested agents table, both captures would still be
+        # equal (both truncated the same way) and the assertEqual below
+        # would pass for the wrong reason. Confirm the second run row is
+        # actually inside what got captured.
+        self.assertIn("wf_2", body_without)
+        self.assertIn("wf_2", body_with)
+
         self.assertEqual(
-            self._run_table_body(html_without), self._run_table_body(html_with),
+            body_without, body_with,
             "run rows must not change shape or content depending on events.jsonl",
+        )
+        self.assertEqual(
+            view_without["projects"][0]["runs"], view_with["projects"][0]["runs"],
+            "the view model's runs must not change shape or content depending on events.jsonl",
         )
 
     def test_skill_counts_never_appear_in_run_totals_or_deltas(self):

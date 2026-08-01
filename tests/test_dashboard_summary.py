@@ -114,7 +114,7 @@ class TestProjectSummaryComparison(LedgerFixture):
         ])
         self._write_baseline({"wf_id": "wf_1", "ts": "2026-01-01T00:00:00Z", "project": "proj-a",
                                "turns_per_agent": 10.0, "ctx_max": 2000, "opus_share": 20.0})
-        view = dash.build_view(self.ledger_path, self.baseline_path)
+        view = dash.build_view(self.ledger_path, self.baseline_path, self.events_path)
         summary = view["projects"][0]["summary"]
 
         self.assertIsNone(summary["limit"])
@@ -138,7 +138,7 @@ class TestProjectSummaryComparison(LedgerFixture):
         ])
         self._write_baseline({"wf_id": "wf_1", "ts": "2026-01-01T00:00:00Z", "project": "proj-a",
                                "turns_per_agent": 5.0, "ctx_max": 1000, "opus_share": 10.0})
-        view = dash.build_view(self.ledger_path, self.baseline_path)
+        view = dash.build_view(self.ledger_path, self.baseline_path, self.events_path)
         summary = view["projects"][0]["summary"]
         self.assertEqual([m["direction"] for m in summary["metrics"]], ["worse", "worse", "worse"])
         self.assertIn("worse", summary["text"])
@@ -153,7 +153,7 @@ class TestProjectSummaryLimits(LedgerFixture):
             row("wf_1", "2026-01-01T00:00:00Z", project="proj-a"),
             row("wf_2", "2026-01-02T00:00:00Z", project="proj-a"),
         ])
-        view = dash.build_view(self.ledger_path, self.baseline_path)
+        view = dash.build_view(self.ledger_path, self.baseline_path, self.events_path)
         summary = view["projects"][0]["summary"]
         self.assertIsNotNone(summary["limit"])
         self.assertIsNone(summary["comparison"])
@@ -165,7 +165,7 @@ class TestProjectSummaryLimits(LedgerFixture):
         self._write_ledger([row("wf_1", "2026-01-01T00:00:00Z", project="proj-a")])
         self._write_baseline({"wf_id": "wf_1", "ts": "2026-01-01T00:00:00Z", "project": "proj-a",
                                "turns_per_agent": 5.0, "ctx_max": 1000, "opus_share": 10.0})
-        view = dash.build_view(self.ledger_path, self.baseline_path)
+        view = dash.build_view(self.ledger_path, self.baseline_path, self.events_path)
         summary = view["projects"][0]["summary"]
         self.assertIsNotNone(summary["limit"])
         self.assertIsNone(summary["comparison"])
@@ -183,7 +183,25 @@ class TestProjectSummaryLimits(LedgerFixture):
         ])
         self._write_baseline({"wf_id": "wf_9", "ts": "2026-01-03T00:00:00Z", "project": "proj-a",
                                "turns_per_agent": 5.0, "ctx_max": 1000, "opus_share": 10.0})
-        view = dash.build_view(self.ledger_path, self.baseline_path)
+        view = dash.build_view(self.ledger_path, self.baseline_path, self.events_path)
+        summary = view["projects"][0]["summary"]
+        self.assertIsNotNone(summary["limit"])
+        self.assertIsNone(summary["comparison"])
+        self.assertEqual(summary["metrics"], [])
+        _assert_no_comparative_wording(self, summary["text"])
+
+    def test_baseline_with_no_comparable_metrics(self):
+        # A `baseline.json` that carries `wf_id`/`ts`/`project` but none of
+        # the three metric values -- an older writer, or a hand-edited file.
+        # `deltas` is then `{key: None, ...}` for every key: not `None`
+        # itself, so the "baseline does not apply" branch above is skipped,
+        # but nothing in it is comparable either.
+        self._write_ledger([
+            row("wf_1", "2026-01-01T00:00:00Z", project="proj-a"),
+            row("wf_2", "2026-01-02T00:00:00Z", project="proj-a"),
+        ])
+        self._write_baseline({"wf_id": "wf_1", "ts": "2026-01-01T00:00:00Z", "project": "proj-a"})
+        view = dash.build_view(self.ledger_path, self.baseline_path, self.events_path)
         summary = view["projects"][0]["summary"]
         self.assertIsNotNone(summary["limit"])
         self.assertIsNone(summary["comparison"])
@@ -192,7 +210,7 @@ class TestProjectSummaryLimits(LedgerFixture):
 
     def test_why_sentence_still_present_in_a_limit_summary(self):
         self._write_ledger([row("wf_1", "2026-01-01T00:00:00Z", project="proj-a")])
-        view = dash.build_view(self.ledger_path, self.baseline_path)
+        view = dash.build_view(self.ledger_path, self.baseline_path, self.events_path)
         summary = view["projects"][0]["summary"]
         self.assertIn("predict", summary["text"].lower())
 
@@ -205,7 +223,7 @@ class TestRenderHtmlSummary(LedgerFixture):
         ])
         self._write_baseline({"wf_id": "wf_1", "ts": "2026-01-01T00:00:00Z", "project": "proj-a",
                                "turns_per_agent": 10.0, "ctx_max": 2000, "opus_share": 20.0})
-        view = dash.build_view(self.ledger_path, self.baseline_path)
+        view = dash.build_view(self.ledger_path, self.baseline_path, self.events_path)
         html_out = dash.render_html(view)
         summary_pos = html_out.index('class="summary"')
         table_pos = html_out.index("<table>")
@@ -228,7 +246,7 @@ class TestJsonKeysPinned(LedgerFixture):
         self._write_ledger([row("wf_1", "2026-01-01T00:00:00Z", project="proj-a")])
         self._write_baseline({"wf_id": "wf_1", "ts": "2026-01-01T00:00:00Z", "project": "proj-a",
                                "turns_per_agent": 5.0, "ctx_max": 1000, "opus_share": 10.0})
-        view = dash.build_view(self.ledger_path, self.baseline_path)
+        view = dash.build_view(self.ledger_path, self.baseline_path, self.events_path)
 
         self.assertTrue(self.PRE_EXISTING_TOP_LEVEL_KEYS.issubset(view.keys()))
         project = view["projects"][0]

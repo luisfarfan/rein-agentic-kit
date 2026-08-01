@@ -307,6 +307,18 @@ def _project_summary(runs: list[dict], baseline: dict | None) -> dict:
         {"key": key, "pct": deltas.get(key), "direction": direction(key, deltas.get(key)), "phrase": _metric_phrase(key, deltas.get(key))}
         for key in ("turns_per_agent", "ctx_max", "opus_share")
     ]
+    if all(m["pct"] is None for m in metrics):
+        # `deltas` is a dict (not None -- that's the branch above), but every
+        # value in it is None: `token_report._pct_change` returns None when
+        # the baseline is missing a metric or that metric is zero, which a
+        # `baseline.json` written by an older tool version or hand-edited
+        # file can produce. Nothing in `deltas` is actually comparable, so
+        # this must read as a LIMIT (D2), not a "0 metrics" comparison.
+        limit = (
+            "the marked baseline records no comparable numbers for this run -- "
+            "re-run `rein baseline mark` on a complete run"
+        )
+        return {"limit": limit, "comparison": None, "metrics": [], "text": f"{limit.capitalize()}. {_WHY_SENTENCE}"}
     phrases = [m["phrase"] if m["direction"] is None else f"{m['phrase']} ({m['direction']})" for m in metrics]
     comparison = "Since the baseline, this run took " + ", ".join(phrases[:-1]) + f", and {phrases[-1]}."
     return {"limit": None, "comparison": comparison, "metrics": metrics, "text": f"{comparison} {_WHY_SENTENCE}"}
