@@ -144,6 +144,30 @@ def _make_targets(root: str) -> list[str]:
     return re.findall(r"^([a-zA-Z][\w-]*):(?!=)", text, re.MULTILINE)
 
 
+def _mise_targets(root: str) -> list[str]:
+    """Task names declared under `[tasks]` in a mise config file.
+
+    Regex-based, like the other task runners here -- not a real TOML parser.
+    A malformed or unreadable file simply yields no matches (never raises),
+    which is exactly the degrade-to-autodetection behaviour the other three
+    runners already get for free from `_read_text`'s own OSError guard.
+    """
+    name = _exists(root, "mise.toml", ".mise.toml", os.path.join(".config", "mise", "config.toml"))
+    if not name:
+        return []
+    text = _read_text(os.path.join(root, name))
+    if not text:
+        return []
+    names: list[str] = []
+    # `[tasks.name]` / `[tasks."name"]` section headers.
+    names += re.findall(r'^\[tasks\."?([\w:-]+)"?\]\s*$', text, re.MULTILINE)
+    # The flat `[tasks]` table: `name = ...` lines up to the next section.
+    body = re.search(r"^\[tasks\]\s*$(.*?)(?=^\[|\Z)", text, re.MULTILINE | re.DOTALL)
+    if body:
+        names += re.findall(r'^\s*"?([\w:-]+)"?\s*=', body.group(1), re.MULTILINE)
+    return names
+
+
 def _task_runner(root: str) -> tuple[str, list[str]]:
     """(runner_prefix, available_targets). Empty prefix means no runner."""
     if _exists(root, "justfile", "Justfile"):
@@ -153,6 +177,8 @@ def _task_runner(root: str) -> tuple[str, list[str]]:
         return "task", re.findall(r"^\s{2}([a-zA-Z][\w-]*):", text, re.MULTILINE)
     if _exists(root, "Makefile", "makefile"):
         return "make", _make_targets(root)
+    if _exists(root, "mise.toml", ".mise.toml", os.path.join(".config", "mise", "config.toml")):
+        return "mise", _mise_targets(root)
     return "", []
 
 
@@ -168,10 +194,13 @@ _SLOT_ALIASES = {
 def _from_task_runner(runner: str, targets: list[str]) -> dict[str, str]:
     found: dict[str, str] = {}
     lowered = {t.lower(): t for t in targets}
+    # mise invokes a declared task as `mise run <task>`, unlike just/task/make
+    # where the target name follows the runner directly.
+    prefix = f"{runner} run" if runner == "mise" else runner
     for slot, aliases in _SLOT_ALIASES.items():
         for alias in aliases:
             if alias in lowered:
-                found[slot] = f"{runner} {lowered[alias]}"
+                found[slot] = f"{prefix} {lowered[alias]}"
                 break
     return found
 
