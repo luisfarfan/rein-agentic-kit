@@ -183,6 +183,16 @@ def _task_runner(root: str) -> tuple[str, list[str]]:
 
 
 # Command slot -> target names a project might plausibly use for it.
+# `check` is deliberately NOT here, and the omission is the decision.
+#
+# A task-runner target named `check` is an AGGREGATE whose contents the runner
+# does not declare: in one repo it is lint + types, in another it adds tests,
+# in a third it is a deploy dry-run. Mapping it to a rein slot would be a
+# guess about someone else's build, and a wrong guess routes the loop's gate
+# at the wrong command -- the class of mistake `verify` exists to expose.
+#
+# A project that wants it says so: `flow.config.json` names slots explicitly
+# and always wins, which is how make-montages resolves `check` -> `just check`.
 _SLOT_ALIASES = {
     "test": ("test", "tests", "test-all", "check-test", "pytest", "test-python", "test-unit"),
     "lint": ("lint", "fmt-check", "ruff", "eslint", "check-lint"),

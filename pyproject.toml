@@ -15,7 +15,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rein-agentic-kit"
-version = "0.7.2"
+version = "0.8.0"
 description = "Rein — keep your Claude Code agents lean and in control. Token-lean, stack-aware agentic dev flow."
 readme = "README.md"
 requires-python = ">=3.9"

@@ -37,7 +37,7 @@ import os
 import shutil
 import sys
 
-VERSION = "0.7.2"
+VERSION = "0.8.0"
 
 HERE = os.path.dirname(os.path.abspath(os.path.realpath(__file__)))
 PLUGIN_ROOT = os.path.dirname(HERE)
@@ -675,6 +675,10 @@ def cmd_doctor(argv: list[str]) -> int:
         # narrower than the historical width of 10, so a fixture with only
         # short names prints byte-identically to before this change.
         slot_width = max([10] + [len(s) for s in resolved["commands"]])
+        # The command column was hardcoded at 40 while the single-subproject path
+        # now emits `cd <dir> && <cmd>`, which is systematically longer -- so the
+        # [source] column broke on exactly the repos this change added support for.
+        cmd_width = max([40] + [len(c) for c in (resolved["commands"] or {}).values()])
         for slot, cmd in sorted(resolved["commands"].items()):
             vr = verify_results.get(slot)
             if vr is None:
@@ -689,7 +693,7 @@ def cmd_doctor(argv: list[str]) -> int:
             else:
                 status = "  verified: stale -- the command changed since `rein verify` last ran"
             source = _ansi.paint(f"[{resolved['commandSources'][slot]}]", "cyan", on=col)
-            print(f"    {slot:<{slot_width}} {cmd:<40} {source}{status}")
+            print(f"    {slot:<{slot_width}} {cmd:<{cmd_width}} {source}{status}")
     else:
         print("    (none)")
     if resolved["missingCommands"]:

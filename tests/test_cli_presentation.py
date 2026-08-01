@@ -413,3 +413,54 @@ class TestDoctorJsonKeysArePinned(DoctorFixture):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestTheReviewsCoherenceGaps(unittest.TestCase):
+    """Three findings the review raised after approving. Each is a place where
+    a value this change made LONGER met a width that was chosen when it was
+    shorter, or a shape that varies per branch."""
+
+    def test_the_command_column_widens_for_the_commands_it_prints(self):
+        """The single-subproject path emits `cd <dir> && <cmd>`, which is
+        systematically longer than what the hardcoded 40 was chosen for -- so
+        the [source] column broke on exactly the repos this change added."""
+        with open(REIN_BIN, encoding="utf-8") as fh:
+            src = fh.read()
+        self.assertNotIn("{cmd:<40}", src, "the command column is fixed again")
+        self.assertIn("cmd_width = max([40]", src)
+
+    def test_check_is_documented_as_a_non_slot(self):
+        """T001's criterion named `check` and rein has no such slot. Recording
+        WHY beats adding a guess: a runner target called `check` is an
+        aggregate whose contents the runner does not declare."""
+        with open(os.path.join(REPO_ROOT, "plugins", "rein", "lib", "detect.py"), encoding="utf-8") as fh:
+            src = fh.read()
+        head = src[:src.index("_SLOT_ALIASES = {")]
+        self.assertIn("`check` is deliberately NOT here", head)
+        aliases = src[src.index("_SLOT_ALIASES = {"):]
+        aliases = aliases[:aliases.index("}")]
+        self.assertNotIn('"check"', aliases, "check became an alias without the decision changing")
+
+
+class TestReadPlanHasOneShape(unittest.TestCase):
+    """`rein doctor --json` and `rein context` splat this dict verbatim, so a
+    key that appears on one branch and not another is a contract a machine
+    consumer cannot rely on."""
+
+    def _plan(self):
+        import sys
+        sys.path.insert(0, os.path.join(REPO_ROOT, "plugins", "rein", "lib"))
+        import plan
+        return plan
+
+    def test_available_changes_is_present_on_every_branch(self):
+        plan = self._plan()
+        import tempfile
+        with tempfile.TemporaryDirectory() as empty:
+            shapes = [
+                plan.read_plan(REPO_ROOT, ""),          # exists: this repo's tasks.md
+                plan.read_plan(empty, ""),         # nothing at all
+            ]
+        for r in shapes:
+            self.assertIn("availableChanges", r, f"missing on {r.get('source')}/{r.get('exists')}")
+            self.assertIsInstance(r["availableChanges"], list)

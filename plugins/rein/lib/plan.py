@@ -298,6 +298,11 @@ def read_plan(root: str = ".", source: str = "", change: str = "", configured: s
             "change": change,
             "path": path,
             "exists": False,
+            # Present on EVERY branch, empty when it does not apply: `rein
+            # doctor --json` and `rein context` splat this dict verbatim, so a
+            # key that appears and disappears is a shape a machine consumer
+            # cannot rely on.
+            "availableChanges": [],
             "tasks": [],
             "pending": [],
             "artifacts": [],
@@ -327,6 +332,7 @@ def read_plan(root: str = ".", source: str = "", change: str = "", configured: s
         "change": change,
         "path": path,
         "exists": True,
+        "availableChanges": [],
         **header,
         "tasks": tasks,
         "pending": [t for t in tasks if not t["checked"]],
