@@ -66,7 +66,7 @@ So the fix is not longer names. It is three different verbs, still short.
     - no compatibility alias is left behind: `tests/test_skill_names.py` asserts no skill directory named `loop`, `run`, `run-auto` or `review` exists, since such a directory would re-register the colliding identifier (D2)
     - the loop's own prompts are updated with the renames — `buildIsolatePrompt`, the step prompts and the review prompts name no retired skill — asserted in `tests/test_skill_names.py` by extracting the shipped strings, not by reading the file
 
-- [ ] T002 A reserved name cannot ship again
+- [x] T002 A reserved name cannot ship again
   - Type: implementation
   - Depends on: T001
   - Human review: false
