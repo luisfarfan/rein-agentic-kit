@@ -775,8 +775,7 @@ function buildPlanCheckPrompt(planPath, taskIds) {
     `plan_check.py's BLOCKING_CLASSES names for the plan skill's own critique pass, verbatim, so the ` +
     `two gates cannot drift (D3): "a verification that cannot mechanically confirm the criteria it ` +
     `is attached to"; "a criterion no command can check"; "a dependency that is circular or names a ` +
-    `task that does not exist"; "a criterion that contradicts a stated decision". Everything else ` +
-    `found under the four lenses above is at most IMPORTANT or SUGGESTION.\n\n` +
+    `task that does not exist"; "a criterion that contradicts a stated decision".\n\n` +
     `For every issue found, report one finding with the offending task's id, a severity of BLOCKING, ` +
     `IMPORTANT, or SUGGESTION (BLOCKING only for something that would waste an implementer's run), and ` +
     `a one-sentence 'text'. Report zero findings if the plan holds up under all four lenses.\n` +

@@ -20,7 +20,6 @@ an agent's mood again.
 from __future__ import annotations
 
 import re
-import shutil
 
 import plan as _plan
 
@@ -148,18 +147,6 @@ def mechanical_findings(text: str) -> list[dict]:
     contract `plan.parse_tasks_md` already carries."""
     tasks = _plan.parse_tasks_md(text)
     return _confirm_findings(tasks) + _dependency_findings(tasks)
-
-
-def openspec_binary() -> str:
-    """Absolute path to the `openspec` binary, or "" if it is not on PATH.
-
-    D5: absence is a fact to report, never a reason to fail -- the caller
-    skips the openspec half of the critique rather than stopping the plan.
-    D4: this module runs openspec's OWN validator (`openspec validate
-    --strict`) when it is present; it does not reimplement any structural
-    rule openspec already checks.
-    """
-    return shutil.which("openspec") or ""
 
 
 if __name__ == "__main__":

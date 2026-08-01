@@ -100,7 +100,10 @@ R=$(command -v rein || ls -d ~/.claude/plugins/cache/*/rein/*/bin/rein 2>/dev/nu
       `rein plan-check` never fails this step (D5): a missing scratch file, an unreadable one, or
       text that fails to parse each yield an empty `findings` list in its JSON output rather than a
       nonzero exit — proceed to (c) regardless. Any `BLOCKING` finding it prints carries into (e)
-      exactly like an agent-found one.
+      exactly like an agent-found one. Any `IMPORTANT` finding it prints (e.g. a reused whole-suite
+      Verification command that is honestly shared rather than the BLOCKING per-module defect) is
+      reported beside the plan for the author to accept or ignore, same as (e) — visible, never a
+      reason by itself to stop (D2).
    c. Critique every task yourself against the two classes no command can decide — semantic calls
       only an agent can honestly make:
       2. a criterion no command can check
@@ -120,7 +123,8 @@ R=$(command -v rein || ls -d ~/.claude/plugins/cache/*/rein/*/bin/rein 2>/dev/nu
    e. Report any BLOCKING finding — from (b) or (c) — to the user before the dry run, naming which
       of the four classes it violates and which criterion it fails to prove. Fix the plan before
       continuing — never show a dry run, and never write, with an open BLOCKING finding still
-      standing.
+      standing. Also report any `IMPORTANT` finding from (b) beside the plan, distinct from
+      BLOCKING: it does not stop the write, it is for the author to accept or ignore (D2).
 6. **Dry run.** Show the user the full draft: tasks in dependency order, each verification
    command, which tasks are gated on human review, and anything the plan assumes.
 7. **Ask for explicit confirmation.** Never write the plan into the project without it.

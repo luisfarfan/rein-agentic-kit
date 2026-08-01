@@ -187,25 +187,47 @@ class TestOpenspecIsReportedNotReimplemented(unittest.TestCase):
     def test_disclaims_reimplementing_structural_rules(self):
         self.assertIn("reimplements none of openspec's structural checks", self.flat)
 
+    def test_mechanical_findings_ignores_structural_defects(self):
+        """Behavioural proof, not a prose match: mechanical_findings() must
+        implement NO structural rule of its own (missing Acceptance block,
+        malformed task header, missing required section) -- that is
+        openspec's job (D4). If a re-derived structural rule were added to
+        plan_check.py tomorrow, this plan (which has none of the two defects
+        mechanical_findings DOES decide -- no reused Verification, no broken
+        dependency) would start producing findings and this test would fail."""
+        # A plan with a genuinely absent Acceptance block, a header line that
+        # doesn't match any of Why/Scope/Decisions, and no Scope/Decisions
+        # section at all -- structurally malformed by any openspec-style rule,
+        # but with valid, non-conflicting Verification commands and dependencies
+        # so classes 1 and 3 (the ONLY two this module decides) stay silent.
+        malformed = (
+            "# Change: not-a-recognized-header\n\n"
+            "not even a proper section title\n\n"
+            "- [ ] T001 Task with no Acceptance block at all\n"
+            "  - Type: implementation\n"
+            "  - Depends on: none\n"
+            "  - Verification: `python3 -m unittest tests.test_one`\n"
+            "- [ ] T002 Task with no Acceptance block either\n"
+            "  - Type: implementation\n"
+            "  - Depends on: T001\n"
+            "  - Verification: `python3 -m unittest tests.test_two`\n"
+        )
+        self.assertEqual(plan_check.mechanical_findings(malformed), [])
+
     def test_missing_binary_is_named_as_a_skip_not_a_failure(self):
         self.assertIn("missing `openspec` binary skips this half silently", self.flat)
         self.assertIn("not a failure", self.flat)
 
-    def test_openspec_binary_absent_is_reported_not_raised(self):
-        orig = plan_check.shutil.which
-        plan_check.shutil.which = lambda name: None
-        try:
-            self.assertEqual(plan_check.openspec_binary(), "")
-        finally:
-            plan_check.shutil.which = orig
-
-    def test_openspec_binary_present_is_returned(self):
-        orig = plan_check.shutil.which
-        plan_check.shutil.which = lambda name: "/usr/local/bin/openspec" if name == "openspec" else None
-        try:
-            self.assertEqual(plan_check.openspec_binary(), "/usr/local/bin/openspec")
-        finally:
-            plan_check.shutil.which = orig
+    def test_skill_runs_command_v_openspec_itself(self):
+        """D4/D5's openspec-availability check is a single, honest mechanism:
+        the shipped skill's own `command -v openspec` in step 5(a), not a
+        Python helper no production path calls. (Round-1 finding 1 closed
+        this exact gap for mechanical_findings; this closes it for the
+        openspec half by deleting the unreached plan_check.openspec_binary
+        rather than leaving it covered only by tests that monkeypatch
+        shutil.which.)"""
+        self.assertFalse(hasattr(plan_check, "openspec_binary"))
+        self.assertIn("command -v openspec", _read(SKILL_MD))
 
 
 class TestPlanCheckIsShippedAndReachable(unittest.TestCase):
