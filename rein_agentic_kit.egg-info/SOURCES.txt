@@ -8,6 +8,7 @@ plugins/rein/.claude-plugin/plugin.json
 plugins/rein/bin/rein
 plugins/rein/commands/ping.md
 plugins/rein/commands/setup.md
+plugins/rein/lib/ansi.py
 plugins/rein/lib/dashboard.py
 plugins/rein/lib/detect.py
 plugins/rein/lib/events.py
@@ -33,6 +34,7 @@ rein_agentic_kit.egg-info/entry_points.txt
 rein_agentic_kit.egg-info/top_level.txt
 tests/test_baseline.py
 tests/test_baseline_cli.py
+tests/test_cli_presentation.py
 tests/test_cli_resolution.py
 tests/test_dashboard.py
 tests/test_dashboard_glossary.py
@@ -47,6 +49,7 @@ tests/test_graph_index.py
 tests/test_graph_retrieval.py
 tests/test_loop_policy.py
 tests/test_measure_step.py
+tests/test_mise_runner.py
 tests/test_monorepo.py
 tests/test_packaging.py
 tests/test_parallel_groups.py
@@ -60,6 +63,7 @@ tests/test_run_duration.py
 tests/test_serena_worktree.py
 tests/test_serve_probe.py
 tests/test_setup.py
+tests/test_single_subproject.py
 tests/test_token_report.py
 tests/test_verify_commands.py
 tests/test_verify_policy.py

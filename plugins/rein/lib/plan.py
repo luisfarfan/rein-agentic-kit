@@ -211,11 +211,45 @@ def parse_header(text: str) -> dict:
     return header
 
 
+def _openspec_changes(root: str) -> list[str]:
+    """Names of the change directories under `openspec/changes`, sorted.
+
+    Each one carries its own `tasks.md` (that is the whole point of the
+    `openspec` plan source) -- a bare directory entry without one is not a
+    real change and is left out, the same way a manifest-less directory is
+    never counted as a sub-project (D2).
+    """
+    changes_dir = os.path.join(root, "openspec", "changes")
+    if not os.path.isdir(changes_dir):
+        return []
+    try:
+        entries = os.listdir(changes_dir)
+    except OSError:
+        return []
+    return sorted(
+        name for name in entries
+        if not name.startswith(".")
+        and os.path.isfile(os.path.join(changes_dir, name, "tasks.md"))
+    )
+
+
 def plan_path(root: str, source: str, change: str = "", configured: str = "") -> str:
+    """The tasks.md this plan resolves to, or "" when none can be named yet.
+
+    D3: never a join that produces a path nobody could have created. For
+    `source == "openspec"` with no `change`, `openspec/changes/<change>/
+    tasks.md` collapses to `openspec/changes/tasks.md` if `change` is simply
+    interpolated -- a location that can never exist, because `tasks.md` is
+    the child of a NAMED change directory, never of `changes/` itself. `""`
+    signals "no change was named" to `read_plan`, which reports the changes
+    that do exist instead of a NOT FOUND at an impossible path.
+    """
     root = os.path.abspath(root)
     if configured:
         return configured if os.path.isabs(configured) else os.path.join(root, configured)
     if source == "openspec":
+        if not change:
+            return ""
         return os.path.join(root, "openspec", "changes", change, "tasks.md")
     for name in ("tasks.md", "TASKS.md"):
         candidate = os.path.join(root, name)
@@ -230,6 +264,33 @@ def read_plan(root: str = ".", source: str = "", change: str = "", configured: s
     if not source:
         source = "openspec" if os.path.isdir(os.path.join(root, "openspec", "changes")) else "tasks-md"
     path = plan_path(root, source, change, configured)
+
+    if source == "openspec" and not path:
+        # No change was named, and the impossible join is exactly what D3
+        # forbids reporting -- name what actually exists instead, and say
+        # distinctly when nothing does (an empty `openspec/changes` is a
+        # different problem than "you did not name one").
+        available = _openspec_changes(root)
+        error = (
+            f"no change named -- choose one of: {', '.join(available)}"
+            if available
+            else "openspec/changes has no changes yet"
+        )
+        return {
+            "source": source,
+            "change": change,
+            "path": path,
+            "exists": False,
+            "tasks": [],
+            "pending": [],
+            "artifacts": [],
+            "why": "",
+            "scopeIn": [],
+            "scopeOut": [],
+            "decisions": [],
+            "availableChanges": available,
+            "error": error,
+        }
 
     if not os.path.exists(path):
         return {

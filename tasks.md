@@ -64,7 +64,7 @@ indexed it and wrote the file — a summary of the state before its own work.
 
 ---
 
-- [ ] T001 mise is a task runner like the others
+- [x] T001 mise is a task runner like the others
   - Type: implementation
   - Depends on: none
   - Human review: false
@@ -76,7 +76,7 @@ indexed it and wrote the file — a summary of the state before its own work.
     - a malformed or unreadable mise file degrades to autodetection with the reason recorded, never a traceback — the same rule every other runner already follows
     - `tests/test_detect.py` passes unchanged, so no existing stack changes its resolution
 
-- [ ] T002 Never report a problem that does not exist
+- [x] T002 Never report a problem that does not exist
   - Type: implementation
   - Depends on: T001
   - Human review: false
@@ -88,7 +88,7 @@ indexed it and wrote the file — a summary of the state before its own work.
     - an openspec directory with no changes at all reports that, distinctly from "you did not name one"
     - `rein detect` on `proxima-engineering`'s real shape resolves `harness`'s commands, and a fixture reproducing that shape is checked in
 
-- [ ] T003 The CLI is readable, and still machine-safe
+- [x] T003 The CLI is readable, and still machine-safe
   - Type: implementation
   - Depends on: T002
   - Human review: false

@@ -43,6 +43,7 @@ HERE = os.path.dirname(os.path.abspath(os.path.realpath(__file__)))
 PLUGIN_ROOT = os.path.dirname(HERE)
 sys.path.insert(0, os.path.join(PLUGIN_ROOT, "lib"))
 
+import ansi as _ansi  # noqa: E402
 import dashboard as _dash  # noqa: E402
 import detect as _detect  # noqa: E402
 import events as _events  # noqa: E402
@@ -229,7 +230,7 @@ def cmd_close(argv: list[str]) -> int:
     plan = _plan.read_plan(root, source=cfg["plan"]["source"], change=_opt(argv, "change"),
                            configured=cfg["plan"].get("path", ""))
     if not plan["exists"]:
-        print(f"no plan at {plan['path']}")
+        print(plan.get("error") or f"no plan at {plan['path']}")
         return 1
     if _plan.close_task(plan["path"], task_id):
         print(f"closed {task_id} in {plan['path']}")
@@ -301,33 +302,60 @@ def cmd_setup(argv: list[str]) -> int:
     if "--json" in argv:
         print(json.dumps(_setup.probe(root), indent=2))
         return 0
-    state = _setup.probe(root)
-    print(_setup.render(state))
+    col = _ansi.enabled(argv)
 
-    ignore = _setup.gitignore_lines(root)
-    if ignore:
-        print(f"\n  these tools write local state into the repo — add to .gitignore: {', '.join(ignore)}")
-
-    # --activate: the repo-scoped half ONLY -- no installs, and never a write
-    # to a TRACKED file. It exists for the loop's worktree, which is cut from
-    # a committed HEAD and therefore never carries `.serena/` (gitignored, so
-    # it cannot travel). Without this, a worktree is unactivated while the
-    # base repo's capability says otherwise, and agents are handed serena
-    # tools for a directory serena does not know as a project.
-    if "--activate" in argv:
-        res = _setup.activate_serena(root)
-        print(f"\n  serena-activate: {'ok' if res['ok'] else 'FAILED'} — {res.get('reason', '')}")
-        return 0  # never blocks a caller (D4): activation is a capability, not a gate
+    def print_summary(state: dict) -> None:
+        print(_setup.render(state, color=col))
+        ignore = _setup.gitignore_lines(root)
+        if ignore:
+            print(f"\n  these tools write local state into the repo — add to .gitignore: {', '.join(ignore)}")
 
     if "--install" not in argv:
+        # --activate: the repo-scoped half ONLY -- no installs, and never a
+        # write to a TRACKED file. It exists for the loop's worktree, which
+        # is cut from a committed HEAD and therefore never carries
+        # `.serena/` (gitignored, so it cannot travel). Without this, a
+        # worktree is unactivated while the base repo's capability says
+        # otherwise, and agents are handed serena tools for a directory
+        # serena does not know as a project.
+        #
+        # D5 applies here too: activation IS work. The summary must be the
+        # probe taken AFTER activating, not before -- otherwise this run
+        # prints "present but inert: serena" and then, in the same run,
+        # creates the marker that makes that statement false.
+        if "--activate" in argv:
+            res = _setup.activate_serena(root)
+            print_summary(_setup.probe(root))
+            print(f"\n  serena-activate: {'ok' if res['ok'] else 'FAILED'} — {res.get('reason', '')}")
+            return 0  # never blocks a caller (D4): activation is a capability, not a gate
+
+        state = _setup.probe(root)
+        print_summary(state)
         return 0 if not state["missing"] else 1
 
+    # `--activate` combined with `--install`: activation still runs before
+    # install, and the summary is STILL a fresh probe taken after activating
+    # -- the same ordering as the `--activate`-only branch above, so the two
+    # cannot disagree about whether D5 applies (activation IS work; this run
+    # can write `.serena/project.yml` and must not then report serena as
+    # "present but inert").
+    if "--activate" in argv:
+        res = _setup.activate_serena(root)
+        print_summary(_setup.probe(root))
+        print(f"\n  serena-activate: {'ok' if res['ok'] else 'FAILED'} — {res.get('reason', '')}")
+        return 0
+
+    # D5: a summary describes the state AFTER the work, not before it -- a
+    # repo whose index this run just built must not be reported inert, and
+    # a .gitignore this run just wrote must not still be suggested. So the
+    # work happens first; the summary below is a FRESH probe taken after.
+    pre = _setup.probe(root)
     # Even with nothing "missing" there may still be work: a repo can carry
     # every binary and still not be activated for serena (D4/T004) -- so
     # --install always runs, it just has less to do when truly nothing
     # needs it.
-    if state["missing"]:
-        print(f"\ninstalling: {', '.join(state['missing'])}\n")
+    if pre["missing"]:
+        print(f"installing: {', '.join(pre['missing'])}\n")
     report = _setup.install(root=root)
     failed = False
     for name, res in report["results"].items():
@@ -343,6 +371,9 @@ def cmd_setup(argv: list[str]) -> int:
                 print(f"    {res['reason']}")
         if res.get("caveat"):
             print(f"    note: {res['caveat']}")
+
+    print()
+    print_summary(_setup.probe(root))
     return 1 if failed else 0
 
 
@@ -533,12 +564,20 @@ def cmd_doctor(argv: list[str]) -> int:
     ok = "ok"
     miss = "MISSING"
 
-    plan = _plan.read_plan(root, source=resolved["plan"]["source"], configured=resolved["plan"].get("path", ""))
-    plan_state = (
-        f"{len(plan['pending'])} pending / {len(plan['tasks'])} tasks"
-        if plan["exists"]
-        else f"NOT FOUND at {plan['path']}"
+    plan = _plan.read_plan(
+        root,
+        source=resolved["plan"]["source"],
+        change=_opt(argv, "change"),
+        configured=resolved["plan"].get("path", ""),
     )
+    if plan["exists"]:
+        plan_state = f"{len(plan['pending'])} pending / {len(plan['tasks'])} tasks"
+    elif plan["path"]:
+        plan_state = f"NOT FOUND at {plan['path']}"
+    else:
+        # D3: no location to report a NOT FOUND at (an openspec source with
+        # no change named) -- `error` names the changes that exist instead.
+        plan_state = plan.get("error", "no plan")
     # Last-known verification state, read-only -- doctor never runs a command
     # itself (that is `rein verify`'s job). "known" means a prior `rein
     # verify` ran and persisted a report; nothing here re-derives it.
@@ -601,7 +640,8 @@ def cmd_doctor(argv: list[str]) -> int:
         print(json.dumps(report, indent=2))
         return 0
 
-    print(f"rein {VERSION}")
+    col = _ansi.enabled(argv)
+    print(_ansi.paint(f"rein {VERSION}", "bold", on=col))
     print(f"  plugin root : {PLUGIN_ROOT}")
     print(f"  CLAUDE_PLUGIN_ROOT env : {os.environ.get('CLAUDE_PLUGIN_ROOT') or '(not set)'}")
     print(f"  `rein` on PATH : {shutil.which('rein') or '(not on PATH -- call it via $CLAUDE_PLUGIN_ROOT/bin/rein)'}")
@@ -627,8 +667,14 @@ def cmd_doctor(argv: list[str]) -> int:
     print(f"  plan source : {resolved['plan']['source']}   tracker: {resolved['tracker']['kind']}")
     print(f"  plan        : {plan_state}")
     print()
-    print("  resolved commands:")
+    print(_ansi.paint("  resolved commands:", "bold", on=col))
     if resolved["commands"]:
+        # Aligns on the LONGEST slot name actually present, not a fixed
+        # width -- a long slot like `harnessTest` must not push the cmd/source
+        # columns out of alignment for every other row (finding 4). Never
+        # narrower than the historical width of 10, so a fixture with only
+        # short names prints byte-identically to before this change.
+        slot_width = max([10] + [len(s) for s in resolved["commands"]])
         for slot, cmd in sorted(resolved["commands"].items()):
             vr = verify_results.get(slot)
             if vr is None:
@@ -642,11 +688,12 @@ def cmd_doctor(argv: list[str]) -> int:
                 status = f"  verified: {vr['outcome']} (exit={vr['exitCode']})"
             else:
                 status = "  verified: stale -- the command changed since `rein verify` last ran"
-            print(f"    {slot:<10} {cmd:<40} [{resolved['commandSources'][slot]}]{status}")
+            source = _ansi.paint(f"[{resolved['commandSources'][slot]}]", "cyan", on=col)
+            print(f"    {slot:<{slot_width}} {cmd:<40} {source}{status}")
     else:
         print("    (none)")
     if resolved["missingCommands"]:
-        print(f"    {miss}: {', '.join(resolved['missingCommands'])} -- set them in flow.config.json")
+        print(f"    {_ansi.paint(miss, 'red', on=col)}: {', '.join(resolved['missingCommands'])} -- set them in flow.config.json")
     if verify_state:
         import datetime as _dt
 
@@ -669,7 +716,10 @@ def cmd_doctor(argv: list[str]) -> int:
     print()
     print(f"  capabilities : {', '.join(resolved['capabilities']) or '(none)'}")
     for optional in ("graphify", "openspec", "serena", "codegraph"):
-        state = ok if optional in resolved["capabilities"] else "absent (optional -- flow degrades, never breaks)"
+        if optional in resolved["capabilities"]:
+            state = _ansi.paint(ok, "green", on=col)
+        else:
+            state = _ansi.paint("absent (optional -- flow degrades, never breaks)", "yellow", on=col)
         print(f"    {optional:<10} {state}")
     print()
     print(f"  ledger : {_tr.LEDGER_PATH} ({len(runs)} run(s) recorded)")

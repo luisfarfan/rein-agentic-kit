@@ -1,0 +1,8 @@
+[tasks.ci]
+run = "harness/scripts/ci.sh"
+
+[tasks.setup]
+run = "harness/scripts/setup.sh"
+
+[tasks.doctor]
+run = "harness/scripts/doctor.sh"

@@ -80,7 +80,11 @@ def next_task(root: str = ".", source: str = "", change: str = "", configured: s
     """
     plan = _plan.read_plan(root, source=source, change=change, configured=configured)
     if not plan["exists"]:
-        return {"ready": False, "reason": f"no plan at {plan['path']}", "planPath": plan["path"],
+        # `error` already names the real problem (D3) -- for an openspec
+        # source with no change, `path` is "" and there is no location to
+        # report a NOT FOUND at.
+        reason = plan.get("error") or f"no plan at {plan['path']}"
+        return {"ready": False, "reason": reason, "planPath": plan["path"],
                 "taskId": "", "title": "", "humanReview": False, "verification": "",
                 "remaining": 0, "blockedBy": [], "unresolvableDeps": []}
 

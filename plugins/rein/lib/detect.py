@@ -144,6 +144,30 @@ def _make_targets(root: str) -> list[str]:
     return re.findall(r"^([a-zA-Z][\w-]*):(?!=)", text, re.MULTILINE)
 
 
+def _mise_targets(root: str) -> list[str]:
+    """Task names declared under `[tasks]` in a mise config file.
+
+    Regex-based, like the other task runners here -- not a real TOML parser.
+    A malformed or unreadable file simply yields no matches (never raises),
+    which is exactly the degrade-to-autodetection behaviour the other three
+    runners already get for free from `_read_text`'s own OSError guard.
+    """
+    name = _exists(root, "mise.toml", ".mise.toml", os.path.join(".config", "mise", "config.toml"))
+    if not name:
+        return []
+    text = _read_text(os.path.join(root, name))
+    if not text:
+        return []
+    names: list[str] = []
+    # `[tasks.name]` / `[tasks."name"]` section headers.
+    names += re.findall(r'^\[tasks\."?([\w:-]+)"?\]\s*$', text, re.MULTILINE)
+    # The flat `[tasks]` table: `name = ...` lines up to the next section.
+    body = re.search(r"^\[tasks\]\s*$(.*?)(?=^\[|\Z)", text, re.MULTILINE | re.DOTALL)
+    if body:
+        names += re.findall(r'^\s*"?([\w:-]+)"?\s*=', body.group(1), re.MULTILINE)
+    return names
+
+
 def _task_runner(root: str) -> tuple[str, list[str]]:
     """(runner_prefix, available_targets). Empty prefix means no runner."""
     if _exists(root, "justfile", "Justfile"):
@@ -153,6 +177,8 @@ def _task_runner(root: str) -> tuple[str, list[str]]:
         return "task", re.findall(r"^\s{2}([a-zA-Z][\w-]*):", text, re.MULTILINE)
     if _exists(root, "Makefile", "makefile"):
         return "make", _make_targets(root)
+    if _exists(root, "mise.toml", ".mise.toml", os.path.join(".config", "mise", "config.toml")):
+        return "mise", _mise_targets(root)
     return "", []
 
 
@@ -168,10 +194,13 @@ _SLOT_ALIASES = {
 def _from_task_runner(runner: str, targets: list[str]) -> dict[str, str]:
     found: dict[str, str] = {}
     lowered = {t.lower(): t for t in targets}
+    # mise invokes a declared task as `mise run <task>`, unlike just/task/make
+    # where the target name follows the runner directly.
+    prefix = f"{runner} run" if runner == "mise" else runner
     for slot, aliases in _SLOT_ALIASES.items():
         for alias in aliases:
             if alias in lowered:
-                found[slot] = f"{runner} {lowered[alias]}"
+                found[slot] = f"{prefix} {lowered[alias]}"
                 break
     return found
 
@@ -759,6 +788,7 @@ def resolve(root: str = ".") -> dict:
     # "unknown" would send the operator to the wrong problem (D1); reporting
     # what is actually there does not.
     subprojects: list[dict] = []
+    all_candidates: list[dict] = []
     subproject_choice = ""
     subproject_invalid = ""
     subproject_subtypes: list[str] = []
@@ -767,12 +797,22 @@ def resolve(root: str = ".") -> dict:
     if auto["stack"] == "unknown":
         found = _find_subprojects(root)
         if found:
-            subprojects = [_resolve_subproject(root, rel) for rel in found]
-            stack_override = "monorepo"
+            all_candidates = [_resolve_subproject(root, rel) for rel in found]
+            if len(found) > 1:
+                # Two or more real candidates -- exposed as a genuine choice
+                # (D2 does not apply: "one" is not the case here).
+                subprojects = all_candidates
+                stack_override = "monorepo"
+
+            # The configured choice (if any) is read BEFORE the single- vs
+            # multi-candidate split, so an explicit `subproject` is never
+            # discarded just because the depth-2 scan happened to find only
+            # one directory (D1: config beats autodetect, always).
             raw_choice = str(cfg.get("subproject") or "").strip()
             normalized_choice = _normalize_subproject_path(raw_choice) if raw_choice else ""
+            chosen = None
             if normalized_choice:
-                chosen = next((s for s in subprojects if s["path"] == normalized_choice), None)
+                chosen = next((s for s in all_candidates if s["path"] == normalized_choice), None)
                 if chosen is None:
                     # Not one of the DISCOVERED candidates (may be outside the
                     # depth-2 scan) -- only trust it if it is a real directory
@@ -782,27 +822,39 @@ def resolve(root: str = ".") -> dict:
                     candidate_root = os.path.join(root, normalized_choice)
                     if os.path.isdir(candidate_root) and _exists(candidate_root, *_SUBPROJECT_MARKERS):
                         chosen = _resolve_subproject(root, normalized_choice)
-                if chosen is not None:
-                    subproject_choice = normalized_choice
-                    subproject_subtypes = chosen.get("subtypes", [])
-                    # Carry the path so the command runs from the repo root,
-                    # not from inside the sub-project. shlex.quote (finding 3):
-                    # `normalized_choice` is an operator-supplied path that
-                    # reaches `shell=True` in verify.run_one -- unquoted, a
-                    # sub-project directory containing a space (which passes
-                    # the isdir + manifest check above) yields a broken,
-                    # confusingly-shell-parsed command.
-                    auto_cmds = {
-                        slot: f"cd {shlex.quote(normalized_choice)} && {cmd}"
-                        for slot, cmd in chosen["commands"].items()
-                    }
-                else:
+                if chosen is None:
                     subproject_invalid = raw_choice
                     auto_cmds = {}
-            else:
-                # The kit must not pick a sub-project, even a single
-                # candidate (D1) -- no commands resolve at the root until
-                # told which one.
+
+            if chosen is None and not subproject_invalid and len(found) == 1:
+                # D2: one is not many. No config choice was made, and there is
+                # EXACTLY ONE manifest-bearing directory -- a list of one is
+                # not a choice. Resolve it directly: its own stack (never
+                # "monorepo"), its own commands, carried with `cd` so they
+                # run from the root exactly like an explicit `subproject`
+                # choice.
+                normalized_choice = found[0]
+                chosen = all_candidates[0]
+
+            if chosen is not None:
+                subproject_choice = normalized_choice
+                subproject_subtypes = chosen.get("subtypes", [])
+                if len(found) == 1:
+                    stack_override = chosen["stack"]
+                # Carry the path so the command runs from the repo root, not
+                # from inside the sub-project. shlex.quote (finding 3):
+                # `normalized_choice` is an operator-supplied path that
+                # reaches `shell=True` in verify.run_one -- unquoted, a
+                # sub-project directory containing a space (which passes the
+                # isdir + manifest check above) yields a broken,
+                # confusingly-shell-parsed command.
+                auto_cmds = {
+                    slot: f"cd {shlex.quote(normalized_choice)} && {cmd}"
+                    for slot, cmd in chosen["commands"].items()
+                }
+            elif not subproject_invalid and len(found) > 1:
+                # Two or more real candidates and no config choice -- the kit
+                # must not guess between them (D1).
                 auto_cmds = {}
 
     # Precedence: config > task runner > autodetect (a chosen sub-project
@@ -835,7 +887,7 @@ def resolve(root: str = ".") -> dict:
     verify_policy, verify_warnings = _verify_policy(verify_subtypes_root, subtypes, commands, cfg)
     verify_warnings = serve_warnings + verify_warnings
     if subproject_invalid:
-        valid_paths = ", ".join(s["path"] for s in subprojects) or "(none discovered)"
+        valid_paths = ", ".join(s["path"] for s in all_candidates) or "(none discovered)"
         verify_warnings.append(
             f'flow.config.json "subproject" {subproject_invalid!r} does not name a real sub-project '
             f"(no such directory, or it carries none of {_SUBPROJECT_MARKERS}) -- "

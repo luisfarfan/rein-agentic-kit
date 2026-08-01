@@ -11,6 +11,7 @@ it lists are the commands that exist.
 
 from __future__ import annotations
 
+import inspect
 import os
 import re
 import subprocess
@@ -20,6 +21,9 @@ import unittest
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 README = os.path.join(REPO, "README.md")
 REIN = os.path.join(REPO, "plugins", "rein", "bin", "rein")
+PLUGINS_LIB = os.path.join(REPO, "plugins", "rein", "lib")
+if PLUGINS_LIB not in sys.path:
+    sys.path.insert(0, PLUGINS_LIB)
 
 
 def _readme() -> str:
@@ -66,3 +70,23 @@ class TestTheInstallInstructionsAreTheOnesThatWork(unittest.TestCase):
         with open(os.path.join(REPO, "pyproject.toml"), encoding="utf-8") as fh:
             name = re.search(r'^name\s*=\s*"([^"]+)"', fh.read(), re.M).group(1)
         self.assertIn(f"install {name}", _readme())
+
+
+class TestThePrecedenceLineListsEveryTaskRunner(unittest.TestCase):
+    """T001 added mise to _task_runner()'s recognised runners. If a future
+    change adds another one and forgets the README, this catches it instead
+    of a person finding out the hard way -- same failure mode the module
+    docstring warns about, mechanised for this specific line."""
+
+    def test_every_runner_prefix_is_named_in_the_precedence_line(self):
+        from detect import _task_runner
+
+        source = inspect.getsource(_task_runner)
+        prefixes = set(re.findall(r'return\s+"([a-z]+)"', source))
+        self.assertGreater(len(prefixes), 0, "guard on the guard: nothing was parsed")
+
+        line = re.search(r"\*\*Precedence:\*\*.*", _readme())
+        self.assertIsNotNone(line, "the README no longer has a Precedence line to check")
+        lowered = line.group(0).lower()
+        for prefix in prefixes:
+            self.assertIn(prefix, lowered, f"{prefix!r} runner is missing from the Precedence line")
