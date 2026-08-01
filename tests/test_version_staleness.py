@@ -81,6 +81,69 @@ class TestDecideStalenessIsPure(unittest.TestCase):
         self.assertEqual(vs.decide_staleness(installed_doc("0.4.0"), None, PLUGIN_KEY, PLUGIN_NAME).verdict, vs.UNKNOWN)
 
 
+def multi_scope_installed_doc(entries, key=PLUGIN_KEY):
+    """entries: list of (scope, version, install_path)."""
+    return {
+        "version": 2,
+        "plugins": {
+            key: [
+                {"scope": scope, "version": version, "installPath": install_path}
+                for scope, version, install_path in entries
+            ]
+        },
+    }
+
+
+class TestDecideStalenessWithMultipleScopeEntries(unittest.TestCase):
+    """installed_plugins.json keys each plugin as a LIST because scopes
+    (user / project / local) coexist -- round-1 review finding 2: picking an
+    arbitrary entry (e.g. always the last) can produce a false 'stale' or a
+    false 'up-to-date' for the entry that is not actually running. The
+    running entry must be identified by matching plugin_root against each
+    entry's installPath.
+    """
+
+    USER_PATH = "/home/dev/.claude/plugins/cache/rein-agentic-kit/rein/0.4.0"
+    PROJECT_PATH = "/home/dev/.claude/plugins/cache/rein-agentic-kit/rein/0.6.3"
+
+    def _doc(self):
+        return multi_scope_installed_doc(
+            [("user", "0.4.0", self.USER_PATH), ("project", "0.6.3", self.PROJECT_PATH)]
+        )
+
+    def test_running_entry_identified_by_plugin_root_decides_the_verdict(self):
+        # The OLDER (user-scope) entry is the one actually running here --
+        # picking the last entry in the list (0.6.3, project-scope) would
+        # wrongly report up-to-date instead of stale.
+        result = vs.decide_staleness(
+            self._doc(), marketplace_doc("0.6.3"), PLUGIN_KEY, PLUGIN_NAME, plugin_root=self.USER_PATH
+        )
+        self.assertEqual(result.verdict, vs.STALE)
+        self.assertEqual(result.installed_version, "0.4.0")
+
+        # And the reverse: the NEWER (project-scope) entry running.
+        result2 = vs.decide_staleness(
+            self._doc(), marketplace_doc("0.6.3"), PLUGIN_KEY, PLUGIN_NAME, plugin_root=self.PROJECT_PATH
+        )
+        self.assertEqual(result2.verdict, vs.UP_TO_DATE)
+        self.assertEqual(result2.installed_version, "0.6.3")
+
+    def test_unidentifiable_running_entry_is_unknown_not_a_guess(self):
+        # No plugin_root at all.
+        result = vs.decide_staleness(self._doc(), marketplace_doc("0.6.3"), PLUGIN_KEY, PLUGIN_NAME)
+        self.assertEqual(result.verdict, vs.UNKNOWN)
+
+        # A plugin_root that matches none of the entries' installPath.
+        result2 = vs.decide_staleness(
+            self._doc(),
+            marketplace_doc("0.6.3"),
+            PLUGIN_KEY,
+            PLUGIN_NAME,
+            plugin_root="/somewhere/else/rein/1.2.3",
+        )
+        self.assertEqual(result2.verdict, vs.UNKNOWN)
+
+
 class TestLoaderNeverRaises(unittest.TestCase):
     """The reading half: resolves paths under ~/.claude/plugins, parses,
     and returns unknown-shaped results rather than raising when a path is

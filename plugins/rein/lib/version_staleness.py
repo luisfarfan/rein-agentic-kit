@@ -86,17 +86,54 @@ def _parse_version(value) -> tuple[int, ...] | None:
     return tuple(out)
 
 
+def _select_installed_entry(entry_list: list, plugin_root: str | None) -> tuple[dict | None, str | None]:
+    """installed_plugins.json keys each plugin as a LIST because scopes
+    (user / project / local) coexist. A single-entry list is unambiguous.
+    A multi-entry list must be disambiguated against the plugin root the
+    CALLER is actually running from (bin/rein's PLUGIN_ROOT, already
+    realpath'd) by matching it to one entry's "installPath" -- guessing
+    (e.g. always taking the last entry) can produce a false 'stale' or a
+    false 'up-to-date' for the entry that is not actually running, which
+    D3 forbids. Returns (entry, None) on success, or (None, reason) when
+    no entry -- or more than one -- matches.
+    """
+    if len(entry_list) == 1:
+        entry = entry_list[0]
+        return (entry, None) if isinstance(entry, dict) else (None, "installed entry is not an object")
+    if not plugin_root:
+        return None, f"is installed at {len(entry_list)} scopes and no running plugin root was given to identify it"
+    target = os.path.realpath(plugin_root)
+    matches = [
+        e
+        for e in entry_list
+        if isinstance(e, dict)
+        and isinstance(e.get("installPath"), str)
+        and os.path.realpath(e["installPath"]) == target
+    ]
+    if len(matches) != 1:
+        return (
+            None,
+            f"is installed at {len(entry_list)} scopes and the running install "
+            f"({plugin_root!r}) could not be matched to exactly one of them",
+        )
+    return matches[0], None
+
+
 def decide_staleness(
     installed_doc: dict | None,
     marketplace_doc: dict | None,
     plugin_key: str | None,
     plugin_name: str | None,
+    plugin_root: str | None = None,
 ) -> StalenessResult:
     """Pure: no filesystem access. installed_doc is the parsed contents of
     installed_plugins.json (or None); marketplace_doc is the parsed contents
     of a marketplace.json (or None). plugin_key looks up installed_doc's
     "plugins" dict (e.g. "rein@rein-agentic-kit"); plugin_name looks up an
     entry by "name" inside marketplace_doc's "plugins" list (e.g. "rein").
+    plugin_root, when the installed list has more than one scope entry, is
+    used to identify which entry is the one actually running (see
+    _select_installed_entry) -- it is never used to read the filesystem here.
     """
     if not isinstance(installed_doc, dict):
         return StalenessResult(UNKNOWN, "installed_plugins.json could not be read")
@@ -111,9 +148,9 @@ def decide_staleness(
     entry_list = installed_entries[plugin_key]
     if not isinstance(entry_list, list) or not entry_list:
         return StalenessResult(UNKNOWN, f"{plugin_key!r} has no installed entries")
-    installed_entry = entry_list[-1]
-    if not isinstance(installed_entry, dict):
-        return StalenessResult(UNKNOWN, f"{plugin_key!r}'s installed entry is not an object")
+    installed_entry, select_reason = _select_installed_entry(entry_list, plugin_root)
+    if installed_entry is None:
+        return StalenessResult(UNKNOWN, f"{plugin_key!r} {select_reason}")
     installed_version_raw = installed_entry.get("version")
     if not isinstance(installed_version_raw, str):
         return StalenessResult(UNKNOWN, f"{plugin_key!r} has no string 'version'")
@@ -234,7 +271,9 @@ def resolve_verdict(plugin_root: str) -> tuple[StalenessResult, LoaderResult]:
     loaded = load_staleness_inputs(plugin_root)
     if loaded.load_reason is not None:
         return StalenessResult(UNKNOWN, loaded.load_reason), loaded
-    result = decide_staleness(loaded.installed_doc, loaded.marketplace_doc, loaded.plugin_key, loaded.plugin_name)
+    result = decide_staleness(
+        loaded.installed_doc, loaded.marketplace_doc, loaded.plugin_key, loaded.plugin_name, plugin_root
+    )
     return result, loaded
 
 

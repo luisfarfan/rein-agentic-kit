@@ -2,7 +2,11 @@
 """rein -- CLI for the Rein agentic kit.
 
 Subcommands:
-  rein doctor         environment probe (plugin wiring, CLIs, config, stack)
+  rein doctor         environment probe (plugin wiring, CLIs, config, stack);
+                      --json returns {"version", "pluginRoot", "project", "plan",
+                      "verifyState", "ledger", "staleness"} -- staleness is the
+                      installed-vs-marketplace verdict ("verdict", "reason",
+                      "installedVersion", "availableVersion")
   rein setup          probe the recommended retrieval tools; --install adds what is missing
   rein detect         resolved stack + commands as JSON (config > runner > auto)
   rein verify         actually RUN each resolved command and report the truth

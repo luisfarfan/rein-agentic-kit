@@ -167,8 +167,17 @@ class DoctorStalenessFixture(DoctorCliFixture):
             json.dump(doc, fh)
 
     def _snapshot_home(self) -> dict:
+        # __pycache__ is CPython's own bytecode cache, written by the
+        # interpreter as a side effect of importing doctor's modules -- not
+        # something `doctor` itself writes. Excluding it (belt) plus
+        # PYTHONDONTWRITEBYTECODE=1 in _run_fixture_doctor (braces) keeps
+        # this assertion about D2 honest instead of environment-dependent
+        # (round-1 review finding 1: a clean checkout has no pre-populated
+        # __pycache__ to reuse, so CPython writes fresh .pyc into the
+        # snapshotted HOME on that run, and `before == after` fails).
         snap = {}
-        for dirpath, _dirnames, filenames in os.walk(self.home):
+        for dirpath, dirnames, filenames in os.walk(self.home):
+            dirnames[:] = [d for d in dirnames if d != "__pycache__"]
             for name in filenames:
                 p = os.path.join(dirpath, name)
                 with open(p, "rb") as fh:
@@ -178,6 +187,7 @@ class DoctorStalenessFixture(DoctorCliFixture):
     def _run_fixture_doctor(self, *args: str) -> subprocess.CompletedProcess:
         env = dict(os.environ)
         env["HOME"] = self.home
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
         return subprocess.run(
             [sys.executable, self.fixture_bin, "doctor", self.root, *args],
             capture_output=True,
