@@ -26,3 +26,7 @@ graphify-out/
 # the tool that owns them, not in the repo.
 .env
 .env.*
+
+# Generated packaging metadata: two copies of it disagreed during a rename,
+# and one still embedded the retired command names. Regenerated on every build.
+*.egg-info/

@@ -37,6 +37,9 @@ RESERVED_NAMES = {
     "loop",
     "run",
     "review",
+    # Visible in the same session listing this snapshot cites as its source;
+    # omitting it made the list disagree with its own stated provenance.
+    "security-review",
     "init",
     "simplify",
     "schedule",
@@ -165,3 +168,21 @@ class TestAWordContainingAReservedNameIsNotACollision(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestTheSkillSweepIsProvenToo(unittest.TestCase):
+    """The command half was proved against a fixture; the skill half was only
+    ever run against the real directory, where it finds nothing by
+    construction. A sweep that has never seen an offender is a sweep nobody
+    has watched work."""
+
+    def test_a_fixture_skill_directory_named_loop_is_surfaced(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            for name in ("loop", "plan"):
+                os.makedirs(os.path.join(d, name))
+                with open(os.path.join(d, name, "SKILL.md"), "w", encoding="utf-8") as fh:
+                    fh.write(f"---\nname: {name}\n---\n")
+            names = _skill_dir_names(d)
+        self.assertEqual(sorted(n for n in names if n in RESERVED_NAMES), ["loop"])
+        self.assertIn("plan", names, "the sweep must see the innocent one too, or it proves nothing")
