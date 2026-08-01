@@ -13,7 +13,7 @@ and records a registered verdict.
 Usage: `/rein:review [change-name]`
 
 ```bash
-R=$(command -v rein || ls -d ~/.claude/plugins/cache/*/rein/*/bin/rein 2>/dev/null | tail -1)
+R=$(command -v rein || ls -d ~/.claude/plugins/cache/*/rein/*/bin/rein 2>/dev/null | sort -V | tail -1)
 ```
 
 ## Steps
@@ -22,7 +22,7 @@ R=$(command -v rein || ls -d ~/.claude/plugins/cache/*/rein/*/bin/rein 2>/dev/nu
    persist between tool calls, so `R` is resolved and used in the SAME block or it is
    empty and nothing is recorded:
    ```bash
-   R=$(command -v rein || ls -d ~/.claude/plugins/cache/*/rein/*/bin/rein 2>/dev/null | tail -1); "$R" event review
+   R=$(command -v rein || ls -d ~/.claude/plugins/cache/*/rein/*/bin/rein 2>/dev/null | sort -V | tail -1); "$R" event review
    ```
 2. Load the plan and the real diff of what was implemented: `"$R" tasks .` and
    `git diff <base>...<branch>`.

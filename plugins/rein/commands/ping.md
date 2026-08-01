@@ -11,7 +11,7 @@ before anything is asked of it.
 Run the environment probe. Which spelling succeeds is itself a diagnostic:
 
 ```bash
-rein doctor 2>/dev/null || "$(ls -d ~/.claude/plugins/cache/*/rein/*/bin/rein 2>/dev/null | tail -1)" doctor
+rein doctor 2>/dev/null || "$(ls -d ~/.claude/plugins/cache/*/rein/*/bin/rein 2>/dev/null | sort -V | tail -1)" doctor
 ```
 
 The bare `rein` only works once Claude Code has put the plugin's `bin/` on

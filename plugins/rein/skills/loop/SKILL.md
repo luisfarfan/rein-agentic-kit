@@ -29,7 +29,7 @@ agent a **compact ledger** (`progress` / `remaining` / `filesTouched` /
    bash block):
 
    ```bash
-   R=$(command -v rein || ls -d ~/.claude/plugins/cache/*/rein/*/bin/rein 2>/dev/null | tail -1); echo "$R"; "$R" event loop; "$R" context .
+   R=$(command -v rein || ls -d ~/.claude/plugins/cache/*/rein/*/bin/rein 2>/dev/null | sort -V | tail -1); echo "$R"; "$R" event loop; "$R" context .
    ```
 
    The event records first and never blocks. Keep `$R` — later steps reuse it

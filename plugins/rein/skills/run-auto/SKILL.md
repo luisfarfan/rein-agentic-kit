@@ -16,7 +16,7 @@ Usage: `/rein:run-auto [change-name] [max-tasks]`
 unlimited.
 
 ```bash
-R=$(command -v rein || ls -d ~/.claude/plugins/cache/*/rein/*/bin/rein 2>/dev/null | tail -1)
+R=$(command -v rein || ls -d ~/.claude/plugins/cache/*/rein/*/bin/rein 2>/dev/null | sort -V | tail -1)
 ```
 
 ## Loop
@@ -25,7 +25,7 @@ R=$(command -v rein || ls -d ~/.claude/plugins/cache/*/rein/*/bin/rein 2>/dev/nu
    persist between tool calls, so `R` is resolved and used in the SAME block or it is
    empty and nothing is recorded:
    ```bash
-   R=$(command -v rein || ls -d ~/.claude/plugins/cache/*/rein/*/bin/rein 2>/dev/null | tail -1); "$R" event run-auto
+   R=$(command -v rein || ls -d ~/.claude/plugins/cache/*/rein/*/bin/rein 2>/dev/null | sort -V | tail -1); "$R" event run-auto
    ```
 2. Set `done = 0`, `cap = max-tasks or 3`.
 3. **Check the deterministic gate before each iteration**: `"$R" next .`

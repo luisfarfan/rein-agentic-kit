@@ -13,7 +13,7 @@ never invokes `/rein:run`.**
 Usage: `/rein:plan <change-name> [description]`
 
 ```bash
-R=$(command -v rein || ls -d ~/.claude/plugins/cache/*/rein/*/bin/rein 2>/dev/null | tail -1)
+R=$(command -v rein || ls -d ~/.claude/plugins/cache/*/rein/*/bin/rein 2>/dev/null | sort -V | tail -1)
 ```
 
 ## Steps
@@ -22,7 +22,7 @@ R=$(command -v rein || ls -d ~/.claude/plugins/cache/*/rein/*/bin/rein 2>/dev/nu
    persist between tool calls, so `R` is resolved and used in the SAME block or it is
    empty and nothing is recorded:
    ```bash
-   R=$(command -v rein || ls -d ~/.claude/plugins/cache/*/rein/*/bin/rein 2>/dev/null | tail -1); "$R" event plan
+   R=$(command -v rein || ls -d ~/.claude/plugins/cache/*/rein/*/bin/rein 2>/dev/null | sort -V | tail -1); "$R" event plan
    ```
 2. Resolve the project so the plan lands where the loop will look for it and the verification
    commands are real: `"$R" context .` — note `plan.source`, `plan.path`,
@@ -98,7 +98,7 @@ R=$(command -v rein || ls -d ~/.claude/plugins/cache/*/rein/*/bin/rein 2>/dev/nu
       # this kit) would write and read the SAME file, and one would critique
       # the other's draft. A predictable name in a shared temp dir is also
       # redirectable through a pre-created symlink.
-      R=$(command -v rein || ls -d ~/.claude/plugins/cache/*/rein/*/bin/rein 2>/dev/null | tail -1)
+      R=$(command -v rein || ls -d ~/.claude/plugins/cache/*/rein/*/bin/rein 2>/dev/null | sort -V | tail -1)
       DRAFT=$(mktemp -t rein-plan-draft) && cat > "$DRAFT" <<'PLAN'
       <the drafted plan text, verbatim>
 PLAN

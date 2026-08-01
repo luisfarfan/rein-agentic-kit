@@ -14,7 +14,7 @@ session's role explicit and loads its profile.
 Usage: `/rein:role <planner|implementer|reviewer>`
 
 ```bash
-R=$(command -v rein || ls -d ~/.claude/plugins/cache/*/rein/*/bin/rein 2>/dev/null | tail -1)
+R=$(command -v rein || ls -d ~/.claude/plugins/cache/*/rein/*/bin/rein 2>/dev/null | sort -V | tail -1)
 ```
 
 ## Steps
@@ -23,7 +23,7 @@ R=$(command -v rein || ls -d ~/.claude/plugins/cache/*/rein/*/bin/rein 2>/dev/nu
    persist between tool calls, so `R` is resolved and used in the SAME block or it is
    empty and nothing is recorded:
    ```bash
-   R=$(command -v rein || ls -d ~/.claude/plugins/cache/*/rein/*/bin/rein 2>/dev/null | tail -1); "$R" event role
+   R=$(command -v rein || ls -d ~/.claude/plugins/cache/*/rein/*/bin/rein 2>/dev/null | sort -V | tail -1); "$R" event role
    ```
 2. If no argument, or an unrecognised one, **ask which role** — do not guess. The role holds
    until the user says otherwise; re-invoke to re-assert it (useful after a long session

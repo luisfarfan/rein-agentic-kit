@@ -399,7 +399,7 @@ const ctx = await agentRetry(
     `Your job is ONE bash round-trip plus faithful reporting. Do NOT explore the repository.\n\n` +
     `1. Resolve the rein CLI. Try in order, stop at the first that works:\n` +
     `   a) 'rein'\n` +
-    `   b) 'R=$(ls -d ~/.claude/plugins/cache/*/rein/*/bin/rein 2>/dev/null | tail -1); echo "$R"'\n` +
+    `   b) 'R=$(ls -d ~/.claude/plugins/cache/*/rein/*/bin/rein 2>/dev/null | sort -V | tail -1); echo "$R"'\n` +
     `   Report the working invocation in 'reinPath' (an absolute path, or the bare word 'rein').\n` +
     `2. Run: '<reinPath> context ${ROOT}${changeArg}'. It prints JSON with 'config' and 'plan'.\n` +
     `   READ that JSON. Do NOT re-derive any of it, do NOT run the commands it reports.\n` +

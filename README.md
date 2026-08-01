@@ -84,17 +84,24 @@ claude plugin marketplace add luisfarfan/rein-agentic-kit
 claude plugin install rein@rein-agentic-kit --scope user
 ```
 
-```bash
-rein doctor
+**Restart Claude Code**, then run inside it:
+
+```
+/rein:ping     →  is it wired here, and what did it detect?
+/rein:setup    →  probe the optional tools · confirm to provision them
 ```
 
-`doctor` tells you the detected stack, the resolved commands, and where each one came from.
-It also tells you whether the installed `rein` plugin itself is stale against its
-marketplace clone (comparing two files already on disk, no network call) — when it is,
-it prints the two commands to fix it (`claude plugin marketplace update ...` then
-`claude plugin update rein@rein-agentic-kit`) and stops there: `doctor` reports, it never installs,
-updates, or writes anything, and being out of date never changes its exit code.
-**If it got everything right, you configure nothing.**
+`ping` reports the detected stack, the resolved commands and where each one
+came from. **If it got everything right, you configure nothing.**
+
+> **Everything runs inside Claude Code — there is nothing to add to your `$PATH`.**
+> Claude Code puts the plugin's `bin/` on the path of its own sessions, which is
+> where the skills, the commands and the agents call `rein`. In a plain terminal
+> `rein` will *not* be found, and that is expected: the CLI exists to be called by
+> the flow, and the two commands a person runs by hand have slash commands above.
+> To update: `claude plugin marketplace update rein-agentic-kit` then
+> `claude plugin update rein@rein-agentic-kit` — qualified with the marketplace,
+> or it reports `Plugin "rein" not found`.
 
 Then, per change:
 
