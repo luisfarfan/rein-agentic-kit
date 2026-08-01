@@ -68,7 +68,7 @@ runs fine — the file is present in the cached copy.
 
 ### Consequence for the design
 
-`/rein:loop` must be a **skill that invokes the workflow by path**, resolving the
+`/rein:apply` must be a **skill that invokes the workflow by path**, resolving the
 plugin root at call time. It cannot be a bare workflow name. Two further notes:
 
 - `${CLAUDE_PLUGIN_ROOT}` is not interpolated by the Workflow tool — the skill has
@@ -156,7 +156,7 @@ first real dataset for the phase-3 dashboard.
 
 ## What phase 1 must carry forward
 
-1. `/rein:loop` invokes the workflow **by absolute path**, never by name.
+1. `/rein:apply` invokes the workflow **by absolute path**, never by name.
 2. All CLI calls go through `"$CLAUDE_PLUGIN_ROOT"/bin/rein`, with the bare name as
    an optimistic first try.
 3. Purge-and-reinstall before any self-hosted run; symlink only for prompt iteration.

@@ -1,10 +1,10 @@
 ---
-name: loop
-description: "Execute a planned change with the Rein loop: bounded fresh-agent implementation steps, then an independent review gate, driven by this project's flow.config.json. Use when the user asks to implement, execute or run an already-planned change, or invokes /rein:loop."
+name: apply
+description: "Execute a planned change with the Rein loop: bounded fresh-agent implementation steps, then an independent review gate, driven by this project's flow.config.json. Use when the user asks to implement, execute or run an already-planned change, or invokes /rein:apply."
 license: MIT
 ---
 
-# /rein:loop
+# /rein:apply
 
 Executes a plan as a **bounded loop of fresh, short agents**, then an independent
 review gate. Implements only what the plan says; it does not decide scope.
@@ -29,7 +29,7 @@ agent a **compact ledger** (`progress` / `remaining` / `filesTouched` /
    bash block):
 
    ```bash
-   R=$(command -v rein || ls -d ~/.claude/plugins/cache/*/rein/*/bin/rein 2>/dev/null | sort -V | tail -1); echo "$R"; "$R" event loop; "$R" context .
+   R=$(command -v rein || ls -d ~/.claude/plugins/cache/*/rein/*/bin/rein 2>/dev/null | sort -V | tail -1); echo "$R"; "$R" event apply; "$R" context .
    ```
 
    The event records first and never blocks. Keep `$R` — later steps reuse it

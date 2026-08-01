@@ -2,7 +2,7 @@
 
 `rein event <name>` appends one line to `~/.claude/rein/events.jsonl`: the
 skill's own name, an ISO timestamp, and the project it ran in. Events are the
-only trace a `/rein:plan`, `/rein:run`, `/rein:run-auto` or `/rein:review`
+only trace a `/rein:plan`, `/rein:step`, `/rein:steps` or `/rein:audit`
 invocation leaves (hooks are out of scope for this project) -- each shipped
 SKILL.md records its own invocation as its first step.
 

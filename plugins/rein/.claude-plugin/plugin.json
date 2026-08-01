@@ -1,6 +1,6 @@
 {
   "name": "rein",
-  "description": "Rein \u2014 keep your Claude Code agents lean and in control. A config-driven, stack-aware dev flow (plan / loop / review) built on bounded fresh-agent steps, per-agent model routing, and real per-model token measurement.",
+  "description": "Rein \u2014 keep your Claude Code agents lean and in control. A config-driven, stack-aware dev flow (plan / apply / audit) built on bounded fresh-agent steps, per-agent model routing, and real per-model token measurement.",
   "version": "0.8.0",
   "author": {
     "name": "Luis Farfan"

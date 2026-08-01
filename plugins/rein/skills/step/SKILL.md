@@ -1,15 +1,15 @@
 ---
-name: run
-description: "Execute exactly ONE ready task of the plan, verify it, and only then tick its checkbox. One task per invocation, with hard attempt limits. Use when the user asks to implement or run the next task, or invokes /rein:run."
+name: step
+description: "Execute exactly ONE ready task of the plan, verify it, and only then tick its checkbox. One task per invocation, with hard attempt limits. Use when the user asks to implement or run the next task, or invokes /rein:step."
 license: MIT
 ---
 
-# /rein:run
+# /rein:step
 
 Thin orchestration that executes **one** task and records evidence. Selection, ordering and
 closure live in the `rein` CLI, not in your judgement. **One task per invocation. No `--all`.**
 
-Usage: `/rein:run [change-name]`
+Usage: `/rein:step [change-name]`
 
 Resolve the CLI once and reuse it:
 
@@ -23,7 +23,7 @@ R=$(command -v rein || ls -d ~/.claude/plugins/cache/*/rein/*/bin/rein 2>/dev/nu
    persist between tool calls, so `R` is resolved and used in the SAME block or it is
    empty and nothing is recorded:
    ```bash
-   R=$(command -v rein || ls -d ~/.claude/plugins/cache/*/rein/*/bin/rein 2>/dev/null | sort -V | tail -1); "$R" event run
+   R=$(command -v rein || ls -d ~/.claude/plugins/cache/*/rein/*/bin/rein 2>/dev/null | sort -V | tail -1); "$R" event step
    ```
 2. **Ask the gate, do not choose yourself**: `"$R" next .` — it returns
    `{ready, taskId, humanReview, verification, reason}` and exits non-zero when nothing is
