@@ -184,6 +184,11 @@ _WHY_SENTENCE = (
 # (why it predicts cost) -- never just a definition floating free of the
 # thing it is supposed to help someone decide.
 GLOSSARY: dict[str, dict[str, str]] = {
+    "invocations": {
+        "meaning": "How many times you invoked this skill, counted from events.jsonl.",
+        "why": "Usage, not cost: an invocation is an EVENT and never enters a run total or a delta, "
+               "so folding it in would corrupt every comparison against the baseline.",
+    },
     "turns": {
         "meaning": "How many turns this agent took to finish its work.",
         "why": "Every turn is a full model call billed on the context sent with it, so turns is the base unit of cost.",
@@ -758,6 +763,19 @@ table.skills th:first-child,table.skills td:first-child{text-align:left}
 """
 
 
+def _metric_label(key: str) -> str:
+    """Human wording for `key`, for an accessible name.
+
+    `_METRIC_WORDS` maps to a DICT of wordings (noun/bare/more/less), not a
+    string -- reading it directly renders `{'noun': ...}` into the label,
+    which is what shipped before the test below existed.
+    """
+    words = _METRIC_WORDS.get(key)
+    if isinstance(words, dict):
+        return words.get("bare") or words.get("noun") or key.replace("_", " ")
+    return key.replace("_", " ")
+
+
 def _glossary_html(key: str, uid: str = "") -> str:
     """The '?' affordance for one metric header (D3/D4): text pulled from
     the single `GLOSSARY` (raises `KeyError` naming `key` if it is missing
@@ -781,7 +799,13 @@ def _glossary_html(key: str, uid: str = "") -> str:
     desc_id = f"glossary-{key}-{uid}" if uid else f"glossary-{key}"
     text = html.escape(f"{entry['meaning']} {entry['why']}")
     return (
-        f'<button type="button" class="glossary-toggle" aria-describedby="{desc_id}" aria-label="What does this mean?">?'
+        # The label names the METRIC. An identical "What does this mean?" on
+        # every button overrides the content as the accessible name, so a
+        # screen-reader user tabbing the header row hears the same six words
+        # six times with no idea which column each belongs to -- D4's intent
+        # inverted for exactly the people D4 names.
+        f'<button type="button" class="glossary-toggle" aria-describedby="{desc_id}" '
+        f'aria-label="What does {_metric_label(key)} mean?">?'
         f'<span id="{desc_id}" class="glossary-text" role="tooltip">{text}</span>'
         "</button>"
     )
@@ -910,7 +934,7 @@ _DEFAULT_EVENTS_NOTE = "no usage history recorded for this project"
 _DEFAULT_TREND_NOTE = "no turns/agent trend recorded for this project"
 
 
-def _skill_counts_html(skill_counts: dict, events_note: str) -> str:
+def _skill_counts_html(skill_counts: dict, events_note: str, uid: str = "") -> str:
     """AC1/AC5: counts per skill name, or -- with none -- the reason why,
     always rendered, never a silently missing section."""
     if not skill_counts:
@@ -920,7 +944,8 @@ def _skill_counts_html(skill_counts: dict, events_note: str) -> str:
         for name, count in sorted(skill_counts.items())
     )
     return (
-        '<table class="skills"><thead><tr><th>skill</th><th>invocations</th></tr></thead>'
+        '<table class="skills"><thead><tr><th>skill</th>'
+        f'<th>invocations{_glossary_html("invocations", uid)}</th></tr></thead>'
         f"<tbody>{rows}</tbody></table>"
     )
 
@@ -936,7 +961,7 @@ def _trend_html(trend_svg: str | None, trend_note: str | None, uid: str = "") ->
 def _project_history_html(history: dict, uid: str = "") -> str:
     """AC1: visually separated from the run table above it -- its own
     heading and CSS block, never mixed into the run rows or their totals."""
-    skills_html = _skill_counts_html(history.get("skill_counts") or {}, history.get("events_note") or "")
+    skills_html = _skill_counts_html(history.get("skill_counts") or {}, history.get("events_note") or "", uid)
     trend_html = _trend_html(history.get("trend_svg"), history.get("trend_note"), uid)
     return (
         '<div class="history">'

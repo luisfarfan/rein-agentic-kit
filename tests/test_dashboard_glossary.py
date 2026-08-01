@@ -49,7 +49,9 @@ RENDERED_METRIC_KEYS = (
 # they have nothing numeric to explain, so `TestGlossaryCompleteness` exempts
 # exactly these from needing a glossary button. Any other <th> with no
 # `aria-describedby` is a metric that shipped unexplained.
-_NON_METRIC_HEADER_LABELS = {"run", "agents", "file", "model"}
+# `skill` names the row (like `file`/`model` above); the COUNT beside it is a
+# metric and does carry a glossary button.
+_NON_METRIC_HEADER_LABELS = {"run", "agents", "file", "model", "skill"}
 
 
 def _strip_tags(cell_html: str) -> str:
@@ -85,6 +87,24 @@ def _full_view(with_baseline: bool = True) -> dict:
         "models": {},
         "runs": [baseline_run, later_run],
         "summary": {"text": "irrelevant to this test"},
+        # POPULATED, not omitted: `_project_section` reads
+        # `project.get("history") or {}`, so a fixture without this key
+        # renders the empty-state paragraph instead of the skills table --
+        # and the ratchet below then never sees that table's headers at all.
+        # That is exactly how two headers shipped unexplained: the guard was
+        # green because it was looking at a page that did not contain them.
+        # Everything `_project_section` can render must be rendered here, or
+        # "a new metric cannot ship unexplained" is a claim about a fixture
+        # rather than about the page.
+        "history": {
+            "skill_counts": {"plan": 7, "run": 3},
+            "events_note": "",
+            # A real SVG, not None: with None the trend section renders its
+            # note instead of the chart, and `_trend_html`'s own glossary
+            # button never appears -- the same blindness, one section over.
+            "trend_svg": '<svg viewBox="0 0 10 10"><polyline class="trend-line" points="0,1 5,5"/></svg>',
+            "trend_note": "",
+        },
         "baseline_info": dash._baseline_identity_text(
             {"wf_id": "wf_base", "ts": "2026-01-01T00:00:00Z", "project": "proj-full"} if with_baseline else None,
             "proj-full",
@@ -308,3 +328,57 @@ class TestRenderedPageStaysSelfContained(LedgerFixture):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestTheRatchetIsNotBlind(unittest.TestCase):
+    """The ratchet was green while two headers shipped unexplained.
+
+    Not because its rule was wrong -- because its FIXTURE did not carry a
+    `history` key, so `_project_section` rendered the empty-state paragraph
+    instead of the skills table and the check never saw those headers at
+    all. A completeness guard is only worth its name over a page that
+    actually contains everything, so that property is now asserted rather
+    than assumed.
+    """
+
+    def test_the_fixture_renders_every_section_project_section_can_render(self):
+        html_out = dash.render_html(_full_view())
+        for marker, what in (
+            ("<th>skill</th>", "the skills table (needs a populated history.skill_counts)"),
+            ("<th>invocations", "the invocation count header"),
+            ('class="trend"', "the trend section (needs history.trend_svg/trend_note)"),
+            ("<th>turns", "the per-agent detail table"),
+        ):
+            self.assertIn(
+                marker, html_out,
+                f"the completeness fixture no longer renders {what} — the ratchet is blind to it, "
+                f"which is exactly how 'skill' and 'invocations' shipped unexplained",
+            )
+
+
+class TestAccessibleNamesAreReadable(unittest.TestCase):
+    """D4 again, one level down: an accessible name is text a person hears.
+
+    `_METRIC_WORDS` maps each key to a DICT of wordings, so reading it
+    directly put `{'noun': 'turns per agent', 'bare': ...}` into three
+    labels. The whole suite stayed green -- nothing asserted what a label
+    actually says.
+    """
+
+    def _labels(self) -> list[str]:
+        return re.findall(r'aria-label="([^"]+)"', dash.render_html(_full_view()))
+
+    def test_no_label_leaks_a_python_repr(self):
+        for label in self._labels():
+            self.assertNotIn("{", label, f"aria-label renders a data structure: {label!r}")
+            self.assertNotIn("'", label, f"aria-label renders a data structure: {label!r}")
+
+    def test_each_metric_gets_its_own_name_not_one_shared_phrase(self):
+        labels = self._labels()
+        self.assertGreater(len(labels), 1, "sanity: the fixture must render several buttons")
+        # Repeats are fine (the same metric renders per project and per run),
+        # but they must not ALL be the same undifferentiated phrase.
+        self.assertGreater(
+            len(set(labels)), 1,
+            "every button shares one accessible name — a screen-reader user cannot tell them apart",
+        )
