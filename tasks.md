@@ -59,7 +59,7 @@ activation) and **5.4 MB**, against 7–8 minutes per task — 0.8% overhead.
 
 ---
 
-- [ ] T001 Tasks that cannot collide run at the same time
+- [x] T001 Tasks that cannot collide run at the same time
   - Type: implementation
   - Depends on: none
   - Human review: false
