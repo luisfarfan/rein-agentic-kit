@@ -375,6 +375,81 @@ def verify_commands(resolved: dict, timeout: float = DEFAULT_TIMEOUT, only: set[
 # docstring above).
 
 
+# A plan's per-task `Verification` is the command that will be asked to prove
+# that task's criteria. Nobody ran them before implementers were paid, and it
+# cost three hours: two tasks in a real plan named a test module that did not
+# exist, with `-k` filters that selected nothing, so they "passed" against
+# `no tests collected` and the defect surfaced two hours later, at review.
+OUTCOME_PROVES_NOTHING = "proves_nothing"
+
+
+def verify_plan(root: str, tasks: list, timeout: float = DEFAULT_TIMEOUT) -> dict:
+    """Run each task's own Verification command and report what it can prove.
+
+    The outcome that matters is not pass/fail -- a plan's verification is
+    EXPECTED to fail before the work exists. What must never happen is a
+    command that cannot prove anything at all: a missing test module, a `-k`
+    that selects nothing, a path that does not exist. Those exit as if they
+    were fine (pytest exits 5 on "no tests ran"), so an implementer "passes"
+    verification without a single criterion being confirmed.
+
+    So `failed` is FINE here and `proves_nothing` is not. This function never
+    repairs and never writes -- it runs and reports, like `verify_commands`.
+    """
+    root = os.path.abspath(root)
+    results = {}
+    for task in tasks or []:
+        tid = task.get("id") or "?"
+        cmd = (task.get("verification") or "").strip().strip("`")
+        if not cmd:
+            results[tid] = {
+                "command": "", "outcome": OUTCOME_SKIPPED,
+                "provesNothing": False,
+                "reason": "the task declares no verification command",
+            }
+            continue
+        res = run_one(tid, cmd, root, timeout=timeout)
+        text = "\n".join(res.output_head)
+        # Ran, but selected nothing: the one state that makes a green
+        # verification meaningless.
+        #
+        # Two signals, because one is not enough. The phrase match reads the
+        # REPORTED head only (matching the whole capture is how a suite that
+        # ran and failed gets misread as a broken runner -- fixed once
+        # already), and a real pytest run buries "no tests ran" under plugin
+        # warnings far past those 20 lines. So the decisive signal is pytest's
+        # own documented exit code 5, EXIT_NOTESTSCOLLECTED, which it uses for
+        # exactly this and nothing else. Scoped to commands that name pytest,
+        # since 5 means something different in every other runner.
+        looks_like_pytest = "pytest" in cmd
+        proves_nothing = res.outcome != OUTCOME_NOT_INVOCABLE and (
+            _looks_like_synthetic_target_noise(text)
+            or (looks_like_pytest and res.exit_code == 5)
+        )
+        outcome = OUTCOME_PROVES_NOTHING if proves_nothing else res.outcome
+        results[tid] = {
+            "command": cmd,
+            "outcome": outcome,
+            "provesNothing": proves_nothing,
+            "exitCode": res.exit_code,
+            "outputHead": res.output_head,
+            "reason": (
+                "ran but selected no tests -- it cannot confirm a single criterion"
+                if proves_nothing else (res.error or "")
+            ),
+        }
+    unusable = [t for t, r in results.items()
+                if r["outcome"] in (OUTCOME_PROVES_NOTHING, OUTCOME_NOT_INVOCABLE)]
+    return {
+        "root": root,
+        "results": results,
+        "unusable": unusable,
+        # `failed` is deliberately NOT here: a plan's verification failing
+        # before the work exists is the normal state of a plan.
+        "allUsable": not unusable,
+    }
+
+
 def _state_path(root: str) -> str:
     abs_root = os.path.abspath(root)
     digest = hashlib.sha256(abs_root.encode("utf-8")).hexdigest()[:16]

@@ -37,7 +37,7 @@ import os
 import shutil
 import sys
 
-VERSION = "0.9.1"
+VERSION = "0.9.2"
 
 HERE = os.path.dirname(os.path.abspath(os.path.realpath(__file__)))
 PLUGIN_ROOT = os.path.dirname(HERE)
@@ -107,6 +107,39 @@ def cmd_verify(argv: list[str]) -> int:
     """
     root = _positional(argv) or "."
     timeout_raw = _opt(argv, "timeout", str(_verify.DEFAULT_TIMEOUT))
+
+    # --plan: the per-task Verification commands, not the project's slots.
+    # Nobody ran these before implementers were paid, and two tasks in a real
+    # plan named a test module that did not exist -- they "passed" against
+    # `no tests collected` and the defect surfaced two hours later at review.
+    if "--plan" in argv:
+        try:
+            timeout = float(timeout_raw)
+        except ValueError:
+            timeout = _verify.DEFAULT_TIMEOUT
+        resolved_root = os.path.abspath(root)
+        plan_doc = _plan.read_plan(resolved_root, _opt(argv, "change", ""))
+        report = _verify.verify_plan(resolved_root, plan_doc.get("tasks") or [], timeout=timeout)
+        if "--json" in argv:
+            print(json.dumps(report, indent=2))
+        else:
+            print(f"plan verifications for {report['root']}")
+            if not report["results"]:
+                print("  (the plan declares no tasks)")
+            for tid, r in report["results"].items():
+                mark = "✗" if r["outcome"] in (_verify.OUTCOME_PROVES_NOTHING,
+                                               _verify.OUTCOME_NOT_INVOCABLE) else "·"
+                print(f"  {mark} {tid:<6} {r['outcome']:<15} {r['command'][:56]}")
+                if r.get("reason"):
+                    print(f"           {r['reason'][:90]}")
+            if report["unusable"]:
+                print(f"\n  UNUSABLE: {', '.join(report['unusable'])} — these cannot confirm their "
+                      f"own criteria, so an implementer would 'pass' without proving anything")
+            else:
+                print("\n  every verification can prove something (failing is fine; proving nothing is not)")
+        # Non-zero ONLY for unusable. A verification that fails before the work
+        # exists is the normal state of a plan and must not stop anything.
+        return 0 if report["allUsable"] else 1
     try:
         timeout = float(timeout_raw)
     except ValueError:
