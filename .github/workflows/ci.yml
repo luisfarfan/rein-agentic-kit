@@ -14,6 +14,14 @@ jobs:
         python-version: ["3.9", "3.12"]
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history, not the default shallow clone: the plan check's
+          # regression test replays every version of tasks.md in this repo
+          # (50 plans) to prove it does not refuse plans this project
+          # already approved. With depth 1 it sees ONE plan, skips itself,
+          # and the property goes unproven -- which is precisely what its
+          # own guard caught here.
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
