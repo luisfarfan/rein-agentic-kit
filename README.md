@@ -154,10 +154,14 @@ rein detect      # stack + commands, with the source of each
 rein tasks       # the plan, parsed
 rein context     # detect + plan in ONE round-trip — what the loop's first agent runs
 rein verify      # actually RUN each resolved command and report the truth — an inference is not a fact
+rein plan-check  # mechanical findings on a drafted plan's own text — what a regex can
+                 # honestly decide; the semantic call belongs to /rein:plan's critique
 rein next        # ✅ the gate: is there a task to claim, and may it be
 rein close T001  # tick a checkbox deterministically — no agent hand-edits the plan
 rein review      # record / check a verdict bound to a code state
-rein token-report# what a run really cost, per agent and per model
+rein token-report# what a run really cost, per agent and per model, plus its wall clock,
+                 # agent-minutes and their ratio (1.00x = nothing overlapped)
+rein event <name># record a skill invocation — an EVENT, never folded into a run total
 rein ledger      # history across projects, with deltas vs a marked baseline
                  # --json: {"runs": [...], "events_by_project": {...}} -- runs are
                  # unchanged row objects; events (D3) are counted separately, never
@@ -293,10 +297,14 @@ honest numbers are the three that predict cost — **turns/agent**, **ctx_max/tu
 
 Things a README usually hides:
 
-- **The reviewer is calibrated hard.** 4 of 6 runs here exhausted their 3 rounds. A three-task
-  change will often use them all.
+- **The reviewer is calibrated hard.** Across 9 runs of this repo, 8 used all 3 rounds, and the
+  LAST round produced a real BLOCKING finding in 4 of them. Review is ~52% of a run's wall
+  clock and it earns it — which is why there is no `--fast` that reviews less.
 - **A stalled agent burns wall-clock.** One run spent 3.4 hours almost entirely in silent API
   retries.
+- **Runs are serial.** Every run measured so far reports an overlap of `1.00x` — tasks that
+  declare no dependency *can* now run concurrently, but the plans written here have been
+  chains, so the parallel path has yet to fire on real work.
 - **`discover` was considered and rejected** — a per-run version of it was measured in the origin
   project and did not move the needle. See [docs/decisions.md](docs/decisions.md).
 
@@ -309,7 +317,8 @@ Things a README usually hides:
 | 2 | Stack-aware verification policy | ✅ |
 | 3 | Local dashboard · per-agent model config | ✅ |
 | 4 | Compose real browser verification | ✅ |
-| 5 | Docs · polish · a second real-world project | ⏳ |
+| 5 | Docs · a second distribution channel (PyPI) · release automation | ✅ |
+| 6 | A second real-world project, and the parallel path on a plan that has one | ⏳ |
 
 ## 📄 License
 
