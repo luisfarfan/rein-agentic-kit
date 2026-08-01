@@ -87,25 +87,40 @@ R=$(command -v rein || ls -d ~/.claude/plugins/cache/*/rein/*/bin/rein 2>/dev/nu
       checks (compose, missing sections, malformed delta headers); that is openspec's job, not
       re-derived here (D4). A missing `openspec` binary skips this half silently — that is not a
       failure, just a fact stated beside the plan (D5).
-   b. Critique every task against exactly these four BLOCKING classes — the SAME four the loop's
-      own PlanCheck applies before Isolate (D3), so the two gates cannot drift:
-      1. a verification that cannot mechanically confirm the criteria it is attached to
-      2. a criterion no command can check
+   b. Run the mechanical half as a concrete, named command — not a judgement call — BEFORE
+      critiquing anything yourself. Write the drafted plan text to a scratch file and run:
+      ```bash
+      "$R" plan-check /tmp/rein-plan-draft.md
+      ```
+      This deterministically decides two of the four BLOCKING classes against the plan's own text:
+      1. a verification that cannot mechanically confirm the criteria it is attached to — a
+         Verification command reused verbatim from an earlier task
       3. a dependency that is circular or names a task that does not exist
+
+      `rein plan-check` never fails this step (D5): a missing scratch file, an unreadable one, or
+      text that fails to parse each yield an empty `findings` list in its JSON output rather than a
+      nonzero exit — proceed to (c) regardless. Any `BLOCKING` finding it prints carries into (e)
+      exactly like an agent-found one.
+   c. Critique every task yourself against the two classes no command can decide — semantic calls
+      only an agent can honestly make:
+      2. a criterion no command can check
       4. a criterion that contradicts a stated decision
 
-      Only these four may BLOCK. Everything else — style, wording, taste, a criterion that could
-      be worded better — is at most a SUGGESTION: shown beside the plan for the author to accept
-      or ignore, never a reason to stop (D2). A check that always finds something stops being
-      read, and the plan goes back to being unreviewed in practice.
-   c. If the critique itself cannot run — no critique agent is available, it times out, or its
-      response is malformed — do NOT skip it silently and do NOT hard-stop the skill: proceed to
-      write the plan anyway, with that failure named plainly beside it, e.g. "critique agent timed
-      out — plan written unreviewed" (D5). A gate meant to save money must never itself become the
-      reason nothing gets written.
-   d. Report any BLOCKING finding to the user before the dry run, naming which of the four classes
-      it violates and which criterion it fails to prove. Fix the plan before continuing — never
-      show a dry run, and never write, with an open BLOCKING finding still standing.
+      Together with (b)'s two, these are the ONLY four classes that may BLOCK — the SAME four the
+      loop's own PlanCheck applies before Isolate (D3), so the two gates cannot drift. Everything
+      else — style, wording, taste, a criterion that could be worded better — is at most a
+      SUGGESTION: shown beside the plan for the author to accept or ignore, never a reason to stop
+      (D2). A check that always finds something stops being read, and the plan goes back to being
+      unreviewed in practice.
+   d. If the agent critique in (c) cannot run — no critique agent is available, it times out, or
+      its response is malformed — do NOT skip it silently and do NOT hard-stop the skill: proceed
+      to write the plan anyway, with that failure named plainly beside it, e.g. "critique agent
+      timed out — plan written unreviewed" (D5). A gate meant to save money must never itself
+      become the reason nothing gets written.
+   e. Report any BLOCKING finding — from (b) or (c) — to the user before the dry run, naming which
+      of the four classes it violates and which criterion it fails to prove. Fix the plan before
+      continuing — never show a dry run, and never write, with an open BLOCKING finding still
+      standing.
 6. **Dry run.** Show the user the full draft: tasks in dependency order, each verification
    command, which tasks are gated on human review, and anything the plan assumes.
 7. **Ask for explicit confirmation.** Never write the plan into the project without it.

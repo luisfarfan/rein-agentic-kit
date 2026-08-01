@@ -19,6 +19,7 @@ an agent's mood again.
 
 from __future__ import annotations
 
+import re
 import shutil
 
 import plan as _plan
@@ -32,12 +33,58 @@ BLOCKING_CLASSES = (
     "a criterion that contradicts a stated decision",
 )
 
+# D3 asymmetry, recorded deliberately rather than fixed by adding a fifth
+# mechanical class (round-1 review finding 4): the loop's PlanCheck prompt
+# carries one lens this module does not decide. Unlike class 1 (a reused
+# Verification string) or class 3 (a missing/circular dependency), "the
+# whole suite where one file would prove it" has no fixed syntactic shape a
+# regex can honestly tell apart from a legitimately whole-suite-only
+# project's own test entry point -- it stays an agent judgement, on the
+# loop's side of the gate, on purpose. Pinned verbatim so a drift in either
+# copy is caught the same way BLOCKING_CLASSES already is.
+UNBOUNDED_VERIFICATION_LENS = (
+    "Verifications that are unbounded — a command that runs the whole suite "
+    "where one test or one file would prove the criterion, burning far more "
+    "context than the task needs."
+)
+LOOP_ONLY_LENSES = {
+    UNBOUNDED_VERIFICATION_LENS: (
+        "no regex can honestly tell a project whose only test entry point IS "
+        "the whole suite from a task that should have scoped its command -- "
+        "stays a semantic call for the loop's own PlanCheck agent"
+    ),
+}
+
+# The one shape this repo's own convention (SKILL.md's own example: "one
+# test file or id, never 'the suite'") treats as inherently task-scoped: a
+# bare `python3 -m unittest <dotted.module.path>` naming exactly one module
+# -- the shape of the real T003/T002 defect this module exists to catch. A
+# bare runner (`pytest`, `npm test`, `cargo test`), `unittest discover`, or a
+# runner invoked with a filter (`npm test -- <suite>`, `cargo test <mod>`)
+# can honestly be reused across tasks that legitimately verify through the
+# same suite, and reusing one is never BLOCKING on that shape alone (round-1
+# review finding 5).
+_SCOPED_UNITTEST_MODULE = re.compile(
+    r"^python3?\s+-m\s+unittest\s+(?!discover\b)[A-Za-z0-9_]+(\.[A-Za-z0-9_]+)+$"
+)
+
+
+def _is_scoped_command(cmd: str) -> bool:
+    return bool(_SCOPED_UNITTEST_MODULE.match(cmd.strip()))
+
 
 def _confirm_findings(tasks: list[dict]) -> list[dict]:
     """Class 1: a Verification command reused verbatim from an earlier task is
     confirming THAT task's criteria, not this one's -- the exact, measured
     shape of the defect this change exists to catch (T003's Verification
-    named tests.test_verify_commands, which was T002's own test module)."""
+    named tests.test_verify_commands, which was T002's own test module).
+
+    Severity depends on the command's own shape (finding 5): a reused,
+    per-module `python3 -m unittest <module>` command is BLOCKING -- this
+    project's own convention makes that shape task-scoped, so reusing one is
+    always the T003/T002 defect. Any other reused shape -- a bare or
+    filtered whole-suite runner -- can be an honestly shared verification
+    and is reported as IMPORTANT instead: visible, but not unfixable."""
     findings: list[dict] = []
     owner: dict[str, str] = {}
     for t in tasks:
@@ -47,9 +94,10 @@ def _confirm_findings(tasks: list[dict]) -> list[dict]:
         if v in owner and owner[v] != t["id"]:
             criteria = t.get("acceptance") or []
             listed = "; ".join(criteria) if criteria else "its acceptance criteria"
+            severity = "BLOCKING" if _is_scoped_command(v) else "IMPORTANT"
             findings.append({
                 "taskId": t["id"],
-                "severity": "BLOCKING",
+                "severity": severity,
                 "classId": BLOCKING_CLASSES[0],
                 "text": (
                     f"{t['id']}'s verification (`{v}`) is {owner[v]}'s verification, not "
@@ -112,3 +160,12 @@ def openspec_binary() -> str:
     rule openspec already checks.
     """
     return shutil.which("openspec") or ""
+
+
+if __name__ == "__main__":
+    import json
+    import sys
+
+    _path = sys.argv[1] if len(sys.argv) > 1 else ""
+    with open(_path, encoding="utf-8", errors="replace") as _fh:
+        print(json.dumps(mechanical_findings(_fh.read()), indent=2))

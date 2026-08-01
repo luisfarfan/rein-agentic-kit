@@ -7,6 +7,7 @@ Subcommands:
   rein detect         resolved stack + commands as JSON (config > runner > auto)
   rein verify         actually RUN each resolved command and report the truth
   rein tasks          parsed plan as JSON (tasks.md or openspec)
+  rein plan-check     mechanical findings on a drafted plan's own text, as JSON
   rein context        detect + tasks in ONE call -- what the loop's first agent runs
   rein close <id>     tick a task's checkbox in the plan
   rein next           the DETERMINISTIC gate: is there a task to claim, and may it be
@@ -43,6 +44,7 @@ import detect as _detect  # noqa: E402
 import events as _events  # noqa: E402
 import gate as _gate  # noqa: E402
 import plan as _plan  # noqa: E402
+import plan_check as _plan_check  # noqa: E402
 import setup as _setup  # noqa: E402
 import serve as _serve  # noqa: E402
 import token_report as _tr  # noqa: E402
@@ -146,6 +148,42 @@ def cmd_tasks(argv: list[str]) -> int:
             indent=2,
         )
     )
+    return 0
+
+
+def cmd_plan_check(argv: list[str]) -> int:
+    """Mechanical, pre-agent findings on a drafted plan's own text (T001:
+    the-plan-checks-itself) -- the shipped entry point for `plugins/rein/lib/
+    plan_check.py`, which is otherwise unreachable in production.
+
+    `rein plan-check <plan-file>` reads PLAN-FILE as plan markdown -- the
+    drafted text before it is written to `plan.path`, or an already-written
+    tasks.md -- and prints its BLOCKING/IMPORTANT findings as JSON. It never
+    parses argv beyond the one positional path: no root resolution, no
+    `flow.config.json` lookup, because the drafted text this exists to check
+    usually is not on disk at `plan.path` yet.
+
+    D5: unavailable is never a stop. A missing path, an unreadable file, or
+    text that fails to parse each yield an empty `findings` list with the
+    problem named in `error` -- this command always exits 0, so a caller can
+    never be blocked by the check itself, only by what it finds.
+    """
+    path = _positional(argv)
+    error = ""
+    findings: list[dict] = []
+    if not path:
+        error = "usage: rein plan-check <plan-file>"
+    elif not os.path.exists(path):
+        error = f"no file at {path}"
+    else:
+        try:
+            with open(path, encoding="utf-8", errors="replace") as fh:
+                text = fh.read()
+        except OSError as exc:
+            error = str(exc)
+        else:
+            findings = _plan_check.mechanical_findings(text)
+    print(json.dumps({"path": path, "error": error, "findings": findings}, indent=2))
     return 0
 
 
@@ -546,6 +584,7 @@ COMMANDS = {
     "detect": cmd_detect,
     "verify": cmd_verify,
     "tasks": cmd_tasks,
+    "plan-check": cmd_plan_check,
     "context": cmd_context,
     "close": cmd_close,
     "next": cmd_next,

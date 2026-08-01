@@ -24,6 +24,7 @@ import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LIB = os.path.join(ROOT, "plugins", "rein", "lib")
+REIN_BIN = os.path.join(ROOT, "plugins", "rein", "bin", "rein")
 LOOP_JS = os.path.join(ROOT, "plugins", "rein", "workflows", "loop.js")
 SKILL_MD = os.path.join(ROOT, "plugins", "rein", "skills", "plan", "SKILL.md")
 FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
@@ -207,6 +208,48 @@ class TestOpenspecIsReportedNotReimplemented(unittest.TestCase):
             plan_check.shutil.which = orig
 
 
+class TestPlanCheckIsShippedAndReachable(unittest.TestCase):
+    """Round-1 finding 1: `plan_check.py` was dead code -- nothing in the
+    shipped path ever ran it. `rein plan-check <file>` is the entry point;
+    these tests prove it is actually wired in (the SKILL names the exact
+    command) and actually works end-to-end (the CLI subprocess, not a direct
+    `import plan_check`, produces the real defect's BLOCKING finding)."""
+
+    def test_skill_names_the_plan_check_command(self):
+        src = _read(SKILL_MD)
+        self.assertIn('"$R" plan-check', src, "SKILL.md step 5 must name the concrete `rein plan-check` command")
+
+    def test_plan_check_command_precedes_the_agent_critique(self):
+        flat = _flatten(_read(SKILL_MD))
+        mechanical_at = flat.index('"$R" plan-check')
+        agent_at = flat.index("Critique every task yourself against the two classes no command can decide")
+        self.assertLess(mechanical_at, agent_at, "the mechanical command must run before the agent critique")
+
+    def test_cli_rejects_the_real_defect_fixture(self):
+        """End-to-end: the subprocess CLI, not plan_check.mechanical_findings()
+        called directly, must produce the BLOCKING T003 finding."""
+        fixture = os.path.join(FIXTURES, "plan_defect_t003.md")
+        proc = subprocess.run(
+            [sys.executable, REIN_BIN, "plan-check", fixture],
+            capture_output=True, text=True, check=True,
+        )
+        self.assertEqual(proc.returncode, 0, "D5: plan-check never fails the caller")
+        report = json.loads(proc.stdout)
+        blocking = [f for f in report["findings"] if f["severity"] == "BLOCKING"]
+        t003 = [f for f in blocking if f["taskId"] == "T003"]
+        self.assertTrue(t003, f"expected a BLOCKING finding on T003 from the CLI, got {report['findings']}")
+
+    def test_cli_never_fails_on_a_missing_file(self):
+        proc = subprocess.run(
+            [sys.executable, REIN_BIN, "plan-check", "/no/such/plan.md"],
+            capture_output=True, text=True, check=True,
+        )
+        self.assertEqual(proc.returncode, 0)
+        report = json.loads(proc.stdout)
+        self.assertEqual(report["findings"], [])
+        self.assertTrue(report["error"])
+
+
 class TestRealDefectFixtureIsRejected(unittest.TestCase):
     """The REAL defect, checked in verbatim: T003's Verification named
     tests.test_verify_commands -- T002's own test module. The commit that
@@ -244,11 +287,24 @@ class TestRealDefectFixtureIsRejected(unittest.TestCase):
 
 
 class TestHealthyPlanHasNoBlockingFindings(unittest.TestCase):
-    """A check that always fires is a check nobody reads (D2). This plan
-    (the-ledger-knows-how-long, T001) was actually approved by the loop's
-    review -- it must produce zero BLOCKING findings."""
+    """A check that always fires is a check nobody reads (D2).
 
-    def test_approved_plan_is_clean(self):
+    Round-1 finding 2: a single-task plan is structurally incapable of
+    triggering either mechanical class (a duplicate verification needs two
+    tasks; a cycle or missing dependency needs a `Depends on` edge), so it
+    proves nothing about the false-positive property. The primary case here
+    is `plan_healthy_dashboard.md` (the-dashboard-answers-the-question,
+    approved, three tasks, distinct verification commands, a real
+    T001->T002->T003 dependency chain) -- it has discriminating power. The
+    single-task plan is kept as an ADDITIONAL case, not the only one."""
+
+    def test_approved_multitask_plan_is_clean(self):
+        text = _read(os.path.join(FIXTURES, "plan_healthy_dashboard.md"))
+        findings = plan_check.mechanical_findings(text)
+        blocking = [f for f in findings if f["severity"] == "BLOCKING"]
+        self.assertEqual(blocking, [], f"a healthy, approved multi-task plan must not BLOCK: {blocking}")
+
+    def test_approved_single_task_plan_is_also_clean(self):
         text = _read(os.path.join(FIXTURES, "plan_healthy_ledger.md"))
         findings = plan_check.mechanical_findings(text)
         blocking = [f for f in findings if f["severity"] == "BLOCKING"]
@@ -298,6 +354,83 @@ class TestDependencyClassMechanics(unittest.TestCase):
             "  - Verification: `python3 -m unittest tests.test_b`\n"
         )
         self.assertEqual(plan_check.mechanical_findings(text), [])
+
+
+class TestReusedVerificationSeverityIsNarrowed(unittest.TestCase):
+    """Round-1 finding 5: equating "two tasks share a verification command
+    string" with BLOCKING would fire on legitimate plans -- two tasks that
+    honestly verify through the same suite, with no way to accept the
+    finding (D2's own "a check that always fires is a check nobody reads"
+    failure, arriving through the mechanical half). A reused per-module
+    `python3 -m unittest <module>` command -- this repo's own task-scoped
+    convention, and the real T003/T002 shape -- stays BLOCKING. A reused
+    bare or filtered whole-suite command is reported IMPORTANT instead:
+    visible, but not unfixable."""
+
+    def test_reused_scoped_unittest_module_is_still_blocking(self):
+        text = (
+            "- [ ] T001 A\n"
+            "  - Verification: `python3 -m unittest tests.test_shared`\n"
+            "\n"
+            "- [ ] T002 B\n"
+            "  - Depends on: T001\n"
+            "  - Verification: `python3 -m unittest tests.test_shared`\n"
+        )
+        findings = plan_check.mechanical_findings(text)
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0]["severity"], "BLOCKING")
+        self.assertEqual(findings[0]["classId"], CANONICAL_CLASSES[0])
+
+    def test_reused_generic_whole_suite_command_is_important_not_blocking(self):
+        text = (
+            "- [ ] T001 Widgets ship\n"
+            "  - Verification: `npm test -- widgets`\n"
+            "\n"
+            "- [ ] T002 Widgets ship faster\n"
+            "  - Depends on: T001\n"
+            "  - Verification: `npm test -- widgets`\n"
+        )
+        findings = plan_check.mechanical_findings(text)
+        self.assertEqual(len(findings), 1, f"a legitimately shared whole-suite command must still be reported: {findings}")
+        self.assertEqual(findings[0]["severity"], "IMPORTANT",
+                          "a reused generic/whole-suite command must not be an unfixable BLOCKING finding")
+        self.assertEqual(findings[0]["classId"], CANONICAL_CLASSES[0])
+
+    def test_reused_unittest_discover_is_important_not_blocking(self):
+        text = (
+            "- [ ] T001 A\n"
+            "  - Verification: `python3 -m unittest discover`\n"
+            "\n"
+            "- [ ] T002 B\n"
+            "  - Depends on: T001\n"
+            "  - Verification: `python3 -m unittest discover`\n"
+        )
+        findings = plan_check.mechanical_findings(text)
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0]["severity"], "IMPORTANT")
+
+
+@unittest.skipUnless(_NODE, "node not on PATH -- loop.js is a node workflow script")
+class TestLoopLensAsymmetryIsRecorded(unittest.TestCase):
+    """Round-1 finding 4: D3 ("the two gates cannot drift") was only checked
+    in one direction -- both shipped texts contain the four canonical
+    classes, but nothing asserted the converse. loop.js's lens 2 (unbounded
+    verification) has no counterpart in plan_check.BLOCKING_CLASSES or in
+    SKILL.md step 5's mechanical/agent split, and that asymmetry was
+    undocumented. This test is the record: the loop's lens-2 wording is
+    pinned, confirmed absent from the shared mechanical classes, and its
+    exclusion carries a reason -- so a REAL, unrecorded drift (a fifth loop
+    lens nobody decided to exclude) still fails this test."""
+
+    def test_unbounded_verification_lens_is_pinned_and_excluded_with_a_reason(self):
+        prompt = _build_plan_check_prompt()
+        self.assertIn(
+            plan_check.UNBOUNDED_VERIFICATION_LENS, prompt,
+            "the loop's lens-2 wording moved -- update the pinned copy in plan_check.py",
+        )
+        self.assertNotIn(plan_check.UNBOUNDED_VERIFICATION_LENS, plan_check.BLOCKING_CLASSES)
+        self.assertIn(plan_check.UNBOUNDED_VERIFICATION_LENS, plan_check.LOOP_ONLY_LENSES)
+        self.assertTrue(plan_check.LOOP_ONLY_LENSES[plan_check.UNBOUNDED_VERIFICATION_LENS].strip())
 
 
 if __name__ == "__main__":

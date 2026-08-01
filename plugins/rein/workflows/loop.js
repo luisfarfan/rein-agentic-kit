@@ -759,19 +759,24 @@ function buildPlanCheckPrompt(planPath, taskIds) {
     `implementer is paid to build it. Read ONLY ${planPath}. Do NOT read, grep, open, or explore ` +
     `any other file in the repository — the codebase does not exist yet as far as you are concerned; ` +
     `judging it against code is out of scope for this agent.\n\n` +
-    // D3: the SAME four classes plugins/rein/lib/plan_check.py's BLOCKING_CLASSES names for the
-    // plan skill's own critique pass, embedded verbatim below so the two gates cannot drift.
     `Apply exactly these four lenses to every task in the plan:\n` +
-    `  1. Criteria that cannot be checked as written — a criterion no command can check: vague or ` +
-    `unfalsifiable acceptance text a verifier could not mechanically confirm or deny.\n` +
+    `  1. Criteria that cannot be checked as written — vague or unfalsifiable acceptance text a ` +
+    `verifier could not mechanically confirm or deny.\n` +
     `  2. Verifications that are unbounded — a command that runs the whole suite where one test or ` +
     `one file would prove the criterion, burning far more context than the task needs.\n` +
     `  3. Criteria satisfiable in letter by a test whose fixture avoids the case it claims to cover — ` +
-    `a verification that cannot mechanically confirm the criteria it is attached to. The failure this ` +
-    `repo produced five times: a test that passes without ever exercising the real path.\n` +
+    `the failure this repo produced five times: a test that passes without ever exercising the real path.\n` +
     `  4. Tasks that contradict the plan's own Scope or dependency order — touching something the plan ` +
-    `marks out of scope, depending on a task that has not run yet, a dependency that is circular or ` +
-    `names a task that does not exist, or a criterion that contradicts a stated decision.\n\n` +
+    `marks out of scope, or depending on a task that has not run yet.\n\n` +
+    // D3: of the issues the four lenses above surface, exactly these four are BLOCKING -- the SAME
+    // four plugins/rein/lib/plan_check.py's BLOCKING_CLASSES names for the plan skill's own
+    // critique pass, embedded verbatim below so the two gates cannot drift.
+    `Of the issues above, exactly these four are BLOCKING -- the SAME four plugins/rein/lib/` +
+    `plan_check.py's BLOCKING_CLASSES names for the plan skill's own critique pass, verbatim, so the ` +
+    `two gates cannot drift (D3): "a verification that cannot mechanically confirm the criteria it ` +
+    `is attached to"; "a criterion no command can check"; "a dependency that is circular or names a ` +
+    `task that does not exist"; "a criterion that contradicts a stated decision". Everything else ` +
+    `found under the four lenses above is at most IMPORTANT or SUGGESTION.\n\n` +
     `For every issue found, report one finding with the offending task's id, a severity of BLOCKING, ` +
     `IMPORTANT, or SUGGESTION (BLOCKING only for something that would waste an implementer's run), and ` +
     `a one-sentence 'text'. Report zero findings if the plan holds up under all four lenses.\n` +
