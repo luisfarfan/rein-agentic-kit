@@ -239,8 +239,41 @@ class TestStalenessNeverChangesExitCodeOrWritesAnything(DoctorStalenessFixture):
         self.assertEqual(before, after)  # D2: report, never act -- nothing written
 
 
-class TestDoctorJsonGainsStalenessAlongsideExistingKeys(DoctorStalenessFixture):
-    def test_json_output_has_pinned_keys_plus_staleness(self):
+class TestCorruptInstalledPluginsJsonDoesNotSinkDoctor(DoctorStalenessFixture):
+    """A single non-UTF-8 byte in installed_plugins.json used to raise
+    UnicodeDecodeError out of `_read_json`, uncaught by the loader's
+    `except (OSError, json.JSONDecodeError)` -- losing the ENTIRE doctor
+    report (not just the version line) and exiting 1, the exact failure
+    class commit 5450b53 already fixed once for events.jsonl. D3: unreadable
+    is 'unknown', not a crash. D4: doctor's exit code never reflects this.
+    """
+
+    def test_corrupt_installed_plugins_json_still_prints_full_report_exit_0(self):
+        self._write_marketplace("0.6.3")
+        path = os.path.join(self.home, ".claude", "plugins", "installed_plugins.json")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "wb") as fh:
+            fh.write(b'{"plugins": {}} \xff')
+
+        doctor = self._run_fixture_doctor()
+        self.assertEqual(doctor.returncode, 0, doctor.stdout + doctor.stderr)
+        self.assertIn("version : unknown", doctor.stdout)
+        # The rest of the report -- not just the version line -- must still
+        # print; resolve_verdict runs before any print in cmd_doctor.
+        self.assertIn("project root :", doctor.stdout)
+        self.assertIn("resolved commands:", doctor.stdout)
+
+
+class TestDoctorJsonKeysIntroducedByThisChange(DoctorStalenessFixture):
+    """`rein doctor --json` did not exist on `main` before this branch (no
+    prior shape to stay backward-compatible with) -- this whole key set,
+    "staleness" included, is NEW here, not a pin against pre-existing
+    behavior. Pinning it now is still worth doing so that whatever reads
+    this JSON going forward has a documented contract to depend on -- see
+    README.md's `rein doctor` section for the human-readable version.
+    """
+
+    def test_json_output_has_the_new_keys(self):
         self._write_installed("0.4.0")
         self._write_marketplace("0.6.3")
 

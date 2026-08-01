@@ -204,6 +204,36 @@ class TestLoaderNeverRaises(unittest.TestCase):
         result, _ = vs.resolve_verdict(self.plugin_root)
         self.assertEqual(result.verdict, vs.UNKNOWN)
 
+    def test_bad_byte_in_installed_plugins_json_is_unknown_no_raise(self):
+        """A single non-UTF-8 byte raises UnicodeDecodeError, not
+        json.JSONDecodeError -- the exact failure class commit 5450b53
+        already fixed once for events.jsonl. _read_json must not let it
+        escape, or the WHOLE `rein doctor` report is lost (D3, D4)."""
+        os.makedirs(self.plugin_root)
+        os.makedirs(os.path.join(vs.CLAUDE_PLUGINS_DIR, "marketplaces", "rein-agentic-kit", ".claude-plugin"))
+        with open(os.path.join(vs.CLAUDE_PLUGINS_DIR, "installed_plugins.json"), "wb") as fh:
+            fh.write(b'{"plugins": {}} \xff')
+        with open(
+            os.path.join(vs.CLAUDE_PLUGINS_DIR, "marketplaces", "rein-agentic-kit", ".claude-plugin", "marketplace.json"),
+            "w",
+        ) as fh:
+            json.dump(marketplace_doc("0.6.3"), fh)
+        result, _ = vs.resolve_verdict(self.plugin_root)
+        self.assertEqual(result.verdict, vs.UNKNOWN)
+
+    def test_bad_byte_in_marketplace_json_is_unknown_no_raise(self):
+        os.makedirs(self.plugin_root)
+        os.makedirs(os.path.join(vs.CLAUDE_PLUGINS_DIR, "marketplaces", "rein-agentic-kit", ".claude-plugin"))
+        with open(os.path.join(vs.CLAUDE_PLUGINS_DIR, "installed_plugins.json"), "w") as fh:
+            json.dump(installed_doc("0.4.0"), fh)
+        with open(
+            os.path.join(vs.CLAUDE_PLUGINS_DIR, "marketplaces", "rein-agentic-kit", ".claude-plugin", "marketplace.json"),
+            "wb",
+        ) as fh:
+            fh.write(b'{"plugins": []} \xff')
+        result, _ = vs.resolve_verdict(self.plugin_root)
+        self.assertEqual(result.verdict, vs.UNKNOWN)
+
 
 class TestNoNetworkCapability(unittest.TestCase):
     """D1: mechanically checkable where "makes no network call" is not."""

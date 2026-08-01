@@ -525,7 +525,18 @@ def cmd_doctor(argv: list[str]) -> int:
     # Never touches or even reads VERSION above -- the repo's own version is
     # a third fact that proves nothing about the clone (D3). Report, never
     # act (D2): doctor's exit code never reflects this verdict (D4).
-    staleness, staleness_loaded = _staleness.resolve_verdict(PLUGIN_ROOT)
+    try:
+        staleness, staleness_loaded = _staleness.resolve_verdict(PLUGIN_ROOT)
+    except Exception as exc:  # noqa: BLE001 -- a staleness bug must never sink the whole report (D4)
+        staleness = _staleness.StalenessResult(_staleness.UNKNOWN, f"staleness check failed: {exc}")
+        staleness_loaded = _staleness.LoaderResult(
+            installed_doc=None,
+            marketplace_doc=None,
+            plugin_key=None,
+            plugin_name=None,
+            marketplace_name=None,
+            load_reason=str(exc),
+        )
 
     if "--json" in argv:
         report = {

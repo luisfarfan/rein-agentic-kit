@@ -209,7 +209,12 @@ def _read_json(path: str) -> dict | None:
     try:
         with open(path, encoding="utf-8") as fh:
             return json.load(fh)
-    except (OSError, json.JSONDecodeError):
+    except (OSError, ValueError):
+        # ValueError covers both json.JSONDecodeError and the
+        # UnicodeDecodeError a non-UTF-8 byte raises while reading the file
+        # (see commit 5450b53's ledger fix for the same failure class) --
+        # either way the file is unreadable, which is D3's "unknown", not a
+        # crash that sinks the whole `rein doctor` report.
         return None
 
 

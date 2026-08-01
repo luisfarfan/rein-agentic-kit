@@ -89,6 +89,11 @@ rein doctor
 ```
 
 `doctor` tells you the detected stack, the resolved commands, and where each one came from.
+It also tells you whether the installed `rein` plugin itself is stale against its
+marketplace clone (comparing two files already on disk, no network call) — when it is,
+it prints the two commands to fix it (`claude plugin marketplace update ...` then
+`claude plugin update rein`) and stops there: `doctor` reports, it never installs,
+updates, or writes anything, and being out of date never changes its exit code.
 **If it got everything right, you configure nothing.**
 
 Then, per change:
@@ -118,6 +123,11 @@ You come back when it finished, not before.
 
 ```bash
 rein doctor      # 🩺 start here: stack, resolved commands, and the source of each
+                 # plus a "version : <verdict> -- <reason>" line -- up-to-date / stale /
+                 # unknown against the marketplace clone, with fix commands when stale
+                 # --json: {"version", "pluginRoot", "project", "plan", "verifyState",
+                 # "ledger", "staleness"} -- staleness is {"verdict", "reason",
+                 # "installedVersion", "availableVersion"}
 rein setup       # probe the optional tools · --install provisions what is missing
 rein detect      # stack + commands, with the source of each
 rein tasks       # the plan, parsed
