@@ -332,7 +332,7 @@ class TestShippedSkillsRecordOwnInvocation(unittest.TestCase):
         # A guard against a silently empty glob (e.g. a moved skills dir)
         # making every test below vacuously pass.
         names = {os.path.basename(os.path.dirname(f)) for f in SKILL_FILES}
-        expected = {"loop", "run", "run-auto", "plan", "review", "role"}
+        expected = {"apply", "step", "steps", "plan", "audit", "role"}
         self.assertTrue(expected.issubset(names), f"missing skill dirs: {expected - names}")
 
     def test_every_shipped_skill_records_its_own_invocation_as_its_first_step(self):

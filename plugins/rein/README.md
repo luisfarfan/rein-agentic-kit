@@ -8,7 +8,7 @@ Plugin internals. For what this is and why, see the [repository README](../../RE
 plugins/rein/
 ├── .claude-plugin/plugin.json    name: "rein" -> the /rein:* namespace
 ├── commands/ping.md              /rein:ping — plumbing self-check for fresh installs
-├── skills/plan|loop|review/      /rein:plan, /rein:loop, /rein:review
+├── skills/plan|apply|audit/      /rein:plan, /rein:apply, /rein:audit
 ├── workflows/loop.js             the bounded loop (phase 0: resolution stub)
 ├── lib/detect.py                 stack + command resolution
 ├── lib/token_report.py           per-model token accounting + ledger

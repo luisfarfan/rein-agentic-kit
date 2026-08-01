@@ -67,7 +67,7 @@ flowchart TD
     B{{"rein next<br/><i>deterministic gate</i>"}}
     C["⚙️ Implement<br/><i>bounded loop of FRESH agents</i><br/><i>context resets each step</i>"]
     D{{"Verify<br/><i>ask the plan, not the agent</i>"}}
-    E["🔍 /rein:review<br/><i>whole change · 5 axes</i>"]
+    E["🔍 /rein:audit<br/><i>whole change · 5 axes</i>"]
     F["✅ merge"]
     G["✋ escalate to you"]
     X["🛑 stop"]
@@ -140,7 +140,7 @@ test fails the build if their version strings ever disagree.
 Then, per change:
 
 ```
-/rein:plan   →   you confirm the plan   →   /rein:loop   →   read the verdict
+/rein:plan   →   you confirm the plan   →   /rein:apply   →   read the verdict
 ```
 
 You come back when it finished, not before.
@@ -155,10 +155,10 @@ You come back when it finished, not before.
 |---|---|
 | 🎭 **`/rein:role`** | Assign this session's role: planner · implementer · reviewer |
 | 🧭 **`/rein:plan`** | Plan into verifiable tasks — dry-run and **explicit confirmation** before writing |
-| 🔨 **`/rein:run`** | Exactly **one** task. Max 3 attempts, max 5 failed commands, no self-approval |
-| 🔁 **`/rein:run-auto`** | Bounded loop of `run`, stopping on **verifiable signals** only |
-| 🔍 **`/rein:review`** | The independent gate: mechanical checks first, then five-axis judgement |
-| ♾️ **`/rein:loop`** | Runs all three end-to-end in an isolated worktree |
+| 🔨 **`/rein:step`** | Exactly **one** task. Max 3 attempts, max 5 failed commands, no self-approval |
+| 🔁 **`/rein:steps`** | Bounded loop of `step`, stopping on **verifiable signals** only |
+| 🔍 **`/rein:audit`** | The independent gate: mechanical checks first, then five-axis judgement |
+| ♾️ **`/rein:apply`** | Runs all three end-to-end in an isolated worktree |
 
 ### CLI — the deterministic half
 

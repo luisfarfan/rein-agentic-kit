@@ -6,9 +6,9 @@ license: MIT
 
 # /rein:plan
 
-Thin orchestration for the **planner** role. Turns a request into a task list `/rein:run` can
+Thin orchestration for the **planner** role. Turns a request into a task list `/rein:step` can
 execute without re-deriving intent. **This skill never implements, never ticks a checkbox and
-never invokes `/rein:run`.**
+never invokes `/rein:step`.**
 
 Usage: `/rein:plan <change-name> [description]`
 
@@ -156,7 +156,7 @@ PLAN
 
 ## Guardrails
 
-- Do not implement. Do not tick a checkbox. Do not call `/rein:run` or `/rein:review`.
+- Do not implement. Do not tick a checkbox. Do not call `/rein:step` or `/rein:audit`.
 - Never write the plan without a dry run and explicit confirmation first.
 - Do not invent verification commands the project cannot run — check them against
   `config.commands` first, and say which are missing rather than substituting one.

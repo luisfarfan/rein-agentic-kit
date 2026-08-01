@@ -367,7 +367,7 @@ def _skill_counts_for_root(root: str | None, events_rows: list[dict], events_pat
     matching = [e for e in events_rows if e.get("project") == root]
     if not matching:
         if not os.path.exists(events_path):
-            note = "no events.jsonl recorded yet -- skill invocations (/rein:plan, /rein:run, /rein:run-auto, /rein:review) will appear here once one runs"
+            note = "no events.jsonl recorded yet -- skill invocations (/rein:plan, /rein:step, /rein:steps, /rein:audit) will appear here once one runs"
         else:
             note = f"no skill invocations recorded yet for this project (among the most recent {MAX_EVENTS_READ} logged)"
         return {"skill_counts": {}, "events_note": note}

@@ -20,12 +20,12 @@ plugins/rein/lib/setup.py
 plugins/rein/lib/token_report.py
 plugins/rein/lib/verify.py
 plugins/rein/lib/version_staleness.py
-plugins/rein/skills/loop/SKILL.md
+plugins/rein/skills/apply/SKILL.md
+plugins/rein/skills/audit/SKILL.md
 plugins/rein/skills/plan/SKILL.md
-plugins/rein/skills/review/SKILL.md
 plugins/rein/skills/role/SKILL.md
-plugins/rein/skills/run/SKILL.md
-plugins/rein/skills/run-auto/SKILL.md
+plugins/rein/skills/step/SKILL.md
+plugins/rein/skills/steps/SKILL.md
 plugins/rein/workflows/loop.js
 rein_agentic_kit.egg-info/PKG-INFO
 rein_agentic_kit.egg-info/SOURCES.txt
@@ -64,6 +64,7 @@ tests/test_serena_worktree.py
 tests/test_serve_probe.py
 tests/test_setup.py
 tests/test_single_subproject.py
+tests/test_skill_names.py
 tests/test_token_report.py
 tests/test_verify_commands.py
 tests/test_verify_policy.py
