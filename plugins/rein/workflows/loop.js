@@ -211,10 +211,16 @@ const ISOLATE_SCHEMA = {
     // over it; graphOutcome is the free-text reason, for the log only.
     graphIndexed: { type: 'boolean' },
     graphOutcome: { type: 'string' },
+    // Same contract, one tool over. `.serena/` is gitignored, so it CANNOT
+    // travel into a worktree cut from a committed HEAD -- the worktree is
+    // always unactivated until something activates it here.
+    serenaActivated: { type: 'boolean' },
+    serenaOutcome: { type: 'string' },
     blocked: { type: 'boolean' },
     blockedReason: { type: 'string' },
   },
-  required: ['done', 'summary', 'pendingIds', 'commits', 'graphIndexed', 'graphOutcome', 'blocked', 'blockedReason'],
+  required: ['done', 'summary', 'pendingIds', 'commits', 'graphIndexed', 'graphOutcome',
+    'serenaActivated', 'serenaOutcome', 'blocked', 'blockedReason'],
   additionalProperties: false,
 }
 
@@ -854,6 +860,15 @@ function decideGraphAvailable(worktreeMode, capabilities, isolate) {
   return !!(isolate && isolate.graphIndexed)
 }
 
+// The same rule as decideGraphAvailable, for the tool that still had the old
+// bug: a capability is only claimed where its tools will actually RUN. serena
+// resolves a project by the DIRECTORY it is in, so the base repo being
+// activated says nothing about the worktree the agents work in.
+function decideSerenaAvailable(worktreeMode, capabilities, isolate) {
+  if (!worktreeMode) return (capabilities || []).includes('serena-project')
+  return !!(isolate && isolate.serenaActivated)
+}
+
 // D4: indexing failure never stops the run — building the prompt is separate
 // from deciding availability (decideGraphAvailable reads what this prompt's
 // agent reports, never re-derives it). Pure so the actual instructions the
@@ -886,7 +901,15 @@ function buildIsolatePrompt(root, base, wd, branch, rein) {
     `the command exited 0 AND ${wd}/.codegraph/codegraph.db now exists; otherwise graphIndexed=false. Set ` +
     `graphOutcome to what literally happened (the command's own message, or "codegraph: command not found" ` +
     `if it is not on PATH) — report it, do not judge it.\n` +
-    `Set done=true when steps 2-4 all succeeded (step 5 never blocks done, per D4).`
+    `6. Activate serena FOR THIS WORKTREE: run '${rein} setup ${wd} --activate'. ` +
+    `\`.serena/\` is gitignored, so it never travels into a worktree cut from a committed HEAD — ` +
+    `without this the worktree is unactivated while ${root}'s own capability says otherwise, and ` +
+    `agents get told to use serena in a directory serena does not know as a project. The repo's ` +
+    `tracked .gitignore already covers \`.serena/\`, so this writes nothing git will see. ` +
+    `Non-blocking exactly like step 5 (D4): set serenaActivated=true ONLY if the command exited 0 AND ` +
+    `${wd}/.serena/project.yml now exists; otherwise false, with serenaOutcome as what literally ` +
+    `happened. Never retry it, never let it fail this step.\n` +
+    `Set done=true when steps 2-4 all succeeded — step 5 never blocks done, and step 6 never blocks done either (D4).`
   )
 }
 
@@ -1073,7 +1096,7 @@ const hasGraph = decideGraphAvailable(WORKTREE_MODE, ctx.capabilities, setup)
 // directions) vs 2 turns (22 + 75 tok); and "which tests cover this symbol",
 // which the other tool has no concept of at all. That is the case for
 // codegraph as the one owner of retrieval below.
-const hasSerena = (ctx.capabilities || []).includes('serena-project')
+const hasSerena = decideSerenaAvailable(WORKTREE_MODE, ctx.capabilities, setup)
 // Pure (hasSerena/hasGraph as args, not read from the outer closure) so all four
 // on/off combinations are executed by a test the same way decideGraphAvailable
 // is (T001 acceptance) — including proving the no-tool branch stays

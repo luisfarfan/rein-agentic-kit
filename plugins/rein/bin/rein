@@ -32,7 +32,7 @@ import os
 import shutil
 import sys
 
-VERSION = "0.6.0"
+VERSION = "0.6.1"
 
 HERE = os.path.dirname(os.path.abspath(os.path.realpath(__file__)))
 PLUGIN_ROOT = os.path.dirname(HERE)
@@ -264,6 +264,17 @@ def cmd_setup(argv: list[str]) -> int:
     ignore = _setup.gitignore_lines(root)
     if ignore:
         print(f"\n  these tools write local state into the repo — add to .gitignore: {', '.join(ignore)}")
+
+    # --activate: the repo-scoped half ONLY -- no installs, and never a write
+    # to a TRACKED file. It exists for the loop's worktree, which is cut from
+    # a committed HEAD and therefore never carries `.serena/` (gitignored, so
+    # it cannot travel). Without this, a worktree is unactivated while the
+    # base repo's capability says otherwise, and agents are handed serena
+    # tools for a directory serena does not know as a project.
+    if "--activate" in argv:
+        res = _setup.activate_serena(root)
+        print(f"\n  serena-activate: {'ok' if res['ok'] else 'FAILED'} — {res.get('reason', '')}")
+        return 0  # never blocks a caller (D4): activation is a capability, not a gate
 
     if "--install" not in argv:
         return 0 if not state["missing"] else 1
