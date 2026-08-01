@@ -47,6 +47,7 @@ tests/test_graph_index.py
 tests/test_graph_retrieval.py
 tests/test_loop_policy.py
 tests/test_measure_step.py
+tests/test_mise_runner.py
 tests/test_monorepo.py
 tests/test_packaging.py
 tests/test_parallel_groups.py
@@ -60,6 +61,7 @@ tests/test_run_duration.py
 tests/test_serena_worktree.py
 tests/test_serve_probe.py
 tests/test_setup.py
+tests/test_single_subproject.py
 tests/test_token_report.py
 tests/test_verify_commands.py
 tests/test_verify_policy.py

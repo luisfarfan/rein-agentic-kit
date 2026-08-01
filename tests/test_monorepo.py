@@ -79,6 +79,11 @@ class TestFirecrawlShaped(unittest.TestCase):
         )
 
     def test_depth_bound_and_skip_dirs_respected(self):
+        # Exercises `_find_subprojects` directly, not `resolve()` -- with
+        # only ONE real candidate here, `resolve()` now takes the D2
+        # single-subproject path (tests/test_single_subproject.py) and
+        # never populates `subprojects[]` at all. The bounded-scan behaviour
+        # under test is orthogonal to that branch.
         with Project(
             {
                 "README.md": "monorepo\n",
@@ -89,21 +94,24 @@ class TestFirecrawlShaped(unittest.TestCase):
                 "node_modules/somelib/package.json": PKG_TEST,
             }
         ) as root:
-            r = detect.resolve(root)
-        paths = {s["path"] for s in r["subprojects"]}
-        self.assertEqual(paths, {"apps/api"})
+            found = detect._find_subprojects(root)
+        self.assertEqual(set(found), {"apps/api"})
 
 
 class TestSingleCandidateMonorepo(unittest.TestCase):
-    """Even ONE candidate must not be auto-picked (D1)."""
+    """Superseded by D2 ("One is not many"), landed in T002: a root with
+    exactly ONE manifest-bearing directory is a project in a subdirectory,
+    not a monorepo, and resolves that directory's commands directly rather
+    than demanding a choice between one option. See
+    tests/test_single_subproject.py::TestSingleSubprojectResolvesDirectly
+    for the current behaviour."""
 
-    def test_single_candidate_still_reports_monorepo_with_empty_root_commands(self):
+    def test_single_candidate_resolves_its_own_commands_not_monorepo(self):
         with Project({"README.md": "x\n", "services/only/package.json": PKG_TEST}) as root:
             r = detect.resolve(root)
-        self.assertEqual(r["stack"], "monorepo")
-        self.assertEqual(len(r["subprojects"]), 1)
-        self.assertEqual(r["subprojects"][0]["path"], "services/only")
-        self.assertEqual(r["commands"], {})
+        self.assertEqual(r["stack"], "node")
+        self.assertNotIn("subprojects", r)
+        self.assertEqual(r["commands"]["test"], "cd services/only && npm run test")
 
 
 class TestSubprojectOverride(unittest.TestCase):

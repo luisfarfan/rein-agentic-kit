@@ -1,0 +1,11 @@
+[project]
+name = "harness"
+version = "0.1.0"
+description = "Provisions each of proxima-engineering's nine repositories"
+requires-python = ">=3.11"
+
+[tool.ruff]
+line-length = 100
+
+[tool.mypy]
+strict = true

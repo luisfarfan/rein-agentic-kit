@@ -795,7 +795,24 @@ def resolve(root: str = ".") -> dict:
     auto_cmds = auto.get("commands", {})
     if auto["stack"] == "unknown":
         found = _find_subprojects(root)
-        if found:
+        if len(found) == 1:
+            # D2: one is not many. A root with no manifest of its own and
+            # EXACTLY ONE manifest-bearing directory is a project that lives
+            # in a subdirectory, not a monorepo -- "choose a sub-project"
+            # over a list of one sends the operator to a problem that does
+            # not exist. Resolve it directly: its own stack (never
+            # "monorepo"), its own commands, carried with `cd` so they run
+            # from the root exactly like an explicit `subproject` choice.
+            rel = found[0]
+            chosen = _resolve_subproject(root, rel)
+            subproject_choice = rel
+            subproject_subtypes = chosen.get("subtypes", [])
+            stack_override = chosen["stack"]
+            auto_cmds = {
+                slot: f"cd {shlex.quote(rel)} && {cmd}"
+                for slot, cmd in chosen["commands"].items()
+            }
+        elif found:
             subprojects = [_resolve_subproject(root, rel) for rel in found]
             stack_override = "monorepo"
             raw_choice = str(cfg.get("subproject") or "").strip()
@@ -829,9 +846,10 @@ def resolve(root: str = ".") -> dict:
                     subproject_invalid = raw_choice
                     auto_cmds = {}
             else:
-                # The kit must not pick a sub-project, even a single
-                # candidate (D1) -- no commands resolve at the root until
-                # told which one.
+                # Two or more real candidates -- the kit must not guess
+                # between them (D1); the single-candidate case above already
+                # left this branch entirely, so "choose a sub-project" is
+                # only ever asked when there genuinely is a choice.
                 auto_cmds = {}
 
     # Precedence: config > task runner > autodetect (a chosen sub-project

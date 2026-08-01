@@ -229,7 +229,7 @@ def cmd_close(argv: list[str]) -> int:
     plan = _plan.read_plan(root, source=cfg["plan"]["source"], change=_opt(argv, "change"),
                            configured=cfg["plan"].get("path", ""))
     if not plan["exists"]:
-        print(f"no plan at {plan['path']}")
+        print(plan.get("error") or f"no plan at {plan['path']}")
         return 1
     if _plan.close_task(plan["path"], task_id):
         print(f"closed {task_id} in {plan['path']}")
@@ -533,12 +533,20 @@ def cmd_doctor(argv: list[str]) -> int:
     ok = "ok"
     miss = "MISSING"
 
-    plan = _plan.read_plan(root, source=resolved["plan"]["source"], configured=resolved["plan"].get("path", ""))
-    plan_state = (
-        f"{len(plan['pending'])} pending / {len(plan['tasks'])} tasks"
-        if plan["exists"]
-        else f"NOT FOUND at {plan['path']}"
+    plan = _plan.read_plan(
+        root,
+        source=resolved["plan"]["source"],
+        change=_opt(argv, "change"),
+        configured=resolved["plan"].get("path", ""),
     )
+    if plan["exists"]:
+        plan_state = f"{len(plan['pending'])} pending / {len(plan['tasks'])} tasks"
+    elif plan["path"]:
+        plan_state = f"NOT FOUND at {plan['path']}"
+    else:
+        # D3: no location to report a NOT FOUND at (an openspec source with
+        # no change named) -- `error` names the changes that exist instead.
+        plan_state = plan.get("error", "no plan")
     # Last-known verification state, read-only -- doctor never runs a command
     # itself (that is `rein verify`'s job). "known" means a prior `rein
     # verify` ran and persisted a report; nothing here re-derives it.
