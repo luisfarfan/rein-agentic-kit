@@ -88,7 +88,7 @@ indexed it and wrote the file — a summary of the state before its own work.
     - an openspec directory with no changes at all reports that, distinctly from "you did not name one"
     - `rein detect` on `proxima-engineering`'s real shape resolves `harness`'s commands, and a fixture reproducing that shape is checked in
 
-- [ ] T003 The CLI is readable, and still machine-safe
+- [x] T003 The CLI is readable, and still machine-safe
   - Type: implementation
   - Depends on: T002
   - Human review: false
