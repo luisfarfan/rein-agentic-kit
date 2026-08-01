@@ -247,3 +247,50 @@ class TestEarlyAbortsAreMeasured(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestTheMeasureStepIsReachableFromEveryEarlyAbort(unittest.TestCase):
+    """`measuredAbort` recorded NOTHING from any early abort, for its whole life.
+
+    Found when PlanCheck stopped a run and the result carried:
+        measure: {recorded: false,
+                  error: "Cannot access 'MEASURE_SCHEMA' before initialization"}
+
+    `MEASURE_SCHEMA` was declared beside `runMeasureStep` near the end of the
+    file, while the five early returns that call `measuredAbort` (Prepare, the
+    gate precheck, an empty plan, PlanCheck, Isolate) all execute far above
+    it. A `const` in its temporal dead zone throws on access, so the step
+    added by `measure-itself` to stop losing early-abort spend lost all of it
+    — in precisely the cases it was built for.
+
+    It stayed invisible because D4 works: the failure is caught, the run
+    continues, and the error lands in a field nobody reads unless an abort
+    happens. The test is therefore about ORDER, which is the actual invariant.
+    """
+
+    def _lines(self) -> list:
+        with open(LOOP_JS, encoding="utf-8") as fh:
+            return fh.read().splitlines()
+
+    def test_the_schema_is_declared_before_the_first_abort_that_needs_it(self):
+        lines = self._lines()
+        decl = [i for i, l in enumerate(lines, 1) if l.startswith("const MEASURE_SCHEMA")]
+        self.assertEqual(len(decl), 1, "MEASURE_SCHEMA must be declared exactly once")
+        uses = [i for i, l in enumerate(lines, 1)
+                if "measuredAbort(" in l and "async function" not in l]
+        self.assertTrue(uses, "sanity: nothing calls measuredAbort any more?")
+        self.assertLess(
+            decl[0], min(uses),
+            f"MEASURE_SCHEMA is declared at line {decl[0]} but measuredAbort runs first at "
+            f"line {min(uses)} — every early abort will throw in the temporal dead zone and "
+            f"record nothing",
+        )
+
+    def test_every_early_abort_is_above_the_schema_free_zone(self):
+        """All five abort sites must sit after the declaration, not just the
+        first one — a new abort added above it would break silently again."""
+        lines = self._lines()
+        decl = next(i for i, l in enumerate(lines, 1) if l.startswith("const MEASURE_SCHEMA"))
+        early = [i for i, l in enumerate(lines, 1)
+                 if "measuredAbort(" in l and "async function" not in l and i < decl]
+        self.assertEqual(early, [], f"abort sites above the declaration: {early}")

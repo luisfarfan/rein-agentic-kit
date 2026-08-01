@@ -211,6 +211,25 @@ const CONTEXT_SCHEMA = {
   additionalProperties: false,
 }
 
+// Declared HERE, with the other schemas, and not beside runMeasureStep:
+// `measuredAbort` is called from five EARLY returns (Prepare, the gate
+// precheck, an empty plan, PlanCheck, Isolate), all of which execute
+// before a declaration further down the file has run. As a `const` in
+// its temporal dead zone that threw `Cannot access 'MEASURE_SCHEMA'
+// before initialization` on every one of them -- so the step added to
+// stop losing early-abort spend recorded nothing, in exactly the cases
+// it exists for. D4 kept the run alive, which is why it stayed invisible.
+const MEASURE_SCHEMA = {
+  type: 'object',
+  properties: {
+    ok: { type: 'boolean' },
+    wfId: { type: 'string' },
+    error: { type: 'string' },
+  },
+  required: ['ok', 'wfId', 'error'],
+  additionalProperties: false,
+}
+
 const ISOLATE_SCHEMA = {
   type: 'object',
   properties: {
@@ -1815,16 +1834,6 @@ const RENDER_SCHEMA = {
 // recorded a row, and under what wf_id. Everything else (turns, ctx_max,
 // opus_share...) already lives in the ledger row itself; re-reporting it here
 // through an agent's JSON would be a second, driftable copy of the truth.
-const MEASURE_SCHEMA = {
-  type: 'object',
-  properties: {
-    ok: { type: 'boolean' },
-    wfId: { type: 'string' },
-    error: { type: 'string' },
-  },
-  required: ['ok', 'wfId', 'error'],
-  additionalProperties: false,
-}
 
 // Finding 5: teardown is the LOOP's job, never left to an agent's memory. A
 // render agent that dies mid-step, or simply stops after starting the server,

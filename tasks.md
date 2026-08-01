@@ -22,7 +22,10 @@ files on disk that Claude Code itself maintains:
 - `~/.claude/plugins/marketplaces/<name>/.claude-plugin/marketplace.json` →
   what that marketplace offers, from a git clone Claude Code refreshes
 
-Comparing them is a string comparison over two JSON reads. `rein doctor` is
+Comparing them is a string comparison over two JSON reads. The repository's
+own version is a THIRD fact and is NOT local — nothing on disk can prove the
+clone is current, so the check reports what it knows and names what it does
+not. `rein doctor` is
 already the command that says "here is what I detected"; it is the honest
 place to also say "and you are running an old me".
 
@@ -56,7 +59,7 @@ place to also say "and you are running an old me".
   - Acceptance:
     - a pure function takes the two parsed JSON documents and returns one of `up-to-date`, `stale`, or `unknown` with a reason, comparing the running plugin's version against the version its marketplace offers; a test drives every branch from fixtures, including equal, newer-available, and newer-installed (which is `unknown`, not `stale` — that is a developer running from a checkout)
     - `rein doctor` prints the verdict, and when stale prints BOTH commands in order — refreshing the marketplace before updating the plugin — because the measured failure was a stale clone that made the update a no-op
-    - the marketplace clone being older than the plugin's own repository is reported as its own case with its own fix, since that is the state this machine was actually in
+    - a marketplace whose clone offers the SAME version that is installed is still reported as `up-to-date`, and the fix line for refreshing the clone is printed anyway with the reason — the clone can be stale and nothing local can prove it is, so the check says what it does not know instead of implying the pair is current (D3)
     - every unreadable, missing or unexpected-shape input yields `unknown` with the reason named, and a test covers a missing file, malformed JSON, and a plugin absent from the installed list (D3)
     - the check makes no network call and writes nothing: a test asserts the function touches only paths under `~/.claude/plugins` and that `doctor`'s exit code is unchanged whether the verdict is stale or not (D1/D2/D4)
     - `rein doctor --json` gains the verdict alongside its existing keys, and a test pins the keys it had before so nothing that reads it breaks
