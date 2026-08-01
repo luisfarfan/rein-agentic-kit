@@ -308,5 +308,50 @@ class TestEventsFileAbsentEmptyOrCorrupt(HistoryFixture):
         self.assertEqual(view["projects"][0]["history"]["skill_counts"], {})
 
 
+class TestHistorySectionStatesWhyItIsEmptyWithNoHistoryKey(unittest.TestCase):
+    """AC5's "state why it is empty" applies wherever the section can render,
+    not only through `build_view` (which always populates `history`).
+    `_project_section` reads it as `project.get("history") or {}`, so a
+    project dict with no "history" key at all -- reachable in-repo, not just
+    hypothetical -- must still render a stated reason, never a heading over
+    a blank `<p>`."""
+
+    def _view_without_history_key(self) -> dict:
+        return {"message": "", "projects": [{
+            "project": "proj-no-history",
+            "root": None,
+            "models": {},
+            "runs": [{
+                "wf_id": "wf_1", "ts": "2026-01-01T00:00:00Z", "turns_per_agent": 5.0,
+                "ctx_max": 1000, "opus_share": 10.0, "is_baseline": False, "deltas": None, "agents": [],
+            }],
+            "summary": {"text": "irrelevant to this test"},
+            "baseline_info": "irrelevant to this test",
+            # deliberately no "history" key
+        }]}
+
+    def test_skill_counts_html_states_a_default_reason_for_no_history_key(self):
+        html_out = dash.render_html(self._view_without_history_key())
+        match = re.search(r'<p class="events-note">([^<]*)</p>', html_out)
+        self.assertIsNotNone(match, "no events-note paragraph rendered")
+        self.assertTrue(match.group(1).strip(), "events-note is blank -- does not state why the section is empty")
+
+    def test_trend_html_states_a_default_reason_for_no_history_key(self):
+        html_out = dash.render_html(self._view_without_history_key())
+        match = re.search(r'<p class="trend-note">([^<]*)</p>', html_out)
+        self.assertIsNotNone(match, "no trend-note paragraph rendered")
+        self.assertTrue(match.group(1).strip(), "trend-note is blank -- does not state why the section is empty")
+
+    def test_skill_counts_html_unit_falls_back_when_note_is_empty_string(self):
+        out = dash._skill_counts_html({}, "")
+        self.assertNotEqual(out, '<p class="events-note"></p>', "blank note with no stated reason")
+        self.assertIn(dash._DEFAULT_EVENTS_NOTE, out)
+
+    def test_trend_html_unit_falls_back_when_note_is_none(self):
+        out = dash._trend_html(None, None)
+        self.assertNotEqual(out, '<p class="trend-note"></p>', "blank note with no stated reason")
+        self.assertIn(dash._DEFAULT_TREND_NOTE, out)
+
+
 if __name__ == "__main__":
     unittest.main()

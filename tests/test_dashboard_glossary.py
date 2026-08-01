@@ -19,6 +19,7 @@ import os
 import re
 import sys
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "plugins", "rein", "lib"))
 
@@ -28,8 +29,11 @@ from tests.test_dashboard import LedgerFixture, row  # noqa: E402
 
 # The authoritative list of metric keys this page renders anywhere: the
 # per-run table (turns_per_agent, ctx_max, opus_share and their deltas) and
-# the per-agent detail table (turns, total, ctx_max). Cross-checked against
-# `_run_view`'s returned dict and `_project_section`'s header strings.
+# the per-agent detail table (turns, total, ctx_max). Used only by the tests
+# below that assert presence of *known* buttons -- the actual completeness
+# ratchet (`TestGlossaryCompleteness`) derives its list from render output
+# instead of trusting this tuple, so a new metric column added without a
+# glossary call fails there even if nobody updates this list.
 RENDERED_METRIC_KEYS = (
     "turns",
     "turns_per_agent",
@@ -40,6 +44,22 @@ RENDERED_METRIC_KEYS = (
     "delta_ctx_max",
     "delta_opus_share",
 )
+
+# `<th>` labels that are structural (row/column identifiers), not metrics --
+# they have nothing numeric to explain, so `TestGlossaryCompleteness` exempts
+# exactly these from needing a glossary button. Any other <th> with no
+# `aria-describedby` is a metric that shipped unexplained.
+_NON_METRIC_HEADER_LABELS = {"run", "agents", "file", "model"}
+
+
+def _strip_tags(cell_html: str) -> str:
+    return re.sub(r"<[^>]+>", "", cell_html).strip()
+
+
+def _th_cells(html_out: str) -> list[str]:
+    """Every `<th>...</th>` cell's inner HTML, from every table on the page
+    (the per-run table and every per-agent detail table)."""
+    return re.findall(r"<th>(.*?)</th>", html_out, re.DOTALL)
 
 
 def _full_view(with_baseline: bool = True) -> dict:
@@ -74,21 +94,43 @@ def _full_view(with_baseline: bool = True) -> dict:
 
 class TestGlossaryCompleteness(unittest.TestCase):
     """D3: one glossary, one source -- every rendered metric key has an
-    entry, and a missing one is named, not silently skipped."""
+    entry, and a missing one is named, not silently skipped.
 
-    def test_glossary_covers_every_rendered_metric_key(self):
-        for key in RENDERED_METRIC_KEYS:
-            self.assertIn(key, dash.GLOSSARY, f"GLOSSARY is missing an entry for metric {key!r}")
+    This is a ratchet against the page's actual render output, not a
+    hand-maintained list: it fails the moment a new metric `<th>` ships
+    without a call to `_glossary_html`, which a hand-maintained
+    `RENDERED_METRIC_KEYS` tuple cannot catch (nothing derives it from what
+    `_project_section`/`_agents_detail` actually render).
+    """
+
+    def test_every_rendered_th_has_a_glossary_button_or_is_structural(self):
+        html_out = dash.render_html(_full_view())
+        cells = _th_cells(html_out)
+        self.assertGreater(len(cells), 0, "sanity: the fixture must render at least one <th>")
+        for cell in cells:
+            # ids are "glossary-<key>-<uid>" (uid is digits, see
+            # `_glossary_html`); keys themselves only ever use underscores.
+            match = re.search(r'aria-describedby="glossary-([a-zA-Z0-9_]+)-\d+"', cell)
+            if match is None:
+                label = _strip_tags(cell)
+                self.assertIn(
+                    label, _NON_METRIC_HEADER_LABELS,
+                    f"<th> {label!r} has no glossary button and is not a known structural column -- "
+                    "a metric shipped unexplained (D3)",
+                )
+                continue
+            key = match.group(1)
+            self.assertIn(key, dash.GLOSSARY, f"<th> references a glossary key with no GLOSSARY entry: {key!r}")
 
     def test_missing_glossary_entry_is_named_in_the_failure(self):
-        # Prove the assertion mechanism itself names the *first* missing
-        # key, rather than a generic "something is missing" message.
-        incomplete = dict(dash.GLOSSARY)
-        del incomplete["ctx_max"]
-        del incomplete["total"]
-        with self.assertRaises(AssertionError) as ctx:
-            for key in RENDERED_METRIC_KEYS:
-                self.assertIn(key, incomplete, f"GLOSSARY is missing an entry for metric {key!r}")
+        # Prove the completeness check itself -- not unittest's own
+        # assertIn message -- names the key that GLOSSARY is missing: patch
+        # a real entry out of the actual `dash.GLOSSARY` and confirm the
+        # product's own render path names it.
+        with mock.patch.dict(dash.GLOSSARY):
+            del dash.GLOSSARY["ctx_max"]
+            with self.assertRaises(KeyError) as ctx:
+                dash.render_html(_full_view())
         self.assertIn("ctx_max", str(ctx.exception))
 
     def test_every_entry_has_a_one_line_meaning_and_a_one_line_why(self):
@@ -112,9 +154,12 @@ class TestGlossaryAffordanceIsAccessible(unittest.TestCase):
         self.html_out = dash.render_html(_full_view())
 
     def test_every_metric_header_carries_a_glossary_button(self):
+        # ids are disambiguated per occurrence ("glossary-<key>-<uid>", see
+        # `_glossary_html`), so match the key as a prefix rather than the
+        # whole id.
         for key in RENDERED_METRIC_KEYS:
-            self.assertIn(
-                f'aria-describedby="glossary-{key}"', self.html_out,
+            self.assertRegex(
+                self.html_out, rf'aria-describedby="glossary-{re.escape(key)}-\d+"',
                 f"no glossary button wired to metric {key!r}",
             )
 
@@ -133,7 +178,7 @@ class TestGlossaryAffordanceIsAccessible(unittest.TestCase):
         for key in RENDERED_METRIC_KEYS:
             entry = dash.GLOSSARY[key]
             match = re.search(
-                rf'<span id="glossary-{re.escape(key)}"[^>]*>([^<]*)</span>', self.html_out,
+                rf'<span id="glossary-{re.escape(key)}-\d+"[^>]*>([^<]*)</span>', self.html_out,
             )
             self.assertIsNotNone(match, f"no description element for metric {key!r}")
             self.assertIn(entry["meaning"], match.group(1))
@@ -141,6 +186,42 @@ class TestGlossaryAffordanceIsAccessible(unittest.TestCase):
 
     def test_no_hover_only_title_attribute_anywhere(self):
         self.assertNotIn(" title=", self.html_out, "a hover-only title is not an accessible explanation")
+
+
+class TestGlossaryIdsAreUniqueAcrossThePage(unittest.TestCase):
+    """Every occurrence of a metric header (the per-run table's header,
+    repeated per project, and the per-agent detail table, repeated per run)
+    must get its own id -- duplicate ids are invalid HTML, and every
+    `aria-describedby` past the first would resolve to whichever span
+    happens to sit first in the DOM rather than the one beside it."""
+
+    def _multi_project_multi_run_view(self, n_projects: int, n_runs: int) -> dict:
+        projects = []
+        for p in range(n_projects):
+            runs = []
+            for r in range(n_runs):
+                runs.append({
+                    "wf_id": f"wf_p{p}_r{r}", "ts": f"2026-01-{r + 1:02d}T00:00:00Z",
+                    "turns_per_agent": 5.0 + r, "ctx_max": 1000 + r, "opus_share": 10.0,
+                    "is_baseline": r == 0, "deltas": {"turns_per_agent": -1.0, "ctx_max": -1.0, "opus_share": 0.0} if r > 0 else None,
+                    "agents": [{"file": f"a{r}.jsonl", "model": "sonnet-5", "turns": 5, "total": 500, "ctx_max": 1000}],
+                })
+            projects.append({
+                "project": f"proj-{p}", "root": None, "models": {}, "runs": runs,
+                "summary": {"text": "irrelevant"}, "baseline_info": "irrelevant",
+            })
+        return {"message": "", "projects": projects}
+
+    def test_every_id_attribute_in_the_rendered_page_is_unique(self):
+        # Mirrors the reviewer-reported scenario: multiple projects, many
+        # runs each -- the shape that previously produced 59 id attributes
+        # with only 5 distinct values.
+        view = self._multi_project_multi_run_view(n_projects=2, n_runs=16)
+        html_out = dash.render_html(view)
+        ids = re.findall(r'\bid="([^"]+)"', html_out)
+        self.assertGreater(len(ids), 5, "sanity: the fixture must render many id attributes")
+        duplicates = {i for i in ids if ids.count(i) > 1}
+        self.assertEqual(duplicates, set(), f"duplicate id attribute(s) in rendered page: {sorted(duplicates)}")
 
 
 class TestDeltaColumnsStateNegativeIsBetter(unittest.TestCase):

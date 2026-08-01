@@ -22,11 +22,14 @@ import difflib
 import hashlib
 import html
 import http.server
+import itertools
 import json
 import os
 import sys
 import time
 import urllib.parse
+
+from typing import Iterator
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -140,10 +143,18 @@ def _run_view(row: dict, project: str, baseline: dict | None) -> dict:
 # Human-readable name for each metric, plus the word to use on either side of
 # its delta ("12.3% fewer turns per agent" / "8.1% more context per turn") --
 # never a bare signed number (D2/T001).
+#
+# "noun" only composes grammatically after a more/less word ("more of the
+# Opus quota"); it does not stand on its own. "bare" is the phrase used when
+# there is no more/less word to precede it -- the pct==0 ("unchanged") and
+# pct is None ("no comparable ... recorded") branches of `_metric_phrase`.
+# For "turns_per_agent" and "ctx_max" the noun already reads fine bare, so
+# "bare" repeats it; "opus_share" needs a different phrase ("Opus quota
+# use") to stay grammatical in those two branches.
 _METRIC_WORDS: dict[str, dict[str, str]] = {
-    "turns_per_agent": {"noun": "turns per agent", "more": "more", "less": "fewer"},
-    "ctx_max": {"noun": "context per turn", "more": "more", "less": "less"},
-    "opus_share": {"noun": "of the Opus quota", "more": "more", "less": "less"},
+    "turns_per_agent": {"noun": "turns per agent", "bare": "turns per agent", "more": "more", "less": "fewer"},
+    "ctx_max": {"noun": "context per turn", "bare": "context per turn", "more": "more", "less": "less"},
+    "opus_share": {"noun": "of the Opus quota", "bare": "Opus quota use", "more": "more", "less": "less"},
 }
 
 # Whether a LOWER value is better, per metric. A lookup table, not a blanket
@@ -251,9 +262,9 @@ def _metric_phrase(metric_key: str, pct: float | None) -> str:
     gives it meaning -- never a bare signed number."""
     words = _METRIC_WORDS[metric_key]
     if pct is None:
-        return f"no comparable {words['noun']} recorded"
+        return f"no comparable {words['bare']} recorded"
     if pct == 0:
-        return f"the same {words['noun']}"
+        return f"the same {words['bare']}"
     word = words["more"] if pct > 0 else words["less"]
     return f"{abs(pct):.1f}% {word} {words['noun']}"
 
@@ -735,7 +746,7 @@ table.skills th:first-child,table.skills td:first-child{text-align:left}
 """
 
 
-def _glossary_html(key: str) -> str:
+def _glossary_html(key: str, uid: str = "") -> str:
     """The '?' affordance for one metric header (D3/D4): text pulled from
     the single `GLOSSARY` (raises `KeyError` naming `key` if it is missing
     an entry, rather than rendering a header that explains nothing), on a
@@ -745,9 +756,17 @@ def _glossary_html(key: str) -> str:
     an accessible description via `aria-describedby`, not a hover-only
     `title` attribute, so it reaches people who use a screen reader as
     reliably as people who use a mouse.
+
+    `uid` disambiguates the id: the same metric key renders once per project
+    header and once per run's per-agent detail table, and HTML ids must be
+    unique document-wide or every `aria-describedby` past the first resolves
+    to whichever span happens to sit first in the DOM instead of the one
+    beside it. `render_html` threads a page-wide counter down as `uid` so
+    every occurrence gets its own id; it defaults to "" for callers (and
+    tests) that only ever render one glossary button in isolation.
     """
     entry = GLOSSARY[key]
-    desc_id = f"glossary-{key}"
+    desc_id = f"glossary-{key}-{uid}" if uid else f"glossary-{key}"
     text = html.escape(f"{entry['meaning']} {entry['why']}")
     return (
         f'<button type="button" class="glossary-toggle" aria-describedby="{desc_id}" aria-label="What does this mean?">?'
@@ -784,10 +803,11 @@ def _delta_cell(pct: float | None) -> str:
     return f'<span class="{cls}">{pct:+.1f}% ({word})</span>'
 
 
-def _agents_detail(agents: list[dict]) -> str:
+def _agents_detail(agents: list[dict], uid: str = "") -> str:
     """Per-agent rows, reachable without leaving the page (native disclosure,
     no JS). An empty `agents` list still renders -- never an empty <table>
-    that looks broken."""
+    that looks broken. `uid` (typically the owning run's wf_id) keeps this
+    table's glossary ids distinct from every other run's (see `_glossary_html`)."""
     if not agents:
         return "<details><summary>0 agents</summary><p>no agents recorded for this run</p></details>"
     rows = "".join(
@@ -803,14 +823,14 @@ def _agents_detail(agents: list[dict]) -> str:
     return (
         f"<details><summary>{len(agents)} agent(s)</summary>"
         '<table class="agents"><thead><tr><th>file</th><th>model</th>'
-        f"<th>turns{_glossary_html('turns')}</th>"
-        f"<th>total{_glossary_html('total')}</th>"
-        f"<th>ctx_max{_glossary_html('ctx_max')}</th>"
+        f"<th>turns{_glossary_html('turns', uid)}</th>"
+        f"<th>total{_glossary_html('total', uid)}</th>"
+        f"<th>ctx_max{_glossary_html('ctx_max', uid)}</th>"
         f"</tr></thead><tbody>{rows}</tbody></table></details>"
     )
 
 
-def _run_row(run: dict, show_deltas: bool) -> str:
+def _run_row(run: dict, show_deltas: bool, uid: str = "") -> str:
     row_class = ' class="baseline"' if run["is_baseline"] else ""
     badge = ' <span class="badge">BASELINE</span>' if run["is_baseline"] else ""
     # A run recorded before `change` labels existed carries "" here (see
@@ -830,7 +850,7 @@ def _run_row(run: dict, show_deltas: bool) -> str:
             f"<td>{_delta_cell(deltas[key]) if deltas else '&mdash;'}</td>"
             for key in ("turns_per_agent", "ctx_max", "opus_share")
         )
-    cells += f"<td>{_agents_detail(run.get('agents') or [])}</td>"
+    cells += f"<td>{_agents_detail(run.get('agents') or [], uid)}</td>"
     return f"<tr{row_class}>{cells}</tr>"
 
 
@@ -869,11 +889,20 @@ def _models_form(root: str | None, models: dict) -> str:
     )
 
 
+# Fallback notes for a project dict that carries no "history" key at all
+# (reachable via `_project_section`'s `project.get("history") or {}`, not
+# just through `_project_history`/`build_view`, which always populate one) --
+# AC5 requires the section to always state why it is empty, never render a
+# heading over a blank paragraph.
+_DEFAULT_EVENTS_NOTE = "no usage history recorded for this project"
+_DEFAULT_TREND_NOTE = "no turns/agent trend recorded for this project"
+
+
 def _skill_counts_html(skill_counts: dict, events_note: str) -> str:
     """AC1/AC5: counts per skill name, or -- with none -- the reason why,
     always rendered, never a silently missing section."""
     if not skill_counts:
-        return f'<p class="events-note">{html.escape(events_note)}</p>'
+        return f'<p class="events-note">{html.escape(events_note or _DEFAULT_EVENTS_NOTE)}</p>'
     rows = "".join(
         f"<tr><td>{html.escape(str(name))}</td><td>{int(count)}</td></tr>"
         for name, count in sorted(skill_counts.items())
@@ -884,19 +913,19 @@ def _skill_counts_html(skill_counts: dict, events_note: str) -> str:
     )
 
 
-def _trend_html(trend_svg: str | None, trend_note: str | None) -> str:
+def _trend_html(trend_svg: str | None, trend_note: str | None, uid: str = "") -> str:
     """AC3: the inline SVG trend, or -- for too few runs -- the stated
     reason instead of a misleading two-point line."""
     if trend_svg is None:
-        return f'<p class="trend-note">{html.escape(trend_note or "")}</p>'
-    return f'<div class="trend">{trend_svg}{_glossary_html("turns_per_agent")}</div>'
+        return f'<p class="trend-note">{html.escape(trend_note or _DEFAULT_TREND_NOTE)}</p>'
+    return f'<div class="trend">{trend_svg}{_glossary_html("turns_per_agent", uid)}</div>'
 
 
-def _project_history_html(history: dict) -> str:
+def _project_history_html(history: dict, uid: str = "") -> str:
     """AC1: visually separated from the run table above it -- its own
     heading and CSS block, never mixed into the run rows or their totals."""
     skills_html = _skill_counts_html(history.get("skill_counts") or {}, history.get("events_note") or "")
-    trend_html = _trend_html(history.get("trend_svg"), history.get("trend_note"))
+    trend_html = _trend_html(history.get("trend_svg"), history.get("trend_note"), uid)
     return (
         '<div class="history">'
         "<h3>Skill invocations</h3>"
@@ -907,37 +936,45 @@ def _project_history_html(history: dict) -> str:
     )
 
 
-def _project_section(project: dict) -> str:
+def _project_section(project: dict, uid_seq: Iterator[int] | None = None) -> str:
+    """`uid_seq` hands out a fresh id suffix (see `_glossary_html`) to every
+    glossary occurrence this section renders -- its own header, each run's
+    per-agent detail table, and the trend -- so ids stay unique even though
+    the page has many projects and many runs, each repeating the same
+    metric keys. Defaults to a private counter when called on its own."""
+    if uid_seq is None:
+        uid_seq = itertools.count()
     runs = project["runs"]
     # Deltas (and therefore the whole "savings" column group) only appear for a
     # project that actually has a baseline in it -- with none, this stays a
     # plain trend table, protecting D4 (no baseline -> no savings figure).
     show_deltas = any(r["is_baseline"] or r["deltas"] is not None for r in runs)
 
+    header_uid = str(next(uid_seq))
     header = (
         "<tr><th>run</th>"
-        f"<th>turns/agent{_glossary_html('turns_per_agent')}</th>"
-        f"<th>ctx_max/turn{_glossary_html('ctx_max')}</th>"
-        f"<th>opus share{_glossary_html('opus_share')}</th>"
+        f"<th>turns/agent{_glossary_html('turns_per_agent', header_uid)}</th>"
+        f"<th>ctx_max/turn{_glossary_html('ctx_max', header_uid)}</th>"
+        f"<th>opus share{_glossary_html('opus_share', header_uid)}</th>"
     )
     if show_deltas:
         # "negative = better" sits inside the same header cell as the delta
         # column it labels -- the same section as the delta values it
         # describes, not merely somewhere else on the page (T002 #3).
         header += (
-            f"<th>Δ turns/agent <small>(negative = better)</small>{_glossary_html('delta_turns_per_agent')}</th>"
-            f"<th>Δ ctx_max <small>(negative = better)</small>{_glossary_html('delta_ctx_max')}</th>"
-            f"<th>Δ opus share <small>(negative = better)</small>{_glossary_html('delta_opus_share')}</th>"
+            f"<th>Δ turns/agent <small>(negative = better)</small>{_glossary_html('delta_turns_per_agent', header_uid)}</th>"
+            f"<th>Δ ctx_max <small>(negative = better)</small>{_glossary_html('delta_ctx_max', header_uid)}</th>"
+            f"<th>Δ opus share <small>(negative = better)</small>{_glossary_html('delta_opus_share', header_uid)}</th>"
         )
     header += "<th>agents</th></tr>"
 
-    body = "".join(_run_row(r, show_deltas) for r in runs)
+    body = "".join(_run_row(r, show_deltas, str(next(uid_seq))) for r in runs)
     models = project.get("models") or {}
     models_html = _models_summary(models) + _models_form(project.get("root"), models)
     summary_text = (project.get("summary") or {}).get("text", "")
     summary_html = f'<p class="summary">{html.escape(summary_text)}</p>'
     baseline_html = f'<p class="baseline-info">{html.escape(project.get("baseline_info", ""))}</p>'
-    history_html = _project_history_html(project.get("history") or {})
+    history_html = _project_history_html(project.get("history") or {}, str(next(uid_seq)))
     return (
         f"<section><h2>{html.escape(project['project'])}</h2>"
         f"{summary_html}"
@@ -955,7 +992,10 @@ def render_html(view: dict) -> str:
         message = view.get("message") or "no runs recorded yet"
         body = f'<p class="empty">{html.escape(message)}</p>'
     else:
-        body = "".join(_project_section(p) for p in view["projects"])
+        # One counter shared across every project's section so glossary ids
+        # stay unique document-wide, not just within a single project.
+        uid_seq = itertools.count()
+        body = "".join(_project_section(p, uid_seq) for p in view["projects"])
 
     return _page(body)
 

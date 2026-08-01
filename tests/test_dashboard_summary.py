@@ -58,6 +58,54 @@ class TestDirectionHelper(unittest.TestCase):
             self.assertEqual(dash.direction(key, 1.0), expected)
 
 
+class TestMetricPhraseGrammar(unittest.TestCase):
+    """`_metric_phrase` must read as a grammatical English phrase in every
+    branch, for every metric -- not just the non-zero, non-None deltas the
+    ledger-backed tests above happen to construct. `opus_share`'s noun
+    ("of the Opus quota") only composes after a more/less word; the pct==0
+    and pct is None branches don't have one, so they need their own bare
+    phrasing (see `_METRIC_WORDS`)."""
+
+    def test_zero_delta_reads_as_a_grammatical_sentence_fragment(self):
+        self.assertEqual(dash._metric_phrase("turns_per_agent", 0), "the same turns per agent")
+        self.assertEqual(dash._metric_phrase("ctx_max", 0), "the same context per turn")
+        self.assertEqual(dash._metric_phrase("opus_share", 0), "the same Opus quota use")
+        for key in ("turns_per_agent", "ctx_max", "opus_share"):
+            self.assertTrue(dash._metric_phrase(key, 0).startswith("the same "))
+
+    def test_none_delta_reads_as_a_grammatical_sentence_fragment(self):
+        self.assertEqual(dash._metric_phrase("turns_per_agent", None), "no comparable turns per agent recorded")
+        self.assertEqual(dash._metric_phrase("ctx_max", None), "no comparable context per turn recorded")
+        self.assertEqual(dash._metric_phrase("opus_share", None), "no comparable Opus quota use recorded")
+
+    def test_nonzero_delta_still_uses_the_comparative_noun(self):
+        # The comparative noun ("of the Opus quota") is only correct beside
+        # a more/less word -- confirm the fix didn't remove that branch.
+        self.assertEqual(dash._metric_phrase("opus_share", 12.0), "12.0% more of the Opus quota")
+        self.assertEqual(dash._metric_phrase("opus_share", -12.0), "12.0% less of the Opus quota")
+
+    def test_rendered_summary_is_grammatical_when_opus_share_is_flat(self):
+        # Reproduces the reported real-page sentence: opus_share unchanged
+        # between baseline and latest run.
+        metrics = [
+            {"key": "turns_per_agent", "pct": -33.0, "direction": "better", "phrase": dash._metric_phrase("turns_per_agent", -33.0)},
+            {"key": "ctx_max", "pct": 0.6, "direction": "worse", "phrase": dash._metric_phrase("ctx_max", 0.6)},
+            {"key": "opus_share", "pct": 0, "direction": "unchanged", "phrase": dash._metric_phrase("opus_share", 0)},
+        ]
+        phrases = [f"{m['phrase']} ({m['direction']})" for m in metrics]
+        sentence = "Since the baseline, this run took " + ", ".join(phrases[:-1]) + f", and {phrases[-1]}."
+        self.assertIn("the same Opus quota use (unchanged)", sentence)
+        self.assertNotIn("the same of the Opus quota", sentence)
+
+    def test_rendered_summary_is_grammatical_when_baseline_opus_share_is_zero(self):
+        # Reproduces the reported real-page sentence: baseline's opus_share
+        # is 0/missing, so `token_report._pct_change` returns None.
+        phrase = dash._metric_phrase("opus_share", None)
+        sentence = f"Since the baseline, this run took {phrase} (n/a)."
+        self.assertIn("no comparable Opus quota use recorded", sentence)
+        self.assertNotIn("no comparable of the Opus quota recorded", sentence)
+
+
 class TestProjectSummaryComparison(LedgerFixture):
     def test_summary_states_the_three_metrics_with_percentage_and_words(self):
         self._write_ledger([
