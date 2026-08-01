@@ -201,6 +201,32 @@ def _dependency_findings(tasks: list[dict]) -> list[dict]:
     return findings
 
 
+def unbacked_findings(text: str, root: str) -> list[dict]:
+    """Class 1, the half a regex over the plan text alone cannot decide.
+
+    `mechanical_findings` reads only the plan, by design. But whether a
+    Verification names a test module that will ever exist is a fact about the
+    repository, and it is the defect that cost three hours: two tasks named a
+    module that did not exist and that no criterion promised to create.
+
+    BLOCKING here, unlike reused-verification: this one is decidable. A module
+    that neither exists nor is promised cannot confirm anything, ever --
+    there is no convention under which that is fine.
+    """
+    import verify as _verify  # local: plan_check stays importable without it
+
+    tasks = _plan.parse_tasks_md(text)
+    return [
+        {
+            "taskId": u["taskId"],
+            "severity": "BLOCKING",
+            "classId": BLOCKING_CLASSES[0],
+            "text": f"{u['taskId']}'s verification (`{u['verification']}`) names {u['reason']}",
+        }
+        for u in _verify.unbacked_verifications(root, tasks)
+    ]
+
+
 def mechanical_findings(text: str) -> list[dict]:
     """Everything about a drafted plan's own text that a regex can honestly
     decide -- classes 1 and 3 of BLOCKING_CLASSES. Never raises: a plan that

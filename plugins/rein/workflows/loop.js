@@ -2083,15 +2083,29 @@ if (gateContradiction) {
   // and approving it would launder the false claim.
   lastVerdict = `review NOT run: ${gateContradiction}`
   log(`⏭ ${lastVerdict}`)
-} else if (incomplete.length) {
-  // Reviewing an incomplete change burns a round on a foregone CHANGES_REQUESTED.
-  lastVerdict = `review NOT run: tasks still incomplete (${incomplete.map((r) => `${r.id}:${r.status}`).join(', ')})`
-  log(`⏭ ${lastVerdict}`)
 } else if (!implemented.length) {
   lastVerdict = 'review NOT run: nothing was implemented'
   log(`⏭ ${lastVerdict}`)
 } else {
-  let reviewerDeaths = 0
+  // PARTIAL REVIEW. This used to skip the review entirely whenever ANY task was
+// incomplete, on the reasoning that reviewing an incomplete change burns a
+// round on a foregone CHANGES_REQUESTED. That reasoning holds for two tasks
+// and fails badly at nine: in a real run, eight tasks landed and a ninth --
+// a supervised verification depending on the whole pipeline -- blocked, so
+// 95 minutes of implementation produced ZERO review signal and three
+// BLOCKING findings surfaced two hours later.
+//
+// The reviewer is told exactly what is missing and instructed to judge only
+// what landed, so a partial review is never mistaken for a whole one. The
+// verdict carries the same fact, and Integrate still refuses to merge a
+// change with incomplete tasks -- reviewing is not approving.
+const partialNote = incomplete.length
+  ? `\n\nPARTIAL REVIEW. These tasks did NOT land and are NOT yours to judge: ` +
+    `${incomplete.map((r) => `${r.id} (${r.status})`).join(', ')}. Review ONLY what did land, ` +
+    `and do not withhold approval for their absence — a human decides what happens to them. ` +
+    `Findings about the landed work are exactly as binding as in a full review.\n`
+  : ''
+let reviewerDeaths = 0
   let round = 1
   while (round <= ROUNDS) {
     roundsUsed = round
@@ -2147,7 +2161,8 @@ if (gateContradiction) {
           `If you find fixable defects: verdict CHANGES_REQUESTED with PRECISE, actionable findings (file, what is ` +
           `wrong, what is missing) — they will be fixed without talking to you. Be demanding: approving something ` +
           `broken is worse than asking for another round.\n` +
-          `Do NOT modify product code: doing so would make your own review stale.`,
+          `Do NOT modify product code: doing so would make your own review stale.` +
+          partialNote,
         { schema: REVIEW_SCHEMA, label: `review#${round}`, phase: 'Review', agentType: 'agent-skills:code-reviewer', model: MODEL_REVIEW }
       )
     } catch (e) {
@@ -2262,8 +2277,17 @@ if (gateContradiction) {
 
 // ── Phase 4: INTEGRATE — merge only approved work ───────────────────────────
 let merged = false
+// Reviewing is not approving, and approving is not merging. Partial review
+// exists so eight landed tasks get audited when a ninth blocks -- NOT so a
+// half-finished change merges. Without this guard the review's approval of
+// the landed work would flow straight into `git merge`, which is a far worse
+// outcome than the silence partial review was added to fix.
+const mergeBlockedBy = incomplete.length
+  ? `${incomplete.length} task(s) did not land: ${incomplete.map((r) => `${r.id} (${r.status})`).join(', ')}`
+  : ''
+if (mergeBlockedBy) log(`⏸ not merging — ${mergeBlockedBy}. The review above covers only what landed.`)
 if (WORKTREE_MODE) {
-  if (approved) {
+  if (approved && !mergeBlockedBy) {
     phase('Integrate')
     const integ = await agent(
       `Integrate the APPROVED change into ${BASE}. You work from ${ctx.root}.\n` +
@@ -2314,6 +2338,10 @@ return {
   implementedByProxy: results.filter((r) => r.status === 'implemented-proxy').map((r) => r.id),
   needsHuman: results.filter((r) => r.status === 'needs-human').map((r) => r.id),
   problems: incomplete.filter((r) => r.status !== 'needs-human'),
+  // What the review actually covered, so 'approved' is never read as
+  // 'the whole change was approved' when part of it never landed.
+  reviewScope: incomplete.length ? 'partial' : 'full',
+  notMergedBecause: mergeBlockedBy,
   // Non-blocking observations survive an approval too — AC5, D1: SUGGESTION/IMPORTANT
   // findings on an approved run are still reported, never silently dropped.
   openFindings: lastFindings,

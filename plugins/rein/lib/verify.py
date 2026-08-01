@@ -383,6 +383,53 @@ def verify_commands(resolved: dict, timeout: float = DEFAULT_TIMEOUT, only: set[
 OUTCOME_PROVES_NOTHING = "proves_nothing"
 
 
+_TEST_MODULE_RE = re.compile(r"\btest_[a-z0-9_]+")
+_MODULE_DIRS = ("tests", "tests/unit", "tests/integration", "test", "")
+
+
+def unbacked_verifications(root: str, tasks: list) -> list:
+    """Verifications naming a test module that neither EXISTS nor is PROMISED.
+
+    Running a plan's verifications cannot gate a run: before the work exists,
+    a task whose test module is part of its own deliverable reports "proves
+    nothing" and is perfectly legitimate. Measured -- a plan reading `a new
+    tests/test_x.py covers the case` is flagged by execution alone.
+
+    Neither half of the rule works by itself, and both were measured over the
+    63 plan texts in this repo's history:
+
+      "the module does not exist"                    -> flags every new test
+      "no criterion of this task names the module"   -> flagged 46 of 63
+
+    Together they flag 0 of 63, and still catch the real defect: a plan whose
+    verification named `tests/unit/test_tech_video_rubric.py`, a module that
+    did not exist and that no criterion promised to create. That one cost
+    three hours.
+    """
+    root = os.path.abspath(root)
+    out = []
+    for task in tasks or []:
+        match = _TEST_MODULE_RE.search(task.get("verification") or "")
+        if not match:
+            continue
+        module = match.group(0)
+        exists = any(
+            os.path.exists(os.path.join(root, d, f"{module}.py")) for d in _MODULE_DIRS
+        )
+        promised = module in " ".join(task.get("acceptance") or [])
+        if not exists and not promised:
+            out.append({
+                "taskId": task.get("id") or "?",
+                "module": module,
+                "verification": (task.get("verification") or "").strip(),
+                "reason": (
+                    f"{module} does not exist and no criterion of this task says it will be "
+                    f"created -- this verification can never confirm anything"
+                ),
+            })
+    return out
+
+
 def verify_plan(root: str, tasks: list, timeout: float = DEFAULT_TIMEOUT) -> dict:
     """Run each task's own Verification command and report what it can prove.
 

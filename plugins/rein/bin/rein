@@ -37,7 +37,7 @@ import os
 import shutil
 import sys
 
-VERSION = "0.9.2"
+VERSION = "0.10.0"
 
 HERE = os.path.dirname(os.path.abspath(os.path.realpath(__file__)))
 PLUGIN_ROOT = os.path.dirname(HERE)
@@ -222,6 +222,12 @@ def cmd_plan_check(argv: list[str]) -> int:
             error = str(exc)
         else:
             findings = _plan_check.mechanical_findings(text)
+
+            # The half that needs the repository: a verification naming a test
+
+            # module that neither exists nor is promised. Decidable, so BLOCKING.
+
+            findings += _plan_check.unbacked_findings(text, os.path.dirname(os.path.abspath(path)) or '.')
     print(json.dumps({"path": path, "error": error, "findings": findings}, indent=2))
     return 0
 
