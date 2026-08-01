@@ -201,6 +201,62 @@ def _dependency_findings(tasks: list[dict]) -> list[dict]:
     return findings
 
 
+# Measured on this repository's own ledger, wall clock per run:
+#
+#   1-2 tasks   34-44 min
+#   3 tasks     67 min
+#   9 tasks     95 min of implementation ALONE, and zero review signal
+#
+# and on a 4-task run, the FIX agents burned 336 turns against the
+# implementers' 305 -- because each fix agent receives the findings of every
+# task at once. Plan size, not task difficulty, is what drives the clock.
+#
+# So: reported above four, never blocked. How much time to spend is the
+# operator's call, and a gate that refuses a big plan would be this tool
+# deciding something that is not its to decide.
+TASK_COUNT_SOFT_MAX = 4
+
+
+def shape_findings(tasks: list) -> list[dict]:
+    """Two facts about a plan's SHAPE that cost hours and that nothing checked.
+
+    Neither is a defect in any single task -- both are properties of the plan
+    as a whole, which is why no per-task lens could ever have seen them.
+    """
+    findings: list[dict] = []
+    pending = [t for t in tasks if not t.get("checked")]
+    if len(pending) > TASK_COUNT_SOFT_MAX:
+        findings.append({
+            "taskId": "",
+            "severity": "IMPORTANT",
+            "classId": "plan shape",
+            "text": (
+                f"{len(pending)} tasks in one change. Measured on this kit's own runs: 1-2 tasks "
+                f"take 34-44 min, 3 take 67, and a 9-task plan produced 95 minutes of "
+                f"implementation with ZERO review signal. Fix agents also receive every task's "
+                f"findings at once, so they grow faster than the implementers do. Consider "
+                f"splitting -- this is a time estimate, not a defect."
+            ),
+        })
+    supervised = [t["id"] for t in pending if t.get("humanReview")]
+    buildable = [t["id"] for t in pending if not t.get("humanReview")]
+    if supervised and buildable:
+        findings.append({
+            "taskId": supervised[0],
+            "severity": "IMPORTANT",
+            "classId": "plan shape",
+            "text": (
+                f"a supervised task ({', '.join(supervised)}) shares this change with "
+                f"{len(buildable)} buildable one(s). A supervised task depends on a human "
+                f"verdict or on the whole real pipeline working, so it is the one most likely "
+                f"to block -- and in a measured run that is exactly what happened, taking the "
+                f"review of eight landed tasks down with it. Its own change would have "
+                f"surfaced their findings hours earlier."
+            ),
+        })
+    return findings
+
+
 def unbacked_findings(text: str, root: str) -> list[dict]:
     """Class 1, the half a regex over the plan text alone cannot decide.
 
@@ -233,7 +289,7 @@ def mechanical_findings(text: str) -> list[dict]:
     fails to parse simply yields no findings, the same "never raises"
     contract `plan.parse_tasks_md` already carries."""
     tasks = _plan.parse_tasks_md(text)
-    return _confirm_findings(tasks) + _dependency_findings(tasks)
+    return _confirm_findings(tasks) + _dependency_findings(tasks) + shape_findings(tasks)
 
 
 if __name__ == "__main__":

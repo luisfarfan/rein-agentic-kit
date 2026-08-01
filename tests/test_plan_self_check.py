@@ -462,3 +462,56 @@ class TestTheCheckIsQuietOnPlansThisRepoApproved(unittest.TestCase):
         passes vacuously and the property goes unproven again."""
         plans = self._historical_plans()
         self.assertGreater(len(plans), 20, "the historical corpus shrank — is git history reachable?")
+
+
+class TestThePlansShapeIsReported(unittest.TestCase):
+    """Two facts about a plan AS A WHOLE that cost hours, and that no per-task
+    lens could ever have seen.
+
+    Neither blocks. How much time to spend is the operator's call, and a gate
+    that refused a big plan would be this tool deciding something that is not
+    its to decide.
+    """
+
+    def _find(self, tasks: str, cls: str) -> list:
+        text = "# Change: probe\n## Why\nx\n---\n" + tasks
+        return [f for f in plan_check.mechanical_findings(text) if f.get("classId") == cls]
+
+    def _task(self, tid: str, human: str = "false") -> str:
+        return (f"- [ ] {tid} t\n  - Type: implementation\n  - Depends on: none\n"
+                f"  - Human review: {human}\n  - Verification: `python3 -m unittest tests.test_{tid.lower()}`\n"
+                f"  - Acceptance:\n    - covered by tests/test_{tid.lower()}.py\n\n")
+
+    def test_a_nine_task_plan_is_reported(self):
+        """The measured shape: 95 minutes of implementation, zero review."""
+        tasks = "".join(self._task(f"T00{i}") for i in range(1, 10))
+        found = self._find(tasks, "plan shape")
+        self.assertTrue(any("9 tasks in one change" in f["text"] for f in found))
+        self.assertTrue(all(f["severity"] == "IMPORTANT" for f in found),
+                        "plan size is a time estimate, never a defect that blocks")
+
+    def test_a_small_plan_says_nothing(self):
+        """A check that fires on ordinary plans stops being read."""
+        tasks = "".join(self._task(f"T00{i}") for i in range(1, 4))
+        self.assertEqual(self._find(tasks, "plan shape"), [])
+
+    def test_a_supervised_task_among_buildable_ones_is_reported(self):
+        """The one most likely to block, and in a measured run it took the
+        review of eight landed tasks down with it."""
+        tasks = "".join(self._task(f"T00{i}") for i in range(1, 3)) + self._task("T009", human="true")
+        found = self._find(tasks, "plan shape")
+        self.assertTrue(any("supervised task" in f["text"] for f in found))
+        self.assertTrue(any(f["taskId"] == "T009" for f in found), "the finding must name it")
+
+    def test_a_plan_that_is_ONLY_supervised_is_not_reported(self):
+        """Nothing to separate it from -- the finding is about mixing."""
+        tasks = self._task("T001", human="true") + self._task("T002", human="true")
+        self.assertEqual(
+            [f for f in self._find(tasks, "plan shape") if "supervised" in f["text"]], [])
+
+    def test_completed_tasks_do_not_count_toward_the_size(self):
+        """A resumed run's plan is mostly ticked boxes; counting them would
+        fire on every continuation."""
+        done = "".join(self._task(f"T00{i}").replace("- [ ]", "- [x]") for i in range(1, 9))
+        tasks = done + self._task("T009")
+        self.assertEqual([f for f in self._find(tasks, "plan shape") if "tasks in one change" in f["text"]], [])
