@@ -229,3 +229,43 @@ class TestEveryIdentifierIsNamespaced(unittest.TestCase):
         survives prefixing, whatever the list happens to contain."""
         for reserved in RESERVED_NAMES:
             self.assertNotIn(PREFIX + reserved, RESERVED_NAMES)
+
+
+class TestDiscoverIsAStanceNotAWorkflow(unittest.TestCase):
+    """`/rein:rein-discover` exists because a plan whose criteria describe the
+    SHAPE of an artifact, rather than something reachable, cannot be caught
+    after the fact -- each such criterion is individually true.
+
+    Its whole value is that it does NOT produce one, so the boundaries are
+    asserted rather than trusted to prose nobody re-reads.
+    """
+
+    def _skill(self) -> str:
+        with open(os.path.join(SKILLS_DIR, "rein-discover", "SKILL.md"), encoding="utf-8") as fh:
+            return fh.read()
+
+    def test_it_ships_and_carries_the_prefix(self):
+        self.assertIn("rein-discover", _skill_dir_names(SKILLS_DIR))
+
+    def test_it_refuses_to_write_a_plan(self):
+        """The one boundary that makes it different from /rein:rein-plan. If it
+        drafts tasks, it is just a slower planner and the phase is lost."""
+        body = self._skill()
+        self.assertIn("Write no plan", body)
+        self.assertIn("Do not write the plan", body)
+
+    def test_it_refuses_to_implement(self):
+        body = self._skill()
+        self.assertIn("Implement nothing", body)
+        self.assertIn('Not "one small fix while I am here"', body)
+
+    def test_it_hands_off_by_name(self):
+        self.assertIn("/rein:rein-plan", self._skill())
+
+    def test_it_carries_the_retrieval_discipline(self):
+        """Discovery is the phase most likely to burn context, because
+        exploring is the point -- so the discipline matters more here."""
+        body = self._skill()
+        self.assertIn("codegraph query", body)
+        self.assertIn("offset/limit", body)
+        self.assertIn('"$R" context .', body)

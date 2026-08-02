@@ -120,7 +120,9 @@ test fails the build if their version strings ever disagree.
 Then, per change:
 
 ```
-/rein:rein-plan   →   you confirm the plan   →   /rein:rein-apply   →   read the verdict
+/rein:rein-discover   →   think it through, until the unknowns that matter are closed
+/rein:rein-plan       →   you confirm the plan
+/rein:rein-apply      →   read the verdict
 ```
 
 You come back when it finished, not before.
@@ -133,6 +135,7 @@ You come back when it finished, not before.
 
 | | |
 |---|---|
+| 🔭 **`/rein:rein-discover`** | Think a problem through before committing to a shape — investigate, ask, produce understanding. **Writes no plan, implements nothing** |
 | 🎭 **`/rein:rein-role`** | Assign this session's role: planner · implementer · reviewer |
 | 🧭 **`/rein:rein-plan`** | Plan into verifiable tasks — dry-run and **explicit confirmation** before writing |
 | 🔨 **`/rein:rein-step`** | Exactly **one** task. Max 3 attempts, max 5 failed commands, no self-approval |

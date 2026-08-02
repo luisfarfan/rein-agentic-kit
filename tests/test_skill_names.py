@@ -35,7 +35,7 @@ RENAMED = {
     "steps": "rein-steps",
     "audit": "rein-audit",
 }
-UNTOUCHED_SKILLS = {"rein-plan", "rein-role"}
+UNTOUCHED_SKILLS = {"rein-plan", "rein-role", "rein-discover"}
 
 # Old invocation strings, anchored so the `run` skill's pattern does not also
 # match inside the `run-auto` skill's invocation (the same pitfall
