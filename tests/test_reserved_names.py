@@ -93,12 +93,12 @@ class TestSweepActuallyReadsTheShippedDirectories(unittest.TestCase):
         # collision sweep below pass over nothing.
         names = _skill_dir_names(SKILLS_DIR)
         self.assertTrue(names, f"no SKILL.md found under {SKILLS_DIR}")
-        self.assertIn("plan", names)
+        self.assertIn("rein-plan", names)
 
     def test_the_commands_sweep_is_non_empty(self):
         names = _command_names(COMMANDS_DIR)
         self.assertTrue(names, f"no command file found under {COMMANDS_DIR}")
-        self.assertIn("ping", names)
+        self.assertIn("rein-ping", names)
 
 
 class TestNoShippedSkillOrCommandTakesAReservedName(unittest.TestCase):
@@ -186,3 +186,46 @@ class TestTheSkillSweepIsProvenToo(unittest.TestCase):
             names = _skill_dir_names(d)
         self.assertEqual(sorted(n for n in names if n in RESERVED_NAMES), ["loop"])
         self.assertIn("plan", names, "the sweep must see the innocent one too, or it proves nothing")
+
+
+PREFIX = "rein-"
+
+
+class TestEveryIdentifierIsNamespaced(unittest.TestCase):
+    """The guard that replaces the snapshot, because the snapshot failed twice.
+
+    RESERVED_NAMES was a list of identifiers Claude Code ships. It missed
+    `security-review` (visible in the very listing it cites), and it never
+    covered OTHER PLUGINS at all -- so `plan` shipped colliding with
+    agent-skills' own `plan`, and the operator saw `/rein:plan` resolve to a
+    bare `plan` with no way to tell whose it was.
+
+    A list of everyone else's names cannot be kept correct: it depends on
+    what is installed, which changes without us. Prefixing every identifier
+    removes the dependency -- `rein-plan` cannot collide with anything that
+    is not also called `rein-plan`, and no snapshot is needed to know it.
+
+    The list above stays as documentation of what went wrong, not as the
+    mechanism.
+    """
+
+    def _identifiers(self) -> list:
+        return _skill_dir_names(SKILLS_DIR) + _command_names(COMMANDS_DIR)
+
+    def test_every_shipped_identifier_carries_the_prefix(self):
+        offenders = [n for n in self._identifiers() if not n.startswith(PREFIX)]
+        self.assertEqual(
+            offenders, [],
+            f"unprefixed identifiers can be reinterpreted as another plugin's or a built-in's: "
+            f"{offenders}",
+        )
+
+    def test_the_sweep_actually_found_the_identifiers(self):
+        """Zero identifiers would pass the check above vacuously."""
+        self.assertGreaterEqual(len(self._identifiers()), 8)
+
+    def test_a_prefixed_name_cannot_hit_the_reserved_list(self):
+        """The property that makes the snapshot unnecessary: no reserved name
+        survives prefixing, whatever the list happens to contain."""
+        for reserved in RESERVED_NAMES:
+            self.assertNotIn(PREFIX + reserved, RESERVED_NAMES)

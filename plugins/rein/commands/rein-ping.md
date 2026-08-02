@@ -3,7 +3,7 @@ description: "Rein self-check: verify the plugin loaded, its CLI is reachable, a
 allowed-tools: Bash
 ---
 
-# /rein:ping
+# /rein:rein-ping
 
 Phase-0 plumbing probe. Confirms the plugin is wired correctly in **this** project
 before anything is asked of it.

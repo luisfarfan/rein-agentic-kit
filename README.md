@@ -43,11 +43,11 @@ lossy and breaks the prompt cache. A long agent's context only grows.
 
 ```mermaid
 flowchart TD
-    A["🧭 /rein:plan<br/><i>Why · Scope · Decisions · Tasks</i>"]
+    A["🧭 /rein:rein-plan<br/><i>Why · Scope · Decisions · Tasks</i>"]
     B{{"rein next<br/><i>deterministic gate</i>"}}
     C["⚙️ Implement<br/><i>bounded loop of FRESH agents</i><br/><i>context resets each step</i>"]
     D{{"Verify<br/><i>ask the plan, not the agent</i>"}}
-    E["🔍 /rein:audit<br/><i>whole change · 5 axes</i>"]
+    E["🔍 /rein:rein-audit<br/><i>whole change · 5 axes</i>"]
     F["✅ merge"]
     G["✋ escalate to you"]
     X["🛑 stop"]
@@ -87,8 +87,8 @@ claude plugin install rein@rein-agentic-kit --scope user
 **Restart Claude Code**, then run inside it:
 
 ```
-/rein:ping     →  is it wired here, and what did it detect?
-/rein:setup    →  probe the optional tools · confirm to provision them
+/rein:rein-ping     →  is it wired here, and what did it detect?
+/rein:rein-setup    →  probe the optional tools · confirm to provision them
 ```
 
 `ping` reports the detected stack, the resolved commands and where each one
@@ -120,7 +120,7 @@ test fails the build if their version strings ever disagree.
 Then, per change:
 
 ```
-/rein:plan   →   you confirm the plan   →   /rein:apply   →   read the verdict
+/rein:rein-plan   →   you confirm the plan   →   /rein:rein-apply   →   read the verdict
 ```
 
 You come back when it finished, not before.
@@ -133,12 +133,12 @@ You come back when it finished, not before.
 
 | | |
 |---|---|
-| 🎭 **`/rein:role`** | Assign this session's role: planner · implementer · reviewer |
-| 🧭 **`/rein:plan`** | Plan into verifiable tasks — dry-run and **explicit confirmation** before writing |
-| 🔨 **`/rein:step`** | Exactly **one** task. Max 3 attempts, max 5 failed commands, no self-approval |
-| 🔁 **`/rein:steps`** | Bounded loop of `step`, stopping on **verifiable signals** only |
-| 🔍 **`/rein:audit`** | The independent gate: mechanical checks first, then five-axis judgement |
-| ♾️ **`/rein:apply`** | Runs all three end-to-end in an isolated worktree |
+| 🎭 **`/rein:rein-role`** | Assign this session's role: planner · implementer · reviewer |
+| 🧭 **`/rein:rein-plan`** | Plan into verifiable tasks — dry-run and **explicit confirmation** before writing |
+| 🔨 **`/rein:rein-step`** | Exactly **one** task. Max 3 attempts, max 5 failed commands, no self-approval |
+| 🔁 **`/rein:rein-steps`** | Bounded loop of `step`, stopping on **verifiable signals** only |
+| 🔍 **`/rein:rein-audit`** | The independent gate: mechanical checks first, then five-axis judgement |
+| ♾️ **`/rein:rein-apply`** | Runs all three end-to-end in an isolated worktree |
 
 ### CLI — the deterministic half
 
@@ -158,7 +158,7 @@ rein verify      # actually RUN each resolved command and report the truth — a
                  # Failing is fine (the work does not exist yet); proving NOTHING is not —
                  # a missing test module or a selector matching zero tests exits non-zero
 rein plan-check  # mechanical findings on a drafted plan's own text — what a regex can
-                 # honestly decide; the semantic call belongs to /rein:plan's critique
+                 # honestly decide; the semantic call belongs to /rein:rein-plan's critique
 rein next        # ✅ the gate: is there a task to claim, and may it be
 rein close T001  # tick a checkbox deterministically — no agent hand-edits the plan
 rein review      # record / check a verdict bound to a code state

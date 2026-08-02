@@ -10,7 +10,7 @@ other.
 Only two of the four are decided here, deterministically. The other two -- an
 uncheckable criterion, a criterion that contradicts a stated Decision -- are
 semantic calls no regex can make honestly; they are the critique agent's job,
-described in `plugins/rein/skills/plan/SKILL.md`, the same way the loop's own
+described in `plugins/rein/skills/rein-plan/SKILL.md`, the same way the loop's own
 PlanCheck lenses are entirely agent-judged, never computed. What IS mechanical
 is decided here so the concrete, measured defect -- T003's Verification naming
 T002's own test module, 81k tokens to catch inside the loop -- is never left to

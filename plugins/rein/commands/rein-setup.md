@@ -3,7 +3,7 @@ description: "Provision this project: probe the retrieval tools, and with --inst
 allowed-tools: Bash
 ---
 
-# /rein:setup
+# /rein:rein-setup
 
 Leaves THIS repository ready to work in. Runs from inside Claude Code, so
 nothing has to be on your shell's `$PATH` — the plugin's own `bin/` is
@@ -30,5 +30,5 @@ codegraph's index, disables codegraph's telemetry, and adds the tools' local
 state to `.gitignore`. Report each line of its output as it is.
 
 Do not run it with `--install` without asking — it writes to the repository
-and installs software on the machine. A bare `/rein:setup` changes nothing,
+and installs software on the machine. A bare `/rein:rein-setup` changes nothing,
 which is the point.

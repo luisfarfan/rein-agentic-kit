@@ -78,8 +78,8 @@ class TestTheHumanEntryPointsAreSlashCommands(unittest.TestCase):
     def test_ping_and_setup_ship_as_commands(self):
         names = {os.path.basename(p)[:-3]
                  for p in glob.glob(os.path.join(PLUGIN, "commands", "*.md"))}
-        self.assertIn("ping", names)
-        self.assertIn("setup", names)
+        self.assertIn("rein-ping", names)
+        self.assertIn("rein-setup", names)
 
     def test_the_readme_does_not_tell_people_to_run_rein_in_a_terminal(self):
         with open(os.path.join(REPO, "README.md"), encoding="utf-8") as fh:
@@ -92,7 +92,7 @@ class TestTheHumanEntryPointsAreSlashCommands(unittest.TestCase):
                 self.fail(f"Quickstart tells the reader to run `rein` in a shell: {stripped!r}")
 
     def test_setup_never_provisions_without_asking(self):
-        with open(os.path.join(PLUGIN, "commands", "setup.md"), encoding="utf-8") as fh:
+        with open(os.path.join(PLUGIN, "commands", "rein-setup.md"), encoding="utf-8") as fh:
             body = fh.read()
         self.assertIn("--install", body)
         self.assertIn("without asking", body)

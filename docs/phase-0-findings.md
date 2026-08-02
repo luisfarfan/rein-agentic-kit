@@ -68,13 +68,13 @@ runs fine — the file is present in the cached copy.
 
 ### Consequence for the design
 
-`/rein:apply` must be a **skill that invokes the workflow by path**, resolving the
+`/rein:rein-apply` must be a **skill that invokes the workflow by path**, resolving the
 plugin root at call time. It cannot be a bare workflow name. Two further notes:
 
 - `${CLAUDE_PLUGIN_ROOT}` is not interpolated by the Workflow tool — the skill has
   to resolve the absolute path (e.g. via `rein doctor`, which prints it) and pass
   a literal.
-- Skills are the only viable carrier, which is fine: `commands/ping.md` was itself
+- Skills are the only viable carrier, which is fine: `commands/rein-ping.md` was itself
   inventoried as a **Skill**, so commands and skills land in the same registry.
 
 ## A3 — a plugin's `bin/` DOES reach `$PATH`, but only from the next session ✅
@@ -156,7 +156,7 @@ first real dataset for the phase-3 dashboard.
 
 ## What phase 1 must carry forward
 
-1. `/rein:apply` invokes the workflow **by absolute path**, never by name.
+1. `/rein:rein-apply` invokes the workflow **by absolute path**, never by name.
 2. All CLI calls go through `"$CLAUDE_PLUGIN_ROOT"/bin/rein`, with the bare name as
    an optimistic first try.
 3. Purge-and-reinstall before any self-hosted run; symlink only for prompt iteration.

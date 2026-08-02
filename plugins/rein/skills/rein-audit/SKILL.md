@@ -1,16 +1,16 @@
 ---
-name: audit
-description: "Independent review of a completed change — the third role, distinct from planner and implementer. Runs the mechanical checks, delegates the five-axis judgement to the code-reviewer, and records a state-bound verdict. Never implements. Use when the user asks to review a change or audit a branch before merge, or invokes /rein:audit."
+name: rein-audit
+description: "Independent review of a completed change — the third role, distinct from planner and implementer. Runs the mechanical checks, delegates the five-axis judgement to the code-reviewer, and records a state-bound verdict. Never implements. Use when the user asks to review a change or audit a branch before merge, or invokes /rein:rein-audit."
 license: MIT
 ---
 
-# /rein:audit
+# /rein:rein-audit
 
 Thin orchestration for the **reviewer** role: *no agent approves its own implementation.* It
 does not reimplement the mechanical checks or the five-axis judgement — it **composes** both
 and records a registered verdict.
 
-Usage: `/rein:audit [change-name]`
+Usage: `/rein:rein-audit [change-name]`
 
 ```bash
 R=$(command -v rein || ls -d ~/.claude/plugins/cache/*/rein/*/bin/rein 2>/dev/null | sort -V | tail -1)
@@ -22,7 +22,7 @@ R=$(command -v rein || ls -d ~/.claude/plugins/cache/*/rein/*/bin/rein 2>/dev/nu
    persist between tool calls, so `R` is resolved and used in the SAME block or it is
    empty and nothing is recorded:
    ```bash
-   R=$(command -v rein || ls -d ~/.claude/plugins/cache/*/rein/*/bin/rein 2>/dev/null | sort -V | tail -1); "$R" event audit
+   R=$(command -v rein || ls -d ~/.claude/plugins/cache/*/rein/*/bin/rein 2>/dev/null | sort -V | tail -1); "$R" event rein-audit
    ```
 2. Load the plan and the real diff of what was implemented: `"$R" tasks .` and
    `git diff <base>...<branch>`.
@@ -83,8 +83,8 @@ verdict stale.
 
 ## What this skill does NOT do
 
-- Does not fix its own findings. `CHANGES_REQUESTED` → the implementer runs `/rein:step` to
-  address them → a **new** `/rein:audit` invocation re-reviews.
+- Does not fix its own findings. `CHANGES_REQUESTED` → the implementer runs `/rein:rein-step` to
+  address them → a **new** `/rein:rein-audit` invocation re-reviews.
 - Does not tick checkboxes, merge, or archive. It produces the evidence the merge gate needs.
 - Does not reimplement the mechanical checks or the five-axis analysis inline.
 

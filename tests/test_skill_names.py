@@ -23,13 +23,19 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SKILLS_DIR = os.path.join(REPO_ROOT, "plugins", "rein", "skills")
 LOOP_JS = os.path.join(REPO_ROOT, "plugins", "rein", "workflows", "loop.js")
 
+# Both renames, in order: first the collision fix (loop/run/run-auto/review),
+# then the namespacing that made a collision impossible by construction.
 RENAMED = {
-    "loop": "apply",
-    "run": "step",
-    "run-auto": "steps",
-    "review": "audit",
+    "loop": "rein-apply",
+    "run": "rein-step",
+    "run-auto": "rein-steps",
+    "review": "rein-audit",
+    "apply": "rein-apply",
+    "step": "rein-step",
+    "steps": "rein-steps",
+    "audit": "rein-audit",
 }
-UNTOUCHED_SKILLS = {"plan", "role"}
+UNTOUCHED_SKILLS = {"rein-plan", "rein-role"}
 
 # Old invocation strings, anchored so the `run` skill's pattern does not also
 # match inside the `run-auto` skill's invocation (the same pitfall

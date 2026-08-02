@@ -1,16 +1,16 @@
 ---
-name: steps
-description: "Repeat /rein:step's per-task procedure in a bounded loop until a deterministic stop condition — nothing ready, a verification failure, a human-review gate, or the per-pass cap. Use when the user asks to work through several tasks in one go, or invokes /rein:steps."
+name: rein-steps
+description: "Repeat /rein:rein-step's per-task procedure in a bounded loop until a deterministic stop condition — nothing ready, a verification failure, a human-review gate, or the per-pass cap. Use when the user asks to work through several tasks in one go, or invokes /rein:rein-steps."
 license: MIT
 ---
 
-# /rein:steps
+# /rein:rein-steps
 
-Repeats the **per-task procedure of `/rein:step`** in a **bounded** loop, in one session, until
+Repeats the **per-task procedure of `/rein:rein-step`** in a **bounded** loop, in one session, until
 an explicit stop condition. It does not reimplement selection, verification or closure — every
-iteration is a full `/rein:step` pass.
+iteration is a full `/rein:rein-step` pass.
 
-Usage: `/rein:steps [change-name] [max-tasks]`
+Usage: `/rein:rein-steps [change-name] [max-tasks]`
 
 `max-tasks` is the per-pass cap (default **3**). It bounds this invocation only. It is never
 unlimited.
@@ -25,12 +25,12 @@ R=$(command -v rein || ls -d ~/.claude/plugins/cache/*/rein/*/bin/rein 2>/dev/nu
    persist between tool calls, so `R` is resolved and used in the SAME block or it is
    empty and nothing is recorded:
    ```bash
-   R=$(command -v rein || ls -d ~/.claude/plugins/cache/*/rein/*/bin/rein 2>/dev/null | sort -V | tail -1); "$R" event steps
+   R=$(command -v rein || ls -d ~/.claude/plugins/cache/*/rein/*/bin/rein 2>/dev/null | sort -V | tail -1); "$R" event rein-steps
    ```
 2. Set `done = 0`, `cap = max-tasks or 3`.
 3. **Check the deterministic gate before each iteration**: `"$R" next .`
 4. **Stop now, without claiming anything**, if any stop condition below holds.
-5. Otherwise run **one full iteration of `/rein:step`**, unabridged: select, load only what the
+5. Otherwise run **one full iteration of `/rein:rein-step`**, unabridged: select, load only what the
    task needs, plan, implement in scope, run its verification plus the configured checks,
    compare against acceptance, close only with evidence.
 6. Increment `done`. Re-check the conditions. Otherwise go to 3.
@@ -53,18 +53,18 @@ feels finished has no gate at all.
 
 - **Never** simulate success, and never continue as if the pass had finished when it has not.
 - Report **which** condition stopped the loop and how many tasks completed this pass.
-- State how to continue: re-invoke `/rein:steps`, or `/rein:step` for a single task. The
+- State how to continue: re-invoke `/rein:rein-steps`, or `/rein:rein-step` for a single task. The
   next invocation re-reads the gate — **no session state is needed to resume**.
 - Human-review stop: the gated task stays unclaimed and ready; the user decides.
-- Verification failure: follow `/rein:step`'s own failure behaviour for that task — do not
+- Verification failure: follow `/rein:rein-step`'s own failure behaviour for that task — do not
   close it, report the failing commands, do not retry past the limits.
 
 ## Per-task contract preserved intact
 
-This skill changes **nothing** about what `/rein:step` guarantees per task: implementation
+This skill changes **nothing** about what `/rein:rein-step` guarantees per task: implementation
 strictly in scope, the task's verification plus configured checks, closing only with
 sufficient evidence, the per-task limits (max 3 attempts, max 5 failed commands), and no
 self-approval. The only thing automated here is relaunching between tasks.
 
 Completing a pass is **not** approval. When the tasks are done, the change still has to go
-through `/rein:audit`.
+through `/rein:rein-audit`.

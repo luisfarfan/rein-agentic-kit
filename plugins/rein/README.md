@@ -7,9 +7,9 @@ Plugin internals. For what this is and why, see the [repository README](../../RE
 ```
 plugins/rein/
 ├── .claude-plugin/plugin.json    name: "rein" -> the /rein:* namespace
-├── commands/ping.md              /rein:ping — plumbing self-check for fresh installs
-├── skills/                       /rein:plan · /rein:apply · /rein:step
-│                                 /rein:steps · /rein:audit · /rein:role
+├── commands/rein-ping.md              /rein:rein-ping — plumbing self-check for fresh installs
+├── skills/                       /rein:rein-plan · /rein:rein-apply · /rein:rein-step
+│                                 /rein:rein-steps · /rein:rein-audit · /rein:rein-role
 ├── workflows/loop.js             the bounded loop (phase 0: resolution stub)
 ├── lib/detect.py                 stack + command resolution
 ├── lib/token_report.py           per-model token accounting + ledger
@@ -59,7 +59,7 @@ Check the wiring from inside a consuming project:
 
 | # | Claim | How it is falsified |
 |---|---|---|
-| A1 | The plugin loads in a second project | `/rein:ping` responds; and: does the marketplace **copy** the repo or read it **live**? |
+| A1 | The plugin loads in a second project | `/rein:rein-ping` responds; and: does the marketplace **copy** the repo or read it **live**? |
 | A2 | A plugin-shipped workflow resolves | `Workflow({name:'rein-loop'})`; if it fails, `{scriptPath:'${CLAUDE_PLUGIN_ROOT}/workflows/loop.js'}` |
 | A3 | The plugin's `bin/` reaches `$PATH` | bare `rein doctor` works from another project |
 | A4 | Config is read from the **consuming** project | the stub reports that project's stack and commands |

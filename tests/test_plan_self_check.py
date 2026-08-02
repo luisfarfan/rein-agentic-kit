@@ -26,7 +26,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LIB = os.path.join(ROOT, "plugins", "rein", "lib")
 REIN_BIN = os.path.join(ROOT, "plugins", "rein", "bin", "rein")
 LOOP_JS = os.path.join(ROOT, "plugins", "rein", "workflows", "loop.js")
-SKILL_MD = os.path.join(ROOT, "plugins", "rein", "skills", "plan", "SKILL.md")
+SKILL_MD = os.path.join(ROOT, "plugins", "rein", "skills", "rein-plan", "SKILL.md")
 FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
 
 sys.path.insert(0, LIB)

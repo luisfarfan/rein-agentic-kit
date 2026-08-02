@@ -1,16 +1,16 @@
 ---
-name: plan
-description: "Plan a change into verifiable tasks with acceptance criteria, dependencies and a bounded verification command each — dry-run and explicit confirmation before anything is written. Never implements. Use when the user asks to plan or break down work, or invokes /rein:plan."
+name: rein-plan
+description: "Plan a change into verifiable tasks with acceptance criteria, dependencies and a bounded verification command each — dry-run and explicit confirmation before anything is written. Never implements. Use when the user asks to plan or break down work, or invokes /rein:rein-plan."
 license: MIT
 ---
 
-# /rein:plan
+# /rein:rein-plan
 
-Thin orchestration for the **planner** role. Turns a request into a task list `/rein:step` can
+Thin orchestration for the **planner** role. Turns a request into a task list `/rein:rein-step` can
 execute without re-deriving intent. **This skill never implements, never ticks a checkbox and
-never invokes `/rein:step`.**
+never invokes `/rein:rein-step`.**
 
-Usage: `/rein:plan <change-name> [description]`
+Usage: `/rein:rein-plan <change-name> [description]`
 
 ```bash
 R=$(command -v rein || ls -d ~/.claude/plugins/cache/*/rein/*/bin/rein 2>/dev/null | sort -V | tail -1)
@@ -22,7 +22,7 @@ R=$(command -v rein || ls -d ~/.claude/plugins/cache/*/rein/*/bin/rein 2>/dev/nu
    persist between tool calls, so `R` is resolved and used in the SAME block or it is
    empty and nothing is recorded:
    ```bash
-   R=$(command -v rein || ls -d ~/.claude/plugins/cache/*/rein/*/bin/rein 2>/dev/null | sort -V | tail -1); "$R" event plan
+   R=$(command -v rein || ls -d ~/.claude/plugins/cache/*/rein/*/bin/rein 2>/dev/null | sort -V | tail -1); "$R" event rein-plan
    ```
 2. Resolve the project so the plan lands where the loop will look for it and the verification
    commands are real: `"$R" context .` — note `plan.source`, `plan.path`,
@@ -93,7 +93,7 @@ R=$(command -v rein || ls -d ~/.claude/plugins/cache/*/rein/*/bin/rein 2>/dev/nu
       # One block, because shell state does NOT persist between tool calls:
       # `$R` or `$DRAFT` set in an earlier block arrive EMPTY here. Verified
       # in this project — five skills once recorded with an empty `$R`.
-      # And mktemp, never a fixed path: two /rein:plan sessions (or one in a
+      # And mktemp, never a fixed path: two /rein:rein-plan sessions (or one in a
       # worktree while another runs in the main checkout, the normal mode of
       # this kit) would write and read the SAME file, and one would critique
       # the other's draft. A predictable name in a shared temp dir is also
@@ -156,7 +156,7 @@ PLAN
 
 ## Guardrails
 
-- Do not implement. Do not tick a checkbox. Do not call `/rein:step` or `/rein:audit`.
+- Do not implement. Do not tick a checkbox. Do not call `/rein:rein-step` or `/rein:rein-audit`.
 - Never write the plan without a dry run and explicit confirmation first.
 - Do not invent verification commands the project cannot run — check them against
   `config.commands` first, and say which are missing rather than substituting one.
