@@ -588,3 +588,74 @@ class TestSerenaDashboardIsQuieted(unittest.TestCase):
         self.assertFalse(res["attempted"])
         self.assertEqual(open(p, encoding="utf-8").read(), before)
         self.assertIn("not present", res["reason"])
+
+
+class TestTheSyncHookNeverOwnsSomebodyElsesFile(unittest.TestCase):
+    """codegraph's index went 61.7 hours stale on this machine while every
+    graph answer silently described old code. Inside `/rein:rein-apply` the
+    worktree is reindexed per run; an ordinary session is not, and nothing
+    covered that half.
+
+    The hook is APPENDED in a delimited block and never written over an
+    existing one. Not caution for its own sake: on this machine
+    `.git/hooks/post-commit` is already owned by graphify in several repos,
+    and the operator's own installer carries a comment saying `lefthook
+    install` had to be avoided because it "rewrites that file wholesale".
+    """
+
+    def _repo(self, hook_body: str = "") -> str:
+        import subprocess
+        d = tempfile.mkdtemp()
+        subprocess.run(["git", "init", "-q", d], check=True)
+        if hook_body:
+            path = os.path.join(d, ".git", "hooks", "post-commit")
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(hook_body)
+            os.chmod(path, 0o755)
+        return d
+
+    def _hook(self, root: str) -> str:
+        with open(os.path.join(root, ".git", "hooks", "post-commit"), encoding="utf-8") as fh:
+            return fh.read()
+
+    def test_an_existing_hook_survives_untouched(self):
+        """The property the whole design turns on."""
+        root = self._repo("#!/bin/sh\necho 'graphify: reindexing'\n")
+        res = setup.install_sync_hook(root)
+        self.assertTrue(res["ok"])
+        body = self._hook(root)
+        self.assertIn("graphify: reindexing", body, "somebody else's automation was destroyed")
+        self.assertIn(setup.HOOK_BEGIN, body)
+
+    def test_it_is_idempotent_and_appends_exactly_once(self):
+        root = self._repo("#!/bin/sh\necho other\n")
+        setup.install_sync_hook(root)
+        second = setup.install_sync_hook(root)
+        self.assertFalse(second["attempted"])
+        self.assertEqual(self._hook(root).count(setup.HOOK_BEGIN), 1)
+
+    def test_a_repo_without_a_hook_gets_one_that_is_executable(self):
+        root = self._repo()
+        setup.install_sync_hook(root)
+        path = os.path.join(root, ".git", "hooks", "post-commit")
+        self.assertTrue(os.access(path, os.X_OK), "a hook git cannot execute is not a hook")
+        self.assertTrue(self._hook(root).startswith("#!/bin/sh"))
+
+    def test_a_non_git_directory_is_reported_not_written(self):
+        d = tempfile.mkdtemp()
+        res = setup.install_sync_hook(d)
+        self.assertFalse(res["attempted"])
+        self.assertIn("not a git repository", res["reason"])
+        self.assertEqual(os.listdir(d), [])
+
+    def test_the_hook_can_never_fail_or_slow_a_commit(self):
+        """post-commit runs on every commit the operator makes. Blocking it,
+        or failing it, would make this kit the thing that broke their day."""
+        root = self._repo()
+        setup.install_sync_hook(root)
+        body = self._hook(root)
+        self.assertIn("|| true", body, "a failing sync would surface as a hook error")
+        self.assertIn("&", body, "the sync must be detached, not run inline")
+        self.assertIn("REIN_SKIP_SYNC_HOOK", body, "there must be an escape hatch")
+        self.assertIn("command -v codegraph", body, "a missing binary must not produce an error")

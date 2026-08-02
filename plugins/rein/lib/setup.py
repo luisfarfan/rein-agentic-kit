@@ -271,6 +271,9 @@ def install(names: list[str] | None = None, root: str = ".") -> dict:
     # Same rule as the telemetry above, one vendor over: a default that
     # interrupts the operator on every session is the vendor's choice, not theirs.
     results["serena-dashboard"] = quiet_serena_dashboard()
+    # The index goes stale outside the loop: inside `/rein:rein-apply` the
+    # worktree is reindexed per run, but an ordinary session is not.
+    results["codegraph-sync-hook"] = install_sync_hook(root)
     # A tracked-file write, so it belongs to --install and nowhere else.
     results["gitignore"] = write_gitignore(root)
     return {"root": state["root"], "results": results}
@@ -315,6 +318,80 @@ def activate_serena(root: str = ".") -> dict:
 
 SERENA_CONFIG = os.path.expanduser("~/.serena/serena_config.yml")
 _DASHBOARD_KEY = "web_dashboard_open_on_launch"
+
+
+HOOK_BEGIN = "# >>> rein: codegraph auto-sync >>>"
+HOOK_END = "# <<< rein: codegraph auto-sync <<<"
+
+_HOOK_BLOCK = f"""{HOOK_BEGIN}
+# Keeps this repo's codegraph index current. Measured: an index here went
+# 61.7 hours stale while every graph answer silently described old code.
+# Inside `/rein:rein-apply` the worktree is reindexed per run, so this covers
+# the OTHER half -- ordinary sessions and `/rein:rein-step`.
+# Detached and `|| true`: a post-commit must never slow or fail a commit.
+# Skip with REIN_SKIP_SYNC_HOOK=1.
+[ "${{REIN_SKIP_SYNC_HOOK:-0}}" = "1" ] || \
+  ( command -v codegraph >/dev/null 2>&1 && \
+    codegraph sync "$(git rev-parse --show-toplevel)" >/dev/null 2>&1 & ) || true
+{HOOK_END}
+"""
+
+
+def install_sync_hook(root: str = ".") -> dict:
+    """Append a post-commit hook that keeps codegraph's index current.
+
+    APPENDED in a delimited block, never written over an existing hook. That
+    is not caution for its own sake: on this machine `.git/hooks/post-commit`
+    is already owned by graphify in several repos, and a tool that rewrites
+    it wholesale silently disables somebody else's automation. The operator's
+    own hook installer uses the same begin/end marker pattern for the same
+    reason.
+
+    Idempotent (the marker is the check), never fails a commit (`|| true`,
+    detached), and skippable without editing anything
+    (`REIN_SKIP_SYNC_HOOK=1`).
+    """
+    root = os.path.abspath(root)
+    try:
+        rel = subprocess.run(
+            ["git", "-C", root, "rev-parse", "--git-path", "hooks/post-commit"],
+            capture_output=True, text=True, timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return {"ok": False, "attempted": False, "reason": f"git unavailable: {exc}"}
+    if rel.returncode != 0:
+        return {"ok": False, "attempted": False, "reason": "not a git repository — no hook installed"}
+
+    hook = rel.stdout.strip()
+    if not os.path.isabs(hook):
+        hook = os.path.join(root, hook)
+
+    existing = ""
+    if os.path.exists(hook):
+        try:
+            with open(hook, encoding="utf-8", errors="replace") as fh:
+                existing = fh.read()
+        except OSError as exc:
+            return {"ok": False, "attempted": False, "reason": f"could not read {hook}: {exc}"}
+        if HOOK_BEGIN in existing:
+            return {"ok": True, "attempted": False, "reason": "auto-sync hook already installed"}
+
+    body = existing if existing else "#!/bin/sh\n"
+    if not body.endswith("\n"):
+        body += "\n"
+    try:
+        os.makedirs(os.path.dirname(hook), exist_ok=True)
+        with open(hook, "w", encoding="utf-8") as fh:
+            fh.write(body + _HOOK_BLOCK)
+        os.chmod(hook, 0o755)
+    except OSError as exc:
+        return {"ok": False, "attempted": True, "reason": f"could not write {hook}: {exc}"}
+    return {
+        "ok": True,
+        "attempted": True,
+        "reason": ("appended to the existing post-commit hook, which was left intact"
+                   if existing else "created a post-commit hook"),
+    }
 
 
 def quiet_serena_dashboard(config_path: str = SERENA_CONFIG) -> dict:
