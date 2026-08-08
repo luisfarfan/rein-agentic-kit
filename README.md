@@ -174,6 +174,8 @@ rein ledger      # history across projects, with deltas vs a marked baseline
                  # folded into a run total
 rein baseline    # mark the run everything is compared against
 rein dashboard   # 📊 serve it all as a local page
+rein workspace   # discover .rein/workspace.json and report each member repo's
+                 # branch and head; one explanatory line, exit 0, when none is found
 ```
 
 > **The rule that separates them:** if it's a *parse*, a script does it. If it's a *judgement*,

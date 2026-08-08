@@ -25,6 +25,9 @@ Subcommands:
                       folded into a run
   rein baseline       mark/show/clear the reference run compared against
   rein dashboard      serve (or --json print) the ledger as a view model
+  rein workspace      discover `.rein/workspace.json` and report every member
+                      repo's branch and head; exits 0 with one line when none
+                      is found
 
 Kept dependency-free on purpose: a plugin that drags a toolchain along at install
 time is a plugin nobody installs. Python 3 stdlib only.
@@ -55,6 +58,7 @@ import serve as _serve  # noqa: E402
 import token_report as _tr  # noqa: E402
 import verify as _verify  # noqa: E402
 import version_staleness as _staleness  # noqa: E402
+import workspace as _workspace  # noqa: E402
 
 USAGE = __doc__
 
@@ -276,6 +280,31 @@ def cmd_close(argv: list[str]) -> int:
         return 0
     print(f"{task_id}: not found or already closed in {plan['path']}")
     return 1
+
+
+def cmd_workspace(argv: list[str]) -> int:
+    """Discover `.rein/workspace.json` above `start` and report each member.
+
+    Never fails the caller (D4-style): no descriptor is not an error, it is
+    the common case for a single-repo project -- one explanatory line, exit
+    0. A member that could not be resolved is reported on stderr and simply
+    does not get a line; the survivors still print.
+    """
+    start = _positional(argv) or "."
+    found = _workspace.discover(start)
+    if not found["found"]:
+        print(f"no workspace descriptor found (.rein/workspace.json) above {os.path.abspath(start)}")
+        return 0
+    if found["doc"] is None:
+        print(f"rein workspace: could not read {found['path']}: {found['error']}", file=sys.stderr)
+        return 0
+
+    ok, problems = _workspace.members(found["doc"], found["root"])
+    for name, reason in problems:
+        print(f"rein workspace: skipping {name}: {reason}", file=sys.stderr)
+    for name, path, branch, head in ok:
+        print(f"{name}\t{branch}\t{head}\t{path}")
+    return 0
 
 
 def cmd_next(argv: list[str]) -> int:
@@ -787,6 +816,7 @@ COMMANDS = {
     "baseline": cmd_baseline,
     "dashboard": cmd_dashboard,
     "serve-probe": cmd_serve_probe,
+    "workspace": cmd_workspace,
 }
 
 
