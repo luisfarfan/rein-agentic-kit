@@ -308,7 +308,7 @@ hierarchy and these tasks are siblings.
       `tests/test_humanize.py` asserts the projection computes its full upsert
       set with the humanizer raising, identical to the humanized run
 
-- [ ] T005 Only what is live, and only what changed
+- [x] T005 Only what is live, and only what changed
   - Type: implementation
   - Depends on: T002, T003
   - Human review: false
