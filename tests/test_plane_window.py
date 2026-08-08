@@ -142,10 +142,27 @@ class HistoryModuleTests(unittest.TestCase):
         self.assertIn("1 blocked", description)
         self.assertIn("3 task", description)
 
-    def test_state_is_completed(self):
+    def test_status_field_is_completed_not_state(self):
+        """Plane's Module resource carries `status`, not `state` -- `state`
+        is the Issue field (a uuid), and a DRF serializer silently drops an
+        unknown field, so a `state` key here would create the Module in
+        whatever Plane defaults to rather than `completed` (finding 4,
+        round-1 review). The field name itself is pinned, not just its
+        value, since that is exactly what a stray `state` key would pass
+        while still being wrong."""
         entities = pp.select(_fixture_state(), window_days=30)
         module = next(e for e in entities if e["change"] == "old-refactor")
-        self.assertEqual(module["payload"]["state"], "completed")
+        self.assertEqual(module["payload"]["status"], "completed")
+        self.assertNotIn("state", module["payload"])
+
+    def test_live_module_carries_no_guessed_status(self):
+        """`"active"` was never a legal Module status (backlog/planned/
+        in-progress/paused/completed/cancelled) -- a live module's status
+        is omitted rather than sent as an un-measured value."""
+        entities = pp.select(_fixture_state(), window_days=30)
+        module = next(e for e in entities if e["change"] == "add-widget")
+        self.assertNotIn("status", module["payload"])
+        self.assertNotIn("state", module["payload"])
 
     def test_no_work_item_emitted_for_a_history_change(self):
         entities = pp.select(_fixture_state(), window_days=30)

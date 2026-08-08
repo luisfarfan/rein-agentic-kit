@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 
 import humanize as _humanize
 import plan as _plan
@@ -41,6 +42,16 @@ import workspace as _workspace
 
 PLANE_CONFIG_FILENAME = "plane.json"
 RECORD_RELATIVE_PATH = os.path.join(".rein", "plane_record.json")
+
+# finding 5 (round-1 review): a 30-day window means ~396 work items, each a
+# distinct title -- humanizing all of them is ~400 sequential agent calls
+# against D10's 9-minute measured budget. Humanization is therefore
+# opt-in, and even then scoped by default to the ~22 project/module titles
+# a sync produces, never the work items that dominate the count.
+HUMANIZE_CONFIG_KEY = "humanize"
+HUMANIZE_WORK_ITEMS_CONFIG_KEY = "humanize_work_items"
+HUMANIZE_BUDGET_CONFIG_KEY = "humanize_budget_seconds"
+DEFAULT_HUMANIZE_BUDGET_SECONDS = 60.0
 
 # AC1: transition -> the Plane State GROUP it maps onto. `merged` and
 # `verified` share `completed` -- both mean the work is done, one via review
@@ -149,6 +160,120 @@ def _work_item_body(repo_root: str, change: str, task_id: str, depends_index: di
     return f"Depends on: {', '.join(deps)}" if deps else ""
 
 
+def _humanize_enabled(config: dict) -> bool:
+    """Opt-in only (finding 5): with no `humanize` key in `plane.json`, or
+    a falsy one, every title reaches Plane raw and no agent subprocess is
+    ever spawned."""
+    return bool(config.get(HUMANIZE_CONFIG_KEY, False))
+
+
+def _humanize_work_items_enabled(config: dict) -> bool:
+    """Work item titles -- by far the largest group (396 of the measured
+    30-day window's ~420 entities) -- stay raw even when humanization is
+    on, unless explicitly requested; project and module titles (~22) are
+    the ones it actually pays for."""
+    return bool(config.get(HUMANIZE_WORK_ITEMS_CONFIG_KEY, False))
+
+
+def _humanize_budget_seconds(config: dict) -> float:
+    value = config.get(HUMANIZE_BUDGET_CONFIG_KEY, DEFAULT_HUMANIZE_BUDGET_SECONDS)
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return DEFAULT_HUMANIZE_BUDGET_SECONDS
+
+
+def _safe_humanize(hcache, text: str, kind: str) -> str:
+    """Guards a `.humanize()` call that itself raises. The shipped
+    `humanize.HumanizeCache` never does -- its underlying `humanize()`
+    already falls back to raw text internally (D7) -- but this is the
+    outer belt for any other object passed as `humanize_cache` (tests, a
+    future cache implementation), so a broken one degrades exactly like
+    the well-behaved one instead of aborting the entity being applied."""
+    try:
+        return hcache.humanize(text, kind)
+    except Exception:
+        return text
+
+
+class _BudgetedHumanizer:
+    """Wraps a humanize cache with an overall wall-clock budget for one
+    whole sync (finding 5). Once the cumulative time this run has spent
+    inside `.humanize()` reaches `budget_seconds`, every later call
+    returns the raw text immediately, with no further agent invocation --
+    nothing bounded total spend before this, only the per-call 30s
+    timeout, so a large window could still dominate wall-clock even with
+    humanization scoped to project/module titles alone."""
+
+    def __init__(self, inner, budget_seconds: float):
+        self._inner = inner
+        self._budget = budget_seconds
+        self._spent = 0.0
+        self._exhausted = False
+
+    def humanize(self, text: str, kind: str, lang: str | None = None) -> str:
+        if self._exhausted:
+            return text
+        start = time.monotonic()
+        try:
+            return self._inner.humanize(text, kind, lang)
+        finally:
+            self._spent += time.monotonic() - start
+            if self._spent >= self._budget:
+                self._exhausted = True
+
+
+def _module_payload_for_change(change_name: str, state_by_change: dict, window_days: int) -> dict:
+    """The module payload T005's `_module_entity` would compute for
+    `change_name` **right now**, independent of whether the module entity
+    itself was part of the current `select()` batch.
+
+    Needed because a live change's module payload is `{"name": ...}` alone
+    (T005) -- it never varies with the change's tasks, so its content hash
+    never changes after the first sync. A later run that only added or
+    moved a task therefore never re-emits the module entity, and
+    `module_ids` (populated solely from module entities processed in the
+    *current* batch) would stay empty for that change -- silently
+    orphaning every new work item from its Module forever (finding 1,
+    round-1 review). Resolving the payload independently of `select()`'s
+    output lets a work item's module id be looked up (or, on a project
+    with no cached id yet, upserted) regardless.
+    """
+    change_state = state_by_change.get(change_name) or {}
+    tasks = change_state.get("tasks") or []
+    age = change_state.get("lastTouchedDays")
+    live = age is None or age <= window_days
+    return dict(_pp._module_entity(change_name, tasks, live)["payload"])
+
+
+def _resolve_module_id(
+    client,
+    hcache,
+    humanize_enabled: bool,
+    workspace_slug: str,
+    repo_name: str,
+    project_id: str,
+    change_name: str,
+    module_ids: dict,
+    state_by_change: dict,
+    window_days: int,
+) -> str:
+    """The Plane id of `change_name`'s Module -- from this batch's cache if
+    a module entity was already applied in it, else upserted here (the
+    409-with-id path returns the existing id harmlessly when nothing
+    changed). Called before every work item is applied, never only when
+    the module entity itself was selected (finding 1)."""
+    if change_name in module_ids:
+        return module_ids[change_name]
+    payload = _module_payload_for_change(change_name, state_by_change, window_days)
+    raw_name = payload.pop("name")
+    name = _safe_humanize(hcache, raw_name, _humanize.KIND_TITLE) if humanize_enabled else raw_name
+    module_ext_id = _pc.make_external_id(workspace_slug, repo_name, change_name, "")
+    module = client.upsert_module(project_id, name, module_ext_id, **payload)
+    module_ids[change_name] = module["id"]
+    return module_ids[change_name]
+
+
 def run_sync(root: str, *, client_factory=None, humanize_cache=None, env=None) -> dict:
     """The whole sync: config checks (AC3) then, entity by entity, every
     Project/Module/Work-Item upsert (AC1), never aborting on one entity's
@@ -174,7 +299,12 @@ def run_sync(root: str, *, client_factory=None, humanize_cache=None, env=None) -
     if workspace_doc is None:
         raise WorkspaceMissing(workspace_slug, base_url)
 
-    hcache = humanize_cache or _humanize.HumanizeCache(root=root)
+    hcache = _BudgetedHumanizer(
+        humanize_cache or _humanize.HumanizeCache(root=root),
+        _humanize_budget_seconds(config),
+    )
+    humanize_enabled = _humanize_enabled(config)
+    humanize_work_items = humanize_enabled and _humanize_work_items_enabled(config)
 
     record_path = os.path.join(root, RECORD_RELATIVE_PATH)
     record = _pp.load_record(record_path)
@@ -194,13 +324,27 @@ def run_sync(root: str, *, client_factory=None, humanize_cache=None, env=None) -
         }
 
         state_list = build_state(repo_root)
+        state_by_change = {cs.get("change") or "": cs for cs in state_list}
         entities = _pp.select(state_list, window_days, record=repo_record)
         if not entities:
             continue
 
         project_ext_id = _pc.make_external_id(workspace_slug, repo_name, "", "")
         try:
-            project = client.ensure_project(hcache.humanize(repo_name, _humanize.KIND_TITLE), project_ext_id)
+            project_title = (
+                _safe_humanize(hcache, repo_name, _humanize.KIND_TITLE) if humanize_enabled else repo_name
+            )
+            # D9: `name` is the RAW repo name, mechanically sanitised by
+            # `safe_name()`/`safe_identifier()` inside `ensure_project()` --
+            # never the humanized string. Humanizing `name` directly made
+            # both the display name AND the workspace-unique `identifier`
+            # depend on non-deterministic agent prose: two repos could
+            # collide on the identifier where their raw names never would,
+            # and the identifier churned across syncs whenever a different
+            # reply (or a fallback to raw text) changed the input string
+            # (finding 2, round-1 review). A humanized title, when wanted,
+            # rides `description` instead -- a field with no identity role.
+            project = client.ensure_project(repo_name, project_ext_id, description=project_title)
         except Exception as exc:  # noqa: BLE001 -- reported per repo, never aborts the sync
             report["failed"].append({"key": f"project:{repo_name}", "error": str(exc)})
             continue
@@ -216,7 +360,11 @@ def run_sync(root: str, *, client_factory=None, humanize_cache=None, env=None) -
             try:
                 if entity["type"] == "module":
                     payload = dict(entity["payload"])
-                    name = hcache.humanize(payload.pop("name"), _humanize.KIND_TITLE)
+                    raw_name = payload.pop("name")
+                    name = (
+                        _safe_humanize(hcache, raw_name, _humanize.KIND_TITLE)
+                        if humanize_enabled else raw_name
+                    )
                     module_ext_id = _pc.make_external_id(workspace_slug, repo_name, change_name, "")
                     module = client.upsert_module(project_id, name, module_ext_id, **payload)
                     module_ids[change_name] = module["id"]
@@ -233,10 +381,24 @@ def run_sync(root: str, *, client_factory=None, humanize_cache=None, env=None) -
                     body = _work_item_body(repo_root, change_name, task_id, depends_index)
                     if body:
                         fields["description"] = body
-                    name = hcache.humanize(payload.get("name") or task_id, _humanize.KIND_TITLE)
+                    raw_name = payload.get("name") or task_id
+                    name = (
+                        _safe_humanize(hcache, raw_name, _humanize.KIND_TITLE)
+                        if humanize_work_items else raw_name
+                    )
                     item_ext_id = _pc.make_external_id(workspace_slug, repo_name, change_name, task_id)
                     work_item = client.upsert_work_item(project_id, name, item_ext_id, **fields)
-                    module_id = module_ids.get(change_name)
+                    # Resolved regardless of whether a module entity was
+                    # itself part of this batch (finding 1) -- a live
+                    # change's module payload never varies with its tasks,
+                    # so its hash never changes after the first sync, and
+                    # `module_ids.get(change_name)` alone would silently
+                    # and permanently orphan every work item added or
+                    # transitioned on any later run.
+                    module_id = _resolve_module_id(
+                        client, hcache, humanize_enabled, workspace_slug, repo_name,
+                        project_id, change_name, module_ids, state_by_change, window_days,
+                    )
                     if module_id:
                         client.attach_work_item_to_module(project_id, module_id, work_item["id"])
                 new_record[f"{repo_prefix}{key}"] = entity["hash"]

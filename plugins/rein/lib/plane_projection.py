@@ -84,13 +84,22 @@ def _history_description(tasks: list) -> str:
 
 
 def _module_entity(change_name: str, tasks: list, live: bool) -> dict:
+    # Plane's Module resource carries `status` (backlog/planned/in-progress/
+    # paused/completed/cancelled) -- `state` is the Issue field (a state-
+    # machine uuid), which is why work items use it and Modules never can.
+    # A DRF serializer silently drops an unknown field rather than 400ing,
+    # so sending `state` here would create every history Module in
+    # whatever Plane defaults a fresh Module to, not `completed` -- the
+    # bug would never surface as a failure, only as a wrong board (finding
+    # 4, round-1 review). `"active"` was never a legal value either; a live
+    # module's status is left unset rather than guessed at.
     if live:
-        payload = {"name": change_name, "state": "active"}
+        payload = {"name": change_name}
     else:
         payload = {
             "name": change_name,
             "description": _history_description(tasks),
-            "state": "completed",
+            "status": "completed",
         }
     key = f"module:{change_name}"
     return {

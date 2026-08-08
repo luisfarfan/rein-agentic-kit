@@ -282,6 +282,82 @@ class RecordIsScopedPerRepoTests(unittest.TestCase):
         self.assertTrue(any(k.startswith("repo-b::") for k in record))
 
 
+class ModuleAttachSurvivesUnchangedModuleHashTests(unittest.TestCase):
+    """Round-1 review, finding 1: a work item whose change's Module hash is
+    unchanged must still resolve and attach to that Module.
+
+    T005's live-module payload is `{"name": change_name}` alone -- it never
+    varies with the change's tasks, so its content hash never changes after
+    the first sync. Before the fix, `module_ids` was populated only from a
+    module ENTITY processed in the *current* `select()` batch; a later run
+    that only added a task (never touching the module) would then find
+    `module_ids` empty for that change and skip `attach_work_item_to_module`
+    entirely -- while still recording the work item as applied. The card
+    would exist in Plane forever, unlinked from any Module."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = self.tmp.name
+        self.change_dir = _make_repo(self.root, "demo", [{"id": "T001", "title": "First task"}])
+        _write_plane_json(self.root)
+        self.repo_name = "acme-repo"
+
+    def _factory(self, transport):
+        def factory(base_url, workspace_slug, env=None):
+            return pc.PlaneClient(base_url, workspace_slug, transport=transport, sleep=lambda s: None,
+                                   env={"REIN_PLANE_API_KEY": "test-key"})
+        return factory
+
+    def _run(self, transport):
+        with mock.patch.object(ps, "repos_for", return_value=[(self.repo_name, self.root)]):
+            return ps.run_sync(self.root, client_factory=self._factory(transport))
+
+    def test_second_run_still_attaches_new_task_to_the_existing_module(self):
+        first_transport = FakeTransport([
+            (200, {"id": "ws-1"}),                                            # GET workspace
+            (200, {"results": []}),                                            # GET list projects
+            (201, {"id": "proj-1"}),                                            # POST create project
+            (200, {"id": "proj-1"}),                                            # PATCH module_view
+            (201, {"id": "mod-1"}),                                              # POST module (demo)
+            (200, {"results": [{"id": "s-backlog", "group": "backlog"}]}),       # GET states
+            (201, {"id": "wi-1"}),                                                # POST T001 work item
+            (200, {"issues": ["wi-1"]}),                                          # POST attach T001
+        ])
+        report1 = self._run(first_transport)
+        self.assertEqual(report1["failed"], [])
+        self.assertEqual(sorted(report1["applied"]), ["item:demo:T001", "module:demo"])
+
+        # A second task is added. The module's payload (name only, for a
+        # live change) is unaffected, so `select()` will not re-emit the
+        # module entity this run -- only the new work item.
+        _write_tasks_md(self.change_dir, "demo", [
+            {"id": "T001", "title": "First task"},
+            {"id": "T002", "title": "Second task"},
+        ])
+
+        project_ext_id = pc.make_external_id("acme", self.repo_name, "", "")
+        second_transport = FakeTransport([
+            (200, {"id": "ws-1"}),                                              # GET workspace
+            (200, {"results": [{"id": "proj-1", "external_id": project_ext_id,
+                                 "external_source": pc.EXTERNAL_SOURCE}]}),      # GET list projects (match)
+            (200, {"id": "proj-1"}),                                             # PATCH project (upsert match)
+            (200, {"id": "proj-1"}),                                             # PATCH module_view
+            (200, {"results": [{"id": "s-backlog", "group": "backlog"}]}),       # GET states
+            (201, {"id": "wi-2"}),                                                # POST T002 work item
+            (409, {"id": "mod-1"}),                                               # POST module -- resolve, 409-with-id
+            (200, {"id": "mod-1"}),                                               # PATCH module (resolve's patch)
+            (200, {"issues": ["wi-2"]}),                                          # POST attach T002
+        ])
+        report2 = self._run(second_transport)
+
+        self.assertEqual(report2["failed"], [])
+        self.assertEqual(report2["applied"], ["item:demo:T002"])  # module NOT re-emitted
+
+        methods_and_paths = [(m, u.split("acme", 1)[1]) for m, u, _ in second_transport.calls]
+        self.assertEqual(methods_and_paths[-1], ("POST", "/projects/proj-1/modules/mod-1/module-issues/"))
+
+
 # --------------------------------------------------------------- AC4: deps --
 
 
