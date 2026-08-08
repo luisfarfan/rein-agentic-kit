@@ -118,7 +118,11 @@ hierarchy and these tasks are siblings.
 - In: humanized Plane text from a small agent, language configurable, Spanish
   by default
 - In: a test proving that removing the Plane config changes nothing
-- Out: reading anything from Plane. No import, no webhook, no reconciliation
+- Out: reading Plane **as a source of state**. No import, no webhook, no
+  reconciliation, and nothing Plane returns may change a local file. Reads that
+  a write needs — listing projects to match an `external_id` (D3), fetching the
+  state ids to map a group, checking the workspace exists before failing with a
+  useful message — are part of writing, not a second source of truth
 - Out: rein creating Plane workspaces over the API — it cannot
 - Out: rein deleting anything in Plane. Create and update only
 - Out: `workspace_seed`. It actively blocks the names rein needs
@@ -245,8 +249,12 @@ hierarchy and these tasks are siblings.
     - `safe_name()` strips every character in the measured forbidden set and
       `safe_identifier()` emits at most 12 characters as an 8-character stem
       plus a 4-character hash of the **full** name; `tests/test_plane_client.py`
-      asserts the 24 real proxima repo names produce 24 distinct identifiers,
-      the case that collided 7 times when truncated (D9)
+      carries the 24 colliding repo names **as a literal list in the test file**
+      — `proxima-website`, `proxima-website-v2`, `proxima-website-v3`,
+      `proxima-website2` and the rest — and asserts they produce 24 distinct
+      identifiers, since truncation collided on 7 of them. The names are data,
+      not a repository to fetch: nothing in this test reads a path outside this
+      repo (D9)
     - a `409`/`400` whose body does not carry an `id` is raised as a named
       conflict error carrying the attempted name, never as a `KeyError` —
       `tests/test_plane_client.py` asserts the error type and that the message
@@ -312,9 +320,13 @@ hierarchy and these tasks are siblings.
       (one closed Module, **no work items**); `tests/test_plane_window.py` is a
       new module asserting the split against a fixture with backdated changes
     - the window defaults to **30** and is read from `plane.json` —
-      `tests/test_plane_window.py` asserts the default and an override, and
-      pins that the measured proxima corpus at 30 days yields 21 live changes
-      and 396 work items rather than 2,649 (D10)
+      `tests/test_plane_window.py` asserts the default, an override, and that a
+      change whose age equals the window exactly is treated as live, since an
+      off-by-one at the boundary silently drops a change nobody would look for.
+      The fixture is synthetic, with ages the test sets: the proxima corpus that
+      motivated 30 days lives in this plan's Why as evidence and is not
+      reachable from a worktree, so pinning its counts would be unfalsifiable
+      here and would drift on the next commit to that repo (D10)
     - a history Module carries its task counts in its description and is created
       in a completed state — `tests/test_plane_window.py` asserts no work item
       is emitted for a history change, since that is the entire saving
