@@ -17,9 +17,16 @@ from __future__ import annotations
 import datetime
 import json
 import os
+import subprocess
 
 EVENTS_DIR = os.path.expanduser("~/.claude/rein")
 EVENTS_PATH = os.path.join(EVENTS_DIR, "events.jsonl")
+
+# T002/AC1: the ONLY transitions a task may emit. Anything else is a caller
+# bug (a typo, a made-up state) and is rejected BY NAME, before anything is
+# written -- accepting an unknown word here would let a state.py fold over
+# it silently and report a task "at" a stage that was never real.
+TASK_TRANSITIONS = ("started", "verified", "blocked", "merged")
 
 
 def record_event(name: str, root: str = ".", events_path: str = EVENTS_PATH) -> tuple[bool, str]:
@@ -34,6 +41,70 @@ def record_event(name: str, root: str = ".", events_path: str = EVENTS_PATH) -> 
         "name": name,
         "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
         "project": os.path.realpath(root),
+    }
+    try:
+        os.makedirs(os.path.dirname(events_path), exist_ok=True)
+        with open(events_path, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except OSError as exc:
+        return False, str(exc)
+    return True, ""
+
+
+def _git_head(repo: str) -> str:
+    """The repo's current commit, or "" if it cannot be determined.
+
+    Never raises (same convention as `workspace._git`): a missing `git`
+    binary, a repo with no commits yet, or any other failure degrades to an
+    empty commit rather than blocking the event it is attached to.
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "-C", repo, "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    if proc.returncode != 0:
+        return ""
+    return proc.stdout.strip()
+
+
+def record_task_event(
+    task_id: str,
+    transition: str,
+    change: str = "",
+    root: str = ".",
+    events_path: str = EVENTS_PATH,
+) -> tuple[bool, str]:
+    """Append one TASK-TRANSITION event -- emitted while it happens (T002),
+    not reconstructed afterwards from a checkbox.
+
+    Rejects any `transition` not in `TASK_TRANSITIONS` BY NAME, before doing
+    anything else -- nothing is written for an unknown transition (AC1).
+    On a valid transition, appends one line to the SAME `events.jsonl` this
+    module already writes skill-invocation events to, carrying `task_id`,
+    `transition`, `change`, the resolved `repo`, and the repo's current git
+    commit (best-effort -- "" when it cannot be read, never fatal).
+
+    Returns `(ok, error)`, same never-raise convention as `record_event`:
+    an unknown transition and an `OSError` while writing both come back as
+    `ok=False` with `error` explaining why, never a raised exception.
+    """
+    if transition not in TASK_TRANSITIONS:
+        return False, (
+            f"unknown transition {transition!r} -- must be one of "
+            f"{', '.join(TASK_TRANSITIONS)}"
+        )
+    repo = os.path.realpath(root)
+    record = {
+        "kind": "task",
+        "task_id": task_id,
+        "transition": transition,
+        "change": change,
+        "repo": repo,
+        "commit": _git_head(repo),
+        "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
     }
     try:
         os.makedirs(os.path.dirname(events_path), exist_ok=True)

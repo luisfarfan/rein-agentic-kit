@@ -168,6 +168,11 @@ rein review      # record / check a verdict bound to a code state
 rein token-report# what a run really cost, per agent and per model, plus its wall clock,
                  # agent-minutes and their ratio (1.00x = nothing overlapped)
 rein event <name># record a skill invocation — an EVENT, never folded into a run total
+rein event task <id> <started|verified|blocked|merged>
+                 # record a task TRANSITION as it happens — rejects any other word
+                 # by name, without writing
+rein state       # per-task transitions folded from the event log + plan; given a
+                 # workspace, folds every member into one table
 rein ledger      # history across projects, with deltas vs a marked baseline
                  # --json: {"runs": [...], "events_by_project": {...}} -- runs are
                  # unchanged row objects; events (D3) are counted separately, never

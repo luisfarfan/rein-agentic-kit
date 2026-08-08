@@ -1062,6 +1062,14 @@ const closeCmd =
     ? (id) => `'bd close ${id} --reason "<what landed>"' and '${REIN} close ${id} --root ${WD}'`
     : (id) => `'${REIN} close ${id} --root ${WD}' (ticks the checkbox deterministically — do not hand-edit the plan)`
 
+// T002/AC1: the exact command a step hands to the agent to record a task
+// transition -- same shape as closeCmd, an EXACT string the loop decided,
+// never "call rein event when it feels appropriate". Which transition(s) go
+// into a given step's prompt is decided by transitionsFor (below), not by
+// this string builder.
+const taskEventCmd = (id, transition) =>
+  `'${REIN} event task ${id} ${transition} --root ${WD}${CHANGE ? ` --change ${CHANGE}` : ''}'`
+
 // ── Phase 1.3: PLAN CHECK — catch plan defects before paying implementers ───
 // D4: a BLOCKING plan finding stops the run before any implementer is paid.
 // One agent, no retries beyond agentRetry's standard, no second opinion, no
@@ -1372,6 +1380,25 @@ function mergeOrderOf(outcomes) {
   return outcomes.slice().sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
 }
 
+// T002/AC2/D2: the loop DECIDES which task-transition events a step must
+// emit -- never left to skill prose an agent might paraphrase, forget, or
+// invent a timing for (the exact defect class this plan exists to remove:
+// a fixture whose words never execute the path they claim to prove). Pure:
+// the same step (attempt, cap, outcome) always yields the same events, so a
+// test EXECUTES the real decision instead of grepping a prompt template.
+//   attempt        the CURRENT step number, 1-indexed
+//   maxAttempts    the bounded-step cap (STEPS)
+//   verifyExitCode null while this step's own verification has not
+//                  concluded yet, 0 once it passed, non-zero once it failed
+function transitionsFor(step) {
+  const s = step || {}
+  const events = []
+  if (s.attempt === 1) events.push('started')
+  if (s.verifyExitCode === 0) events.push('verified')
+  else if (s.attempt >= s.maxAttempts) events.push('blocked')
+  return events
+}
+
 // D3: any failure anywhere in the parallel path — worktree creation, the
 // implementation itself, or the merge back into the run's worktree — must
 // fall back to a serial retry, never a lost or aborted task. `worktreeFailed`
@@ -1492,10 +1519,34 @@ function stepPrompt(task, proxied, ledger, step, wtOverride, closesOwnTask = tru
 
   const ctxBlock = wtOverride ? buildTaskCTX(wtOverride.wd, wtOverride.branch) : CTX
 
+  // T002/AC2: the step CALLS transitionsFor to decide what it must emit --
+  // the loop's own decision, not an agent's judgement about when a
+  // transition "feels" due. `verifyExitCode: null` asks what is due before
+  // this step's outcome is known (only 'started' can be, on step 1);
+  // `verifyExitCode: 0` / `: 1` ask what is due for each of this step's two
+  // POSSIBLE outcomes, so the prompt hands the agent the exact command for
+  // whichever one it actually reaches.
+  const dueBeforeAttempt = transitionsFor({ attempt: step, maxAttempts: STEPS, verifyExitCode: null })
+  const dueOnPass = transitionsFor({ attempt: step, maxAttempts: STEPS, verifyExitCode: 0 })
+    .filter((e) => e !== 'started')
+  const dueOnCap = transitionsFor({ attempt: step, maxAttempts: STEPS, verifyExitCode: 1 })
+    .filter((e) => e !== 'started')
+
+  const startedLine = dueBeforeAttempt.includes('started')
+    ? `As your FIRST action this step, run ${taskEventCmd(task.id, 'started')} — the loop decided this event ` +
+      `is due, not you.\n`
+    : ''
+  const cappedLine = dueOnCap.includes('blocked')
+    ? `This is the FINAL bounded step (${step} of ${STEPS}): if you reach its end still not done, run ` +
+      `${taskEventCmd(task.id, 'blocked')} before returning blocked=true or done=false — the attempt cap ` +
+      `decided this, not your judgement.\n`
+    : ''
+
   return (
     `${ctxBlock}\n\nYou are the IMPLEMENTER of task ${task.id} ("${task.title}").\n` +
     criteria +
     mapHintFor(task.id) +
+    startedLine +
     cont +
     `BOUNDED-STEP CONTRACT (this is the point — an agent that runs 200 turns re-reads its bloated context ` +
     `every single turn and costs a fortune): do ONE FOCUSED STRETCH, not the whole task at once. Run the ` +
@@ -1506,8 +1557,10 @@ function stepPrompt(task, proxied, ledger, step, wtOverride, closesOwnTask = tru
     `(progress/remaining/filesTouched/verification, a few lines) so another FRESH agent continues. Do NOT ` +
     `keep accumulating context to "just finish it": cutting and handing off is CHEAP, running 200 turns is ` +
     `what is expensive.\n` +
+    cappedLine +
     `Return done=true ONLY when everything holds: all acceptance criteria + the task's verification green + ` +
     (gateCmds.length ? `${gateCmds.join(' and ')} green + ` : '') +
+    (dueOnPass.includes('verified') ? `${taskEventCmd(task.id, 'verified')} recorded + ` : '') +
     (closesOwnTask
       ? `committed + the task closed with ${closeCmd(task.id)}.\n`
       : `committed. Do NOT close the task — ${ctx.planPath} is the ONE file every task in a parallel ` +
