@@ -33,6 +33,10 @@ Subcommands:
   rein workspace      discover `.rein/workspace.json` and report every member
                       repo's branch and head; exits 0 with one line when none
                       is found
+  rein sync --plane   project local state onto Plane (T006); exits 0 with one
+                      line when `plane.json` is absent -- state is derived
+                      locally, Plane is a projection, and this is fully
+                      additive: no other subcommand reads `plane.json` (D1)
 
 Kept dependency-free on purpose: a plugin that drags a toolchain along at install
 time is a plugin nobody installs. Python 3 stdlib only.
@@ -58,6 +62,8 @@ import events as _events  # noqa: E402
 import gate as _gate  # noqa: E402
 import plan as _plan  # noqa: E402
 import plan_check as _plan_check  # noqa: E402
+import plane_client as _pclient  # noqa: E402
+import plane_sync as _psync  # noqa: E402
 import product_state as _pstate  # noqa: E402
 import setup as _setup  # noqa: E402
 import serve as _serve  # noqa: E402
@@ -327,6 +333,43 @@ def cmd_workspace(argv: list[str]) -> int:
     for name, path, branch, head in ok:
         print(f"{name}\t{branch}\t{head}\t{path}")
     return 0
+
+
+def cmd_sync(argv: list[str]) -> int:
+    """T006: project local state onto Plane. Fully additive -- this is the
+    only subcommand that imports `plane_sync`/`plane_client`, so deleting
+    `plane.json` cannot change what any other subcommand prints (D1).
+
+    Three config problems exit differently on purpose (AC3), because they
+    mean different things: not configured is not an error (exit 0); a
+    missing API key or a missing workspace both need a human to act, so
+    they exit non-zero naming what to do.
+    """
+    if not argv or argv[0] != "--plane":
+        print("usage: rein sync --plane [root]")
+        return 2
+    root = _positional(argv[1:]) or "."
+
+    try:
+        report = _psync.run_sync(root)
+    except _psync.NotConfigured:
+        print("rein sync --plane: not configured (no plane.json in this repo) -- nothing to do")
+        return 0
+    except _pclient.PlaneAuthError as exc:
+        print(f"rein sync --plane: {exc}", file=sys.stderr)
+        return 1
+    except _psync.WorkspaceMissing as exc:
+        print(f"rein sync --plane: {exc}", file=sys.stderr)
+        return 1
+
+    for key in report["applied"]:
+        print(f"  ok    {key}")
+    for item in report["failed"]:
+        print(f"  FAIL  {item['key']}: {item['error']}", file=sys.stderr)
+    total = len(report["applied"]) + len(report["failed"])
+    if total == 0:
+        print("rein sync --plane: nothing changed since the last sync")
+    return 1 if report["failed"] else 0
 
 
 def cmd_next(argv: list[str]) -> int:
@@ -919,6 +962,7 @@ COMMANDS = {
     "dashboard": cmd_dashboard,
     "serve-probe": cmd_serve_probe,
     "workspace": cmd_workspace,
+    "sync": cmd_sync,
 }
 
 

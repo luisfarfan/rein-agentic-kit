@@ -1,0 +1,553 @@
+#!/usr/bin/env python3
+"""Tests for T006 -- "deleting the Plane config changes nothing".
+
+  AC1  `rein sync --plane` walks the selection (T005) and issues the
+       upserts (T003): repo -> Project, change -> Module, task -> Work
+       Item, transition -> the State whose `group` matches.
+  D1   with `plane.json` absent, `rein state`, `rein-apply` and `rein-step`
+       produce byte-identical output to a run where it is present. Tested
+       at the CLI commands each literally invokes (`state`, `next`,
+       `context`, `tasks` -- see SKILL.md for rein-step/rein-apply).
+  AC3  three config problems exit differently because they mean different
+       things: no `plane.json` (exit 0), `plane.json` but no
+       `REIN_PLANE_API_KEY` (exit non-zero, names the variable), both
+       present but the workspace does not exist in Plane (exit non-zero,
+       prints the URL a human must use).
+  AC4  a task's `Depends on` is a plain line in the work item body; no
+       `/relation` call is ever attempted.
+  AC5  a Plane failure is reported per entity, never aborts the sync; the
+       local task-event log is untouched.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import importlib.machinery
+import importlib.util
+import io
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import unittest
+from unittest import mock
+
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+LIB_DIR = os.path.join(REPO_ROOT, "plugins", "rein", "lib")
+REIN_BIN = os.path.join(REPO_ROOT, "plugins", "rein", "bin", "rein")
+
+sys.path.insert(0, LIB_DIR)
+
+import plane_client as pc  # noqa: E402
+import plane_sync as ps  # noqa: E402
+
+
+def _load_rein_cli():
+    """Loads `bin/rein` as an importable module (it has no `.py` suffix and
+    guards `main()` behind `__name__ == "__main__"`, so this never runs the
+    real CLI) -- lets cmd_sync's exit-code mapping be tested by monkeypatching
+    `plane_sync.run_sync` directly, with no subprocess and no network."""
+    loader = importlib.machinery.SourceFileLoader("rein_cli_under_test", REIN_BIN)
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+class FakeTransport:
+    """Replays a fixed queue of (status, body) responses, recording every
+    (method, url, parsed_json_body) call in order. Same shape as
+    tests/test_plane_client.py's -- no test here opens a socket."""
+
+    def __init__(self, responses):
+        self._responses = list(responses)
+        self.calls = []
+
+    def request(self, method, url, headers, body):
+        parsed_body = json.loads(body) if body else None
+        self.calls.append((method, url, parsed_body))
+        if not self._responses:
+            raise AssertionError(f"FakeTransport ran out of scripted responses for {method} {url}")
+        status, resp_body = self._responses.pop(0)
+        raw = json.dumps(resp_body).encode("utf-8") if resp_body is not None else b""
+        return status, {}, raw
+
+
+def _write_tasks_md(change_dir: str, change: str, tasks: list[dict]) -> None:
+    os.makedirs(change_dir, exist_ok=True)
+    lines = [f"# Change: {change}", "", "## Why", "", "Fixture change for T006 tests.", ""]
+    for t in tasks:
+        lines.append(f"- [ ] {t['id']} {t['title']}")
+        lines.append("  - Type: implementation")
+        deps = ", ".join(t.get("dependsOn", [])) or "none"
+        lines.append(f"  - Depends on: {deps}")
+        lines.append("  - Human review: false")
+        lines.append("  - Verification: `true`")
+        lines.append("  - Acceptance:")
+        lines.append("    - it works")
+    with open(os.path.join(change_dir, "tasks.md"), "w", encoding="utf-8") as fh:
+        fh.write("\n".join(lines) + "\n")
+
+
+def _make_repo(root: str, change: str, tasks: list[dict]) -> str:
+    change_dir = os.path.join(root, "openspec", "changes", change)
+    _write_tasks_md(change_dir, change, tasks)
+    return change_dir
+
+
+def _make_flat_repo(root: str, change: str, tasks: list[dict]) -> str:
+    """A plain `tasks.md` at `root` -- the source `rein state`/`next`/
+    `tasks`/`context` resolve with no `--change` needed, unlike the
+    `openspec` layout `_make_repo` builds."""
+    _write_tasks_md(root, change, tasks)
+    return root
+
+
+def _write_plane_json(root: str, **fields) -> str:
+    path = os.path.join(root, "plane.json")
+    payload = {"base_url": "https://plane.example.com", "workspace_slug": "acme"}
+    payload.update(fields)
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(payload, fh)
+    return path
+
+
+def _no_network_env(root: str) -> dict:
+    env = dict(os.environ)
+    env["HOME"] = root
+    return env
+
+
+# ------------------------------------------------------------ AC1: mapping --
+
+
+class TransitionGroupMappingTests(unittest.TestCase):
+    """AC1: the full transition -> State GROUP mapping, against the five
+    groups measured on a fresh Plane project."""
+
+    FRESH_PROJECT_STATES = [
+        {"id": "s-backlog", "group": "backlog"},
+        {"id": "s-unstarted", "group": "unstarted"},
+        {"id": "s-started", "group": "started"},
+        {"id": "s-completed", "group": "completed"},
+        {"id": "s-cancelled", "group": "cancelled"},
+    ]
+
+    def test_dict_matches_the_five_measured_groups(self):
+        self.assertEqual(
+            ps.TRANSITION_GROUP,
+            {
+                "planned": "backlog",
+                "started": "started",
+                "verified": "completed",
+                "merged": "completed",
+                "blocked": "unstarted",
+            },
+        )
+
+    def test_resolves_the_matching_state_id_per_transition(self):
+        expected = {
+            "planned": "s-backlog",
+            "started": "s-started",
+            "verified": "s-completed",
+            "merged": "s-completed",
+            "blocked": "s-unstarted",
+        }
+        for transition, state_id in expected.items():
+            with self.subTest(transition=transition):
+                self.assertEqual(
+                    ps._state_id_for_transition(self.FRESH_PROJECT_STATES, transition),
+                    state_id,
+                )
+
+    def test_unknown_transition_falls_back_to_backlog_group(self):
+        self.assertEqual(
+            ps._state_id_for_transition(self.FRESH_PROJECT_STATES, "made-up"),
+            "s-backlog",
+        )
+
+
+class RunSyncWiringTests(unittest.TestCase):
+    """AC1: `run_sync` walks a repo/change/task tree and issues, in order,
+    the Project -> Module -> Work-Item -> attach upserts T003 defines."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = self.tmp.name
+        _make_repo(self.root, "demo", [{"id": "T001", "title": "Build the thing"}])
+        _write_plane_json(self.root)
+
+    def test_repo_to_project_change_to_module_task_to_work_item(self):
+        # get_workspace, then: list_projects, create project, patch module_view,
+        # upsert module, list_states, upsert work item, attach.
+        transport = FakeTransport([
+            (200, {"id": "ws-1", "slug": "acme"}),          # GET workspace
+            (200, {"results": []}),                          # GET list projects
+            (201, {"id": "proj-1"}),                          # POST create project
+            (200, {"id": "proj-1", "module_view": True}),     # PATCH module_view
+            (201, {"id": "mod-1"}),                            # POST module
+            (200, {"results": [
+                {"id": "s-backlog", "group": "backlog"},
+                {"id": "s-started", "group": "started"},
+                {"id": "s-completed", "group": "completed"},
+                {"id": "s-unstarted", "group": "unstarted"},
+                {"id": "s-cancelled", "group": "cancelled"},
+            ]}),                                                # GET states
+            (201, {"id": "wi-1"}),                              # POST work item
+            (200, {"issues": ["wi-1"]}),                        # POST attach
+        ])
+
+        def factory(base_url, workspace_slug, env=None):
+            return pc.PlaneClient(base_url, workspace_slug, transport=transport, sleep=lambda s: None,
+                                   env={"REIN_PLANE_API_KEY": "test-key"})
+
+        report = ps.run_sync(self.root, client_factory=factory)
+
+        self.assertEqual(report["failed"], [])
+        self.assertEqual(len(report["applied"]), 2)  # module + 1 work item
+
+        methods_and_paths = [(m, u.split("acme", 1)[1]) for m, u, _ in transport.calls]
+        self.assertEqual(methods_and_paths, [
+            ("GET", "/"),
+            ("GET", "/projects/"),
+            ("POST", "/projects/"),
+            ("PATCH", "/projects/proj-1/"),
+            ("POST", "/projects/proj-1/modules/"),
+            ("GET", "/projects/proj-1/states/"),
+            ("POST", "/projects/proj-1/issues/"),
+            ("POST", "/projects/proj-1/modules/mod-1/module-issues/"),
+        ])
+
+        # Work item upsert carried the state id matching its transition
+        # (planned -> backlog, per AC1).
+        work_item_call = transport.calls[6]
+        self.assertEqual(work_item_call[2]["state"], "s-backlog")
+
+
+class RecordIsScopedPerRepoTests(unittest.TestCase):
+    """AC1's repo -> Project mapping means a workspace with two repos that
+    happen to name a change the same must not let one repo's synced record
+    hide the other's -- `plane_projection`'s own entity keys
+    (`module:<change>`, `item:<change>:<task>`) carry no repo at all."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = self.tmp.name
+        _make_repo(self.root, "demo", [{"id": "T001", "title": "Same-named change"}])
+
+    def _script(self):
+        return FakeTransport([
+            (200, {"id": "ws-1"}),
+            (200, {"results": []}),
+            (201, {"id": "proj-1"}),
+            (200, {"id": "proj-1"}),
+            (201, {"id": "mod-1"}),
+            (200, {"results": [{"id": "s-backlog", "group": "backlog"}]}),
+            (201, {"id": "wi-1"}),
+            (200, {"issues": ["wi-1"]}),
+        ])
+
+    def _run_for_repo(self, repo_name):
+        transport = self._script()
+
+        def factory(base_url, workspace_slug, env=None):
+            return pc.PlaneClient(base_url, workspace_slug, transport=transport, sleep=lambda s: None,
+                                   env={"REIN_PLANE_API_KEY": "test-key"})
+
+        with mock.patch.object(ps, "repos_for", return_value=[(repo_name, self.root)]):
+            return ps.run_sync(self.root, client_factory=factory)
+
+    def test_two_repos_with_an_identically_named_change_both_sync(self):
+        _write_plane_json(self.root)
+
+        report_a = self._run_for_repo("repo-a")
+        self.assertEqual(report_a["failed"], [])
+        self.assertEqual(len(report_a["applied"]), 2)  # module + T001
+
+        # repo-b's identically-shaped "demo" change must NOT be skipped as
+        # already-synced just because repo-a's record carries the same
+        # unscoped `module:demo` / `item:demo:T001` keys.
+        report_b = self._run_for_repo("repo-b")
+        self.assertEqual(report_b["failed"], [])
+        self.assertEqual(len(report_b["applied"]), 2)
+
+        record_path = os.path.join(self.root, ps.RECORD_RELATIVE_PATH)
+        with open(record_path, encoding="utf-8") as fh:
+            record = json.load(fh)
+        self.assertEqual(len(record), 4)  # 2 entities x 2 repos, distinctly keyed
+        self.assertTrue(any(k.startswith("repo-a::") for k in record))
+        self.assertTrue(any(k.startswith("repo-b::") for k in record))
+
+
+# --------------------------------------------------------------- AC4: deps --
+
+
+class DependsOnBodyTests(unittest.TestCase):
+    """AC4: `Depends on` is a plain body line; no `/relation` path is ever
+    hit, and the emitted method set stays inside {GET, POST, PATCH}."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = self.tmp.name
+        _make_repo(self.root, "demo", [
+            {"id": "T001", "title": "Base task"},
+            {"id": "T002", "title": "Depends on base", "dependsOn": ["T001"]},
+        ])
+        _write_plane_json(self.root)
+
+    def test_dependency_line_present_no_relation_call(self):
+        transport = FakeTransport([
+            (200, {"id": "ws-1"}),
+            (200, {"results": []}),
+            (201, {"id": "proj-1"}),
+            (200, {"id": "proj-1"}),
+            (201, {"id": "mod-1"}),
+            (200, {"results": [{"id": "s-backlog", "group": "backlog"}]}),
+            (201, {"id": "wi-1"}),                        # T001
+            (200, {"issues": ["wi-1"]}),
+            (201, {"id": "wi-2"}),                        # T002
+            (200, {"issues": ["wi-2"]}),
+        ])
+
+        def factory(base_url, workspace_slug, env=None):
+            return pc.PlaneClient(base_url, workspace_slug, transport=transport, sleep=lambda s: None,
+                                   env={"REIN_PLANE_API_KEY": "test-key"})
+
+        report = ps.run_sync(self.root, client_factory=factory)
+        self.assertEqual(report["failed"], [])
+
+        # The T002 work item POST is the 9th call (index 8): body must carry
+        # the plain "Depends on: T001" line.
+        method, url, body = transport.calls[8]
+        self.assertEqual(method, "POST")
+        self.assertIn("Depends on: T001", body.get("description", ""))
+
+        methods = {m for m, _, _ in transport.calls}
+        self.assertEqual(methods, {"GET", "POST", "PATCH"})  # D6: never DELETE
+        for _, call_url, _ in transport.calls:
+            self.assertNotIn("/relation", call_url)  # D8: no relation call, ever
+
+
+# ------------------------------------------------------- AC5: per-entity ---
+
+
+class PartialFailureTests(unittest.TestCase):
+    """AC5: a failure on one entity is reported against that entity alone;
+    the other four in the same batch are still attempted, and the local
+    task-event log is never touched."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = self.tmp.name
+        _make_repo(self.root, "demo", [
+            {"id": "T001", "title": "Task one"},
+            {"id": "T002", "title": "Task two"},
+            {"id": "T003", "title": "Task three"},
+            {"id": "T004", "title": "Task four"},
+        ])
+        _write_plane_json(self.root)
+
+    def test_third_of_five_upserts_fails_other_four_still_applied(self):
+        # Entities, in select()'s order: module, T001, T002, T003, T004.
+        # The THIRD upsert -- T002's work-item POST -- 500s.
+        transport = FakeTransport([
+            (200, {"id": "ws-1"}),                                  # GET workspace
+            (200, {"results": []}),                                  # GET list projects
+            (201, {"id": "proj-1"}),                                  # POST create project
+            (200, {"id": "proj-1"}),                                  # PATCH module_view
+            (201, {"id": "mod-1"}),                                    # upsert #1: module
+            (200, {"results": [{"id": "s-backlog", "group": "backlog"}]}),  # GET states (cached)
+            (201, {"id": "wi-1"}),                                      # upsert #2: T001 work item
+            (200, {"issues": ["wi-1"]}),                                #   attach
+            (500, {"error": "boom"}),                                    # upsert #3: T002 FAILS
+            (201, {"id": "wi-3"}),                                       # upsert #4: T003 work item
+            (200, {"issues": ["wi-3"]}),                                #   attach
+            (201, {"id": "wi-4"}),                                       # upsert #5: T004 work item
+            (200, {"issues": ["wi-4"]}),                                #   attach
+        ])
+
+        def factory(base_url, workspace_slug, env=None):
+            return pc.PlaneClient(base_url, workspace_slug, transport=transport, sleep=lambda s: None,
+                                   env={"REIN_PLANE_API_KEY": "test-key"})
+
+        with mock.patch("events.record_event") as fake_event, \
+             mock.patch("events.record_task_event") as fake_task_event:
+            report = ps.run_sync(self.root, client_factory=factory)
+
+        self.assertEqual(len(report["applied"]), 4)   # module + T001 + T003 + T004
+        self.assertEqual(len(report["failed"]), 1)
+        self.assertIn("T002", report["failed"][0]["key"])
+
+        # AC5: the local task-event log was never touched by the sync.
+        fake_event.assert_not_called()
+        fake_task_event.assert_not_called()
+
+        # The on-disk projection record carries only what actually applied.
+        record_path = os.path.join(self.root, ps.RECORD_RELATIVE_PATH)
+        with open(record_path, encoding="utf-8") as fh:
+            record = json.load(fh)
+        self.assertEqual(len(record), 4)
+        self.assertFalse(any("T002" in key for key in record))
+
+    def test_plane_sync_never_imports_events(self):
+        """Structural guarantee behind the above: this module has no way to
+        reach the event log even if a future change forgot to mock it."""
+        with open(os.path.join(LIB_DIR, "plane_sync.py"), encoding="utf-8") as fh:
+            src = fh.read()
+        self.assertNotIn("import events", src)
+
+
+# ------------------------------------------------------------- AC3: exits --
+
+
+class ConfigLoadingTests(unittest.TestCase):
+    """AC3, library level: the three config problems raise distinctly."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = self.tmp.name
+
+    def test_no_plane_json_raises_not_configured(self):
+        with self.assertRaises(ps.NotConfigured):
+            ps.run_sync(self.root, env={})
+
+    def test_plane_json_present_no_api_key_raises_auth_error(self):
+        _write_plane_json(self.root)
+        with self.assertRaises(pc.PlaneAuthError) as ctx:
+            ps.run_sync(self.root, env={})
+        self.assertIn("REIN_PLANE_API_KEY", str(ctx.exception))
+
+    def test_workspace_absent_raises_workspace_missing_with_url(self):
+        _write_plane_json(self.root)
+        transport = FakeTransport([(404, {"error": "not found"})])
+
+        def factory(base_url, workspace_slug, env=None):
+            return pc.PlaneClient(base_url, workspace_slug, transport=transport, sleep=lambda s: None,
+                                   env={"REIN_PLANE_API_KEY": "test-key"})
+
+        with self.assertRaises(ps.WorkspaceMissing) as ctx:
+            ps.run_sync(self.root, client_factory=factory)
+        self.assertIn("acme", str(ctx.exception))
+        self.assertIn("https://plane.example.com/create-workspace/", str(ctx.exception))
+
+
+class CmdSyncExitCodeTests(unittest.TestCase):
+    """AC3, CLI level: `cmd_sync` maps each of the three config problems to
+    its own exit code and message, with `plane_sync.run_sync` monkeypatched
+    so no network or plane.json parsing is involved here at all."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.rein_cli = _load_rein_cli()
+
+    def _run(self, side_effect):
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(self.rein_cli._psync, "run_sync", side_effect=side_effect), \
+             contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = self.rein_cli.cmd_sync(["--plane", "."])
+        return code, out.getvalue(), err.getvalue()
+
+    def test_not_configured_exits_zero(self):
+        code, out, _err = self._run(ps.NotConfigured())
+        self.assertEqual(code, 0)
+        self.assertIn("not configured", out)
+
+    def test_missing_api_key_exits_nonzero_naming_variable(self):
+        code, _out, err = self._run(pc.PlaneAuthError("REIN_PLANE_API_KEY is not set"))
+        self.assertNotEqual(code, 0)
+        self.assertIn("REIN_PLANE_API_KEY", err)
+
+    def test_workspace_missing_exits_nonzero_with_url(self):
+        code, _out, err = self._run(ps.WorkspaceMissing("acme", "https://plane.example.com"))
+        self.assertNotEqual(code, 0)
+        self.assertIn("acme", err)
+        self.assertIn("create-workspace", err)
+
+
+class SyncCliSubprocessTests(unittest.TestCase):
+    """AC3, real subprocess: the two config problems that need no network
+    reached through the actual `rein` binary, HOME isolated to a tmpdir."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = self.tmp.name
+
+    def _run(self, env):
+        return subprocess.run(
+            [sys.executable, REIN_BIN, "sync", "--plane", self.root],
+            capture_output=True, text=True, env=env,
+        )
+
+    def test_no_plane_json_exits_zero(self):
+        proc = self._run(_no_network_env(self.root))
+        self.assertEqual(proc.returncode, 0)
+        self.assertIn("not configured", proc.stdout)
+
+    def test_missing_api_key_exits_nonzero(self):
+        _write_plane_json(self.root)
+        env = _no_network_env(self.root)
+        env.pop("REIN_PLANE_API_KEY", None)
+        proc = self._run(env)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("REIN_PLANE_API_KEY", proc.stderr)
+
+
+# --------------------------------------------------------- D1: byte-identical
+
+
+class ByteIdenticalWithoutPlaneJsonTests(unittest.TestCase):
+    """D1: `rein state`, and the CLI commands `rein-step`/`rein-apply`'s own
+    SKILL.md literally shell out to (`next`, `tasks`, `context`), produce
+    byte-identical output whether or not `plane.json` is present -- proof
+    that adding `rein sync --plane` was fully additive.
+
+    Same directory both times (only `plane.json`'s presence toggles) so the
+    comparison is never confused by two tmpdirs' names differing."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = self.tmp.name
+        _make_flat_repo(self.root, "demo", [{"id": "T001", "title": "Do the thing"}])
+        self.plane_json_path = os.path.join(self.root, "plane.json")
+
+    def _run(self, *args):
+        env = _no_network_env(self.root)
+        proc = subprocess.run(
+            [sys.executable, REIN_BIN, *args, self.root],
+            capture_output=True, text=True, env=env,
+        )
+        return proc.returncode, proc.stdout, proc.stderr
+
+    def _compare(self, *args):
+        self.assertFalse(os.path.exists(self.plane_json_path))
+        without = self._run(*args)
+        _write_plane_json(self.root, workspace_slug="whatever", window=7, lang="en")
+        try:
+            with_plane = self._run(*args)
+        finally:
+            os.remove(self.plane_json_path)
+        self.assertEqual(without, with_plane)
+
+    def test_state_is_byte_identical(self):
+        self._compare("state")
+
+    def test_next_is_byte_identical(self):
+        self._compare("next")
+
+    def test_tasks_is_byte_identical(self):
+        self._compare("tasks")
+
+    def test_context_is_byte_identical(self):
+        self._compare("context")
+
+
+if __name__ == "__main__":
+    unittest.main()

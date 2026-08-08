@@ -260,6 +260,34 @@ class PlaneClient:
             raise PlaneRequestError("POST", path, status, parsed)
         return parsed
 
+    # -- workspace / state lookups: reads a write needs (T006) --------------
+
+    def get_workspace(self) -> dict | None:
+        """`GET /api/v1/workspaces/{slug}/` -- `None` on a `404` (the
+        workspace does not exist), never raised: rein cannot create a
+        workspace over the API (a human must, per the plan's Out-of-scope),
+        so the caller needs a plain existence check to fail on, not an
+        exception to unwrap."""
+        path = f"/api/v1/workspaces/{self._workspace_slug}/"
+        status, parsed = self._request("GET", path)
+        if status == 404:
+            return None
+        if status != 200:
+            raise PlaneRequestError("GET", path, status, parsed)
+        return parsed
+
+    def list_states(self, project_id: str) -> list:
+        """`GET .../states/` -- every workflow State of a project, each
+        carrying the `group` (`backlog`/`unstarted`/`started`/`completed`/
+        `cancelled`) T006 maps a task transition onto. A read a write needs
+        (per the plan's Out-of-scope), not a second source of truth."""
+        path = f"{self._project_path(project_id)}/states/"
+        status, parsed = self._request("GET", path)
+        if status != 200:
+            raise PlaneRequestError("GET", path, status, parsed)
+        items = parsed.get("results", []) if isinstance(parsed, dict) else parsed
+        return list(items) if isinstance(items, list) else []
+
     # -- projects: list-and-match client side (D3) --------------------------
 
     def list_projects(self, force_refresh: bool = False) -> list:
