@@ -191,7 +191,7 @@ hierarchy and these tasks are siblings.
       than `git`; `tests/test_workspace.py` pins the resolved git invocations so
       a later refactor cannot widen what this module executes
 
-- [ ] T002 Transitions are emitted while they happen, not guessed afterwards
+- [x] T002 Transitions are emitted while they happen, not guessed afterwards
   - Type: implementation
   - Depends on: T001
   - Human review: false
