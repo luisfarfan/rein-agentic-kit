@@ -27,6 +27,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -35,6 +36,7 @@ from unittest import mock
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LIB_DIR = os.path.join(REPO_ROOT, "plugins", "rein", "lib")
+WORKFLOWS_DIR = os.path.join(REPO_ROOT, "plugins", "rein", "workflows")
 REIN_BIN = os.path.join(REPO_ROOT, "plugins", "rein", "bin", "rein")
 
 sys.path.insert(0, LIB_DIR)
@@ -224,6 +226,65 @@ class RunSyncWiringTests(unittest.TestCase):
         # (planned -> backlog, per AC1).
         work_item_call = transport.calls[6]
         self.assertEqual(work_item_call[2]["state"], "s-backlog")
+
+
+class FlatRepoGetsARealModuleNameTests(unittest.TestCase):
+    """Round-2 review, finding 1: a flat `tasks.md` repo (no
+    `openspec/changes` directory -- rein's own layout) resolves to the
+    single implicit change `changes_for()` returns as `[""]`. Before the
+    fix, `product_state.state()` folded that `""` straight into
+    `state["change"]`, `_module_entity` built a payload of `{"name": ""}`,
+    and Plane's API 400s on a blank Module name -- which
+    `_upsert_post_then_conflict` turns into a `PlaneConflictError` with no
+    id, which cascaded to every work item too (each one resolves its
+    module id through `_resolve_module_id`, which re-upserts the same
+    blank name). `plan.read_plan()` now falls back to the plan's own
+    `# Change: <name>` header, so the flat layout's Module gets a real
+    name and `rein sync --plane` applies cleanly end to end."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = self.tmp.name
+        _make_flat_repo(self.root, "my-flat-change", [{"id": "T001", "title": "Do the thing"}])
+        _write_plane_json(self.root)
+
+    def test_module_gets_a_real_name_and_everything_applies(self):
+        transport = FakeTransport([
+            (200, {"id": "ws-1", "slug": "acme"}),          # GET workspace
+            (200, {"results": []}),                          # GET list projects
+            (201, {"id": "proj-1"}),                          # POST create project
+            (200, {"id": "proj-1"}),                          # PATCH module_view
+            (201, {"id": "mod-1"}),                            # POST module
+            (200, {"results": [{"id": "s-backlog", "group": "backlog"}]}),  # GET states
+            (201, {"id": "wi-1"}),                              # POST work item
+            (200, {"issues": ["wi-1"]}),                        # POST attach
+        ])
+
+        def factory(base_url, workspace_slug, env=None):
+            return pc.PlaneClient(base_url, workspace_slug, transport=transport, sleep=lambda s: None,
+                                   env={"REIN_PLANE_API_KEY": "test-key"})
+
+        report = ps.run_sync(self.root, client_factory=factory)
+
+        # Everything applies -- no PlaneConflictError cascading from a
+        # blank module name.
+        self.assertEqual(report["failed"], [])
+        self.assertEqual(sorted(report["applied"]), ["item:my-flat-change:T001", "module:my-flat-change"])
+
+        module_call = next(c for c in transport.calls if c[1].endswith("/modules/"))
+        self.assertEqual(module_call[2]["name"], "my-flat-change")
+
+        # The module's identity must not forge the project's -- both used to
+        # collapse to the same external_id when the change component was "".
+        repo_name = os.path.basename(os.path.abspath(self.root))
+        project_ext_id = pc.make_external_id("acme", repo_name, "", "")
+        module_ext_id = pc.make_external_id("acme", repo_name, "my-flat-change", "")
+        self.assertNotEqual(
+            project_ext_id, module_ext_id,
+            "an empty change component let the module's identity forge the project's",
+        )
+        self.assertEqual(module_call[2]["external_id"], module_ext_id)
 
 
 class RecordIsScopedPerRepoTests(unittest.TestCase):
@@ -623,6 +684,53 @@ class ByteIdenticalWithoutPlaneJsonTests(unittest.TestCase):
 
     def test_context_is_byte_identical(self):
         self._compare("context")
+
+
+class NoPlaneReachableFromReinApplyOrReinStepTests(unittest.TestCase):
+    """D1, mechanically, for the two commands `rein-apply`/`rein-step`
+    actually run (per their own SKILL.md) rather than the four
+    `ByteIdenticalWithoutPlaneJsonTests` substitutes for them (`state`,
+    `next`, `tasks`, `context` -- the substitution is defensible, since the
+    two skills are agent-driven and have no deterministic output to diff,
+    but it leaves the two commands the criterion actually names unproven).
+
+    A source-level guarantee is cheap and can name them directly: none of
+    `loop.js` (the workflow both commands drive), `plan.py` (what T002
+    touched), `verify.py`, `gate.py`, or `plan_check.py` mentions
+    `plane.json` or imports `plane_client`/`plane_sync`/`plane_projection`/
+    `humanize` -- the same shape as `PartialFailureTests.
+    test_plane_sync_never_imports_events`, which pins the write direction
+    only (round-2 review finding 3)."""
+
+    FILES = {
+        "loop.js": os.path.join(WORKFLOWS_DIR, "loop.js"),
+        "plan.py": os.path.join(LIB_DIR, "plan.py"),
+        "verify.py": os.path.join(LIB_DIR, "verify.py"),
+        "gate.py": os.path.join(LIB_DIR, "gate.py"),
+        "plan_check.py": os.path.join(LIB_DIR, "plan_check.py"),
+    }
+
+    # Actual import statements only -- not a bare "plane" substring, which
+    # would also match harmless prose like a comment citing
+    # "test_plane_projection.py" by name.
+    _IMPORT_RE = re.compile(
+        r"^\s*(?:import|from)\s+(plane_client|plane_sync|plane_projection|humanize)\b",
+        re.MULTILINE,
+    )
+
+    def test_files_exist_where_expected(self):
+        for label, path in self.FILES.items():
+            self.assertTrue(os.path.isfile(path), f"{label} not found at {path}")
+
+    def test_no_plane_json_literal_and_no_plane_or_humanize_import(self):
+        for label, path in self.FILES.items():
+            with open(path, encoding="utf-8") as fh:
+                src = fh.read()
+            self.assertNotIn("plane.json", src, f"{label} names plane.json")
+            match = self._IMPORT_RE.search(src)
+            self.assertIsNone(
+                match, f"{label} imports {match.group(1) if match else ''}"
+            )
 
 
 if __name__ == "__main__":

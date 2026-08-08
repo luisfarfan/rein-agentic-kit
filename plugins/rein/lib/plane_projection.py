@@ -2,7 +2,7 @@
 """Plane projection: only what is live, and only what changed (T005).
 
 This module decides WHAT to sync, never HOW -- issuing the actual upserts is
-T003's `plane_client.py`, wired up by T006's `rein sync --plane`. Two halves:
+T003's `plane_client.py`, wired up by T006's `rein sync --plane`.
 
   `select(state, window_days, record)` -- pure, no I/O. `state` is a list of
   per-change records shaped like `product_state.state()`'s return value (one
@@ -15,14 +15,15 @@ T003's `plane_client.py`, wired up by T006's `rein sync --plane`. Two halves:
   recorded `{key: hash}` map drops anything unchanged since last time, so a
   no-op run over an unchanged state emits nothing.
 
-  `sync(state, window_days, apply_fn, record_path)` -- the only place this
-  module touches disk. It loads the record, calls `select()`, and applies
-  each emitted entity through the caller's `apply_fn`. The updated record is
-  written only once every entity in this batch applied cleanly: a failure
-  partway leaves the ON-DISK record exactly as it was, so nothing already
-  recorded gets un-recorded, and nothing this run touched but didn't finish
-  gets mistaken for synced. The remainder (the failed entity and everything
-  queued after it) comes back as the retry set for the next run.
+  `load_record`/`save_record` -- the on-disk `{key: hash}` map. Applying the
+  selected entities and deciding when to write the record back is
+  `plane_sync.run_sync()`'s job (T006), not this module's: a sync spans
+  several repos and continues past a single entity's failure, reporting it
+  and moving on, then writes the record once at the end carrying only the
+  entities that actually applied (round-2 review finding 2 -- an earlier
+  `sync()` here stopped at the first failure and wrote nothing at all, the
+  OPPOSITE of what ships; it was dead code, never called outside its own
+  tests, and has been removed rather than left to contradict `run_sync`).
 
 The window defaults to 30 days (D10, measured against the proxima corpus
 described in this plan's Why) and is read from `plane.json`'s `window` field
@@ -83,7 +84,17 @@ def _history_description(tasks: list) -> str:
     return f"{total} {noun} ({breakdown})" if breakdown else f"{total} {noun}"
 
 
-def _module_entity(change_name: str, tasks: list, live: bool) -> dict:
+def _module_entity(change_name: str, tasks: list, live: bool) -> dict | None:
+    # `None` when `change_name` is blank: Plane's Module `name` is required
+    # and rejects a blank string outright (`400 name may not be blank`), so
+    # emitting a payload with `{"name": ""}` is a doomed upsert, not a
+    # degraded one (round-2 review finding 1). `plan.read_plan()` now
+    # resolves a real name for every flat `tasks.md` plan (its own
+    # `# Change:` header, else the repo directory name), so this only ever
+    # fires for a plan this module has no way to name -- refusing silently
+    # here is honest; sending the blank string to Plane is not.
+    if not change_name:
+        return None
     # Plane's Module resource carries `status` (backlog/planned/in-progress/
     # paused/completed/cancelled) -- `state` is the Issue field (a state-
     # machine uuid), which is why work items use it and Modules never can.
@@ -153,7 +164,9 @@ def select(state: list, window_days: int | None = None, record: dict | None = No
         age = change_state.get("lastTouchedDays")
         live = age is None or age <= window_days
 
-        entities.append(_module_entity(change_name, tasks, live))
+        module_entity = _module_entity(change_name, tasks, live)
+        if module_entity is not None:
+            entities.append(module_entity)
         if live:
             for task in tasks:
                 entities.append(_work_item_entity(change_name, task))
@@ -162,9 +175,10 @@ def select(state: list, window_days: int | None = None, record: dict | None = No
 
 
 def load_record(path: str) -> dict:
-    """The `{key: hash}` map recorded after the last successful `sync()`.
-    `{}` when the file is absent, unreadable, or malformed -- the first run
-    ever, or a deleted record, both just mean "emit everything"."""
+    """The `{key: hash}` map recorded after the last sync that applied at
+    least one entity (`plane_sync.run_sync()`, T006). `{}` when the file is
+    absent, unreadable, or malformed -- the first run ever, or a deleted
+    record, both just mean "emit everything"."""
     try:
         with open(path, "r", encoding="utf-8") as fh:
             data = json.load(fh)
@@ -181,33 +195,3 @@ def save_record(path: str, record: dict) -> None:
     with open(tmp_path, "w", encoding="utf-8") as fh:
         json.dump(record, fh, sort_keys=True, indent=2)
     os.replace(tmp_path, path)
-
-
-def sync(state: list, window_days: int | None, apply_fn, record_path: str):
-    """Select the changed entities and apply each through `apply_fn(entity)`
-    (which raises on failure). The on-disk record is written **once**, only
-    after every selected entity applied cleanly (AC4) -- never partially, so
-    a failure partway leaves the previous record intact and the unsent
-    remainder -- starting with the entity that failed -- comes back as the
-    retry set for the next run (AC5).
-
-    Returns `(applied, retry)`.
-    """
-    record = load_record(record_path)
-    entities = select(state, window_days, record=record)
-
-    applied = []
-    for index, entity in enumerate(entities):
-        try:
-            apply_fn(entity)
-        except Exception:
-            return applied, entities[index:]
-        applied.append(entity)
-
-    if applied:
-        new_record = dict(record)
-        for entity in applied:
-            new_record[entity["key"]] = entity["hash"]
-        save_record(record_path, new_record)
-
-    return applied, []

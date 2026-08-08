@@ -9,8 +9,17 @@
        created in a completed state, and emits no work items.
   AC4  `select()` emits only entities whose content hash differs from the
        last recorded projection.
-  AC5  a sync that fails partway leaves the previous projection record
-       intact, and the retry set carries the entity that failed.
+
+  AC5 (a sync failure reported per entity, never aborting the whole run) is
+  exercised against the real production path in
+  `tests/test_plane_projection.py`'s `PartialFailureTests`, not here --
+  applying entities and deciding when to write the record is
+  `plane_sync.run_sync()`'s job (T006), not this module's pure `select()`.
+  An earlier `sync()` lived in `plane_projection.py` with the OPPOSITE
+  semantics (stop at the first failure, write nothing at all); it was dead
+  code -- nothing outside its own tests here ever called it -- and has been
+  removed rather than left contradicting what actually ships (round-2
+  review finding 2).
 """
 
 from __future__ import annotations
@@ -195,67 +204,6 @@ class ContentHashDedupTests(unittest.TestCase):
         self.assertEqual(len(third), 1)
         self.assertEqual(third[0]["taskId"], "T002")
         self.assertEqual(third[0]["payload"]["transition"], "verified")
-
-
-class SyncRetryTests(unittest.TestCase):
-    """AC5: a sync that fails partway leaves the previous projection record
-    intact, and the retry set carries the entity that failed."""
-
-    def test_failure_partway_leaves_record_intact_and_returns_retry_set(self):
-        state = _fixture_state()
-        with tempfile.TemporaryDirectory() as tmp:
-            record_path = os.path.join(tmp, "plane_projection.json")
-
-            applied_calls = []
-
-            def failing_apply(entity):
-                applied_calls.append(entity["key"])
-                if entity["type"] == "work_item":
-                    raise RuntimeError("simulated network failure")
-
-            applied, retry = pp.sync(state, 30, failing_apply, record_path)
-
-            self.assertFalse(os.path.exists(record_path))
-            self.assertTrue(retry)
-            self.assertIn(applied_calls[-1], [e["key"] for e in retry])
-
-    def test_successful_sync_writes_the_record_and_next_run_emits_nothing(self):
-        state = _fixture_state()
-        with tempfile.TemporaryDirectory() as tmp:
-            record_path = os.path.join(tmp, "plane_projection.json")
-
-            applied, retry = pp.sync(state, 30, lambda entity: None, record_path)
-            self.assertFalse(retry)
-            self.assertTrue(applied)
-            self.assertTrue(os.path.exists(record_path))
-
-            second_applied, second_retry = pp.sync(state, 30, lambda entity: None, record_path)
-            self.assertEqual(second_applied, [])
-            self.assertEqual(second_retry, [])
-
-    def test_partial_success_then_success_retries_only_the_remainder(self):
-        state = [_change_state("solo", 5, [_task("T001", "A", "planned"), _task("T002", "B", "planned")])]
-        with tempfile.TemporaryDirectory() as tmp:
-            record_path = os.path.join(tmp, "plane_projection.json")
-
-            calls = {"n": 0}
-
-            def fail_on_second_call(entity):
-                calls["n"] += 1
-                if calls["n"] == 2:
-                    raise RuntimeError("simulated failure")
-
-            applied, retry = pp.sync(state, 30, fail_on_second_call, record_path)
-            self.assertEqual(len(applied), 1)
-            self.assertTrue(retry)
-            self.assertFalse(os.path.exists(record_path))
-
-            # Retry with an always-succeeding apply_fn: the remainder goes out.
-            applied2, retry2 = pp.sync(state, 30, lambda entity: None, record_path)
-            self.assertFalse(retry2)
-            self.assertTrue(os.path.exists(record_path))
-            record = pp.load_record(record_path)
-            self.assertEqual(len(record), 3)  # module + 2 work items
 
 
 if __name__ == "__main__":

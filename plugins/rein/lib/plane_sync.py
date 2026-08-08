@@ -223,7 +223,7 @@ class _BudgetedHumanizer:
                 self._exhausted = True
 
 
-def _module_payload_for_change(change_name: str, state_by_change: dict, window_days: int) -> dict:
+def _module_payload_for_change(change_name: str, state_by_change: dict, window_days: int) -> dict | None:
     """The module payload T005's `_module_entity` would compute for
     `change_name` **right now**, independent of whether the module entity
     itself was part of the current `select()` batch.
@@ -238,12 +238,17 @@ def _module_payload_for_change(change_name: str, state_by_change: dict, window_d
     round-1 review). Resolving the payload independently of `select()`'s
     output lets a work item's module id be looked up (or, on a project
     with no cached id yet, upserted) regardless.
+
+    `None` when `change_name` is blank -- `_module_entity` refuses to build
+    a payload with an empty `name` (round-2 review finding 1); callers must
+    not upsert a module for a change with no name at all.
     """
     change_state = state_by_change.get(change_name) or {}
     tasks = change_state.get("tasks") or []
     age = change_state.get("lastTouchedDays")
     live = age is None or age <= window_days
-    return dict(_pp._module_entity(change_name, tasks, live)["payload"])
+    entity = _pp._module_entity(change_name, tasks, live)
+    return dict(entity["payload"]) if entity is not None else None
 
 
 def _resolve_module_id(
@@ -262,10 +267,18 @@ def _resolve_module_id(
     a module entity was already applied in it, else upserted here (the
     409-with-id path returns the existing id harmlessly when nothing
     changed). Called before every work item is applied, never only when
-    the module entity itself was selected (finding 1)."""
+    the module entity itself was selected (finding 1).
+
+    Returns "" without upserting anything when `change_name` is blank --
+    there is no name to give Plane's Module, so the caller skips the
+    attach rather than send a doomed request (round-2 review finding 1)."""
+    if not change_name:
+        return ""
     if change_name in module_ids:
         return module_ids[change_name]
     payload = _module_payload_for_change(change_name, state_by_change, window_days)
+    if payload is None:
+        return ""
     raw_name = payload.pop("name")
     name = _safe_humanize(hcache, raw_name, _humanize.KIND_TITLE) if humanize_enabled else raw_name
     module_ext_id = _pc.make_external_id(workspace_slug, repo_name, change_name, "")
