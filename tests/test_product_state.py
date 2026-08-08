@@ -305,6 +305,84 @@ class TestProductStateFold(unittest.TestCase):
         self.assertEqual(by_id["T001"]["transition"], "planned")
 
 
+class TestTransitionsEmittedFromAWorktreeSurvive(unittest.TestCase):
+    """The default execution mode, which nothing else here exercised.
+
+    The loop runs every task inside a worktree and emits with
+    `--root <worktree>`; `rein state` folds against the main repo. Keying the
+    event on the literal path made the two never match — and the worktree is
+    removed when the run ends, so the transition was written to a name nobody
+    could look up again. Measured before the fix: main repo `planned`,
+    worktree `verified`. Every task would have read `planned` forever and
+    every Plane card would have sat in `backlog` forever.
+
+    `test_events_from_a_different_repo_are_not_folded_in` pins the opposite
+    direction only, which is why a green suite said nothing about this.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.repo = os.path.join(self.tmp.name, "repo")
+        os.makedirs(self.repo)
+        _init_git_repo(self.repo)
+        with open(os.path.join(self.repo, "tasks.md"), "w", encoding="utf-8") as fh:
+            fh.write("# Change: c\n\n- [ ] T001 do it\n  - Depends on: none\n")
+        _git(self.repo, "add", "-A")
+        _git(self.repo, "commit", "-qm", "plan")
+        self.events_path = os.path.join(self.tmp.name, "events.jsonl")
+        self.wt = os.path.join(self.tmp.name, "wt")
+        _git(self.repo, "worktree", "add", "-q", "-b", "wt-branch", self.wt)
+
+    def test_the_main_repo_sees_a_transition_emitted_in_its_worktree(self):
+        ev.record_task_event("T001", "verified", root=self.wt, events_path=self.events_path)
+        rec = ps.state(self.repo, events_path=self.events_path)
+        by_id = {t["taskId"]: t for t in rec["tasks"]}
+        self.assertEqual(by_id["T001"]["transition"], "verified")
+
+    def test_it_still_reads_after_the_worktree_is_removed(self):
+        """The run deletes the worktree. The record has to outlive it."""
+        ev.record_task_event("T001", "verified", root=self.wt, events_path=self.events_path)
+        _git(self.repo, "worktree", "remove", "--force", self.wt)
+        rec = ps.state(self.repo, events_path=self.events_path)
+        by_id = {t["taskId"]: t for t in rec["tasks"]}
+        self.assertEqual(by_id["T001"]["transition"], "verified")
+
+    def test_the_commit_recorded_is_the_worktrees_not_the_main_repos(self):
+        """Canonical repo for identity, real commit for evidence."""
+        _git(self.wt, "commit", "-q", "--allow-empty", "-m", "work")
+        ev.record_task_event("T001", "verified", root=self.wt, events_path=self.events_path)
+        wt_head = _git(self.wt, "rev-parse", "HEAD").stdout.strip()
+        main_head = _git(self.repo, "rev-parse", "HEAD").stdout.strip()
+        self.assertNotEqual(wt_head, main_head)
+        rec = ps.state(self.repo, events_path=self.events_path)
+        self.assertEqual(rec["tasks"][0]["commit"], wt_head)
+
+    def test_state_read_from_inside_the_worktree_sees_it_too(self):
+        """The other half: both SIDES must canonicalise, not just the emitter.
+
+        Emitting canonically is enough for `rein state` in the main repo,
+        because there the resolved root already IS the canonical repo. It is
+        not enough when the reader is itself inside a worktree — which is
+        exactly where the loop asks for the plan's state mid-run. Without the
+        fold canonicalising too, this reads `planned` while the event sits in
+        the log two lines away.
+        """
+        ev.record_task_event("T001", "verified", root=self.wt, events_path=self.events_path)
+        rec = ps.state(self.wt, events_path=self.events_path)
+        self.assertEqual(rec["tasks"][0]["transition"], "verified")
+
+    def test_a_genuinely_unrelated_repo_is_still_excluded(self):
+        """The fix must not make the fold indiscriminate."""
+        other = os.path.join(self.tmp.name, "other")
+        os.makedirs(other)
+        _init_git_repo(other)
+        _git(other, "commit", "-q", "--allow-empty", "-m", "init")
+        ev.record_task_event("T001", "verified", root=other, events_path=self.events_path)
+        rec = ps.state(self.repo, events_path=self.events_path)
+        self.assertEqual(rec["tasks"][0]["transition"], "planned")
+
+
 # ══════════════════════════════════════════════════════ AC5: last-touched age ══
 
 

@@ -205,6 +205,26 @@ class ContentHashDedupTests(unittest.TestCase):
         self.assertEqual(third[0]["taskId"], "T002")
         self.assertEqual(third[0]["payload"]["transition"], "verified")
 
+    def test_editing_a_dependency_re_emits_the_work_item(self):
+        """The hash has to cover every field the sync WRITES.
+
+        `dependsOn` reaches Plane as the work item's body and, because no
+        relation call is ever made (D8), it is the only place a dependency
+        appears. Hashing name+transition alone meant an edited dependency
+        changed neither, `select()` emitted nothing, and the board kept a
+        stale line that reads as current — worse than showing none at all.
+        """
+        state = _fixture_state()
+        first = pp.select(state, window_days=30, record={})
+        record = {e["key"]: e["hash"] for e in first}
+
+        mutated = copy.deepcopy(state)
+        mutated[0]["tasks"][1]["dependsOn"] = ["T001"]
+
+        again = pp.select(mutated, window_days=30, record=record)
+        self.assertEqual([e["taskId"] for e in again], ["T002"])
+        self.assertEqual(again[0]["payload"]["dependsOn"], ["T001"])
+
 
 if __name__ == "__main__":
     unittest.main()

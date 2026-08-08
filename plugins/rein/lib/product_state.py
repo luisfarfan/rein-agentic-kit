@@ -104,8 +104,13 @@ def state(root: str = ".", change: str = "", events_path: str = _events.EVENTS_P
     plan_doc = _plan.read_plan(resolved_root, change=change)
     tasks = plan_doc.get("tasks") or []
 
+    # The SAME identity the emitter used. A plain path comparison made every
+    # transition emitted from a worktree invisible here, and the loop runs
+    # every task in a worktree by default -- see `events.canonical_repo`.
+    repo_key = _events.canonical_repo(resolved_root)
+
     all_rows = _events.read_events(events_path)
-    task_rows = [r for r in all_rows if r.get("kind") == "task" and r.get("repo") == resolved_root]
+    task_rows = [r for r in all_rows if r.get("kind") == "task" and r.get("repo") == repo_key]
     latest = _fold_task_events(task_rows)
 
     records = []
@@ -119,6 +124,10 @@ def state(root: str = ".", change: str = "", events_path: str = _events.EVENTS_P
             "transition": ev.get("transition") if ev else PLANNED,
             "when": (ev.get("ts") if ev else "") or "",
             "commit": (ev.get("commit") if ev else "") or "",
+            # Carried so the projection can HASH it: the work item's body is
+            # built from this, and change-detection that ignores a field it
+            # writes leaves the board stale forever.
+            "dependsOn": list(t.get("dependsOn") or []),
         })
 
     plan_path = plan_doc.get("path") or ""

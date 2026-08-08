@@ -185,7 +185,10 @@ class RunSyncWiringTests(unittest.TestCase):
         # get_workspace, then: list_projects, create project, patch module_view,
         # upsert module, list_states, upsert work item, attach.
         transport = FakeTransport([
-            (200, {"id": "ws-1", "slug": "acme"}),          # GET workspace
+            # Existence check IS a projects listing: Plane serves no
+            # /api/v1/workspaces/{slug}/ route -- asking for one answered
+            # 401 against a live instance holding a valid key.
+            (200, {"results": []}),                          # GET workspace
             (200, {"results": []}),                          # GET list projects
             (201, {"id": "proj-1"}),                          # POST create project
             (200, {"id": "proj-1", "module_view": True}),     # PATCH module_view
@@ -212,7 +215,7 @@ class RunSyncWiringTests(unittest.TestCase):
 
         methods_and_paths = [(m, u.split("acme", 1)[1]) for m, u, _ in transport.calls]
         self.assertEqual(methods_and_paths, [
-            ("GET", "/"),
+            ("GET", "/projects/"),
             ("GET", "/projects/"),
             ("POST", "/projects/"),
             ("PATCH", "/projects/proj-1/"),
@@ -251,7 +254,10 @@ class FlatRepoGetsARealModuleNameTests(unittest.TestCase):
 
     def test_module_gets_a_real_name_and_everything_applies(self):
         transport = FakeTransport([
-            (200, {"id": "ws-1", "slug": "acme"}),          # GET workspace
+            # Existence check IS a projects listing: Plane serves no
+            # /api/v1/workspaces/{slug}/ route -- asking for one answered
+            # 401 against a live instance holding a valid key.
+            (200, {"results": []}),                          # GET workspace
             (200, {"results": []}),                          # GET list projects
             (201, {"id": "proj-1"}),                          # POST create project
             (200, {"id": "proj-1"}),                          # PATCH module_view
@@ -270,7 +276,10 @@ class FlatRepoGetsARealModuleNameTests(unittest.TestCase):
         # Everything applies -- no PlaneConflictError cascading from a
         # blank module name.
         self.assertEqual(report["failed"], [])
-        self.assertEqual(sorted(report["applied"]), ["item:my-flat-change:T001", "module:my-flat-change"])
+        self.assertEqual(
+            [k.split("::", 1)[-1] for k in sorted(report["applied"])],
+            ["item:my-flat-change:T001", "module:my-flat-change"],
+        )
 
         module_call = next(c for c in transport.calls if c[1].endswith("/modules/"))
         self.assertEqual(module_call[2]["name"], "my-flat-change")
@@ -387,7 +396,10 @@ class ModuleAttachSurvivesUnchangedModuleHashTests(unittest.TestCase):
         ])
         report1 = self._run(first_transport)
         self.assertEqual(report1["failed"], [])
-        self.assertEqual(sorted(report1["applied"]), ["item:demo:T001", "module:demo"])
+        self.assertEqual(
+            [k.split("::", 1)[-1] for k in sorted(report1["applied"])],
+            ["item:demo:T001", "module:demo"],
+        )
 
         # A second task is added. The module's payload (name only, for a
         # live change) is unaffected, so `select()` will not re-emit the
@@ -413,7 +425,10 @@ class ModuleAttachSurvivesUnchangedModuleHashTests(unittest.TestCase):
         report2 = self._run(second_transport)
 
         self.assertEqual(report2["failed"], [])
-        self.assertEqual(report2["applied"], ["item:demo:T002"])  # module NOT re-emitted
+        self.assertEqual(
+            [k.split("::", 1)[-1] for k in report2["applied"]],
+            ["item:demo:T002"],
+        )  # module NOT re-emitted
 
         methods_and_paths = [(m, u.split("acme", 1)[1]) for m, u, _ in second_transport.calls]
         self.assertEqual(methods_and_paths[-1], ("POST", "/projects/proj-1/modules/mod-1/module-issues/"))

@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """T006 -- wires T005's selection to T003's writes and T004's prose behind
 `rein sync --plane`, and is the module that PROVES deleting `plane.json`
-changes nothing (D1): nothing else in this codebase imports this module or
-`plane_client`/`plane_projection`/`humanize`, so a repo with no `plane.json`
-never runs a line of it.
+changes nothing (D1): `bin/rein` imports this module at load, but no other
+subcommand READS `plane.json` or reaches a line of the projection, so a repo
+without that file behaves identically -- which is asserted directly by
+ByteIdenticalWithoutPlaneJsonTests rather than claimed here.
 
 Three failure modes are distinguished on purpose, because they mean
 different things (AC3):
@@ -414,8 +415,12 @@ def run_sync(root: str, *, client_factory=None, humanize_cache=None, env=None) -
                     )
                     if module_id:
                         client.attach_work_item_to_module(project_id, module_id, work_item["id"])
-                new_record[f"{repo_prefix}{key}"] = entity["hash"]
-                report["applied"].append(key)
+                scoped_key = f"{repo_prefix}{key}"
+                new_record[scoped_key] = entity["hash"]
+                # Scoped, like the record: two repos in one workspace can
+                # hold changes with the same name, and two identical
+                # `ok module:<change>` lines name nothing.
+                report["applied"].append(scoped_key)
             except Exception as exc:  # noqa: BLE001 -- per-entity, never aborts the sync (AC5)
                 report["failed"].append({"key": key, "error": str(exc)})
                 continue

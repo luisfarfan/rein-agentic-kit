@@ -70,6 +70,44 @@ def _git_head(repo: str) -> str:
     return proc.stdout.strip()
 
 
+def canonical_repo(root: str) -> str:
+    """The MAIN repo for `root`, so a worktree and its parent agree on identity.
+
+    This is the whole reason transitions survive a run. The loop executes each
+    task inside a worktree and emits with `--root <worktree>`; the fold in
+    `product_state.state()` runs against the main repo. Keying events on the
+    literal path made those two never match, and the worktree is deleted when
+    the run ends -- so every transition was written to a name nobody would ever
+    look up again, and `rein state` reported `planned` forever. Measured: emit
+    `verified` from a real `git worktree add` directory, then fold; the main
+    repo saw `planned` and only the worktree saw `verified`.
+
+    `--git-common-dir` is the shared `.git` for every worktree of a repo, so
+    its parent is the one path both sides can compute. Anything that is not a
+    git repo -- or a bare one, whose common dir has no working tree -- falls
+    back to the literal path, which is exactly right for a non-worktree root.
+    """
+    real = os.path.realpath(root)
+    try:
+        proc = subprocess.run(
+            ["git", "-C", real, "rev-parse", "--git-common-dir"],
+            capture_output=True, text=True, timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return real
+    if proc.returncode != 0:
+        return real
+    common = proc.stdout.strip()
+    if not common:
+        return real
+    if not os.path.isabs(common):
+        common = os.path.join(real, common)
+    parent = os.path.dirname(os.path.realpath(common))
+    # A bare repo's common dir has no working tree above it; keep the literal
+    # path rather than inventing a parent that holds no plan.
+    return parent if os.path.isdir(parent) else real
+
+
 def record_task_event(
     task_id: str,
     transition: str,
@@ -96,14 +134,19 @@ def record_task_event(
             f"unknown transition {transition!r} -- must be one of "
             f"{', '.join(TASK_TRANSITIONS)}"
         )
-    repo = os.path.realpath(root)
+    # `repo` is the MAIN repo so the fold can find this again after the
+    # worktree is removed; `commit` still reads the worktree, because the
+    # commit the work was actually on is the useful one.
+    worktree = os.path.realpath(root)
+    repo = canonical_repo(worktree)
     record = {
         "kind": "task",
         "task_id": task_id,
         "transition": transition,
         "change": change,
         "repo": repo,
-        "commit": _git_head(repo),
+        "worktree": worktree if worktree != repo else "",
+        "commit": _git_head(worktree),
         "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
     }
     try:

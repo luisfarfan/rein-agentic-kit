@@ -369,5 +369,49 @@ class NoDeleteAndTransportSafetyTests(unittest.TestCase):
             ctor.assert_not_called()
 
 
+class WorkspaceExistenceUsesAReachableEndpointTests(unittest.TestCase):
+    """The URL itself has to be one that exists.
+
+    An injected transport replays whatever URL it is handed, so it will
+    happily confirm an endpoint that is not there. This suite was green
+    against `GET /api/v1/workspaces/{slug}/` — a path Plane does not serve at
+    all (`apps/api/plane/api/urls/` has no workspace module), so a live run
+    answered `401 "credentials were not provided"` for a workspace that
+    existed, with a valid key. Measured against a real 1.4.1 instance:
+
+        GET /v1/workspaces/<real>/projects/    -> 200
+        GET /v1/workspaces/<absent>/projects/  -> 403   (not 404)
+        GET /v1/workspaces/<real>/             -> 401   (no such route)
+
+    These tests pin the path and both status codes so the endpoint cannot
+    silently become an invented one again.
+    """
+
+    def test_it_asks_the_projects_collection_not_the_workspace_itself(self):
+        transport = FakeTransport([(200, {"results": []})])
+        client = _client(transport)
+        client.get_workspace()
+        method, url, _ = transport.calls[0]
+        self.assertEqual(method, "GET")
+        self.assertTrue(
+            url.endswith("/api/v1/workspaces/acme/projects/"),
+            f"asked {url!r} — /api/v1/workspaces/<slug>/ is not a route Plane serves",
+        )
+
+    def test_403_means_absent_because_that_is_what_plane_answers(self):
+        client = _client(FakeTransport([(403, {"detail": "not a member"})]))
+        self.assertIsNone(client.get_workspace())
+
+    def test_404_also_means_absent(self):
+        client = _client(FakeTransport([(404, {"detail": "not found"})]))
+        self.assertIsNone(client.get_workspace())
+
+    def test_401_is_raised_not_swallowed_as_absent(self):
+        """A bad key must not read as "the workspace does not exist"."""
+        client = _client(FakeTransport([(401, {"detail": "no credentials"})]))
+        with self.assertRaises(pc.PlaneRequestError):
+            client.get_workspace()
+
+
 if __name__ == "__main__":
     unittest.main()

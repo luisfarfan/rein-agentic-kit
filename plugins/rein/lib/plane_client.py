@@ -63,12 +63,18 @@ class PlaneConflictError(PlaneError):
     Plane's misdirected message as if it explained the failure.
     """
 
-    def __init__(self, entity_kind: str, name: str, body):
+    def __init__(self, entity_kind: str, name: str, body, status: int = 409):
         self.entity_kind = entity_kind
         self.name = name
         self.body = body
+        self.status = status
+        # 409 means a name or identifier is taken; 400 means Plane refused
+        # the payload. Same error type (T003), different first word, so a
+        # failure line does not send anyone hunting for a duplicate that
+        # was never there.
+        what = "conflict creating" if status != 400 else "Plane rejected the"
         super().__init__(
-            f"conflict creating {entity_kind} {name!r}: Plane returned no id "
+            f"{what} {entity_kind} {name!r}: Plane returned no id "
             f"to resolve against (body={body!r})"
         )
 
@@ -233,7 +239,14 @@ class PlaneClient:
         if status in (409, 400):
             existing_id = parsed.get("id") if isinstance(parsed, dict) else None
             if not existing_id:
-                raise PlaneConflictError(entity_kind, name, parsed)
+                # Stays a named conflict error -- T003 requires that, and
+                # the point of the criterion is that it is never a
+                # KeyError. But 409 and 400 mean different things: one is
+                # a name already taken, the other a payload Plane refused.
+                # The status rides along so the failure line can say which
+                # instead of sending the reader hunting for a duplicate
+                # that does not exist.
+                raise PlaneConflictError(entity_kind, name, parsed, status=status)
             patch_path = f"{collection_path}{existing_id}/"
             patch_status, patch_parsed = self._request("PATCH", patch_path, json_body=payload)
             if patch_status not in (200, 201):
@@ -263,18 +276,32 @@ class PlaneClient:
     # -- workspace / state lookups: reads a write needs (T006) --------------
 
     def get_workspace(self) -> dict | None:
-        """`GET /api/v1/workspaces/{slug}/` -- `None` on a `404` (the
-        workspace does not exist), never raised: rein cannot create a
-        workspace over the API (a human must, per the plan's Out-of-scope),
-        so the caller needs a plain existence check to fail on, not an
-        exception to unwrap."""
-        path = f"/api/v1/workspaces/{self._workspace_slug}/"
+        """Does the workspace exist? `None` when it does not, never raised.
+
+        Measured against a real instance, not assumed: **there is no
+        `/api/v1/workspaces/{slug}/` endpoint.** `apps/api/plane/api/urls/`
+        has no workspace module at all, so that path falls through to a
+        session-authenticated route and answers `401` for a workspace that
+        exists — which would have made every sync fail with "credentials
+        were not provided" while the key was perfectly valid.
+
+        The reachable existence check is the projects collection, which the
+        sync needs anyway:
+
+            GET /v1/workspaces/<real>/projects/   -> 200
+            GET /v1/workspaces/<absent>/projects/ -> 403   (not 404)
+
+        `403` is the absent case here, because Plane answers "you are not a
+        member of this workspace" for a slug that has no workspace either.
+        Both mean the same thing to rein: a human has to create it.
+        """
+        path = f"/api/v1/workspaces/{self._workspace_slug}/projects/"
         status, parsed = self._request("GET", path)
-        if status == 404:
+        if status in (403, 404):
             return None
         if status != 200:
             raise PlaneRequestError("GET", path, status, parsed)
-        return parsed
+        return {"slug": self._workspace_slug}
 
     def list_states(self, project_id: str) -> list:
         """`GET .../states/` -- every workflow State of a project, each

@@ -124,10 +124,18 @@ def _module_entity(change_name: str, tasks: list, live: bool) -> dict | None:
 
 
 def _work_item_entity(change_name: str, task: dict) -> dict:
+    """The hash must cover EVERY field the sync writes, not just the visible
+    ones. `dependsOn` reaches Plane as the work item's body (D8/AC4) and is
+    the only place a dependency is visible at all, since no relation call is
+    ever made. Hashing just name+transition meant editing a dependency in
+    tasks.md changed neither, so `select()` emitted nothing and the board kept
+    a stale line indefinitely -- worse than an absent one, because it reads as
+    current."""
     task_id = task.get("taskId") or ""
     payload = {
         "name": task.get("title") or task_id,
         "transition": task.get("transition") or "planned",
+        "dependsOn": list(task.get("dependsOn") or []),
     }
     key = f"item:{change_name}:{task_id}"
     return {
