@@ -164,7 +164,7 @@ hierarchy and these tasks are siblings.
      that is the seam — and T005's removability proof is only meaningful once
      T002 has been in use. -->
 
-- [ ] T001 A workspace is N repos, and a monorepo is not one
+- [x] T001 A workspace is N repos, and a monorepo is not one
   - Type: implementation
   - Depends on: none
   - Human review: false
