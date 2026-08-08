@@ -340,7 +340,7 @@ hierarchy and these tasks are siblings.
       injects a failure and asserts the record is unchanged and the retry set
       contains the entity that failed
 
-- [ ] T006 Deleting the Plane config changes nothing
+- [x] T006 Deleting the Plane config changes nothing
   - Type: implementation
   - Depends on: T004, T005
   - Human review: false
