@@ -229,7 +229,7 @@ hierarchy and these tasks are siblings.
       member into one table — `tests/test_product_state.py` asserts the
       workspace-wide output names each member repo
 
-- [ ] T003 One write strategy per entity, because they were measured different
+- [x] T003 One write strategy per entity, because they were measured different
   - Type: implementation
   - Depends on: none
   - Human review: false
