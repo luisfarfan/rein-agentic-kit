@@ -147,6 +147,14 @@ def parse_tasks_md(text: str) -> list[dict]:
             bullet = BULLET_RE.match(raw)
             if bullet and len(bullet.group(1)) > current["_indent"]:
                 current["acceptance"].append(_clean(bullet.group(2)))
+            elif current["acceptance"] and len(raw) - len(raw.lstrip()) > current["_indent"]:
+                # A criterion wrapped across lines. Without this, every
+                # continuation was dropped in silence -- measured at 2% of the
+                # criteria text across this repo's 63 historical plans, because
+                # those were written as single long lines. A plan hard-wrapped
+                # for readability loses far more, and loses it invisibly: the
+                # implementer prompt is built from this list (loop.js).
+                current["acceptance"][-1] += " " + _clean(raw)
 
     for t in tasks:
         t.pop("_indent", None)

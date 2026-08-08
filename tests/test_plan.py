@@ -264,6 +264,42 @@ class TestHeader(unittest.TestCase):
         h = plan.parse_header("## Scope\n- just this module\n\n- [ ] T001 x\n")
         self.assertEqual(h["scopeIn"], ["just this module"])
 
+    def test_a_wrapped_criterion_keeps_its_continuation_lines(self):
+        """A criterion hard-wrapped for readability must arrive whole.
+
+        Continuations used to be dropped in silence. Measured at 2% of the
+        criteria text over this repo's 63 historical plans -- small only
+        because those were written as single long lines. The prompt handed to
+        the implementer is built from this list, so a criterion that loses its
+        second half loses exactly the part naming what proves it.
+        """
+        tasks = plan.parse_tasks_md(
+            "- [ ] T001 x\n"
+            "  - Acceptance:\n"
+            "    - the module exposes `f(a)` and rejects an empty a,\n"
+            "      proven by `tests/test_thing.py` against a real fixture\n"
+            "    - a second criterion stays separate\n"
+        )
+        acc = tasks[0]["acceptance"]
+        self.assertEqual(len(acc), 2, "the continuation must not become its own criterion")
+        self.assertIn("tests/test_thing.py", acc[0])
+        self.assertEqual(acc[1], "a second criterion stays separate")
+
+    def test_a_continuation_cannot_swallow_the_next_task_or_field(self):
+        """The guard that keeps the fix from eating structure."""
+        tasks = plan.parse_tasks_md(
+            "- [ ] T001 x\n"
+            "  - Acceptance:\n"
+            "    - one criterion wrapping\n"
+            "      onto a second line\n"
+            "  - Verification: `make test`\n"
+            "- [ ] T002 y\n"
+        )
+        self.assertEqual(len(tasks), 2)
+        self.assertEqual(tasks[0]["verification"], "make test")
+        self.assertEqual(len(tasks[0]["acceptance"]), 1)
+        self.assertNotIn("Verification", tasks[0]["acceptance"][0])
+
 
 if __name__ == "__main__":
     unittest.main()
