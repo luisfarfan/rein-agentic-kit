@@ -1,0 +1,412 @@
+"""Tests for T002 -- "transitions are emitted while they happen, not guessed
+afterwards".
+
+Four things, four suites:
+  AC1  `rein event task <id> <transition>` (plugins/rein/lib/events.py +
+       plugins/rein/bin/rein) -- the accepted set, and that an unknown
+       transition exits non-zero without writing.
+  AC2  `transitionsFor(step)` in plugins/rein/workflows/loop.js -- extracted
+       straight out of the SHIPPED source by regex and run with `new
+       Function`, same discipline as tests/test_loop_policy.py, so this
+       proves the actual logic a step runs, not a reimplementation that
+       could drift from it (D2's defect class: prose whose words never
+       execute the path they claim to prove).
+  AC3/AC4  plugins/rein/lib/product_state.py's `state(root)` -- folding is
+       last-write-wins BY TIMESTAMP over an out-of-order, duplicated event
+       log, stable across two calls, and a task with no events still
+       appears as "planned" rather than vanishing.
+  AC5  `change_age_days` -- the newest commit touching the change directory,
+       against a fixture with backdated commits.
+  AC6  `rein state` -- the per-task record printed, and folded per member
+       when `root` sits inside a `.rein/workspace.json` workspace.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+import unittest
+
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+REIN_BIN = os.path.join(REPO_ROOT, "plugins", "rein", "bin", "rein")
+LIB_DIR = os.path.join(REPO_ROOT, "plugins", "rein", "lib")
+LOOP_JS = os.path.join(REPO_ROOT, "plugins", "rein", "workflows", "loop.js")
+
+sys.path.insert(0, LIB_DIR)
+import events as ev  # noqa: E402
+import product_state as ps  # noqa: E402
+
+_NODE = shutil.which("node")
+
+TASKS_MD = (
+    "# Change: demo\n\n"
+    "- [x] T001 First task\n"
+    "- [ ] T002 Second task\n"
+    "- [ ] T003 Third task\n"
+)
+
+
+def _git(repo: str, *args: str, env: dict | None = None) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", "-C", repo, *args], capture_output=True, text=True, env=env, check=True)
+
+
+def _init_git_repo(repo: str) -> None:
+    os.makedirs(repo, exist_ok=True)
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.email", "t@example.com")
+    _git(repo, "config", "user.name", "Test")
+    _git(repo, "config", "commit.gpgsign", "false")
+
+
+def _commit(repo: str, filename: str, content: str, when: str | None = None) -> str:
+    with open(os.path.join(repo, filename), "w", encoding="utf-8") as fh:
+        fh.write(content)
+    _git(repo, "add", filename)
+    env = dict(os.environ)
+    if when is not None:
+        env["GIT_AUTHOR_DATE"] = when
+        env["GIT_COMMITTER_DATE"] = when
+    _git(repo, "commit", "-q", "-m", f"add {filename}", env=env)
+    return _git(repo, "rev-parse", "HEAD").stdout.strip()
+
+
+# ═══════════════════════════════════════════════════════════ AC1: events.py ══
+
+
+class TestTaskTransitionsAccepted(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.repo = os.path.join(self.tmp.name, "repo")
+        _init_git_repo(self.repo)
+
+    def test_accepted_set_is_exactly_started_verified_blocked_merged(self):
+        self.assertEqual(set(ev.TASK_TRANSITIONS), {"started", "verified", "blocked", "merged"})
+
+    def test_each_accepted_transition_is_recorded_with_task_id_change_and_repo(self):
+        path = os.path.join(self.tmp.name, "events.jsonl")
+        for transition in ev.TASK_TRANSITIONS:
+            ok, error = ev.record_task_event("T099", transition, change="demo", root=self.repo, events_path=path)
+            self.assertTrue(ok, error)
+        rows = ev.read_events(path)
+        self.assertEqual([r["transition"] for r in rows], list(ev.TASK_TRANSITIONS))
+        for row in rows:
+            self.assertEqual(row["task_id"], "T099")
+            self.assertEqual(row["change"], "demo")
+            self.assertEqual(row["repo"], os.path.realpath(self.repo))
+            self.assertIn("commit", row)
+            self.assertIn("ts", row)
+
+    def test_unknown_transition_is_rejected_by_name_and_writes_nothing(self):
+        path = os.path.join(self.tmp.name, "events.jsonl")
+        ok, error = ev.record_task_event("T099", "closed", root=self.repo, events_path=path)
+        self.assertFalse(ok)
+        self.assertIn("closed", error)
+        self.assertFalse(os.path.exists(path))
+
+
+class TaskEventCliFixture(unittest.TestCase):
+    """A tmp HOME with its own ~/.claude/rein -- never the real one."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.home = self.tmp.name
+        self.events_path = os.path.join(self.home, ".claude", "rein", "events.jsonl")
+        self.repo = os.path.join(self.tmp.name, "repo")
+        _init_git_repo(self.repo)
+
+    def _run(self, *args: str) -> subprocess.CompletedProcess:
+        env = dict(os.environ)
+        env["HOME"] = self.home
+        return subprocess.run([sys.executable, REIN_BIN, *args], capture_output=True, text=True, env=env, timeout=30)
+
+
+class TestEventTaskCli(TaskEventCliFixture):
+    def test_appends_transition_task_id_change_and_resolved_repo(self):
+        result = self._run("event", "task", "T002", "started", "--root", self.repo, "--change", "product-observability")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        with open(self.events_path, encoding="utf-8") as fh:
+            row = json.loads(fh.readline())
+        self.assertEqual(row["task_id"], "T002")
+        self.assertEqual(row["transition"], "started")
+        self.assertEqual(row["change"], "product-observability")
+        self.assertEqual(row["repo"], os.path.realpath(self.repo))
+
+    def test_each_accepted_transition_exits_zero(self):
+        for transition in ("started", "verified", "blocked", "merged"):
+            result = self._run("event", "task", "T003", transition, "--root", self.repo)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_unknown_transition_exits_nonzero_without_writing(self):
+        result = self._run("event", "task", "T002", "closed", "--root", self.repo)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(os.path.exists(self.events_path))
+
+    def test_missing_task_id_or_transition_exits_nonzero_without_writing(self):
+        result = self._run("event", "task", "T002", "--root", self.repo)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(os.path.exists(self.events_path))
+
+
+# ═══════════════════════════════════════════════════ AC2: loop.js transitionsFor ══
+
+_EXTRACT_AND_RUN_JS = r"""
+const fs = require('fs');
+const [, , loopPath, scenariosJson] = process.argv;
+const src = fs.readFileSync(loopPath, 'utf8');
+function extract(name, params) {
+  const re = new RegExp(`function ${name}\\(${params}\\) \\{\\n([\\s\\S]*?)\\n\\}\\n`);
+  const m = src.match(re);
+  if (!m) throw new Error('not found in loop.js: ' + name);
+  return m[1];
+}
+const transitionsFor = new Function('step', extract('transitionsFor', 'step'));
+const scenarios = JSON.parse(scenariosJson);
+const out = scenarios.map((s) => transitionsFor(s));
+process.stdout.write(JSON.stringify(out));
+"""
+
+
+@unittest.skipUnless(_NODE, "node not on PATH -- loop.js is a node workflow script")
+class TestTransitionsForIsExtractable(unittest.TestCase):
+    def test_function_exists_with_expected_signature(self):
+        with open(LOOP_JS, encoding="utf-8") as f:
+            src = f.read()
+        self.assertIn("function transitionsFor(step)", src)
+
+    def test_a_step_actually_calls_it_not_just_defines_it(self):
+        # D2: dead code that only DEFINES the decision proves nothing about
+        # what a step actually does. Must appear at least once more than the
+        # `function transitionsFor(step) {` declaration itself.
+        with open(LOOP_JS, encoding="utf-8") as f:
+            src = f.read()
+        self.assertGreater(src.count("transitionsFor("), 1)
+
+
+@unittest.skipUnless(_NODE, "node not on PATH -- loop.js is a node workflow script")
+class TestTransitionsForPolicy(unittest.TestCase):
+    def _run(self, scenarios: list[dict]) -> list[list[str]]:
+        with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False, encoding="utf-8") as f:
+            f.write(_EXTRACT_AND_RUN_JS)
+            script_path = f.name
+        try:
+            proc = subprocess.run(
+                [_NODE, script_path, LOOP_JS, json.dumps(scenarios)],
+                capture_output=True, text=True, check=True,
+            )
+        finally:
+            os.unlink(script_path)
+        return json.loads(proc.stdout)
+
+    def test_a_passing_step_emits_started_then_verified(self):
+        [result] = self._run([{"attempt": 1, "maxAttempts": 5, "verifyExitCode": 0}])
+        self.assertEqual(result, ["started", "verified"])
+
+    def test_a_failing_first_attempt_emits_only_started(self):
+        [result] = self._run([{"attempt": 1, "maxAttempts": 5, "verifyExitCode": 1}])
+        self.assertEqual(result, ["started"])
+
+    def test_a_failing_mid_attempt_emits_nothing(self):
+        [result] = self._run([{"attempt": 2, "maxAttempts": 5, "verifyExitCode": 1}])
+        self.assertEqual(result, [])
+
+    def test_a_capped_attempt_that_still_fails_emits_blocked(self):
+        [result] = self._run([{"attempt": 5, "maxAttempts": 5, "verifyExitCode": 1}])
+        self.assertEqual(result, ["blocked"])
+
+    def test_a_capped_attempt_that_passes_emits_verified_not_blocked(self):
+        [result] = self._run([{"attempt": 5, "maxAttempts": 5, "verifyExitCode": 0}])
+        self.assertEqual(result, ["verified"])
+
+
+# ═══════════════════════════════════════════════ AC3/AC4: product_state fold ══
+
+
+class TestProductStateFold(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.repo = os.path.join(self.tmp.name, "repo")
+        _init_git_repo(self.repo)
+        _commit(self.repo, "tasks.md", TASKS_MD)
+        self.events_path = os.path.join(self.tmp.name, "events.jsonl")
+
+    def _write_events(self, rows: list[dict]) -> None:
+        with open(self.events_path, "w", encoding="utf-8") as fh:
+            for r in rows:
+                fh.write(json.dumps(r) + "\n")
+
+    def _row(self, task_id: str, transition: str, ts: str, commit: str = "c0") -> dict:
+        return {
+            "kind": "task", "task_id": task_id, "transition": transition,
+            "change": "demo", "repo": os.path.realpath(self.repo),
+            "commit": commit, "ts": ts,
+        }
+
+    def test_fold_is_last_write_wins_by_timestamp_not_file_order(self):
+        self._write_events([
+            self._row("T001", "started", "2026-01-01T00:00:00+00:00", commit="c1"),
+            self._row("T001", "verified", "2026-01-02T00:00:00+00:00", commit="c2"),
+            # A DUPLICATE 'started' lands LAST in the file but carries an
+            # EARLIER timestamp -- file order must not win over it.
+            self._row("T001", "started", "2026-01-01T00:00:00+00:00", commit="c1"),
+            # T002's events are OUT OF ORDER in the file (blocked appears
+            # before started) but 'blocked' has the LATER timestamp.
+            self._row("T002", "blocked", "2026-01-05T00:00:00+00:00", commit="c4"),
+            self._row("T002", "started", "2026-01-04T00:00:00+00:00", commit="c3"),
+        ])
+        rec = ps.state(self.repo, events_path=self.events_path)
+        by_id = {t["taskId"]: t for t in rec["tasks"]}
+        self.assertEqual(by_id["T001"]["transition"], "verified")
+        self.assertEqual(by_id["T001"]["commit"], "c2")
+        self.assertEqual(by_id["T002"]["transition"], "blocked")
+        self.assertEqual(by_id["T002"]["commit"], "c4")
+
+    def test_stable_across_two_calls(self):
+        self._write_events([
+            self._row("T001", "started", "2026-01-01T00:00:00+00:00"),
+            self._row("T001", "verified", "2026-01-02T00:00:00+00:00"),
+            self._row("T002", "started", "2026-01-03T00:00:00+00:00"),
+        ])
+        first = ps.state(self.repo, events_path=self.events_path)
+        second = ps.state(self.repo, events_path=self.events_path)
+        # `lastTouchedDays` is a live clock reading (AC5) and is not itself
+        # part of the FOLD's stability claim -- exercised on its own below.
+        self.assertEqual(first["tasks"], second["tasks"])
+        self.assertEqual({k: v for k, v in first.items() if k != "lastTouchedDays"},
+                          {k: v for k, v in second.items() if k != "lastTouchedDays"})
+
+    def test_a_task_with_no_events_appears_as_planned_not_omitted(self):
+        self._write_events([
+            self._row("T001", "started", "2026-01-01T00:00:00+00:00"),
+        ])
+        rec = ps.state(self.repo, events_path=self.events_path)
+        ids = {t["taskId"] for t in rec["tasks"]}
+        self.assertEqual(ids, {"T001", "T002", "T003"})
+        by_id = {t["taskId"]: t for t in rec["tasks"]}
+        self.assertEqual(by_id["T002"]["transition"], "planned")
+        self.assertEqual(by_id["T003"]["transition"], "planned")
+        self.assertEqual(by_id["T002"]["when"], "")
+        self.assertEqual(by_id["T002"]["commit"], "")
+
+    def test_events_from_a_different_repo_are_not_folded_in(self):
+        other = os.path.join(self.tmp.name, "other-repo")
+        self._write_events([
+            {**self._row("T001", "verified", "2026-01-01T00:00:00+00:00"), "repo": os.path.realpath(other)},
+        ])
+        rec = ps.state(self.repo, events_path=self.events_path)
+        by_id = {t["taskId"]: t for t in rec["tasks"]}
+        self.assertEqual(by_id["T001"]["transition"], "planned")
+
+
+# ══════════════════════════════════════════════════════ AC5: last-touched age ══
+
+
+class TestChangeAgeDays(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.repo = self.tmp.name
+        _init_git_repo(self.repo)
+
+    def test_age_in_days_matches_a_backdated_commit(self):
+        ten_days_ago = int(time.time()) - 10 * 86400
+        _commit(self.repo, "tasks.md", TASKS_MD, when=f"@{ten_days_ago} +0000")
+        age = ps.change_age_days(self.repo, self.repo)
+        self.assertIsNotNone(age)
+        self.assertAlmostEqual(age, 10.0, delta=0.05)
+
+    def test_the_newest_commit_touching_the_path_wins(self):
+        _commit(self.repo, "tasks.md", TASKS_MD, when=f"@{int(time.time()) - 20 * 86400} +0000")
+        _commit(self.repo, "tasks.md", TASKS_MD + "- [ ] T004 more\n", when=f"@{int(time.time()) - 1 * 86400} +0000")
+        age = ps.change_age_days(self.repo, os.path.join(self.repo, "tasks.md"))
+        self.assertAlmostEqual(age, 1.0, delta=0.05)
+
+    def test_no_commits_touching_the_path_yields_none(self):
+        age = ps.change_age_days(self.repo, os.path.join(self.repo, "never-committed"))
+        self.assertIsNone(age)
+
+    def test_state_carries_last_touched_days(self):
+        five_days_ago = int(time.time()) - 5 * 86400
+        _commit(self.repo, "tasks.md", TASKS_MD, when=f"@{five_days_ago} +0000")
+        rec = ps.state(self.repo)
+        self.assertIsNotNone(rec["lastTouchedDays"])
+        self.assertAlmostEqual(rec["lastTouchedDays"], 5.0, delta=0.05)
+
+
+# ═══════════════════════════════════════════════════════════ AC6: rein state ══
+
+
+class TestReinStateCli(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.home = self.tmp.name
+
+    def _run(self, *args: str) -> subprocess.CompletedProcess:
+        env = dict(os.environ)
+        env["HOME"] = self.home
+        return subprocess.run([sys.executable, REIN_BIN, *args], capture_output=True, text=True, env=env, timeout=30)
+
+    def test_prints_the_per_task_record_for_a_single_repo(self):
+        repo = os.path.join(self.tmp.name, "solo")
+        _init_git_repo(repo)
+        _commit(repo, "tasks.md", TASKS_MD)
+        result = self._run("state", repo)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("T001", result.stdout)
+        self.assertIn("T002", result.stdout)
+        self.assertIn("planned", result.stdout)
+
+    def test_json_output_matches_the_library_record(self):
+        repo = os.path.join(self.tmp.name, "solo-json")
+        _init_git_repo(repo)
+        _commit(repo, "tasks.md", TASKS_MD)
+        result = self._run("state", repo, "--json")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        doc = json.loads(result.stdout)
+        self.assertEqual(len(doc["tasks"]), 3)
+
+    def test_workspace_output_names_each_member_repo(self):
+        ws = os.path.join(self.tmp.name, "ws")
+        api = os.path.join(ws, "api")
+        web = os.path.join(ws, "web")
+        os.makedirs(os.path.join(ws, ".rein"))
+        _init_git_repo(api)
+        _commit(api, "tasks.md", TASKS_MD)
+        _init_git_repo(web)
+        _commit(web, "tasks.md", TASKS_MD)
+        with open(os.path.join(ws, ".rein", "workspace.json"), "w", encoding="utf-8") as fh:
+            json.dump({"members": [{"name": "api", "path": "api"}, {"name": "web", "path": "web"}]}, fh)
+
+        result = self._run("state", ws)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("api", result.stdout)
+        self.assertIn("web", result.stdout)
+
+    def test_workspace_json_output_keys_each_member_by_name(self):
+        ws = os.path.join(self.tmp.name, "ws-json")
+        api = os.path.join(ws, "api")
+        web = os.path.join(ws, "web")
+        os.makedirs(os.path.join(ws, ".rein"))
+        _init_git_repo(api)
+        _commit(api, "tasks.md", TASKS_MD)
+        _init_git_repo(web)
+        _commit(web, "tasks.md", TASKS_MD)
+        with open(os.path.join(ws, ".rein", "workspace.json"), "w", encoding="utf-8") as fh:
+            json.dump({"members": [{"name": "api", "path": "api"}, {"name": "web", "path": "web"}]}, fh)
+
+        result = self._run("state", ws, "--json")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        doc = json.loads(result.stdout)
+        self.assertEqual(set(doc.keys()), {"api", "web"})
+
+
+if __name__ == "__main__":
+    unittest.main()

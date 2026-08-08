@@ -18,6 +18,11 @@ Subcommands:
   rein review         record / check a review episode (approval is state-bound)
   rein token-report   real per-model token accounting for the last agent run
   rein event <name>   record a skill invocation as an event (D3, never a run)
+  rein event task <task-id> <started|verified|blocked|merged>
+                      record a task TRANSITION as it happens (T002) -- rejects any
+                      other word by name, without writing
+  rein state          per-task transitions folded from the event log + plan (T002);
+                      given a workspace, folds every member into one table
   rein ledger         summary of recorded runs (per project / per session);
                       --json returns {"runs": [...], "events_by_project": {...}} --
                       runs is the unchanged array of run rows, events_by_project is
@@ -53,6 +58,7 @@ import events as _events  # noqa: E402
 import gate as _gate  # noqa: E402
 import plan as _plan  # noqa: E402
 import plan_check as _plan_check  # noqa: E402
+import product_state as _pstate  # noqa: E402
 import setup as _setup  # noqa: E402
 import serve as _serve  # noqa: E402
 import token_report as _tr  # noqa: E402
@@ -81,6 +87,22 @@ def _positional(argv: list[str]) -> str:
             continue  # value of a preceding flag
         return a
     return ""
+
+
+def _positionals(argv: list[str]) -> list[str]:
+    """Every non-flag token, in order -- `_positional` only ever returns the
+    first one, and `rein event task <id> <transition>` needs both.
+    """
+    out: list[str] = []
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a.startswith("--"):
+            i += 1 if "=" in a else 2  # `--flag=value` is one token, `--flag value` is two
+            continue
+        out.append(a)
+        i += 1
+    return out
 
 
 def cmd_detect(argv: list[str]) -> int:
@@ -450,11 +472,43 @@ def cmd_token_report(argv: list[str]) -> int:
 
 
 def cmd_event(argv: list[str]) -> int:
-    """Record a skill invocation as an EVENT (D3) -- never a run, never a
-    failure for the caller (D4): always exits 0, even when the events file
-    or its directory does not exist yet, or the directory is unwritable (the
+    """`rein event <name>` records a skill invocation (D3) -- never a run,
+    never a failure for the caller (D4): always exits 0, even when the
+    events file or its directory does not exist yet, or is unwritable (the
     latter is reported on stderr so it is still visible, just never fatal).
+
+    `rein event task <task-id> <transition>` (T002/AC1) records a task
+    TRANSITION instead -- emitted while it happens, not reconstructed later
+    from a checkbox. Unlike the skill-invocation form, an unknown transition
+    is a caller bug, not a transient environment problem: it is rejected BY
+    NAME, nothing is written, and this exits non-zero.
     """
+    if argv and argv[0] == "task":
+        positionals = _positionals(argv)
+        task_id = positionals[1] if len(positionals) > 1 else ""
+        transition = positionals[2] if len(positionals) > 2 else ""
+        if not task_id or not transition:
+            print(
+                "usage: rein event task <task-id> <started|verified|blocked|merged> "
+                "[--change <name>] [--root <path>]",
+                file=sys.stderr,
+            )
+            return 2
+        if transition not in _events.TASK_TRANSITIONS:
+            print(
+                f"rein event: unknown transition {transition!r} -- must be one of "
+                f"{', '.join(_events.TASK_TRANSITIONS)}",
+                file=sys.stderr,
+            )
+            return 1
+        change = _opt(argv, "change", "")
+        root = _opt(argv, "root", ".")
+        ok, error = _events.record_task_event(task_id, transition, change=change, root=root)
+        if not ok:
+            print(f"rein event: could not record {task_id} {transition!r}: {error}", file=sys.stderr)
+            return 0  # a write failure is an environment problem, not a caller bug (D4)
+        return 0
+
     name = _positional(argv)
     if not name:
         print("usage: rein event <name> [--root <path>]", file=sys.stderr)
@@ -463,6 +517,53 @@ def cmd_event(argv: list[str]) -> int:
     ok, error = _events.record_event(name, root)
     if not ok:
         print(f"rein event: could not record {name!r}: {error}", file=sys.stderr)
+    return 0
+
+
+def _print_task_state(rec: dict) -> None:
+    label = rec["change"] or "(no change)"
+    touched = rec["lastTouchedDays"]
+    touched_str = f"{touched:.1f}d ago" if touched is not None else "unknown"
+    print(f"  change: {label}   last-touched: {touched_str}   plan: {rec['planPath'] or '(none)'}")
+    if not rec["tasks"]:
+        print("    (no tasks in the plan)")
+        return
+    for t in rec["tasks"]:
+        when = t["when"] or "-"
+        commit = (t["commit"] or "-")[:12]
+        print(f"    {t['taskId']:<6} {t['transition']:<10} {when:<22} {commit:<12} {t['title']}")
+
+
+def cmd_state(argv: list[str]) -> int:
+    """AC6: the per-task record `product_state.state()` folds, printed --
+    and, when `root` sits inside a `.rein/workspace.json` workspace, folded
+    per member so ONE call reports the whole product, not one repo at a time.
+    """
+    root = _positional(argv) or "."
+    as_json = "--json" in argv
+    change = _opt(argv, "change", "")
+
+    found = _workspace.discover(root)
+    if found["found"] and found.get("doc") is not None:
+        ok, problems = _workspace.members(found["doc"], found["root"])
+        for name, reason in problems:
+            print(f"rein state: skipping {name}: {reason}", file=sys.stderr)
+        by_member = {name: _pstate.state(path, change=change) for name, path, _branch, _head in ok}
+        if as_json:
+            print(json.dumps(by_member, indent=2))
+            return 0
+        print(f"workspace: {found['root']} ({len(by_member)} member(s))")
+        for name, rec in by_member.items():
+            print(f"\n== {name} — {rec['root']} ==")
+            _print_task_state(rec)
+        return 0
+
+    rec = _pstate.state(root, change=change)
+    if as_json:
+        print(json.dumps(rec, indent=2))
+        return 0
+    print(f"state: {rec['root']}")
+    _print_task_state(rec)
     return 0
 
 
@@ -812,6 +913,7 @@ COMMANDS = {
     "review": cmd_review,
     "token-report": cmd_token_report,
     "event": cmd_event,
+    "state": cmd_state,
     "ledger": cmd_ledger,
     "baseline": cmd_baseline,
     "dashboard": cmd_dashboard,
