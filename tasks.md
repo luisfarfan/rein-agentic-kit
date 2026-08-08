@@ -198,11 +198,16 @@ hierarchy and these tasks are siblings.
       exactly `started`, `verified`, `blocked`, `merged` and rejecting anything
       else by name; `tests/test_product_state.py` is a new module asserting the
       accepted set and that an unknown transition exits non-zero without writing
-    - the `rein-step` and `rein-apply` skills emit `started` before the first
-      attempt and `verified` only after the verification command exits 0 —
-      `tests/test_product_state.py` extracts the shipped skill text and asserts
-      both emissions are present and ordered, reading the files the plugin ships
-      rather than a copy (D2)
+    - **the loop emits the transitions, not the skill prose.** `loop.js` exposes
+      a pure `transitionsFor(step)` returning the events a step must emit —
+      `started` before the first attempt, `verified` only when the verification
+      exited 0, `blocked` when the attempt cap is reached — and the step calls
+      it; `tests/test_product_state.py` extracts that function from the shipped
+      `loop.js` and **executes** it over fixture steps, asserting the emitted
+      sequence for a passing step, a failing one and a capped one. Asserting
+      that skill prose contains the words would be satisfied by a fixture
+      without the path ever running, which is the defect class this plan exists
+      to remove (D2)
     - `plugins/rein/lib/product_state.py` exposes `state(root)` folding the event
       log over the plan and git head into one record per task carrying its
       transition, when it happened, and the commit at that moment;
@@ -272,7 +277,7 @@ hierarchy and these tasks are siblings.
 
 - [ ] T004 The board reads like a person wrote it, or it reads like the plan
   - Type: implementation
-  - Depends on: none
+  - Depends on: T003
   - Human review: false
   - Verification: `python3 -m unittest tests.test_humanize`
   - Acceptance:
