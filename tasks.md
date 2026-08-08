@@ -283,7 +283,7 @@ hierarchy and these tasks are siblings.
     - `tests/test_plane_client.py` opens no socket: the transport is injected and
       a test asserts the default one is never constructed during the suite
 
-- [ ] T004 The board reads like a person wrote it, or it reads like the plan
+- [x] T004 The board reads like a person wrote it, or it reads like the plan
   - Type: implementation
   - Depends on: T003
   - Human review: false
