@@ -86,6 +86,29 @@ def change_age_days(repo: str, change_dir: str, now: float | None = None) -> flo
     return (reference - epoch) / 86400.0
 
 
+def changes_for(repo_root: str) -> list:
+    """Every change a repo holds: each `openspec/changes/*` entry, or `[""]`
+    for a plain `tasks.md`.
+
+    This lived in `plane_sync` and nowhere else, so `rein state` -- the
+    command T001/T002 ship as a standalone deliverable -- folded exactly one
+    change per repo. On the corpus the Why is written about (24 repos, 118
+    openspec changes) it printed `(no change) / (no tasks in the plan)` for
+    every member. Enumerating a repo's changes is product state, not a Plane
+    concern; `plane_sync` now delegates here.
+    """
+    changes_dir = os.path.join(repo_root, "openspec", "changes")
+    if os.path.isdir(changes_dir):
+        return _plan._openspec_changes(repo_root) or [""]
+    return [""]
+
+
+def state_all(repo_root: str, events_path: str = _events.EVENTS_PATH) -> list:
+    """One `state()` record per change in `repo_root`."""
+    return [state(repo_root, change=c, events_path=events_path)
+            for c in changes_for(repo_root)]
+
+
 def state(root: str = ".", change: str = "", events_path: str = _events.EVENTS_PATH) -> dict:
     """One record per task in the plan at `root`, folded from the task-event
     log plus the plan's own task list plus (AC5) git history of the change
@@ -101,13 +124,21 @@ def state(root: str = ".", change: str = "", events_path: str = _events.EVENTS_P
     operator's real one.
     """
     resolved_root = os.path.realpath(os.path.abspath(root))
-    plan_doc = _plan.read_plan(resolved_root, change=change)
+    # The canonical repo, for the SAME reason line ~118 uses it: a
+    # header-less flat plan takes its change name from `basename(root)`,
+    # and inside a worktree that basename is `rein-wt-<label>`. Reading
+    # the plan from the literal root made `state(worktree)` compute a
+    # different change key than the emitter -- so the round-2 fix
+    # normalised the emitter and left the reader six lines away still
+    # unnormalised. Third appearance of one defect in a third cell.
+    canonical_root = _events.canonical_repo(resolved_root)
+    plan_doc = _plan.read_plan(canonical_root, change=change)
     tasks = plan_doc.get("tasks") or []
 
     # The SAME identity the emitter used. A plain path comparison made every
     # transition emitted from a worktree invisible here, and the loop runs
     # every task in a worktree by default -- see `events.canonical_repo`.
-    repo_key = _events.canonical_repo(resolved_root)
+    repo_key = canonical_root
 
     # Repo AND change. Task ids are always T001..T00N, so filtering on the
     # repo alone makes every change in it share one namespace: closing

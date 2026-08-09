@@ -226,9 +226,6 @@ class ContentHashDedupTests(unittest.TestCase):
         self.assertEqual(again[0]["payload"]["dependsOn"], ["T001"])
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class CrossingTheWindowBoundaryTests(unittest.TestCase):
     """"History" hides two different situations, and only one is a saving.
@@ -278,3 +275,75 @@ class CrossingTheWindowBoundaryTests(unittest.TestCase):
         record.update({e["key"]: e["hash"] for e in first})
         second = pp.select(self._state(401, ["planned"]), window_days=30, record=record)
         self.assertEqual(second, [])
+
+
+class ShippedWorkIsNeverMarkedCancelledTests(unittest.TestCase):
+    """`checked` and `transition` come from different places.
+
+    `transition` is folded from the event log; `checked` is the plan's
+    checkbox. `rein close` ticks the box and emits NO event, so
+    `checked=True, transition="planned"` is ordinary. Reading only the
+    transition marked shipped work `cancelled` the moment its change aged
+    out — permanently, since the next run dedups on the new hash.
+
+    The other fixtures in this file derive `checked` FROM the transition
+    (`_task`, line ~50), so the two fields there cannot disagree and the
+    case is unreachable.
+    """
+
+    def _aged(self, tasks):
+        return [{"change": "shipped", "lastTouchedDays": 400, "tasks": tasks}]
+
+    def _task(self, tid, checked, transition):
+        return {"taskId": tid, "title": tid, "checked": checked,
+                "transition": transition, "dependsOn": []}
+
+    def test_a_ticked_task_is_not_cancelled_when_its_change_ages_out(self):
+        state = self._aged([self._task("T001", True, "planned")])
+        live = pp.select([{**state[0], "lastTouchedDays": 1}], window_days=30, record={})
+        record = {e["key"]: e["hash"] for e in live}
+        out = pp.select(state, window_days=30, record=record)
+        self.assertEqual([e for e in out if e["type"] == "work_item"], [])
+
+    def test_a_genuinely_open_task_still_is(self):
+        state = self._aged([self._task("T002", False, "planned")])
+        live = pp.select([{**state[0], "lastTouchedDays": 1}], window_days=30, record={})
+        record = {e["key"]: e["hash"] for e in live}
+        out = pp.select(state, window_days=30, record=record)
+        items = [e for e in out if e["type"] == "work_item"]
+        self.assertEqual([e["taskId"] for e in items], ["T002"])
+        self.assertEqual(items[0]["payload"]["transition"], "cancelled")
+
+
+class WriteStyleIsPartOfTheContentHashTests(unittest.TestCase):
+    """The hash must cover every field the sync WRITES.
+
+    The sync sends a humanized name; the hash covered only the raw one. So
+    flipping `humanize`, `humanize_work_items` or `lang` in plane.json
+    emitted nothing at all and the board kept the old wording forever —
+    including never returning to raw text when humanization is switched off.
+    """
+
+    def _state(self):
+        return [{"change": "demo", "lastTouchedDays": 1, "tasks": [
+            {"taskId": "T001", "title": "Build it", "checked": False,
+             "transition": "planned", "dependsOn": []}]}]
+
+    def test_changing_the_style_re_emits_everything(self):
+        first = pp.select(self._state(), window_days=30, record={}, write_style="h=0,w=0,lang=")
+        record = {e["key"]: e["hash"] for e in first}
+        self.assertEqual(pp.select(self._state(), window_days=30, record=record,
+                                   write_style="h=0,w=0,lang="), [])
+        again = pp.select(self._state(), window_days=30, record=record,
+                          write_style="h=1,w=1,lang=es")
+        self.assertEqual({e["key"] for e in again}, set(record))
+
+    def test_turning_humanization_back_off_re_emits_too(self):
+        on = pp.select(self._state(), window_days=30, record={}, write_style="h=1,w=1,lang=es")
+        record = {e["key"]: e["hash"] for e in on}
+        off = pp.select(self._state(), window_days=30, record=record, write_style="h=0,w=0,lang=")
+        self.assertTrue(off, "the board would keep humanized text forever")
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -88,7 +88,7 @@ def _history_description(tasks: list) -> str:
     return f"{total} {noun} ({breakdown})" if breakdown else f"{total} {noun}"
 
 
-def _module_entity(change_name: str, tasks: list, live: bool) -> dict | None:
+def _module_entity(change_name: str, tasks: list, live: bool, style: str = "") -> dict | None:
     # `None` when `change_name` is blank: Plane's Module `name` is required
     # and rejects a blank string outright (`400 name may not be blank`), so
     # emitting a payload with `{"name": ""}` is a doomed upsert, not a
@@ -116,6 +116,8 @@ def _module_entity(change_name: str, tasks: list, live: bool) -> dict | None:
             "description": _history_description(tasks),
             "status": "completed",
         }
+    if style:
+        payload = {**payload, "_style": style}
     key = f"module:{change_name}"
     return {
         "type": "module",
@@ -132,7 +134,25 @@ def _module_entity(change_name: str, tasks: list, live: bool) -> dict | None:
 _FINISHED_TRANSITIONS = ("verified", "merged")
 
 
-def _work_item_entity(change_name: str, task: dict, history: bool = False) -> dict:
+def _is_finished(task: dict) -> bool:
+    """Done by EITHER signal, because they come from different places.
+
+    `transition` is folded from the event log; `checked` is the plan's
+    checkbox. `rein close` ticks the box and emits no event, so
+    `checked=True, transition="planned"` is ordinary -- not an anomaly.
+    Reading only the transition marked SHIPPED work as `cancelled` the
+    moment its change aged out, permanently, and the fixture could not
+    catch it: `tests/test_plane_window.py` derives `checked` FROM the
+    transition, so the two fields there are incapable of disagreeing.
+    T005 AC3 says "still-open tasks", and a `- [x]` task is not one.
+    """
+    if bool(task.get("checked")):
+        return True
+    return (task.get("transition") or "planned") in _FINISHED_TRANSITIONS
+
+
+def _work_item_entity(change_name: str, task: dict, history: bool = False,
+                      style: str = "") -> dict:
     """The hash must cover EVERY field the sync writes, not just the visible
     ones. `dependsOn` reaches Plane as the work item's body (D8/AC4) and is
     the only place a dependency is visible at all, since no relation call is
@@ -150,6 +170,8 @@ def _work_item_entity(change_name: str, task: dict, history: bool = False) -> di
         "transition": "cancelled" if history else transition,
         "dependsOn": list(task.get("dependsOn") or []),
     }
+    if style:
+        payload = {**payload, "_style": style}
     key = f"item:{change_name}:{task_id}"
     return {
         "type": "work_item",
@@ -161,7 +183,8 @@ def _work_item_entity(change_name: str, task: dict, history: bool = False) -> di
     }
 
 
-def select(state: list, window_days: int | None = None, record: dict | None = None) -> list:
+def select(state: list, window_days: int | None = None, record: dict | None = None,
+           write_style: str = "") -> list:
     """Split `state`'s changes into live and history, project each into
     Plane entities, and drop anything whose content hash already matches
     `record` (the last successfully synced `{key: hash}` map).
@@ -177,6 +200,13 @@ def select(state: list, window_days: int | None = None, record: dict | None = No
     if window_days is None:
         window_days = DEFAULT_WINDOW_DAYS
     record = record or {}
+    # `write_style` folds the humanization settings into every hash. The
+    # sync writes a humanized name while the hash covered only the raw
+    # one, so flipping `humanize` / `humanize_work_items` / `lang` in
+    # plane.json emitted NOTHING and the board kept the old text forever
+    # -- including never returning to raw when humanization is turned off.
+    # The rule `_work_item_entity` states is "cover every field the sync
+    # writes"; the humanizer was added to the write side without it.
 
     entities = []
     for change_state in state:
@@ -185,12 +215,12 @@ def select(state: list, window_days: int | None = None, record: dict | None = No
         age = change_state.get("lastTouchedDays")
         live = age is None or age <= window_days
 
-        module_entity = _module_entity(change_name, tasks, live)
+        module_entity = _module_entity(change_name, tasks, live, style=write_style)
         if module_entity is not None:
             entities.append(module_entity)
         if live:
             for task in tasks:
-                entities.append(_work_item_entity(change_name, task))
+                entities.append(_work_item_entity(change_name, task, style=write_style))
         else:
             # Two different situations hide behind "history", and the T005
             # criterion ("no work item for a history change -- that is the
@@ -210,9 +240,9 @@ def select(state: list, window_days: int | None = None, record: dict | None = No
             # a terminal group and their hash is unchanged, so the dedup below
             # drops them.
             for task in tasks:
-                if (task.get("transition") or "planned") in _FINISHED_TRANSITIONS:
+                if _is_finished(task):
                     continue
-                entity = _work_item_entity(change_name, task, history=True)
+                entity = _work_item_entity(change_name, task, history=True, style=write_style)
                 if entity["key"] in record:
                     entities.append(entity)
 

@@ -604,22 +604,32 @@ def cmd_state(argv: list[str]) -> int:
         ok, problems = _workspace.members(found["doc"], found["root"])
         for name, reason in problems:
             print(f"rein state: skipping {name}: {reason}", file=sys.stderr)
-        by_member = {name: _pstate.state(path, change=change) for name, path, _branch, _head in ok}
+        # Every change per member, not one. An explicit --change still
+        # narrows; without it a member with 29 openspec changes used to
+        # report `(no change)`.
+        by_member = {
+            name: ([_pstate.state(path, change=change)] if change
+                   else _pstate.state_all(path))
+            for name, path, _branch, _head in ok
+        }
         if as_json:
             print(json.dumps(by_member, indent=2))
             return 0
-        print(f"workspace: {found['root']} ({len(by_member)} member(s))")
-        for name, rec in by_member.items():
-            print(f"\n== {name} — {rec['root']} ==")
-            _print_task_state(rec)
+        total = sum(len(v) for v in by_member.values())
+        print(f"workspace: {found['root']} ({len(by_member)} member(s), {total} change(s))")
+        for name, recs in by_member.items():
+            print(f"\n== {name} — {recs[0]['root'] if recs else path} ==")
+            for rec in recs:
+                _print_task_state(rec)
         return 0
 
-    rec = _pstate.state(root, change=change)
+    recs = [_pstate.state(root, change=change)] if change else _pstate.state_all(root)
     if as_json:
-        print(json.dumps(rec, indent=2))
+        print(json.dumps(recs if len(recs) != 1 else recs[0], indent=2))
         return 0
-    print(f"state: {rec['root']}")
-    _print_task_state(rec)
+    print(f"state: {recs[0]['root']}")
+    for rec in recs:
+        _print_task_state(rec)
     return 0
 
 

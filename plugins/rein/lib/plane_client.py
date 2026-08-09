@@ -492,9 +492,19 @@ class PlaneClient:
             if not parsed.get("next_page_results"):
                 break
             cursor = parsed.get("next_cursor")
+            if not cursor:
+                # "More results" with nothing to ask for them with. Silent
+                # truncation here recreates exactly what pagination was
+                # added to prevent: an existing project past the cut is
+                # not matched, and since projects have no `external_id`
+                # uniqueness the POST creates a DUPLICATE. Refuse instead.
+                raise PlaneRequestError(
+                    "GET", page_path, status,
+                    "page reports more results but carries no next_cursor",
+                )
             # A server that keeps handing back the same cursor would spin
             # forever; stop rather than hang a sync on it.
-            if not cursor or cursor in seen:
+            if cursor in seen:
                 break
             seen.add(cursor)
         return collected
@@ -534,6 +544,14 @@ class PlaneClient:
             status, parsed = self._request("PATCH", patch_path, json_body=payload)
             if status not in (200, 201):
                 raise PlaneRequestError("PATCH", patch_path, status, parsed)
+            # Same carry-over as `_upsert_post_then_conflict`: Plane's module
+            # PATCH was MEASURED to omit `id`, and nothing says the project
+            # serializer differs. `ensure_project` does `project["id"]`
+            # immediately after, so a body without one is a KeyError reported
+            # as `FAIL project:<repo>: 'id'`. Only a re-sync reaches this
+            # branch -- the same reason the module case survived 985 tests.
+            if isinstance(parsed, dict) and "id" not in parsed:
+                parsed = {**parsed, "id": project_id}
             self._project_cache = [parsed if p.get("id") == project_id else p for p in self._project_cache]
             return parsed
 

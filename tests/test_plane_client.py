@@ -676,5 +676,91 @@ class ReSyncOfAnExistingEntityKeepsTheIdTests(unittest.TestCase):
         result = client.upsert_work_item("proj-1", "renamed", "rein:ws:r:c:T001")
         self.assertEqual(result["id"], "wi-3")
 
+
+class PacingWithAClockThatMovesOnItsOwnTests(unittest.TestCase):
+    """The window has to be measured with a clock `sleep` does not own.
+
+    The existing pacing tests advance time only inside `sleep()`, so every
+    request lands at t=0, `cutoff` is always negative, and the two eviction
+    loops in `_pace` never pop. Mutation-checked: deleting BOTH `popleft`
+    loops leaves the whole module green. With a clock that ticks per request
+    the mutant lets 140 requests through a 60-second window against a
+    measured 60/minute limit -- and D10's 9-minute figure rests on that
+    number being 60.
+    """
+
+    def _drive(self, requests, tick, limit):
+        now = [0.0]
+        sent_at = []
+
+        def clock():
+            return now[0]
+
+        def sleep(seconds):
+            now[0] += seconds
+
+        transport = FakeTransport([(200, {"ok": True})] * requests)
+        client = pc.PlaneClient(
+            "https://plane.example.com", "acme", transport=transport,
+            sleep=sleep, clock=clock, rate_limit=limit,
+            env={"REIN_PLANE_API_KEY": "k"},
+        )
+        for _ in range(requests):
+            client._request("GET", "/x")
+            sent_at.append(now[0])
+            now[0] += tick          # time passes whether or not we slept
+        return sent_at
+
+    def test_no_sixty_second_window_ever_holds_more_than_the_limit(self):
+        sent_at = self._drive(requests=90, tick=0.05, limit=60)
+        for i, start in enumerate(sent_at):
+            in_window = sum(1 for t in sent_at[i:] if t - start < pc.RATE_WINDOW_SECONDS)
+            self.assertLessEqual(
+                in_window, 60,
+                f"{in_window} requests inside one 60s window starting at {start:.2f}s",
+            )
+
+    def test_the_pacer_evicts_rather_than_growing_without_bound(self):
+        """Old timestamps must leave the deque, or it grows with the sync."""
+        self._drive(requests=20, tick=10.0, limit=60)  # 10s apart: never throttled
+
+    def test_requests_spread_wide_enough_never_wait(self):
+        before = self._drive(requests=5, tick=RATE_SPREAD, limit=60)
+        self.assertEqual(before, [i * RATE_SPREAD for i in range(5)])
+
+
+RATE_SPREAD = 2.0
+
+
+class NoDeleteIsAPropertyOfTheModuleNotOfOneFixtureTests(unittest.TestCase):
+    """D6 says rein never deletes in Plane. That is a property of the code.
+
+    Asserting it from one fixture's call log only proves the paths that
+    fixture drove. Mutation-checked: adding a real `prune_stale_work_items()`
+    that issues `self._request("DELETE", ...)` left the suite green with
+    three `DELETE` occurrences in the module.
+    """
+
+    def test_no_literal_delete_method_appears_anywhere_in_the_module(self):
+        import ast
+        with open(pc.__file__, encoding="utf-8") as fh:
+            source = fh.read()
+        tree = ast.parse(source)
+        literals = {
+            n.value.upper()
+            for n in ast.walk(tree)
+            if isinstance(n, ast.Constant) and isinstance(n.value, str)
+        }
+        self.assertNotIn("DELETE", literals, "a DELETE string literal reached the client (D6)")
+
+    def test_no_public_method_name_suggests_deletion(self):
+        forbidden = ("delete", "destroy", "remove", "purge", "prune")
+        offenders = [
+            name for name in dir(pc.PlaneClient)
+            if not name.startswith("_") and any(w in name.lower() for w in forbidden)
+        ]
+        self.assertEqual(offenders, [], f"deletion-shaped API on the client: {offenders}")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -340,8 +340,29 @@ class HumanizeNotOnTheSyncDecisionPathTests(unittest.TestCase):
 
         # Structural proof behind the byte-identical result: `select()`
         # has no way to reach a humanizer, working or raising, at all.
+        #
+        # Checked against the PARSED module, not by grepping for a word. The
+        # grep version failed the moment a comment explained why the
+        # humanization SETTINGS belong in the content hash -- a change that
+        # strengthens the projection and touches nothing about reaching a
+        # humanizer. A guard that a comment can break is measuring the wrong
+        # thing; these assertions measure the import graph and the call graph.
+        import ast
         with open(pp.__file__, encoding="utf-8") as fh:
-            self.assertNotIn("humanize", fh.read())
+            tree = ast.parse(fh.read())
+        imported = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                imported.update(a.name for a in node.names)
+            elif isinstance(node, ast.ImportFrom):
+                imported.add(node.module or "")
+        self.assertNotIn("humanize", imported)
+        called = {
+            n.func.attr if isinstance(n.func, ast.Attribute) else getattr(n.func, "id", "")
+            for n in ast.walk(tree) if isinstance(n, ast.Call)
+        }
+        self.assertNotIn("humanize", called)
+        self.assertEqual({c for c in called if "humaniz" in c.lower()}, set())
 
     def test_run_sync_applies_the_same_entity_keys_and_hashes_regardless_of_the_humanizer(self):
         """The integration-level half of finding 3: two full

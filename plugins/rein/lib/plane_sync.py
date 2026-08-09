@@ -135,7 +135,7 @@ def changes_for(repo_root: str) -> list[str]:
 def build_state(repo_root: str) -> list[dict]:
     """One `product_state.state()` record per change in `repo_root` -- the
     shape `plane_projection.select()` expects (T005)."""
-    return [_pstate.state(repo_root, change=c) for c in changes_for(repo_root)]
+    return _pstate.state_all(repo_root)
 
 
 def _depends_on_by_task(repo_root: str, change: str) -> dict[str, list[str]]:
@@ -323,6 +323,10 @@ def run_sync(root: str, *, client_factory=None, humanize_cache=None, env=None) -
     )
     humanize_enabled = _humanize_enabled(config)
     humanize_work_items = humanize_enabled and _humanize_work_items_enabled(config)
+    write_style = (
+        f"h={int(humanize_enabled)},w={int(humanize_work_items)},"
+        f"lang={config.get('lang', '')}"
+    )
 
     record_path = os.path.join(root, RECORD_RELATIVE_PATH)
     record = _pp.load_record(record_path)
@@ -343,7 +347,12 @@ def run_sync(root: str, *, client_factory=None, humanize_cache=None, env=None) -
 
         state_list = build_state(repo_root)
         state_by_change = {cs.get("change") or "": cs for cs in state_list}
-        entities = _pp.select(state_list, window_days, record=repo_record)
+        # The humanization settings are part of what gets WRITTEN, so they
+        # belong in the hash. Without this, flipping `humanize` in
+        # plane.json emitted nothing and the board kept the old wording
+        # forever -- including never coming back to raw when turned off.
+        entities = _pp.select(state_list, window_days, record=repo_record,
+                              write_style=write_style)
         if not entities:
             continue
 

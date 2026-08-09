@@ -532,9 +532,6 @@ class TestReinStateCli(unittest.TestCase):
         self.assertEqual(set(doc.keys()), {"api", "web"})
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 # ═══════════════════════════════════════ AC2 (cont.): loop.js emits `merged` ══
 
@@ -672,3 +669,56 @@ class TestAHeaderlessPlanAgreesAcrossAWorktree(unittest.TestCase):
         rows = [r for r in ev.read_events(self.events_path) if r.get("kind") == "task"]
         self.assertEqual(len({r["change"] for r in rows}), 1, "two namespaces in one run")
         self.assertEqual(ps.state(self.repo, events_path=self.events_path)["tasks"][0]["transition"], "merged")
+
+
+class TestStateEnumeratesEveryOpenspecChange(unittest.TestCase):
+    """`rein state` is the standalone half of T001-T002, on the corpus the
+    Why is written about: 24 repos, 118 openspec changes.
+
+    Enumeration lived only in `plane_sync`, so `state` folded exactly one
+    change per repo and printed `(no change) / (no tasks in the plan)` for
+    every member of a real workspace. Every AC6 fixture used a flat
+    `tasks.md`, where one change per repo happens to be the truth.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.repo = os.path.join(self.tmp.name, "repo")
+        _init_git_repo(self.repo)
+        for name in ("alpha", "beta", "gamma"):
+            d = os.path.join(self.repo, "openspec", "changes", name)
+            os.makedirs(d)
+            with open(os.path.join(d, "tasks.md"), "w", encoding="utf-8") as fh:
+                fh.write(f"# Change: {name}\n\n- [ ] T001 task of {name}\n  - Depends on: none\n")
+        _git(self.repo, "add", "-A")
+        _git(self.repo, "commit", "-qm", "three changes")
+
+    def test_changes_for_lists_them_all(self):
+        self.assertEqual(sorted(ps.changes_for(self.repo)), ["alpha", "beta", "gamma"])
+
+    def test_a_flat_repo_still_resolves_one_implicit_change(self):
+        flat = os.path.join(self.tmp.name, "flat")
+        _init_git_repo(flat)
+        with open(os.path.join(flat, "tasks.md"), "w", encoding="utf-8") as fh:
+            fh.write("# Change: solo\n\n- [ ] T001 x\n")
+        self.assertEqual(ps.changes_for(flat), [""])
+
+    def test_state_all_folds_one_record_per_change(self):
+        recs = ps.state_all(self.repo)
+        self.assertEqual(sorted(r["change"] for r in recs), ["alpha", "beta", "gamma"])
+        for r in recs:
+            self.assertEqual(len(r["tasks"]), 1)
+
+    def test_the_cli_prints_every_change_not_just_one(self):
+        env = dict(os.environ)
+        env["HOME"] = self.tmp.name
+        out = subprocess.run([sys.executable, REIN_BIN, "state", self.repo],
+                             capture_output=True, text=True, env=env, timeout=60).stdout
+        for name in ("alpha", "beta", "gamma"):
+            self.assertIn(name, out)
+        self.assertNotIn("(no change)", out)
+
+
+if __name__ == "__main__":
+    unittest.main()
