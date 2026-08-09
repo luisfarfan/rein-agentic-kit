@@ -168,12 +168,22 @@ rein review      # record / check a verdict bound to a code state
 rein token-report# what a run really cost, per agent and per model, plus its wall clock,
                  # agent-minutes and their ratio (1.00x = nothing overlapped)
 rein event <name># record a skill invocation — an EVENT, never folded into a run total
+rein event task <id> <started|verified|blocked|merged>
+                 # record a task TRANSITION as it happens — rejects any other word
+                 # by name, without writing
+rein state       # per-task transitions folded from the event log + plan; given a
+                 # workspace, folds every member into one table
 rein ledger      # history across projects, with deltas vs a marked baseline
                  # --json: {"runs": [...], "events_by_project": {...}} -- runs are
                  # unchanged row objects; events (D3) are counted separately, never
                  # folded into a run total
 rein baseline    # mark the run everything is compared against
 rein dashboard   # 📊 serve it all as a local page
+rein workspace   # discover .rein/workspace.json and report each member repo's
+                 # branch and head; one explanatory line, exit 0, when none is found
+rein sync --plane# project local state onto Plane — repo → Project, change → Module,
+                 # task → Work Item. Exits 0 with one line when plane.json is absent:
+                 # state is derived locally, Plane is only a projection of it
 ```
 
 > **The rule that separates them:** if it's a *parse*, a script does it. If it's a *judgement*,

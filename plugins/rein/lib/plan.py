@@ -44,6 +44,14 @@ SECTION_RE = re.compile(r"^#{1,3}\s+(Why|Scope|Decisions)\s*$", re.I | re.M)
 DECISION_RE = re.compile(r"^\s*[-*]\s+(D\d+)\b[.:) ]*\s*(.*)$", re.I)
 SCOPE_RE = re.compile(r"^\s*[-*]\s+(in|out)\s*:\s*(.*)$", re.I)
 
+# `# Change: <name>` -- the convention every plan in this repo already
+# follows (tests/test_plan.py's FULL fixture, tests/test_plane_projection.py's
+# `_write_tasks_md`). Matched separately from `parse_header()`, whose exact
+# key set is pinned by `test_a_plan_with_no_header_still_parses_exactly_
+# as_before`; adding a key there would break that test for every plan that
+# names itself, which is nearly all of them.
+CHANGE_HEADER_RE = re.compile(r"^#\s+Change:\s*(.*)$", re.I)
+
 TASK_RE = re.compile(r"^(\s*)[-*]\s+\[([ xX])\]\s+(.*)$")
 FIELD_RE = re.compile(r"^(\s*)[-*]\s+([A-Za-z][A-Za-z ]*?)\s*:\s*(.*)$")
 BULLET_RE = re.compile(r"^(\s*)[-*]\s+(.*)$")
@@ -219,6 +227,24 @@ def parse_header(text: str) -> dict:
     return header
 
 
+def change_name_from_text(text: str) -> str:
+    """The name after a `# Change: <name>` line above the first task, or ""
+    when the plan carries no such line.
+
+    This is what a flat `tasks.md` plan (no `openspec/changes` directory)
+    names itself -- `read_plan()` falls back to it when no `change` argument
+    was given, so a flat repo's Module in Plane gets a real name instead of
+    the blank string Plane's API 400s on (round-2 review finding 1).
+    """
+    for raw in text.splitlines():
+        if TASK_RE.match(raw):
+            break
+        m = CHANGE_HEADER_RE.match(raw.strip())
+        if m:
+            return _clean(m.group(1))
+    return ""
+
+
 def _openspec_changes(root: str) -> list[str]:
     """Names of the change directories under `openspec/changes`, sorted.
 
@@ -326,6 +352,13 @@ def read_plan(root: str = ".", source: str = "", change: str = "", configured: s
     tasks = parse_tasks_md(raw)
     header = parse_header(raw)
 
+    # `change` arrives "" for a flat tasks-md plan (there is no directory to
+    # name it from, unlike openspec's `<change>/tasks.md`). Fall back to the
+    # plan's own `# Change: <name>` header, then to the repo directory name,
+    # so `product_state.state()["change"]` -- and everything keyed on it,
+    # including the Plane Module's `name` -- is never silently blank.
+    resolved_change = change or change_name_from_text(raw) or (os.path.basename(root) or "")
+
     artifacts = []
     if source == "openspec":
         base = os.path.dirname(path)
@@ -337,7 +370,7 @@ def read_plan(root: str = ".", source: str = "", change: str = "", configured: s
 
     return {
         "source": source,
-        "change": change,
+        "change": resolved_change,
         "path": path,
         "exists": True,
         "availableChanges": [],

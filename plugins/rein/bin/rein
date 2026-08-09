@@ -18,6 +18,11 @@ Subcommands:
   rein review         record / check a review episode (approval is state-bound)
   rein token-report   real per-model token accounting for the last agent run
   rein event <name>   record a skill invocation as an event (D3, never a run)
+  rein event task <task-id> <started|verified|blocked|merged>
+                      record a task TRANSITION as it happens (T002) -- rejects any
+                      other word by name, without writing
+  rein state          per-task transitions folded from the event log + plan (T002);
+                      given a workspace, folds every member into one table
   rein ledger         summary of recorded runs (per project / per session);
                       --json returns {"runs": [...], "events_by_project": {...}} --
                       runs is the unchanged array of run rows, events_by_project is
@@ -25,6 +30,13 @@ Subcommands:
                       folded into a run
   rein baseline       mark/show/clear the reference run compared against
   rein dashboard      serve (or --json print) the ledger as a view model
+  rein workspace      discover `.rein/workspace.json` and report every member
+                      repo's branch and head; exits 0 with one line when none
+                      is found
+  rein sync --plane   project local state onto Plane (T006); exits 0 with one
+                      line when `plane.json` is absent -- state is derived
+                      locally, Plane is a projection, and this is fully
+                      additive: no other subcommand reads `plane.json` (D1)
 
 Kept dependency-free on purpose: a plugin that drags a toolchain along at install
 time is a plugin nobody installs. Python 3 stdlib only.
@@ -50,11 +62,15 @@ import events as _events  # noqa: E402
 import gate as _gate  # noqa: E402
 import plan as _plan  # noqa: E402
 import plan_check as _plan_check  # noqa: E402
+import plane_client as _pclient  # noqa: E402
+import plane_sync as _psync  # noqa: E402
+import product_state as _pstate  # noqa: E402
 import setup as _setup  # noqa: E402
 import serve as _serve  # noqa: E402
 import token_report as _tr  # noqa: E402
 import verify as _verify  # noqa: E402
 import version_staleness as _staleness  # noqa: E402
+import workspace as _workspace  # noqa: E402
 
 USAGE = __doc__
 
@@ -77,6 +93,22 @@ def _positional(argv: list[str]) -> str:
             continue  # value of a preceding flag
         return a
     return ""
+
+
+def _positionals(argv: list[str]) -> list[str]:
+    """Every non-flag token, in order -- `_positional` only ever returns the
+    first one, and `rein event task <id> <transition>` needs both.
+    """
+    out: list[str] = []
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a.startswith("--"):
+            i += 1 if "=" in a else 2  # `--flag=value` is one token, `--flag value` is two
+            continue
+        out.append(a)
+        i += 1
+    return out
 
 
 def cmd_detect(argv: list[str]) -> int:
@@ -278,6 +310,81 @@ def cmd_close(argv: list[str]) -> int:
     return 1
 
 
+def cmd_workspace(argv: list[str]) -> int:
+    """Discover `.rein/workspace.json` above `start` and report each member.
+
+    Never fails the caller (D4-style): no descriptor is not an error, it is
+    the common case for a single-repo project -- one explanatory line, exit
+    0. A member that could not be resolved is reported on stderr and simply
+    does not get a line; the survivors still print.
+    """
+    start = _positional(argv) or "."
+    found = _workspace.discover(start)
+    if not found["found"]:
+        print(f"no workspace descriptor found (.rein/workspace.json) above {os.path.abspath(start)}")
+        return 0
+    if found["doc"] is None:
+        print(f"rein workspace: could not read {found['path']}: {found['error']}", file=sys.stderr)
+        return 0
+
+    ok, problems = _workspace.members(found["doc"], found["root"])
+    for name, reason in problems:
+        print(f"rein workspace: skipping {name}: {reason}", file=sys.stderr)
+    for name, path, branch, head in ok:
+        print(f"{name}\t{branch}\t{head}\t{path}")
+    return 0
+
+
+def cmd_sync(argv: list[str]) -> int:
+    """T006: project local state onto Plane. Fully additive -- this is the
+    only subcommand that imports `plane_sync`/`plane_client`, so deleting
+    `plane.json` cannot change what any other subcommand prints (D1).
+
+    Three config problems exit differently on purpose (AC3), because they
+    mean different things: not configured is not an error (exit 0); a
+    missing API key or a missing workspace both need a human to act, so
+    they exit non-zero naming what to do.
+    """
+    if not argv or argv[0] != "--plane":
+        print("usage: rein sync --plane [root]")
+        return 2
+    root = _positional(argv[1:]) or "."
+
+    try:
+        report = _psync.run_sync(root)
+    except _psync.NotConfigured:
+        print("rein sync --plane: not configured (no plane.json in this repo) -- nothing to do")
+        return 0
+    except _pclient.PlaneAuthError as exc:
+        print(f"rein sync --plane: {exc}", file=sys.stderr)
+        return 1
+    except _psync.WorkspaceMissing as exc:
+        print(f"rein sync --plane: {exc}", file=sys.stderr)
+        return 1
+    except _pclient.PlaneConfigError as exc:
+        # `plane.json` names where the API key gets sent. A bad value there is
+        # a config problem like the three above, not a crash.
+        print(f"rein sync --plane: {exc}", file=sys.stderr)
+        return 1
+    except _pclient.PlaneUnreachable as exc:
+        # The fourth and commonest failure: Plane down, wrong host, TLS. AC3
+        # distinguished three CONFIG problems and let this one out as a raw
+        # urllib traceback.
+        print(f"rein sync --plane: {exc}", file=sys.stderr)
+        print("  Plane is optional -- delete plane.json and nothing else changes (D1).",
+              file=sys.stderr)
+        return 1
+
+    for key in report["applied"]:
+        print(f"  ok    {key}")
+    for item in report["failed"]:
+        print(f"  FAIL  {item['key']}: {item['error']}", file=sys.stderr)
+    total = len(report["applied"]) + len(report["failed"])
+    if total == 0:
+        print("rein sync --plane: nothing changed since the last sync")
+    return 1 if report["failed"] else 0
+
+
 def cmd_next(argv: list[str]) -> int:
     """The signal a bounded loop stops on. JSON by default: it is read by scripts."""
     root = _positional(argv) or "."
@@ -421,11 +528,43 @@ def cmd_token_report(argv: list[str]) -> int:
 
 
 def cmd_event(argv: list[str]) -> int:
-    """Record a skill invocation as an EVENT (D3) -- never a run, never a
-    failure for the caller (D4): always exits 0, even when the events file
-    or its directory does not exist yet, or the directory is unwritable (the
+    """`rein event <name>` records a skill invocation (D3) -- never a run,
+    never a failure for the caller (D4): always exits 0, even when the
+    events file or its directory does not exist yet, or is unwritable (the
     latter is reported on stderr so it is still visible, just never fatal).
+
+    `rein event task <task-id> <transition>` (T002/AC1) records a task
+    TRANSITION instead -- emitted while it happens, not reconstructed later
+    from a checkbox. Unlike the skill-invocation form, an unknown transition
+    is a caller bug, not a transient environment problem: it is rejected BY
+    NAME, nothing is written, and this exits non-zero.
     """
+    if argv and argv[0] == "task":
+        positionals = _positionals(argv)
+        task_id = positionals[1] if len(positionals) > 1 else ""
+        transition = positionals[2] if len(positionals) > 2 else ""
+        if not task_id or not transition:
+            print(
+                "usage: rein event task <task-id> <started|verified|blocked|merged> "
+                "[--change <name>] [--root <path>]",
+                file=sys.stderr,
+            )
+            return 2
+        if transition not in _events.TASK_TRANSITIONS:
+            print(
+                f"rein event: unknown transition {transition!r} -- must be one of "
+                f"{', '.join(_events.TASK_TRANSITIONS)}",
+                file=sys.stderr,
+            )
+            return 1
+        change = _opt(argv, "change", "")
+        root = _opt(argv, "root", ".")
+        ok, error = _events.record_task_event(task_id, transition, change=change, root=root)
+        if not ok:
+            print(f"rein event: could not record {task_id} {transition!r}: {error}", file=sys.stderr)
+            return 0  # a write failure is an environment problem, not a caller bug (D4)
+        return 0
+
     name = _positional(argv)
     if not name:
         print("usage: rein event <name> [--root <path>]", file=sys.stderr)
@@ -434,6 +573,63 @@ def cmd_event(argv: list[str]) -> int:
     ok, error = _events.record_event(name, root)
     if not ok:
         print(f"rein event: could not record {name!r}: {error}", file=sys.stderr)
+    return 0
+
+
+def _print_task_state(rec: dict) -> None:
+    label = rec["change"] or "(no change)"
+    touched = rec["lastTouchedDays"]
+    touched_str = f"{touched:.1f}d ago" if touched is not None else "unknown"
+    print(f"  change: {label}   last-touched: {touched_str}   plan: {rec['planPath'] or '(none)'}")
+    if not rec["tasks"]:
+        print("    (no tasks in the plan)")
+        return
+    for t in rec["tasks"]:
+        when = t["when"] or "-"
+        commit = (t["commit"] or "-")[:12]
+        print(f"    {t['taskId']:<6} {t['transition']:<10} {when:<22} {commit:<12} {t['title']}")
+
+
+def cmd_state(argv: list[str]) -> int:
+    """AC6: the per-task record `product_state.state()` folds, printed --
+    and, when `root` sits inside a `.rein/workspace.json` workspace, folded
+    per member so ONE call reports the whole product, not one repo at a time.
+    """
+    root = _positional(argv) or "."
+    as_json = "--json" in argv
+    change = _opt(argv, "change", "")
+
+    found = _workspace.discover(root)
+    if found["found"] and found.get("doc") is not None:
+        ok, problems = _workspace.members(found["doc"], found["root"])
+        for name, reason in problems:
+            print(f"rein state: skipping {name}: {reason}", file=sys.stderr)
+        # Every change per member, not one. An explicit --change still
+        # narrows; without it a member with 29 openspec changes used to
+        # report `(no change)`.
+        by_member = {
+            name: ([_pstate.state(path, change=change)] if change
+                   else _pstate.state_all(path))
+            for name, path, _branch, _head in ok
+        }
+        if as_json:
+            print(json.dumps(by_member, indent=2))
+            return 0
+        total = sum(len(v) for v in by_member.values())
+        print(f"workspace: {found['root']} ({len(by_member)} member(s), {total} change(s))")
+        for name, recs in by_member.items():
+            print(f"\n== {name} — {recs[0]['root'] if recs else path} ==")
+            for rec in recs:
+                _print_task_state(rec)
+        return 0
+
+    recs = [_pstate.state(root, change=change)] if change else _pstate.state_all(root)
+    if as_json:
+        print(json.dumps(recs if len(recs) != 1 else recs[0], indent=2))
+        return 0
+    print(f"state: {recs[0]['root']}")
+    for rec in recs:
+        _print_task_state(rec)
     return 0
 
 
@@ -783,10 +979,13 @@ COMMANDS = {
     "review": cmd_review,
     "token-report": cmd_token_report,
     "event": cmd_event,
+    "state": cmd_state,
     "ledger": cmd_ledger,
     "baseline": cmd_baseline,
     "dashboard": cmd_dashboard,
     "serve-probe": cmd_serve_probe,
+    "workspace": cmd_workspace,
+    "sync": cmd_sync,
 }
 
 

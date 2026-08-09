@@ -50,6 +50,8 @@ projection of two real repos. Everything below is measured, not documented.
 | `GET ?external_id=X&external_source=Y` on issues | returns **the object**, 404 when absent |
 | states of an API-created project | 5, one per group: `backlog` (default), `unstarted`, `started`, `completed`, `cancelled` |
 | `POST /modules/` on an API-created project | **400 `"Modules are not enabled"`** until `PATCH {"module_view": true}` |
+| list pagination (`?per_page=1` over 3 projects) | envelope carries `results`, `next_cursor` (`1:1:0`), `next_page_results`; following the cursor walked all 3 pages and the last reported `False`. `?cursor=1:1:0` — colons unescaped — answers 200 |
+| module `PATCH` response | **omits `id` entirely** (opens with `name`, `description`, `start_date`), unlike the `POST`. The 409 is the only place the id appears, so it has to be carried over |
 
 **Projects do not behave that way, and this is the finding that reshaped the
 plan.** Three separate measurements:
@@ -116,7 +118,10 @@ hierarchy and these tasks are siblings.
   1/22nd of the cost
 - In: incremental sync — only what changed since the last projection
 - In: humanized Plane text from a small agent, language configurable, Spanish
-  by default
+  by default when it is on. **It is off unless `plane.json` asks for it** —
+  a first review found every title spawning an agent subprocess, which makes
+  a board expensive to keep current for a cosmetic gain. D7 already says
+  humanization must never block; defaulting it off is the same judgement
 - In: a test proving that removing the Plane config changes nothing
 - Out: reading Plane **as a source of state**. No import, no webhook, no
   reconciliation, and nothing Plane returns may change a local file. Reads that
@@ -164,7 +169,7 @@ hierarchy and these tasks are siblings.
      that is the seam — and T005's removability proof is only meaningful once
      T002 has been in use. -->
 
-- [ ] T001 A workspace is N repos, and a monorepo is not one
+- [x] T001 A workspace is N repos, and a monorepo is not one
   - Type: implementation
   - Depends on: none
   - Human review: false
@@ -191,7 +196,7 @@ hierarchy and these tasks are siblings.
       than `git`; `tests/test_workspace.py` pins the resolved git invocations so
       a later refactor cannot widen what this module executes
 
-- [ ] T002 Transitions are emitted while they happen, not guessed afterwards
+- [x] T002 Transitions are emitted while they happen, not guessed afterwards
   - Type: implementation
   - Depends on: T001
   - Human review: false
@@ -229,7 +234,7 @@ hierarchy and these tasks are siblings.
       member into one table — `tests/test_product_state.py` asserts the
       workspace-wide output names each member repo
 
-- [ ] T003 One write strategy per entity, because they were measured different
+- [x] T003 One write strategy per entity, because they were measured different
   - Type: implementation
   - Depends on: none
   - Human review: false
@@ -283,7 +288,7 @@ hierarchy and these tasks are siblings.
     - `tests/test_plane_client.py` opens no socket: the transport is injected and
       a test asserts the default one is never constructed during the suite
 
-- [ ] T004 The board reads like a person wrote it, or it reads like the plan
+- [x] T004 The board reads like a person wrote it, or it reads like the plan
   - Type: implementation
   - Depends on: T003
   - Human review: false
@@ -308,7 +313,7 @@ hierarchy and these tasks are siblings.
       `tests/test_humanize.py` asserts the projection computes its full upsert
       set with the humanizer raising, identical to the humanized run
 
-- [ ] T005 Only what is live, and only what changed
+- [x] T005 Only what is live, and only what changed
   - Type: implementation
   - Depends on: T002, T003
   - Human review: false
@@ -328,19 +333,28 @@ hierarchy and these tasks are siblings.
       reachable from a worktree, so pinning its counts would be unfalsifiable
       here and would drift on the next commit to that repo (D10)
     - a history Module carries its task counts in its description and is created
-      in a completed state — `tests/test_plane_window.py` asserts no work item
-      is emitted for a history change, since that is the entire saving
+      in a completed state, and a change that was **never synced** emits no work
+      item at all — that omission is the saving. A change that WAS synced and
+      then aged out is the other case and must not be confused with it: its
+      cards already exist, D6 forbids deleting them, and suppressing them left a
+      completed Module holding open backlog cards forever. Its still-open tasks
+      are emitted once, as `cancelled`; `record` is what tells the two apart, a
+      key in it being proof the card exists — `tests/test_plane_window.py`
+      asserts both halves and that the closing happens once, not every run
     - `select()` emits only entities whose content hash differs from the last
-      recorded projection, and the record is written **after** a successful
-      sync — `tests/test_plane_window.py` runs twice over an unchanged state and
-      asserts the second emits nothing, then mutates one task and asserts
-      exactly one entity is emitted
-    - a sync that fails partway leaves the previous projection record intact, so
-      the next run retries the unsent remainder — `tests/test_plane_window.py`
-      injects a failure and asserts the record is unchanged and the retry set
-      contains the entity that failed
+      recorded projection — `tests/test_plane_window.py` runs twice over an
+      unchanged state and asserts the second emits nothing, then mutates one
+      task and asserts exactly one entity is emitted. Applying the selected
+      entities and deciding when to write the record back is T006's
+      `plane_sync.run_sync()`, not this module's job — see T006 acceptance 5
+      for that half
+    - (moved to T006 acceptance 5 — round-2 review finding 2: an earlier
+      `sync()` here stopped at the first failure and wrote nothing at all,
+      the OPPOSITE of what `run_sync()` actually does; it was dead code,
+      never called outside its own now-removed tests, and duplicating the
+      guarantee here would just contradict production again)
 
-- [ ] T006 Deleting the Plane config changes nothing
+- [x] T006 Deleting the Plane config changes nothing
   - Type: implementation
   - Depends on: T004, T005
   - Human review: false
@@ -355,8 +369,17 @@ hierarchy and these tasks are siblings.
       project
     - **with `plane.json` absent, `rein state`, `rein-apply` and `rein-step`
       produce byte-identical output to a run where it is present** —
-      `tests/test_plane_projection.py` runs each of the three both ways over one
-      fixture and compares captured output exactly (D1)
+      `tests/test_plane_projection.py`'s `ByteIdenticalWithoutPlaneJsonTests`
+      compares the deterministic CLI commands `rein-apply`/`rein-step` actually
+      shell out to (`state`, `next`, `tasks`, `context`; see SKILL.md) both ways
+      over one fixture, since the two skills themselves are agent-driven and
+      have no deterministic output to diff (D1).
+      `NoPlaneReachableFromReinApplyOrReinStepTests` backs this mechanically
+      for the two named commands themselves: `loop.js` (what both drive),
+      `plan.py`, `verify.py`, `gate.py` and `plan_check.py` are asserted to
+      contain no `plane.json` literal and no
+      `plane_client`/`plane_sync`/`plane_projection`/`humanize` import
+      (round-2 review finding 3)
     - `rein sync --plane` with no `plane.json` exits 0 with one line saying the
       projection is not configured; with `plane.json` present but
       `REIN_PLANE_API_KEY` unset it exits non-zero naming the variable; with
@@ -373,4 +396,10 @@ hierarchy and these tasks are siblings.
       error — leaves the local state untouched and is reported per entity rather
       than aborting the sync; `tests/test_plane_projection.py` injects a failure
       on the third of five upserts and asserts the other four were attempted and
-      the local event log is unchanged (D1)
+      the local event log is unchanged (D1). The projection record
+      (`plane_projection.save_record`) is written once, at the end of the whole
+      sync, carrying only the entities that actually applied — a failed
+      entity's key is simply absent, so `select()` re-emits it (and it alone)
+      on the next run, with no separate "retry set" needed; the same test
+      asserts the record holds exactly the four that applied and none of the
+      failed one's key

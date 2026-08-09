@@ -17,9 +17,16 @@ from __future__ import annotations
 import datetime
 import json
 import os
+import subprocess
 
 EVENTS_DIR = os.path.expanduser("~/.claude/rein")
 EVENTS_PATH = os.path.join(EVENTS_DIR, "events.jsonl")
+
+# T002/AC1: the ONLY transitions a task may emit. Anything else is a caller
+# bug (a typo, a made-up state) and is rejected BY NAME, before anything is
+# written -- accepting an unknown word here would let a state.py fold over
+# it silently and report a task "at" a stage that was never real.
+TASK_TRANSITIONS = ("started", "verified", "blocked", "merged")
 
 
 def record_event(name: str, root: str = ".", events_path: str = EVENTS_PATH) -> tuple[bool, str]:
@@ -34,6 +41,168 @@ def record_event(name: str, root: str = ".", events_path: str = EVENTS_PATH) -> 
         "name": name,
         "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
         "project": os.path.realpath(root),
+    }
+    try:
+        os.makedirs(os.path.dirname(events_path), exist_ok=True)
+        with open(events_path, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except OSError as exc:
+        return False, str(exc)
+    return True, ""
+
+
+def _git_head(repo: str) -> str:
+    """The repo's current commit, or "" if it cannot be determined.
+
+    Never raises (same convention as `workspace._git`): a missing `git`
+    binary, a repo with no commits yet, or any other failure degrades to an
+    empty commit rather than blocking the event it is attached to.
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "-C", repo, "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    if proc.returncode != 0:
+        return ""
+    return proc.stdout.strip()
+
+
+def canonical_repo(root: str) -> str:
+    """The MAIN repo for `root`, so a worktree and its parent agree on identity.
+
+    This is the whole reason transitions survive a run. The loop executes each
+    task inside a worktree and emits with `--root <worktree>`; the fold in
+    `product_state.state()` runs against the main repo. Keying events on the
+    literal path made those two never match, and the worktree is deleted when
+    the run ends -- so every transition was written to a name nobody would ever
+    look up again, and `rein state` reported `planned` forever. Measured: emit
+    `verified` from a real `git worktree add` directory, then fold; the main
+    repo saw `planned` and only the worktree saw `verified`.
+
+    `--git-common-dir` is the shared `.git` for every worktree of a repo, so
+    its parent is the one path both sides can compute. Anything that is not a
+    git repo -- or a bare one, whose common dir has no working tree -- falls
+    back to the literal path, which is exactly right for a non-worktree root.
+    """
+    real = os.path.realpath(root)
+
+    def git(*args):
+        try:
+            proc = subprocess.run(
+                ["git", "-C", real, *args],
+                capture_output=True, text=True, timeout=15,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        return proc.stdout.strip() if proc.returncode == 0 else None
+
+    # A bare repo has no working tree, and `--git-common-dir` answers "." for
+    # it -- whose parent is the CONTAINING directory, so two sibling bare
+    # repos collapsed onto one key. Measured: bare/a.git and bare/b.git both
+    # resolved to `bare`.
+    if (git("rev-parse", "--is-bare-repository") or "").lower() == "true":
+        return real
+
+    common = git("rev-parse", "--git-common-dir")
+    if not common:
+        return real
+    if not os.path.isabs(common):
+        common = os.path.join(real, common)
+    common = os.path.realpath(common)
+
+    # Only a common dir literally named `.git` sits directly above a working
+    # tree. A submodule's is `<parent>/.git/modules/<name>`, and taking its
+    # parent mapped every submodule of one repo to `<parent>/.git/modules` --
+    # so a workspace of submodules folded all of its members together.
+    if os.path.basename(common) == ".git":
+        parent = os.path.dirname(common)
+        if os.path.isdir(parent):
+            return parent
+
+    toplevel = git("rev-parse", "--show-toplevel")
+    return os.path.realpath(toplevel) if toplevel else real
+
+
+def resolve_change(root: str, change: str = "") -> str:
+    """The change an event belongs to, resolved the SAME way the reader
+    resolves it.
+
+    Symmetry is the whole point, exactly as with `canonical_repo`. A flat
+    `tasks.md` takes its change name from the `# Change:` heading, so a
+    plan reads as `product-observability` while an event emitted without
+    `--change` recorded `""` -- and a fold that compares the two found
+    nothing. Deriving it here instead of trusting the caller keeps both
+    halves in agreement whether or not the loop passed the flag.
+
+    An explicit `change` always wins; anything unresolvable degrades to
+    `""`, never raises.
+    """
+    if change:
+        return change
+    try:
+        import plan as _plan  # local: plan.py must not import this module
+        # Resolved against the CANONICAL repo, not the literal root. This is
+        # the same normalisation `canonical_repo` performs, and for the same
+        # reason -- but it took a second review to notice the change axis
+        # needed it too.
+        #
+        # `read_plan` falls back to `basename(root)` when a flat `tasks.md`
+        # carries no `# Change:` heading (plan.py documents such a plan as
+        # valid). In a worktree that basename is `rein-wt-<label>`, a sibling
+        # directory, while the reader in the main repo computes the repo's own
+        # name. So a header-less plan emitted `change="wt-feature"` and folded
+        # against `change="mainrepo"`, and every task read `planned` forever --
+        # byte for byte the failure canonical_repo was written to remove, moved
+        # one column over, and strictly worse than not filtering on change at
+        # all. Measured on a real `git worktree add`.
+        return _plan.read_plan(canonical_repo(root)).get("change") or ""
+    except Exception:  # noqa: BLE001 -- identity is best-effort, never fatal
+        return ""
+
+
+def record_task_event(
+    task_id: str,
+    transition: str,
+    change: str = "",
+    root: str = ".",
+    events_path: str = EVENTS_PATH,
+) -> tuple[bool, str]:
+    """Append one TASK-TRANSITION event -- emitted while it happens (T002),
+    not reconstructed afterwards from a checkbox.
+
+    Rejects any `transition` not in `TASK_TRANSITIONS` BY NAME, before doing
+    anything else -- nothing is written for an unknown transition (AC1).
+    On a valid transition, appends one line to the SAME `events.jsonl` this
+    module already writes skill-invocation events to, carrying `task_id`,
+    `transition`, `change`, the resolved `repo`, and the repo's current git
+    commit (best-effort -- "" when it cannot be read, never fatal).
+
+    Returns `(ok, error)`, same never-raise convention as `record_event`:
+    an unknown transition and an `OSError` while writing both come back as
+    `ok=False` with `error` explaining why, never a raised exception.
+    """
+    if transition not in TASK_TRANSITIONS:
+        return False, (
+            f"unknown transition {transition!r} -- must be one of "
+            f"{', '.join(TASK_TRANSITIONS)}"
+        )
+    # `repo` is the MAIN repo so the fold can find this again after the
+    # worktree is removed; `commit` still reads the worktree, because the
+    # commit the work was actually on is the useful one.
+    worktree = os.path.realpath(root)
+    repo = canonical_repo(worktree)
+    record = {
+        "kind": "task",
+        "task_id": task_id,
+        "transition": transition,
+        "change": resolve_change(worktree, change),
+        "repo": repo,
+        "worktree": worktree if worktree != repo else "",
+        "commit": _git_head(worktree),
+        "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
     }
     try:
         os.makedirs(os.path.dirname(events_path), exist_ok=True)
