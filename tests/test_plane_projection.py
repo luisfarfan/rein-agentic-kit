@@ -766,9 +766,6 @@ class NoPlaneReachableFromReinApplyOrReinStepTests(unittest.TestCase):
             )
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class RemovingADependencyClearsItOnTheBoardTests(unittest.TestCase):
     """Re-emitting is only half of it -- the PATCH has to carry the field.
@@ -859,3 +856,6 @@ class RemovingADependencyClearsItOnTheBoardTests(unittest.TestCase):
             "omitting the key makes the PATCH partial -- Plane keeps the stale line",
         )
         self.assertEqual(bodies[0]["description"], "")
+
+if __name__ == "__main__":
+    unittest.main()

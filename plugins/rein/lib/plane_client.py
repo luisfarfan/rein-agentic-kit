@@ -47,9 +47,13 @@ FORBIDDEN_NAME_CHARS = "&+,:;$^}{*=?@#|'<>.()%!-"
 RATE_WINDOW_SECONDS = 60.0
 DEFAULT_RATE_LIMIT = 60
 MAX_BACKOFF_SECONDS = 30.0
-# 1+2+4+8+16+30+30 = 91s > the 60s window, so a throttled call can still
-# recover. At 5 attempts the budget was 15s and recovery was impossible.
-DEFAULT_MAX_ATTEMPTS = 7
+# N attempts yield N-1 sleeps, so 8 attempts are 1+2+4+8+16+30+30 = 91s of
+# cumulative backoff against a 60s window -- enough margin that a throttled
+# call actually recovers. (7 attempts gave 61s: past the window by one
+# second, which is a coincidence, not a margin. At 5 it was 15s and
+# recovery was arithmetically impossible.) The test drives _request and
+# asserts the OBSERVED sleeps rather than recomputing this formula.
+DEFAULT_MAX_ATTEMPTS = 8
 DEFAULT_BASE_DELAY = 1.0
 RATE_LIMIT_ERROR_CODE = 5900
 
@@ -334,9 +338,13 @@ class PlaneClient:
                 # the server's window or the retries are theatre.
                 delay = self._retry_after(resp_headers)
                 if delay is None:
-                    delay = min(
-                        self._base_delay * (2 ** (attempt - 1)), MAX_BACKOFF_SECONDS
-                    )
+                    delay = self._base_delay * (2 ** (attempt - 1))
+                # Capped whether the number is ours or the server's. A
+                # `Retry-After: 86400` -- from a proxy, a misconfigured hop,
+                # or the low-trust host `plane.json` names -- would
+                # otherwise park `rein sync --plane` for 24 hours inside a
+                # single sleep, with no deadline anywhere above it.
+                delay = min(delay, MAX_BACKOFF_SECONDS)
                 self._sleep(delay)
                 continue
             return status, parsed
@@ -537,7 +545,16 @@ class PlaneClient:
         # Measured: `409 {"name": "The project name is already taken"}` --
         # no `id` in the body, ever, for a project. Do not attempt to read
         # one; surface a named conflict instead (D3).
-        raise PlaneConflictError("project", clean_name, parsed)
+        #
+        # ONLY 409/400 though. Falling through to a conflict for every other
+        # status made a 502 from a proxy, a 401 from a rotated key and a 500
+        # all print "conflict creating project 'x'", sending the reader to
+        # hunt a duplicate that does not exist -- the exact misdirection
+        # PlaneConflictError's own docstring says it exists to avoid. The
+        # work-item path already split these; this one did not.
+        if status in (409, 400):
+            raise PlaneConflictError("project", clean_name, parsed, status=status)
+        raise PlaneRequestError("POST", collection_path, status, parsed)
 
     def ensure_project(self, name: str, external_id: str, **fields) -> dict:
         """`upsert_project()` then `PATCH {"module_view": true}`.

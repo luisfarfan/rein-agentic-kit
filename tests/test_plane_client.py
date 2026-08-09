@@ -413,9 +413,6 @@ class WorkspaceExistenceUsesAReachableEndpointTests(unittest.TestCase):
             client.get_workspace()
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class PacingStaysUnderTheServerWindowTests(unittest.TestCase):
     """Backoff alone cannot recover from a window you have already saturated.
@@ -460,12 +457,46 @@ class PacingStaysUnderTheServerWindowTests(unittest.TestCase):
         self.assertEqual(self.slept, [])
 
     def test_cumulative_backoff_budget_exceeds_the_server_window(self):
-        """The arithmetic the old defaults failed: retries must outlast 60s."""
-        budget = sum(
-            min(pc.DEFAULT_BASE_DELAY * (2 ** i), pc.MAX_BACKOFF_SECONDS)
-            for i in range(pc.DEFAULT_MAX_ATTEMPTS - 1)
+        """Driven, not re-derived.
+
+        The previous version recomputed `min(BASE * 2**i, MAX)` from the
+        constants and asserted the sum -- so it would have stayed green if
+        the retry loop stopped sleeping altogether, and it hid that N
+        attempts yield N-1 sleeps (the comment claimed 91s while 7 attempts
+        actually gave 61s: past the 60s window by one second, a coincidence
+        rather than a margin). This drives `_request` and measures what it
+        really sleeps.
+        """
+        slept = []
+        transport = FakeTransport([(429, {"detail": "slow down"})] * pc.DEFAULT_MAX_ATTEMPTS)
+        client = pc.PlaneClient(
+            "https://plane.example.com", "acme", transport=transport,
+            sleep=slept.append, rate_limit=None, env={"REIN_PLANE_API_KEY": "k"},
         )
-        self.assertGreater(budget, pc.RATE_WINDOW_SECONDS)
+        with self.assertRaises(pc.PlaneRetryExhausted):
+            client._request("GET", "/x")
+        self.assertEqual(len(slept), pc.DEFAULT_MAX_ATTEMPTS - 1)
+        self.assertGreater(sum(slept), pc.RATE_WINDOW_SECONDS)
+        self.assertTrue(all(s <= pc.MAX_BACKOFF_SECONDS for s in slept))
+
+    def test_a_hostile_retry_after_cannot_park_the_sync_for_hours(self):
+        """`Retry-After: 86400` from a proxy or a misconfigured hop would
+        otherwise sleep 24 hours inside one call, with no deadline above it."""
+        slept = []
+        transport = FakeTransport([(429, {}), (200, {"ok": True})])
+        original = transport.request
+
+        def with_header(method, url, headers, body):
+            status, _h, raw = original(method, url, headers, body)
+            return status, ({"Retry-After": "86400"} if status == 429 else {}), raw
+
+        transport.request = with_header
+        client = pc.PlaneClient(
+            "https://plane.example.com", "acme", transport=transport,
+            sleep=slept.append, rate_limit=None, env={"REIN_PLANE_API_KEY": "k"},
+        )
+        client._request("GET", "/x")
+        self.assertEqual(slept, [pc.MAX_BACKOFF_SECONDS])
 
     def test_retry_after_header_is_obeyed_over_the_guess(self):
         """The server knows when the window frees; we do not."""
@@ -540,8 +571,31 @@ class ListProjectsReadsEveryPageTests(unittest.TestCase):
     DUPLICATE project.
     """
 
+    # MEASURED against Plane 1.4.1 with `?per_page=1` over a 3-project
+    # workspace, not assumed. The full envelope, verbatim:
+    #
+    #   grouped_by/sub_grouped_by/extra_stats: None
+    #   total_count 3 · count 1 · total_pages 3 · total_results 3
+    #   next_cursor '1:1:0' · prev_cursor '1:-1:1'
+    #   next_page_results True · prev_page_results False
+    #   results [...]
+    #
+    # Following `next_cursor` returned page 2 ('1:2:0') then page 3, whose
+    # `next_page_results` was False. The cursor's unescaped colons are fine
+    # in the query string: `?cursor=1:1:0` answered 200. This was the last
+    # Plane behaviour in the module resting on a fixture that manufactured
+    # the shape it then asserted.
     def _page(self, ids, more, cursor=None):
         body = {
+            "grouped_by": None,
+            "sub_grouped_by": None,
+            "total_count": 3,
+            "prev_cursor": "1:-1:1",
+            "prev_page_results": False,
+            "count": len(ids),
+            "total_pages": 3,
+            "total_results": 3,
+            "extra_stats": None,
             "results": [
                 {"id": i, "external_id": f"rein:ws:{i}:c:_", "external_source": "rein"} for i in ids
             ],
@@ -550,6 +604,15 @@ class ListProjectsReadsEveryPageTests(unittest.TestCase):
         if cursor:
             body["next_cursor"] = cursor
         return (200, body)
+
+    def test_the_cursor_reaches_the_query_string_as_measured(self):
+        """`?cursor=1:1:0` -- colons unescaped -- answered 200 live."""
+        transport = FakeTransport([
+            self._page(["p1"], True, "1:1:0"),
+            self._page(["p2"], False),
+        ])
+        _client(transport).list_projects()
+        self.assertIn("?cursor=1:1:0", transport.calls[1][1])
 
     def test_it_follows_the_cursor_to_the_last_page(self):
         transport = FakeTransport([
@@ -612,3 +675,6 @@ class ReSyncOfAnExistingEntityKeepsTheIdTests(unittest.TestCase):
         client = _client(transport)
         result = client.upsert_work_item("proj-1", "renamed", "rein:ws:r:c:T001")
         self.assertEqual(result["id"], "wi-3")
+
+if __name__ == "__main__":
+    unittest.main()

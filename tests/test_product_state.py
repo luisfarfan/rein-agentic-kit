@@ -620,3 +620,55 @@ class TestMergedIsActuallyEmitted(unittest.TestCase):
         # And it is wired into the Integrate agent, not some other prompt.
         integrate = src[src.index("Integrate the APPROVED change into"):]
         self.assertIn("mergedEventsBlock(", integrate[:1200])
+
+
+class TestAHeaderlessPlanAgreesAcrossAWorktree(unittest.TestCase):
+    """The change axis needs the same normalisation the repo axis got.
+
+    `read_plan` falls back to `basename(root)` when a flat `tasks.md` has no
+    `# Change:` heading — and plan.py documents such a plan as valid. In a
+    worktree that basename is `rein-wt-<label>`, a sibling directory, while
+    the reader in the main repo computes the repo's own name. So the emitter
+    wrote `change="wt-feature"`, the fold looked for `change="mainrepo"`, and
+    every task read `planned` forever: the exact failure `canonical_repo`
+    removed, moved one column over by the fix that added change filtering.
+
+    Every other worktree fixture in this file writes `# Change: c`, which
+    takes the header branch and never crosses this one — the fake avoiding
+    the case it claims to cover.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.repo = os.path.join(self.tmp.name, "mainrepo")
+        _init_git_repo(self.repo)
+        # No `# Change:` line, on purpose.
+        with open(os.path.join(self.repo, "tasks.md"), "w", encoding="utf-8") as fh:
+            fh.write("- [ ] T001 do the thing\n  - Depends on: none\n")
+        _git(self.repo, "add", "-A")
+        _git(self.repo, "commit", "-qm", "plan")
+        self.events_path = os.path.join(self.tmp.name, "events.jsonl")
+        self.wt = os.path.join(self.tmp.name, "wt-feature")
+        _git(self.repo, "worktree", "add", "-q", "-b", "feature", self.wt)
+
+    def test_emitter_and_reader_resolve_the_same_change(self):
+        self.assertEqual(
+            ev.resolve_change(self.wt), ev.resolve_change(self.repo),
+            "a worktree and its main repo must name the same change",
+        )
+
+    def test_the_transition_is_visible_from_the_main_repo(self):
+        ev.record_task_event("T001", "verified", root=self.wt, events_path=self.events_path)
+        rec = ps.state(self.repo, events_path=self.events_path)
+        self.assertEqual(rec["tasks"][0]["transition"], "verified")
+
+    def test_merged_from_the_main_repo_lands_in_the_same_namespace(self):
+        """`mergedEventsBlock` emits with --root <main repo> while started and
+        verified emit with --root <worktree>. One task must not end up with
+        two change namespaces inside one run."""
+        ev.record_task_event("T001", "verified", root=self.wt, events_path=self.events_path)
+        ev.record_task_event("T001", "merged", root=self.repo, events_path=self.events_path)
+        rows = [r for r in ev.read_events(self.events_path) if r.get("kind") == "task"]
+        self.assertEqual(len({r["change"] for r in rows}), 1, "two namespaces in one run")
+        self.assertEqual(ps.state(self.repo, events_path=self.events_path)["tasks"][0]["transition"], "merged")

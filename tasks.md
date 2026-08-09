@@ -50,6 +50,8 @@ projection of two real repos. Everything below is measured, not documented.
 | `GET ?external_id=X&external_source=Y` on issues | returns **the object**, 404 when absent |
 | states of an API-created project | 5, one per group: `backlog` (default), `unstarted`, `started`, `completed`, `cancelled` |
 | `POST /modules/` on an API-created project | **400 `"Modules are not enabled"`** until `PATCH {"module_view": true}` |
+| list pagination (`?per_page=1` over 3 projects) | envelope carries `results`, `next_cursor` (`1:1:0`), `next_page_results`; following the cursor walked all 3 pages and the last reported `False`. `?cursor=1:1:0` — colons unescaped — answers 200 |
+| module `PATCH` response | **omits `id` entirely** (opens with `name`, `description`, `start_date`), unlike the `POST`. The 409 is the only place the id appears, so it has to be carried over |
 
 **Projects do not behave that way, and this is the finding that reshaped the
 plan.** Three separate measurements:

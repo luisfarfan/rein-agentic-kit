@@ -144,7 +144,21 @@ def resolve_change(root: str, change: str = "") -> str:
         return change
     try:
         import plan as _plan  # local: plan.py must not import this module
-        return _plan.read_plan(root).get("change") or ""
+        # Resolved against the CANONICAL repo, not the literal root. This is
+        # the same normalisation `canonical_repo` performs, and for the same
+        # reason -- but it took a second review to notice the change axis
+        # needed it too.
+        #
+        # `read_plan` falls back to `basename(root)` when a flat `tasks.md`
+        # carries no `# Change:` heading (plan.py documents such a plan as
+        # valid). In a worktree that basename is `rein-wt-<label>`, a sibling
+        # directory, while the reader in the main repo computes the repo's own
+        # name. So a header-less plan emitted `change="wt-feature"` and folded
+        # against `change="mainrepo"`, and every task read `planned` forever --
+        # byte for byte the failure canonical_repo was written to remove, moved
+        # one column over, and strictly worse than not filtering on change at
+        # all. Measured on a real `git worktree add`.
+        return _plan.read_plan(canonical_repo(root)).get("change") or ""
     except Exception:  # noqa: BLE001 -- identity is best-effort, never fatal
         return ""
 
