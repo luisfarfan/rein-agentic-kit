@@ -109,8 +109,20 @@ def state(root: str = ".", change: str = "", events_path: str = _events.EVENTS_P
     # every task in a worktree by default -- see `events.canonical_repo`.
     repo_key = _events.canonical_repo(resolved_root)
 
+    # Repo AND change. Task ids are always T001..T00N, so filtering on the
+    # repo alone makes every change in it share one namespace: closing
+    # T001 of `alpha` reported T001 of `beta` as verified, and the sync
+    # then wrote beta's card to Plane as completed. The Why of this change
+    # is "118 OpenSpec changes" in one workspace -- that is the target
+    # shape, not an edge case.
+    change_key = plan_doc.get("change") or ""
     all_rows = _events.read_events(events_path)
-    task_rows = [r for r in all_rows if r.get("kind") == "task" and r.get("repo") == repo_key]
+    task_rows = [
+        r for r in all_rows
+        if r.get("kind") == "task"
+        and r.get("repo") == repo_key
+        and (r.get("change") or "") == change_key
+    ]
     latest = _fold_task_events(task_rows)
 
     records = []
@@ -131,7 +143,17 @@ def state(root: str = ".", change: str = "", events_path: str = _events.EVENTS_P
         })
 
     plan_path = plan_doc.get("path") or ""
-    change_dir = os.path.dirname(plan_path) if plan_path else resolved_root
+    # For an openspec change the directory IS the change. For a flat
+    # `tasks.md` its directory is the repo root, so the age became "the
+    # newest commit to anything" -- a README typo made a year-old plan
+    # look live, and committing `plane.json` changed `rein state` output,
+    # breaking D1 in the usage D4 explicitly calls safe. The pathspec is
+    # the change directory when there is one, and the PLAN FILE otherwise.
+    if plan_path:
+        parent = os.path.dirname(plan_path)
+        age_path = parent if os.path.realpath(parent) != resolved_root else plan_path
+    else:
+        age_path = resolved_root
 
     return {
         "root": resolved_root,
@@ -139,5 +161,5 @@ def state(root: str = ".", change: str = "", events_path: str = _events.EVENTS_P
         "planPath": plan_path,
         "planExists": bool(plan_doc.get("exists")),
         "tasks": records,
-        "lastTouchedDays": change_age_days(resolved_root, change_dir),
+        "lastTouchedDays": change_age_days(resolved_root, age_path),
     }

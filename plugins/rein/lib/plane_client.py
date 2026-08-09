@@ -27,10 +27,12 @@ deletes, in Plane.
 from __future__ import annotations
 
 import hashlib
+import collections
 import json
 import os
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 EXTERNAL_SOURCE = "rein"
@@ -40,13 +42,24 @@ API_KEY_ENV = "REIN_PLANE_API_KEY"
 # so almost no repo name is legal without cleaning first (D9).
 FORBIDDEN_NAME_CHARS = "&+,:;$^}{*=?@#|'<>.()%!-"
 
-DEFAULT_MAX_ATTEMPTS = 5
+# The server window the instance was measured enforcing
+# (`API_KEY_RATE_LIMIT=60/minute`). Every number below is derived from it.
+RATE_WINDOW_SECONDS = 60.0
+DEFAULT_RATE_LIMIT = 60
+MAX_BACKOFF_SECONDS = 30.0
+# 1+2+4+8+16+30+30 = 91s > the 60s window, so a throttled call can still
+# recover. At 5 attempts the budget was 15s and recovery was impossible.
+DEFAULT_MAX_ATTEMPTS = 7
 DEFAULT_BASE_DELAY = 1.0
 RATE_LIMIT_ERROR_CODE = 5900
 
 
 class PlaneError(Exception):
     """Base class for every error this client raises."""
+
+
+class PlaneConfigError(PlaneError):
+    """`plane.json` is not usable as written."""
 
 
 class PlaneAuthError(PlaneError):
@@ -87,6 +100,17 @@ class PlaneRetryExhausted(PlaneError):
         self.path = path
         self.attempts = attempts
         super().__init__(f"{method} {path} still rate-limited after {attempts} attempts")
+
+
+class PlaneUnreachable(PlaneError):
+    """Plane could not be reached at all: down, wrong `base_url`, DNS,
+    TLS. T006 distinguishes three CONFIG failures carefully and left the
+    most common runtime one to surface as a raw `URLError` traceback."""
+
+    def __init__(self, url: str, cause):
+        self.url = url
+        self.cause = cause
+        super().__init__(f"cannot reach Plane at {url}: {cause}")
 
 
 class PlaneRequestError(PlaneError):
@@ -152,6 +176,38 @@ class PlaneTransport:
                 return resp.status, dict(resp.headers), resp.read()
         except urllib.error.HTTPError as exc:
             return exc.code, dict(exc.headers or {}), exc.read()
+        except (urllib.error.URLError, OSError, ValueError) as exc:
+            # URLError: refused/DNS/TLS. ValueError: an empty or
+            # scheme-less `base_url` ("unknown url type"). Both are the
+            # same fact to a caller -- Plane is not there.
+            raise PlaneUnreachable(url, exc) from exc
+
+
+def _checked_base_url(base_url: str) -> str:
+    """Where the API key is allowed to be sent.
+
+    D4 calls `plane.json` "nothing secret, safe to commit" -- so it is a
+    low-trust file any pull request can edit, and `X-Api-Key` rides on
+    every request to whatever host it names. Plain `http` is permitted
+    only for loopback, where nothing leaves the machine; anything else
+    must be `https`. This is the one place a config value decides where
+    a secret travels.
+    """
+    url = (base_url or "").strip().rstrip("/")
+    if not url:
+        raise PlaneConfigError("base_url is empty in plane.json")
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise PlaneConfigError(
+            f"base_url {url!r} must start with https:// (or http:// for localhost)"
+        )
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme == "http" and host not in ("localhost", "127.0.0.1", "::1"):
+        raise PlaneConfigError(
+            f"base_url {url!r} uses plain http to a non-local host -- the API key "
+            f"would travel in clear text; use https://"
+        )
+    return url
 
 
 def _parse_json(raw):
@@ -182,6 +238,8 @@ class PlaneClient:
         base_delay: float = DEFAULT_BASE_DELAY,
         env=None,
         api_key_env: str = API_KEY_ENV,
+        rate_limit: int | None = DEFAULT_RATE_LIMIT,
+        clock=None,
     ):
         env = env if env is not None else os.environ
         api_key = env.get(api_key_env)
@@ -190,12 +248,15 @@ class PlaneClient:
                 f"{api_key_env} is not set -- the API key is never read from a file (D4)"
             )
         self._api_key = api_key
-        self._base_url = base_url.rstrip("/")
+        self._base_url = _checked_base_url(base_url)
         self._workspace_slug = workspace_slug
         self._transport_override = transport
         self._sleep = sleep or time.sleep
         self._max_attempts = max_attempts
         self._base_delay = base_delay
+        self._rate_limit = rate_limit
+        self._clock = clock or time.monotonic
+        self._sent = collections.deque()
         self._project_cache = None  # populated lazily by list_projects()
 
     @property
@@ -209,13 +270,59 @@ class PlaneClient:
     def _url(self, path: str) -> str:
         return f"{self._base_url}{path}"
 
+    def _pace(self):
+        """Stay under the server's window instead of discovering it by 429.
+
+        Measured: the instance enforces `API_KEY_RATE_LIMIT=60/minute` over a
+        sliding window. Firing as fast as the socket allows burns all 60
+        permits in about three seconds, and from there every call throttles.
+        Exponential backoff cannot recover from that -- 1+2+4+8 is 15s, and
+        the oldest permit does not free for ~57s -- so a real sync of the
+        measured 30-day window (~900-1200 calls) would spend two hours
+        sleeping and fail most entities. Pacing is what makes D10's "9
+        minutes" a real number rather than an arithmetic one.
+        """
+        if not self._rate_limit:
+            return
+        now = self._clock()
+        cutoff = now - RATE_WINDOW_SECONDS
+        while self._sent and self._sent[0] <= cutoff:
+            self._sent.popleft()
+        if len(self._sent) >= self._rate_limit:
+            wait = (self._sent[0] + RATE_WINDOW_SECONDS) - now
+            if wait > 0:
+                self._sleep(wait)
+            now = self._clock()
+            cutoff = now - RATE_WINDOW_SECONDS
+            while self._sent and self._sent[0] <= cutoff:
+                self._sent.popleft()
+        self._sent.append(now)
+
+    @staticmethod
+    def _retry_after(headers) -> float | None:
+        """Plane sends `Retry-After` when it throttles. Obeying it beats
+        guessing: the server knows when the window frees and we do not."""
+        if not headers:
+            return None
+        for key, value in dict(headers).items():
+            if str(key).lower() != "retry-after":
+                continue
+            try:
+                return max(0.0, float(str(value).strip()))
+            except (TypeError, ValueError):
+                return None
+        return None
+
     def _request(self, method: str, path: str, json_body=None):
         headers = {"X-Api-Key": self._api_key, "Content-Type": "application/json"}
         body = json.dumps(json_body).encode("utf-8") if json_body is not None else None
         attempt = 0
         while True:
             attempt += 1
-            status, _headers, raw = self.transport.request(method, self._url(path), headers, body)
+            self._pace()
+            status, resp_headers, raw = self.transport.request(
+                method, self._url(path), headers, body
+            )
             parsed = _parse_json(raw)
             retryable = status == 429 or (
                 isinstance(parsed, dict) and parsed.get("error_code") == RATE_LIMIT_ERROR_CODE
@@ -223,7 +330,14 @@ class PlaneClient:
             if retryable:
                 if attempt >= self._max_attempts:
                     raise PlaneRetryExhausted(method, path, attempt)
-                self._sleep(self._base_delay * (2 ** (attempt - 1)))
+                # Capped per attempt, but the CUMULATIVE budget has to exceed
+                # the server's window or the retries are theatre.
+                delay = self._retry_after(resp_headers)
+                if delay is None:
+                    delay = min(
+                        self._base_delay * (2 ** (attempt - 1)), MAX_BACKOFF_SECONDS
+                    )
+                self._sleep(delay)
                 continue
             return status, parsed
 
@@ -251,6 +365,19 @@ class PlaneClient:
             patch_status, patch_parsed = self._request("PATCH", patch_path, json_body=payload)
             if patch_status not in (200, 201):
                 raise PlaneRequestError("PATCH", patch_path, patch_status, patch_parsed)
+            # MEASURED against a live instance: Plane's module PATCH
+            # serializer omits `id` -- the body opens with `name`,
+            # `description`, `start_date` and never carries one, unlike the
+            # POST. Callers need it (attaching work items to a module, for
+            # one), so it is carried over from the 409 that just handed it to
+            # us rather than read back out of a body that has none.
+            #
+            # Only a re-sync of an ALREADY-EXISTING entity reaches this line,
+            # which is why 985 green tests and a first live run both missed
+            # it: the fake transport returned whatever body the test author
+            # imagined, and a first sync only ever takes the 201 path.
+            if isinstance(patch_parsed, dict) and "id" not in patch_parsed:
+                patch_parsed = {**patch_parsed, "id": existing_id}
             return patch_parsed
         raise PlaneRequestError("POST", collection_path, status, parsed)
 
@@ -301,6 +428,15 @@ class PlaneClient:
             return None
         if status != 200:
             raise PlaneRequestError("GET", path, status, parsed)
+        # This response IS the first page of the project listing the sync
+        # needs next. Discarding it spent a second call out of a 60/minute
+        # budget for nothing -- but only prime the cache when there is no
+        # second page, or the cache would be a truncated listing, which is
+        # exactly the bug the pagination fix above exists to remove.
+        if isinstance(parsed, dict) and not parsed.get("next_page_results"):
+            items = parsed.get("results")
+            if isinstance(items, list):
+                self._project_cache = list(items)
         return {"slug": self._workspace_slug}
 
     def list_states(self, project_id: str) -> list:
@@ -318,14 +454,42 @@ class PlaneClient:
     # -- projects: list-and-match client side (D3) --------------------------
 
     def list_projects(self, force_refresh: bool = False) -> list:
+        """EVERY page, not the first.
+
+        Plane paginates list endpoints with a cursor at 100 rows. D3's whole
+        project-identity strategy is client-side matching over this listing,
+        so a workspace past 100 projects made `_match_project` return None
+        for a project that exists -- and since the plan measured that
+        projects have NO `external_id` uniqueness, the follow-up POST does
+        not 409 on identity: it either collides on the name (failing that
+        repo on every run, permanently) or creates a DUPLICATE project.
+        """
         if self._project_cache is None or force_refresh:
-            path = f"/api/v1/workspaces/{self._workspace_slug}/projects/"
-            status, parsed = self._request("GET", path)
-            if status != 200:
-                raise PlaneRequestError("GET", path, status, parsed)
-            items = parsed.get("results", []) if isinstance(parsed, dict) else parsed
-            self._project_cache = list(items) if isinstance(items, list) else []
+            self._project_cache = self._collect_pages(
+                f"/api/v1/workspaces/{self._workspace_slug}/projects/"
+            )
         return self._project_cache
+
+    def _collect_pages(self, path: str, max_pages: int = 200) -> list:
+        collected, cursor, seen = [], None, set()
+        for _ in range(max_pages):
+            page_path = f"{path}?cursor={cursor}" if cursor else path
+            status, parsed = self._request("GET", page_path)
+            if status != 200:
+                raise PlaneRequestError("GET", page_path, status, parsed)
+            if not isinstance(parsed, dict):
+                return list(parsed) if isinstance(parsed, list) else []
+            items = parsed.get("results")
+            collected.extend(items if isinstance(items, list) else [])
+            if not parsed.get("next_page_results"):
+                break
+            cursor = parsed.get("next_cursor")
+            # A server that keeps handing back the same cursor would spin
+            # forever; stop rather than hang a sync on it.
+            if not cursor or cursor in seen:
+                break
+            seen.add(cursor)
+        return collected
 
     def _match_project(self, external_id: str):
         for project in self.list_projects():

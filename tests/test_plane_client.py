@@ -415,3 +415,200 @@ class WorkspaceExistenceUsesAReachableEndpointTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PacingStaysUnderTheServerWindowTests(unittest.TestCase):
+    """Backoff alone cannot recover from a window you have already saturated.
+
+    Measured: the instance enforces `API_KEY_RATE_LIMIT=60/minute` over a
+    sliding window. With no pacing the client burns all 60 permits in about
+    three seconds; from there every call throttles, and the old budget of
+    1+2+4+8 = 15s never reached the ~57s needed for the oldest permit to
+    expire. A real sync of the 30-day window (~900-1200 calls) would have
+    spent hours sleeping and failed most entities, while
+    `test_retries_on_http_429_then_succeeds` stayed green on a scripted
+    `429, 429, 200`.
+    """
+
+    def _paced_client(self, responses, limit=3):
+        self.slept = []
+        self.now = [0.0]
+
+        def sleep(seconds):
+            self.slept.append(seconds)
+            self.now[0] += seconds
+
+        transport = FakeTransport(responses)
+        client = pc.PlaneClient(
+            "https://plane.example.com", "acme", transport=transport,
+            sleep=sleep, clock=lambda: self.now[0], rate_limit=limit,
+            env={"REIN_PLANE_API_KEY": "k"},
+        )
+        return client, transport
+
+    def test_it_waits_rather_than_exceeding_the_window(self):
+        client, _ = self._paced_client([(200, {"results": []})] * 4, limit=3)
+        for _ in range(4):
+            client._request("GET", "/x")
+        self.assertTrue(self.slept, "the 4th call in a 3-per-window budget must wait")
+        self.assertAlmostEqual(sum(self.slept), pc.RATE_WINDOW_SECONDS, places=3)
+
+    def test_calls_within_the_budget_never_sleep(self):
+        client, _ = self._paced_client([(200, {"results": []})] * 3, limit=3)
+        for _ in range(3):
+            client._request("GET", "/x")
+        self.assertEqual(self.slept, [])
+
+    def test_cumulative_backoff_budget_exceeds_the_server_window(self):
+        """The arithmetic the old defaults failed: retries must outlast 60s."""
+        budget = sum(
+            min(pc.DEFAULT_BASE_DELAY * (2 ** i), pc.MAX_BACKOFF_SECONDS)
+            for i in range(pc.DEFAULT_MAX_ATTEMPTS - 1)
+        )
+        self.assertGreater(budget, pc.RATE_WINDOW_SECONDS)
+
+    def test_retry_after_header_is_obeyed_over_the_guess(self):
+        """The server knows when the window frees; we do not."""
+        self.slept = []
+        transport = FakeTransport([(429, {"detail": "slow down"}), (200, {"ok": True})])
+        transport.header_queue = [{"Retry-After": "7"}, {}]
+        original = transport.request
+
+        def with_headers(method, url, headers, body):
+            status, _h, raw = original(method, url, headers, body)
+            return status, (transport.header_queue.pop(0) if transport.header_queue else {}), raw
+
+        transport.request = with_headers
+        client = pc.PlaneClient(
+            "https://plane.example.com", "acme", transport=transport,
+            sleep=self.slept.append, rate_limit=None, env={"REIN_PLANE_API_KEY": "k"},
+        )
+        client._request("GET", "/x")
+        self.assertEqual(self.slept, [7.0])
+
+
+class BaseUrlDecidesWhereTheKeyTravelsTests(unittest.TestCase):
+    """D4 calls `plane.json` "safe to commit" — so it is low-trust input.
+
+    Every request carries `X-Api-Key`, and `base_url` alone chooses the host
+    it goes to. A contributor editing that one field in a pull request would
+    exfiltrate the key on the next `rein sync --plane`. Plain http is allowed
+    only to loopback, where nothing leaves the machine.
+    """
+
+    def _build(self, base_url):
+        return pc.PlaneClient(base_url, "acme", transport=FakeTransport([]),
+                              sleep=lambda _s: None, env={"REIN_PLANE_API_KEY": "k"})
+
+    def test_https_anywhere_is_fine(self):
+        self.assertTrue(self._build("https://plane.example.com/"))
+
+    def test_http_to_localhost_is_fine(self):
+        for url in ("http://localhost:8080", "http://127.0.0.1:8080"):
+            self.assertTrue(self._build(url))
+
+    def test_http_to_a_remote_host_is_refused(self):
+        with self.assertRaises(pc.PlaneConfigError) as ctx:
+            self._build("http://evil.example.com")
+        self.assertIn("clear text", str(ctx.exception))
+
+    def test_empty_and_schemeless_are_refused_by_name(self):
+        for bad in ("", "   ", "plane.example.com", "ftp://x/"):
+            with self.assertRaises(pc.PlaneConfigError):
+                self._build(bad)
+
+    def test_the_key_is_absent_from_every_config_error(self):
+        """A distinctive key, not "k" — a one-letter secret matches any word
+        and would make this assertion pass without proving anything."""
+        secret = "plane_api_ZZQQXX0000deadbeef"
+        for bad in ("", "http://evil.example.com", "ftp://x/"):
+            with self.assertRaises(pc.PlaneConfigError) as ctx:
+                pc.PlaneClient(bad, "acme", transport=FakeTransport([]),
+                               sleep=lambda _s: None,
+                               env={"REIN_PLANE_API_KEY": secret})
+            self.assertNotIn(secret, str(ctx.exception))
+            self.assertNotIn(secret, repr(ctx.exception))
+
+
+class ListProjectsReadsEveryPageTests(unittest.TestCase):
+    """D3 matches projects client-side over this listing.
+
+    Plane paginates at 100. Reading only the first page made `_match_project`
+    miss an existing project — and since the plan measured that projects have
+    NO `external_id` uniqueness, the follow-up POST does not 409 on identity:
+    it collides on the name (that repo fails forever) or silently creates a
+    DUPLICATE project.
+    """
+
+    def _page(self, ids, more, cursor=None):
+        body = {
+            "results": [
+                {"id": i, "external_id": f"rein:ws:{i}:c:_", "external_source": "rein"} for i in ids
+            ],
+            "next_page_results": more,
+        }
+        if cursor:
+            body["next_cursor"] = cursor
+        return (200, body)
+
+    def test_it_follows_the_cursor_to_the_last_page(self):
+        transport = FakeTransport([
+            self._page(["p1", "p2"], True, "c1"),
+            self._page(["p3"], False),
+        ])
+        client = _client(transport)
+        self.assertEqual([p["id"] for p in client.list_projects()], ["p1", "p2", "p3"])
+        self.assertEqual(len([c for c in transport.calls if c[0] == "GET"]), 2)
+
+    def test_a_project_on_the_second_page_is_matched_not_recreated(self):
+        transport = FakeTransport([
+            self._page(["p1"], True, "c1"),
+            self._page(["target"], False),
+            (200, {"id": "target", "updated": True}),
+        ])
+        client = _client(transport)
+        result = client.upsert_project("repo", "rein:ws:target:c:_")
+        self.assertTrue(result["updated"])
+        self.assertEqual([m for m, _, _ in transport.calls], ["GET", "GET", "PATCH"])
+
+    def test_a_repeated_cursor_stops_instead_of_spinning(self):
+        transport = FakeTransport([self._page(["p1"], True, "same")] * 5)
+        client = _client(transport)
+        client.list_projects()
+        self.assertLessEqual(len(transport.calls), 3)
+
+
+class ReSyncOfAnExistingEntityKeepsTheIdTests(unittest.TestCase):
+    """The 409 hands us the id; the PATCH response does not give it back.
+
+    Measured on a live instance: Plane's module PATCH serializer omits `id`
+    entirely — the body opens with `name`, `description`, `start_date`. So
+    returning the PATCH body verbatim produced a dict with no `id`, and
+    `plane_sync`'s `module["id"]` raised `KeyError: 'id'` for every entity on
+    the second sync of an already-existing change.
+
+    Nothing caught it: a fake transport returns whatever body the test author
+    imagined (and every fixture here imagined an `id`), and a FIRST sync only
+    ever takes the 201 path. It took a real re-sync against a real instance.
+    """
+
+    def test_id_survives_a_patch_body_that_omits_it(self):
+        transport = FakeTransport([
+            (409, {"error": "Module with the same external id ... exists", "id": "mod-7"}),
+            # The measured shape: no `id` anywhere.
+            (200, {"name": "product-observability", "description": "x",
+                   "start_date": None, "status": "planned"}),
+        ])
+        client = _client(transport)
+        result = client.upsert_module("proj-1", "product-observability", "rein:ws:r:c:_")
+        self.assertEqual(result["id"], "mod-7")
+        self.assertEqual(result["name"], "product-observability")
+
+    def test_a_patch_body_that_does_carry_an_id_is_left_alone(self):
+        transport = FakeTransport([
+            (409, {"id": "wi-3"}),
+            (200, {"id": "wi-3", "name": "renamed"}),
+        ])
+        client = _client(transport)
+        result = client.upsert_work_item("proj-1", "renamed", "rein:ws:r:c:T001")
+        self.assertEqual(result["id"], "wi-3")

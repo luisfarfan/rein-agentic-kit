@@ -9,8 +9,12 @@ T003's `plane_client.py`, wired up by T006's `rein sync --plane`.
   entry per change: `change`, `tasks`, `lastTouchedDays`, ...). A change
   touched within the window projects as a Module plus one Work Item per task
   (**live**); a change older than the window collapses to a single closed
-  Module carrying its task counts in the description, with **no** work items
-  emitted at all (D10 -- that omission is the entire saving). Every entity
+  Module carrying its task counts in the description, and no work items for
+  its FINISHED tasks (D10 -- that omission is the saving). Tasks still open
+  when a change crosses the boundary are emitted once, as `cancelled`:
+  their cards already exist, D6 forbids deleting them, and nothing else
+  would ever touch them again -- a completed Module holding open backlog
+  cards forever is not what the window was for. Every entity
   (module or work item) carries a content hash; passing the previously
   recorded `{key: hash}` map drops anything unchanged since last time, so a
   no-op run over an unchanged state emits nothing.
@@ -123,7 +127,12 @@ def _module_entity(change_name: str, tasks: list, live: bool) -> dict | None:
     }
 
 
-def _work_item_entity(change_name: str, task: dict) -> dict:
+# Transitions that already sit in a terminal Plane group; a change ageing
+# out must not disturb them.
+_FINISHED_TRANSITIONS = ("verified", "merged")
+
+
+def _work_item_entity(change_name: str, task: dict, history: bool = False) -> dict:
     """The hash must cover EVERY field the sync writes, not just the visible
     ones. `dependsOn` reaches Plane as the work item's body (D8/AC4) and is
     the only place a dependency is visible at all, since no relation call is
@@ -132,9 +141,13 @@ def _work_item_entity(change_name: str, task: dict) -> dict:
     a stale line indefinitely -- worse than an absent one, because it reads as
     current."""
     task_id = task.get("taskId") or ""
+    transition = task.get("transition") or "planned"
     payload = {
         "name": task.get("title") or task_id,
-        "transition": task.get("transition") or "planned",
+        # An unfinished task in a change that aged out is not "planned"
+        # any more -- it stopped. `cancelled` says that; leaving it in
+        # `backlog` claims someone is still going to pick it up.
+        "transition": "cancelled" if history else transition,
         "dependsOn": list(task.get("dependsOn") or []),
     }
     key = f"item:{change_name}:{task_id}"
@@ -178,6 +191,30 @@ def select(state: list, window_days: int | None = None, record: dict | None = No
         if live:
             for task in tasks:
                 entities.append(_work_item_entity(change_name, task))
+        else:
+            # Two different situations hide behind "history", and the T005
+            # criterion ("no work item for a history change -- that is the
+            # entire saving") is right about one of them only.
+            #
+            #  * never synced: its cards do not exist. Emitting nothing is the
+            #    saving, exactly as written -- 2,200 cards nobody would read.
+            #  * synced while live, now aged out: its cards DO exist, open. D6
+            #    forbids deleting them and nothing would ever touch them again,
+            #    so the board keeps a completed Module full of open backlog
+            #    cards, forever.
+            #
+            # `record` is the evidence of which case this is: a key in it means
+            # the card was created. So the saving is kept intact and only real,
+            # already-created cards are closed -- once, as `cancelled`, the
+            # honest state for work that stopped. Finished tasks are already in
+            # a terminal group and their hash is unchanged, so the dedup below
+            # drops them.
+            for task in tasks:
+                if (task.get("transition") or "planned") in _FINISHED_TRANSITIONS:
+                    continue
+                entity = _work_item_entity(change_name, task, history=True)
+                if entity["key"] in record:
+                    entities.append(entity)
 
     return [e for e in entities if record.get(e["key"]) != e["hash"]]
 

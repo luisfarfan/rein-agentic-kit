@@ -116,7 +116,10 @@ hierarchy and these tasks are siblings.
   1/22nd of the cost
 - In: incremental sync — only what changed since the last projection
 - In: humanized Plane text from a small agent, language configurable, Spanish
-  by default
+  by default when it is on. **It is off unless `plane.json` asks for it** —
+  a first review found every title spawning an agent subprocess, which makes
+  a board expensive to keep current for a cosmetic gain. D7 already says
+  humanization must never block; defaulting it off is the same judgement
 - In: a test proving that removing the Plane config changes nothing
 - Out: reading Plane **as a source of state**. No import, no webhook, no
   reconciliation, and nothing Plane returns may change a local file. Reads that
@@ -328,8 +331,14 @@ hierarchy and these tasks are siblings.
       reachable from a worktree, so pinning its counts would be unfalsifiable
       here and would drift on the next commit to that repo (D10)
     - a history Module carries its task counts in its description and is created
-      in a completed state — `tests/test_plane_window.py` asserts no work item
-      is emitted for a history change, since that is the entire saving
+      in a completed state, and a change that was **never synced** emits no work
+      item at all — that omission is the saving. A change that WAS synced and
+      then aged out is the other case and must not be confused with it: its
+      cards already exist, D6 forbids deleting them, and suppressing them left a
+      completed Module holding open backlog cards forever. Its still-open tasks
+      are emitted once, as `cancelled`; `record` is what tells the two apart, a
+      key in it being proof the card exists — `tests/test_plane_window.py`
+      asserts both halves and that the closing happens once, not every run
     - `select()` emits only entities whose content hash differs from the last
       recorded projection — `tests/test_plane_window.py` runs twice over an
       unchanged state and asserts the second emits nothing, then mutates one

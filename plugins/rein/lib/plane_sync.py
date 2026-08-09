@@ -63,6 +63,10 @@ TRANSITION_GROUP = {
     "verified": "completed",
     "merged": "completed",
     "blocked": "unstarted",
+    # Emitted only by the projection, when a change ages past the window
+    # with tasks still open: the work stopped, and saying so beats leaving
+    # the card in backlog as if someone were about to pick it up.
+    "cancelled": "cancelled",
 }
 
 
@@ -392,9 +396,15 @@ def run_sync(root: str, *, client_factory=None, humanize_cache=None, env=None) -
                     fields = {}
                     if state_id:
                         fields["state"] = state_id
-                    body = _work_item_body(repo_root, change_name, task_id, depends_index)
-                    if body:
-                        fields["description"] = body
+                    # Unconditional, including the empty string. Omitting the
+                    # key makes the PATCH partial, so Plane keeps whatever was
+                    # there: removing a dependency left `Depends on: T001` on
+                    # the board forever. D8 makes this line the ONLY place a
+                    # dependency appears, and a stale one reads as current --
+                    # worse than showing none.
+                    fields["description"] = _work_item_body(
+                        repo_root, change_name, task_id, depends_index
+                    )
                     raw_name = payload.get("name") or task_id
                     name = (
                         _safe_humanize(hcache, raw_name, _humanize.KIND_TITLE)
@@ -422,7 +432,12 @@ def run_sync(root: str, *, client_factory=None, humanize_cache=None, env=None) -
                 # `ok module:<change>` lines name nothing.
                 report["applied"].append(scoped_key)
             except Exception as exc:  # noqa: BLE001 -- per-entity, never aborts the sync (AC5)
-                report["failed"].append({"key": key, "error": str(exc)})
+                # Scoped exactly like `applied` and like the record: two repos in
+                # one workspace can hold a same-named change, and two
+                # identical `FAIL module:demo` lines name nothing.
+                report["failed"].append(
+                    {"key": f"{repo_prefix}{key}", "error": str(exc)}
+                )
                 continue
 
     if report["applied"]:

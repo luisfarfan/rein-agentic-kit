@@ -1070,6 +1070,30 @@ const closeCmd =
 const taskEventCmd = (id, transition) =>
   `'${REIN} event task ${id} ${transition} --root ${WD}${CHANGE ? ` --change ${CHANGE}` : ''}'`
 
+// `merged` sat in the transition enum, mapped to a Plane state group, and was
+// emitted by NOTHING -- a state the product could never reach, while the
+// plan's Why names it outright ("not when it merged"). Integrate is the one
+// moment the loop knows a merge happened.
+//
+// Two things this gets right and a hand-written prompt line would not:
+// `--root` is the MAIN repo, never WD (the same step removes the worktree, and
+// an event keyed there is one nobody can look up again -- the exact defect
+// canonical_repo was added for), and only tasks that actually landed are
+// named. Pure, so a test executes it instead of grepping the prompt.
+const mergedEventsBlock = (taskResults, root) => {
+  const landedIds = (taskResults || [])
+    .filter((r) => r && typeof r.status === 'string' && r.status.startsWith('implemented'))
+    .map((r) => r.id)
+  if (!landedIds.length) return ''
+  return (
+    `4. Record the merge — exactly these, after the merge succeeds and before cleanup:\n` +
+    landedIds
+      .map((id) => `   '${REIN} event task ${id} merged --root ${root}${CHANGE ? ` --change ${CHANGE}` : ''}'\n`)
+      .join('') +
+    `   They never fail the run; report it if one errors and carry on.\n`
+  )
+}
+
 // ── Phase 1.3: PLAN CHECK — catch plan defects before paying implementers ───
 // D4: a BLOCKING plan finding stops the run before any implementer is paid.
 // One agent, no retries beyond agentRetry's standard, no second opinion, no
@@ -2349,7 +2373,8 @@ if (WORKTREE_MODE) {
         `   favour of the branch for files this change owns; keep both for additive plan/spec files. Do NOT force ` +
         `   a resolution you do not understand — report it instead.\n` +
         (ctx.cmdTest ? `3. Verify green on ${BASE} after the merge: '${ctx.cmdTest}' (ONCE).\n` : '') +
-        `4. Clean up: 'git -C ${ctx.root} worktree remove ${WD}' (or --force if dirty) and ` +
+        mergedEventsBlock(results, ctx.root) +
+        `5. Clean up: 'git -C ${ctx.root} worktree remove ${WD}' (or --force if dirty) and ` +
         `   'git -C ${ctx.root} branch -d ${BRANCH}' if it merged cleanly.\n` +
         `Report whether it merged cleanly and any conflict you touched.`,
       { schema: TASK_SCHEMA, label: 'integrate', phase: 'Integrate', agentType: 'general-purpose', model: MODEL_IMPL }

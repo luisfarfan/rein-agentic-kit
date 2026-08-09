@@ -305,6 +305,52 @@ class TestProductStateFold(unittest.TestCase):
         self.assertEqual(by_id["T001"]["transition"], "planned")
 
 
+class TestTwoChangesInOneRepoDoNotShareTaskIds(unittest.TestCase):
+    """Task ids are always T001..T00N, so the repo alone is not an identity.
+
+    Filtering events on `repo` only made every change in a repository share
+    one namespace: emitting `verified` for `alpha`'s T001 reported `beta`'s
+    T001 as verified too, and the sync then wrote beta's card to Plane as
+    completed — work that had never started, marked done on the board.
+
+    This is the plan's PRIMARY shape, not an edge case: the Why counts 118
+    OpenSpec changes in one workspace. The suite was green because no test
+    built two changes in one repo; the repo dimension was covered and the
+    change dimension was not.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.repo = self.tmp.name
+        _init_git_repo(self.repo)
+        for name in ("alpha", "beta"):
+            d = os.path.join(self.repo, "openspec", "changes", name)
+            os.makedirs(d)
+            with open(os.path.join(d, "tasks.md"), "w", encoding="utf-8") as fh:
+                fh.write(f"# Change: {name}\n\n- [ ] T001 task of {name}\n  - Depends on: none\n")
+        _git(self.repo, "add", "-A")
+        _git(self.repo, "commit", "-qm", "two changes")
+        self.events_path = os.path.join(self.tmp.name, "events.jsonl")
+
+    def _transition(self, change):
+        return ps.state(self.repo, change=change, events_path=self.events_path)["tasks"][0]["transition"]
+
+    def test_closing_one_change_does_not_close_the_other(self):
+        ev.record_task_event("T001", "verified", change="alpha",
+                             root=self.repo, events_path=self.events_path)
+        self.assertEqual(self._transition("alpha"), "verified")
+        self.assertEqual(self._transition("beta"), "planned")
+
+    def test_each_change_folds_its_own_transition(self):
+        ev.record_task_event("T001", "started", change="alpha",
+                             root=self.repo, events_path=self.events_path)
+        ev.record_task_event("T001", "blocked", change="beta",
+                             root=self.repo, events_path=self.events_path)
+        self.assertEqual(self._transition("alpha"), "started")
+        self.assertEqual(self._transition("beta"), "blocked")
+
+
 class TestTransitionsEmittedFromAWorktreeSurvive(unittest.TestCase):
     """The default execution mode, which nothing else here exercised.
 
@@ -488,3 +534,89 @@ class TestReinStateCli(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ═══════════════════════════════════════ AC2 (cont.): loop.js emits `merged` ══
+
+_MERGED_BLOCK_JS = r"""
+const fs = require('fs');
+const [, , loopPath, resultsJson] = process.argv;
+const src = fs.readFileSync(loopPath, 'utf8');
+// The arrow body, between `=> {` and the closing `}` of the const.
+const m = src.match(/const mergedEventsBlock = \(taskResults, root\) => \{\n([\s\S]*?)\n\}\n/);
+if (!m) throw new Error('mergedEventsBlock not found in loop.js');
+const REIN = 'rein';
+const CHANGE = '';
+const fn = new Function('taskResults', 'root', 'REIN', 'CHANGE', m[1]);
+const out = fn(JSON.parse(resultsJson), '/main/repo', REIN, CHANGE);
+process.stdout.write(JSON.stringify(out));
+"""
+
+
+@unittest.skipUnless(_NODE, "node not on PATH -- loop.js is a node workflow script")
+class TestMergedIsActuallyEmitted(unittest.TestCase):
+    """`merged` was in the enum, mapped to a Plane group, emitted by nothing.
+
+    `events.TASK_TRANSITIONS`, `plane_sync.TRANSITION_GROUP` and
+    `plane_projection`'s history ordering all carried `merged`, and no code
+    path ever produced one -- a state the product could not reach, while the
+    plan's Why names it outright ("not when it merged"). No criterion broke,
+    because T002 AC2 enumerates started/verified/blocked only.
+
+    Executed, not grepped: the same discipline `transitionsFor` established.
+    """
+
+    def _run(self, results):
+        with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False, encoding="utf-8") as f:
+            f.write(_MERGED_BLOCK_JS)
+            script = f.name
+        try:
+            proc = subprocess.run(
+                [_NODE, script, LOOP_JS, json.dumps(results)],
+                capture_output=True, text=True, timeout=30,
+            )
+        finally:
+            os.unlink(script)
+        if proc.returncode != 0:
+            self.fail(proc.stderr.strip())
+        return json.loads(proc.stdout)
+
+    def test_landed_tasks_each_get_a_merged_event(self):
+        out = self._run([
+            {"id": "T001", "status": "implemented"},
+            {"id": "T002", "status": "implemented-proxy"},
+        ])
+        self.assertIn("event task T001 merged", out)
+        self.assertIn("event task T002 merged", out)
+
+    def test_it_targets_the_main_repo_never_the_worktree(self):
+        """Integrate removes the worktree in the very next step."""
+        out = self._run([{"id": "T001", "status": "implemented"}])
+        self.assertIn("--root /main/repo", out)
+        self.assertNotIn("rein-wt", out)
+
+    def test_a_task_that_did_not_land_is_not_marked_merged(self):
+        out = self._run([
+            {"id": "T001", "status": "implemented"},
+            {"id": "T002", "status": "blocked"},
+        ])
+        self.assertIn("T001", out)
+        self.assertNotIn("T002", out)
+
+    def test_nothing_landed_emits_no_block_at_all(self):
+        self.assertEqual(self._run([{"id": "T001", "status": "blocked"}]), "")
+
+    def test_the_integrate_prompt_actually_calls_it(self):
+        """Defining the decision proves nothing about what Integrate does.
+
+        Counted precisely rather than by `>1`: this is an arrow assigned to a
+        const, so the DECLARATION reads `const mergedEventsBlock = (` and does
+        not itself match `mergedEventsBlock(`. Every match is a real call.
+        """
+        with open(LOOP_JS, encoding="utf-8") as f:
+            src = f.read()
+        self.assertIn("const mergedEventsBlock = (taskResults, root) =>", src)
+        self.assertGreaterEqual(src.count("mergedEventsBlock(results"), 1)
+        # And it is wired into the Integrate agent, not some other prompt.
+        integrate = src[src.index("Integrate the APPROVED change into"):]
+        self.assertIn("mergedEventsBlock(", integrate[:1200])

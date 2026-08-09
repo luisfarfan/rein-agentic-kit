@@ -228,3 +228,53 @@ class ContentHashDedupTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CrossingTheWindowBoundaryTests(unittest.TestCase):
+    """"History" hides two different situations, and only one is a saving.
+
+    A change that was NEVER synced has no cards; emitting none is the saving
+    T005 describes. A change synced while live and now aged out DOES have
+    cards, open, and D6 forbids deleting them — so suppressing its work items
+    unconditionally left a completed Module holding open backlog cards
+    forever, and nothing would ever touch them again. `record` distinguishes
+    the two: a key in it is proof the card exists.
+    """
+
+    def _state(self, age, transitions):
+        return [{
+            "change": "demo",
+            "lastTouchedDays": age,
+            "tasks": [
+                {"taskId": f"T00{i+1}", "title": f"Task {i+1}", "transition": t, "dependsOn": []}
+                for i, t in enumerate(transitions)
+            ],
+        }]
+
+    def test_a_never_synced_history_change_still_emits_only_a_module(self):
+        """The saving, unchanged: no record means no cards to close."""
+        out = pp.select(self._state(400, ["planned", "started"]), window_days=30, record={})
+        self.assertEqual([e["type"] for e in out], ["module"])
+
+    def test_an_open_card_that_exists_is_closed_when_its_change_ages_out(self):
+        live = pp.select(self._state(1, ["planned", "verified"]), window_days=30, record={})
+        record = {e["key"]: e["hash"] for e in live}
+
+        aged = pp.select(self._state(400, ["planned", "verified"]), window_days=30, record=record)
+        items = [e for e in aged if e["type"] == "work_item"]
+        self.assertEqual([e["taskId"] for e in items], ["T001"])
+        self.assertEqual(items[0]["payload"]["transition"], "cancelled")
+
+    def test_a_finished_card_is_left_alone(self):
+        live = pp.select(self._state(1, ["verified"]), window_days=30, record={})
+        record = {e["key"]: e["hash"] for e in live}
+        aged = pp.select(self._state(400, ["verified"]), window_days=30, record=record)
+        self.assertEqual([e["type"] for e in aged if e["type"] == "work_item"], [])
+
+    def test_closing_happens_once_not_every_run(self):
+        live = pp.select(self._state(1, ["planned"]), window_days=30, record={})
+        record = {e["key"]: e["hash"] for e in live}
+        first = pp.select(self._state(400, ["planned"]), window_days=30, record=record)
+        record.update({e["key"]: e["hash"] for e in first})
+        second = pp.select(self._state(401, ["planned"]), window_days=30, record=record)
+        self.assertEqual(second, [])

@@ -136,7 +136,10 @@ class TransitionGroupMappingTests(unittest.TestCase):
         {"id": "s-cancelled", "group": "cancelled"},
     ]
 
-    def test_dict_matches_the_five_measured_groups(self):
+    def test_every_transition_maps_into_a_measured_group(self):
+        """Six transitions, five groups -- and every target must be one of
+        the five a freshly created project was measured to have, or the sync
+        would look up a state id that does not exist."""
         self.assertEqual(
             ps.TRANSITION_GROUP,
             {
@@ -145,8 +148,20 @@ class TransitionGroupMappingTests(unittest.TestCase):
                 "verified": "completed",
                 "merged": "completed",
                 "blocked": "unstarted",
+                # Emitted only by the projection, for a task still open when
+                # its change ages past the window.
+                "cancelled": "cancelled",
             },
         )
+        measured = {s["group"] for s in self.FRESH_PROJECT_STATES}
+        self.assertTrue(set(ps.TRANSITION_GROUP.values()) <= measured)
+
+    def test_every_emitted_transition_has_a_mapping(self):
+        """A transition with no group silently loses its state on the board."""
+        import events as _ev
+        import plane_projection as _pp
+        emitted = set(_ev.TASK_TRANSITIONS) | {"planned", "cancelled"}
+        self.assertEqual(emitted - set(ps.TRANSITION_GROUP), set())
 
     def test_resolves_the_matching_state_id_per_transition(self):
         expected = {
@@ -188,8 +203,10 @@ class RunSyncWiringTests(unittest.TestCase):
             # Existence check IS a projects listing: Plane serves no
             # /api/v1/workspaces/{slug}/ route -- asking for one answered
             # 401 against a live instance holding a valid key.
-            (200, {"results": []}),                          # GET workspace
-            (200, {"results": []}),                          # GET list projects
+            # One GET, not two: the existence check IS the first page of
+            # the project listing, and priming the cache from it saves a
+            # call out of a 60/minute budget.
+            (200, {"results": []}),                          # GET workspace + projects
             (201, {"id": "proj-1"}),                          # POST create project
             (200, {"id": "proj-1", "module_view": True}),     # PATCH module_view
             (201, {"id": "mod-1"}),                            # POST module
@@ -216,7 +233,6 @@ class RunSyncWiringTests(unittest.TestCase):
         methods_and_paths = [(m, u.split("acme", 1)[1]) for m, u, _ in transport.calls]
         self.assertEqual(methods_and_paths, [
             ("GET", "/projects/"),
-            ("GET", "/projects/"),
             ("POST", "/projects/"),
             ("PATCH", "/projects/proj-1/"),
             ("POST", "/projects/proj-1/modules/"),
@@ -227,7 +243,7 @@ class RunSyncWiringTests(unittest.TestCase):
 
         # Work item upsert carried the state id matching its transition
         # (planned -> backlog, per AC1).
-        work_item_call = transport.calls[6]
+        work_item_call = transport.calls[5]
         self.assertEqual(work_item_call[2]["state"], "s-backlog")
 
 
@@ -257,8 +273,10 @@ class FlatRepoGetsARealModuleNameTests(unittest.TestCase):
             # Existence check IS a projects listing: Plane serves no
             # /api/v1/workspaces/{slug}/ route -- asking for one answered
             # 401 against a live instance holding a valid key.
-            (200, {"results": []}),                          # GET workspace
-            (200, {"results": []}),                          # GET list projects
+            # One GET, not two: the existence check IS the first page of
+            # the project listing, and priming the cache from it saves a
+            # call out of a 60/minute budget.
+            (200, {"results": []}),                          # GET workspace + projects
             (201, {"id": "proj-1"}),                          # POST create project
             (200, {"id": "proj-1"}),                          # PATCH module_view
             (201, {"id": "mod-1"}),                            # POST module
@@ -750,3 +768,94 @@ class NoPlaneReachableFromReinApplyOrReinStepTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RemovingADependencyClearsItOnTheBoardTests(unittest.TestCase):
+    """Re-emitting is only half of it -- the PATCH has to carry the field.
+
+    `_work_item_entity` hashes `dependsOn`, so editing one re-emits the work
+    item. But the sync built `description` only `if body:`, and
+    `_work_item_body` returns `""` when a task has no dependencies. So the
+    PATCH went out with no `description` key at all, Plane kept the previous
+    value, and a removed dependency stayed on the card forever. D8 makes
+    that line the ONLY place a dependency is visible, so a stale one reads
+    as current -- worse than showing none.
+
+    `ContentHashDedupTests.test_editing_a_dependency_re_emits_the_work_item`
+    stops at re-emission and never inspects the payload, which is why the
+    suite was green.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = self.tmp.name
+        self.change_dir = _make_repo(self.root, "demo", [
+            {"id": "T001", "title": "First"},
+            {"id": "T002", "title": "Second", "dependsOn": ["T001"]},
+        ])
+        _write_plane_json(self.root)
+
+    def _sync(self):
+        """A URL-aware fake, not a fixed queue: the second run emits fewer
+        entities than the first, so a positional script silently desyncs and
+        the test stops measuring what it claims to."""
+
+        class Adaptive:
+            def __init__(self):
+                self.calls = []
+
+            def request(self, method, url, headers, body):
+                parsed = json.loads(body) if body else None
+                self.calls.append((method, url, parsed))
+                if method == "GET" and url.endswith("/states/"):
+                    payload = {"results": [{"id": "sb", "group": "backlog"}]}
+                elif method == "GET" and url.endswith("/projects/"):
+                    payload = {"results": []}
+                elif "/module-issues/" in url:
+                    payload = {"issues": []}
+                elif "/modules/" in url:
+                    payload = {"id": "m1"}
+                elif "/issues/" in url:
+                    payload = {"id": "w-" + str(len(self.calls))}
+                else:
+                    payload = {"id": "p1"}
+                return (201 if method == "POST" else 200), {}, json.dumps(payload).encode()
+
+        transport = Adaptive()
+
+        def factory(base_url, workspace_slug, env=None):
+            return pc.PlaneClient(base_url, workspace_slug, transport=transport,
+                                  sleep=lambda s: None, rate_limit=None,
+                                  env={"REIN_PLANE_API_KEY": "k"})
+
+        ps.run_sync(self.root, client_factory=factory)
+        return transport
+
+    def _bodies_for(self, transport, external_suffix):
+        return [
+            b for _m, _u, b in transport.calls
+            if isinstance(b, dict) and str(b.get("external_id", "")).endswith(external_suffix)
+        ]
+
+    def test_the_dependency_reaches_plane_in_the_first_place(self):
+        transport = self._sync()
+        bodies = self._bodies_for(transport, ":T002")
+        self.assertTrue(bodies)
+        self.assertEqual(bodies[0].get("description"), "Depends on: T001")
+
+    def test_removing_it_sends_an_empty_description_rather_than_omitting_it(self):
+        self._sync()
+        # Same plan, dependency removed.
+        _write_tasks_md(self.change_dir, "demo", [
+            {"id": "T001", "title": "First"},
+            {"id": "T002", "title": "Second"},
+        ])
+        transport = self._sync()
+        bodies = self._bodies_for(transport, ":T002")
+        self.assertTrue(bodies)
+        self.assertIn(
+            "description", bodies[0],
+            "omitting the key makes the PATCH partial -- Plane keeps the stale line",
+        )
+        self.assertEqual(bodies[0]["description"], "")

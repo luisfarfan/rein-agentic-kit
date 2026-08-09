@@ -33,5 +33,7 @@ graphify-out/
 
 # rein: local projection record. Plane is removable (D1), so its
 # bookkeeping does not belong in the repo -- a fresh clone simply
-# re-syncs, which is idempotent by construction.
-.rein/
+# re-syncs, which is idempotent by construction. Narrow on purpose:
+# `.rein/` wholesale would also swallow `.rein/workspace.json`, the
+# descriptor T001 exists to read and which SHOULD be committed.
+.rein/plane_record.json

@@ -361,6 +361,19 @@ def cmd_sync(argv: list[str]) -> int:
     except _psync.WorkspaceMissing as exc:
         print(f"rein sync --plane: {exc}", file=sys.stderr)
         return 1
+    except _pclient.PlaneConfigError as exc:
+        # `plane.json` names where the API key gets sent. A bad value there is
+        # a config problem like the three above, not a crash.
+        print(f"rein sync --plane: {exc}", file=sys.stderr)
+        return 1
+    except _pclient.PlaneUnreachable as exc:
+        # The fourth and commonest failure: Plane down, wrong host, TLS. AC3
+        # distinguished three CONFIG problems and let this one out as a raw
+        # urllib traceback.
+        print(f"rein sync --plane: {exc}", file=sys.stderr)
+        print("  Plane is optional -- delete plane.json and nothing else changes (D1).",
+              file=sys.stderr)
+        return 1
 
     for key in report["applied"]:
         print(f"  ok    {key}")

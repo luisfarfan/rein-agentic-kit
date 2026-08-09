@@ -88,24 +88,65 @@ def canonical_repo(root: str) -> str:
     back to the literal path, which is exactly right for a non-worktree root.
     """
     real = os.path.realpath(root)
-    try:
-        proc = subprocess.run(
-            ["git", "-C", real, "rev-parse", "--git-common-dir"],
-            capture_output=True, text=True, timeout=15,
-        )
-    except (OSError, subprocess.SubprocessError):
+
+    def git(*args):
+        try:
+            proc = subprocess.run(
+                ["git", "-C", real, *args],
+                capture_output=True, text=True, timeout=15,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        return proc.stdout.strip() if proc.returncode == 0 else None
+
+    # A bare repo has no working tree, and `--git-common-dir` answers "." for
+    # it -- whose parent is the CONTAINING directory, so two sibling bare
+    # repos collapsed onto one key. Measured: bare/a.git and bare/b.git both
+    # resolved to `bare`.
+    if (git("rev-parse", "--is-bare-repository") or "").lower() == "true":
         return real
-    if proc.returncode != 0:
-        return real
-    common = proc.stdout.strip()
+
+    common = git("rev-parse", "--git-common-dir")
     if not common:
         return real
     if not os.path.isabs(common):
         common = os.path.join(real, common)
-    parent = os.path.dirname(os.path.realpath(common))
-    # A bare repo's common dir has no working tree above it; keep the literal
-    # path rather than inventing a parent that holds no plan.
-    return parent if os.path.isdir(parent) else real
+    common = os.path.realpath(common)
+
+    # Only a common dir literally named `.git` sits directly above a working
+    # tree. A submodule's is `<parent>/.git/modules/<name>`, and taking its
+    # parent mapped every submodule of one repo to `<parent>/.git/modules` --
+    # so a workspace of submodules folded all of its members together.
+    if os.path.basename(common) == ".git":
+        parent = os.path.dirname(common)
+        if os.path.isdir(parent):
+            return parent
+
+    toplevel = git("rev-parse", "--show-toplevel")
+    return os.path.realpath(toplevel) if toplevel else real
+
+
+def resolve_change(root: str, change: str = "") -> str:
+    """The change an event belongs to, resolved the SAME way the reader
+    resolves it.
+
+    Symmetry is the whole point, exactly as with `canonical_repo`. A flat
+    `tasks.md` takes its change name from the `# Change:` heading, so a
+    plan reads as `product-observability` while an event emitted without
+    `--change` recorded `""` -- and a fold that compares the two found
+    nothing. Deriving it here instead of trusting the caller keeps both
+    halves in agreement whether or not the loop passed the flag.
+
+    An explicit `change` always wins; anything unresolvable degrades to
+    `""`, never raises.
+    """
+    if change:
+        return change
+    try:
+        import plan as _plan  # local: plan.py must not import this module
+        return _plan.read_plan(root).get("change") or ""
+    except Exception:  # noqa: BLE001 -- identity is best-effort, never fatal
+        return ""
 
 
 def record_task_event(
@@ -143,7 +184,7 @@ def record_task_event(
         "kind": "task",
         "task_id": task_id,
         "transition": transition,
-        "change": change,
+        "change": resolve_change(worktree, change),
         "repo": repo,
         "worktree": worktree if worktree != repo else "",
         "commit": _git_head(worktree),
