@@ -24,6 +24,7 @@ import os
 import subprocess
 import time
 
+import backlog as _backlog
 import events as _events
 import plan as _plan
 
@@ -104,9 +105,20 @@ def changes_for(repo_root: str) -> list:
 
 
 def state_all(repo_root: str, events_path: str = _events.EVENTS_PATH) -> list:
-    """One `state()` record per change in `repo_root`."""
-    return [state(repo_root, change=c, events_path=events_path)
-            for c in changes_for(repo_root)]
+    """One `state()` record per change in `repo_root`, plus the backlog.
+
+    The backlog arrives as a synthetic change record so `plane_projection`
+    and the whole sync project it with no new code -- one Module named
+    `backlog`, one work item per entry. Appended LAST, and computed from the
+    real changes, because each item's state is derived from whether the
+    change that absorbed it is still alive (backlog.D1).
+    """
+    records = [state(repo_root, change=c, events_path=events_path)
+               for c in changes_for(repo_root)]
+    entry = _backlog.as_change_record(repo_root, records)
+    if entry is not None:
+        records.append(entry)
+    return records
 
 
 def state(root: str = ".", change: str = "", events_path: str = _events.EVENTS_PATH) -> dict:
@@ -192,5 +204,8 @@ def state(root: str = ".", change: str = "", events_path: str = _events.EVENTS_P
         "planPath": plan_path,
         "planExists": bool(plan_doc.get("exists")),
         "tasks": records,
+        # Which backlog items this change took. `derive_states` needs it,
+        # and it is read from the plan text rather than stored anywhere.
+        "absorbs": _plan.absorbs_for(plan_path),
         "lastTouchedDays": change_age_days(resolved_root, age_path),
     }

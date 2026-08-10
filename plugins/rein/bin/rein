@@ -58,6 +58,7 @@ sys.path.insert(0, os.path.join(PLUGIN_ROOT, "lib"))
 import ansi as _ansi  # noqa: E402
 import dashboard as _dash  # noqa: E402
 import detect as _detect  # noqa: E402
+import backlog as _backlog
 import events as _events  # noqa: E402
 import gate as _gate  # noqa: E402
 import plan as _plan  # noqa: E402
@@ -966,6 +967,56 @@ def cmd_doctor(argv: list[str]) -> int:
     return 0
 
 
+def cmd_backlog(argv: list[str]) -> int:
+    """`rein backlog add "<text>"` / `rein backlog list`.
+
+    The input `/rein:rein-plan` reads from. A backlog item is a pointer to a
+    problem, not a unit of work, so it carries no criteria and no
+    verification -- and it lives at `.rein/backlog.md`, which `read_plan`
+    does not look at, so the loop can never be handed one to implement
+    (measured: the same list under `openspec/changes/` IS offered by
+    `rein next` as claimable).
+    """
+    if not argv or argv[0] not in ("add", "list"):
+        print('usage: rein backlog add "<text>" [root] | rein backlog list [root]')
+        return 2
+    action, rest = argv[0], argv[1:]
+
+    if action == "add":
+        words = [a for a in rest if not a.startswith("--")]
+        # A trailing token that is an existing directory is the root, even
+        # when it is the ONLY token -- otherwise `rein backlog add <dir>`
+        # silently files the directory path itself as an idea.
+        root = "."
+        if words and os.path.isdir(words[-1]):
+            root, words = words[-1], words[:-1]
+        text = " ".join(words)
+        if not text.strip():
+            print('rein backlog: nothing to add -- rein backlog add "<text>"', file=sys.stderr)
+            return 2
+        try:
+            new_id = _backlog.add(root, text)
+        except (OSError, ValueError) as exc:
+            print(f"rein backlog: {exc}", file=sys.stderr)
+            return 1
+        print(f"{new_id}  {text.strip()}")
+        return 0
+
+    root = _positional(rest) or "."
+    entries = _backlog.items(root)
+    if not entries:
+        print("rein backlog: empty (.rein/backlog.md)")
+        return 0
+    changes = [r for r in _pstate.state_all(root) if r.get("change") != "backlog"]
+    derived = _backlog.derive_states(root, changes)
+    if "--json" in rest:
+        print(json.dumps([{**e, "state": derived.get(e["id"])} for e in entries], indent=2))
+        return 0
+    for entry in entries:
+        print(f"  {entry['id']}  {derived.get(entry['id'], 'backlog'):10} {entry['text']}")
+    return 0
+
+
 COMMANDS = {
     "doctor": cmd_doctor,
     "setup": cmd_setup,
@@ -985,6 +1036,7 @@ COMMANDS = {
     "dashboard": cmd_dashboard,
     "serve-probe": cmd_serve_probe,
     "workspace": cmd_workspace,
+    "backlog": cmd_backlog,
     "sync": cmd_sync,
 }
 

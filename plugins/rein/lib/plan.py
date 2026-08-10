@@ -52,6 +52,14 @@ SCOPE_RE = re.compile(r"^\s*[-*]\s+(in|out)\s*:\s*(.*)$", re.I)
 # names itself, which is nearly all of them.
 CHANGE_HEADER_RE = re.compile(r"^#\s+Change:\s*(.*)$", re.I)
 
+# `Absorbs: B001, B002` -- which backlog items this change took. Matched
+# separately from `parse_header()` for the same reason `CHANGE_HEADER_RE`
+# is: that function's exact key set is pinned by
+# `test_a_plan_with_no_header_still_parses_exactly_as_before`, so adding a
+# key there breaks every plan that does not use this field -- which is all
+# of them today.
+ABSORBS_RE = re.compile(r"^\s*(?:absorbs|closes\s+backlog)\s*:\s*(.*)$", re.I | re.M)
+
 TASK_RE = re.compile(r"^(\s*)[-*]\s+\[([ xX])\]\s+(.*)$")
 FIELD_RE = re.compile(r"^(\s*)[-*]\s+([A-Za-z][A-Za-z ]*?)\s*:\s*(.*)$")
 BULLET_RE = re.compile(r"^(\s*)[-*]\s+(.*)$")
@@ -170,6 +178,38 @@ def parse_tasks_md(text: str) -> list[dict]:
 
 
 # ---------------------------------------------------------------- locating --
+
+
+def absorbs_from_text(text: str) -> list:
+    """The backlog ids a change declares it took. `[]` when absent.
+
+    Read from anywhere above the first task, so it can sit in the Why
+    where it reads naturally. Tolerates `Absorbs:` and `Closes backlog:`,
+    any case, and a `none` value.
+    """
+    head = text.split("\n- [", 1)[0]
+    found = []
+    for match in ABSORBS_RE.finditer(head):
+        for part in re.split(r"[,;/]| and ", match.group(1)):
+            token = _clean(part).upper()
+            if token and token.lower() not in NONE_WORDS and re.fullmatch(r"B\d+", token):
+                found.append(token)
+    return found
+
+
+def absorbs_for(plan_path: str) -> list:
+    """`absorbs_from_text` over a plan FILE. `[]` when unreadable.
+
+    A separate reader rather than a new key on `read_plan`, whose return
+    shape several callers already destructure -- and the parse is cheap
+    enough that a second read costs nothing next to the git calls
+    `product_state.state()` already makes.
+    """
+    try:
+        with open(plan_path, "r", encoding="utf-8") as fh:
+            return absorbs_from_text(fh.read())
+    except OSError:
+        return []
 
 
 def parse_header(text: str) -> dict:
