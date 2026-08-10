@@ -447,6 +447,34 @@ class PlaneClient:
                 self._project_cache = list(items)
         return {"slug": self._workspace_slug}
 
+    def find_work_item(self, project_id: str, external_id: str) -> dict | None:
+        """`GET ?external_id=&external_source=` -- the object itself, or None.
+
+        Measured on the live instance: with BOTH params this endpoint returns
+        the work item directly rather than a paginated list, and 404s when
+        there is none. Used for the one case that must not touch a card's
+        title: an item deleted from the backlog file, whose card has to be
+        closed even though the local text that named it is gone.
+        """
+        path = (
+            f"/api/v1/workspaces/{self._workspace_slug}/projects/{project_id}/issues/"
+            f"?external_id={external_id}&external_source={EXTERNAL_SOURCE}"
+        )
+        status, parsed = self._request("GET", path)
+        if status == 404:
+            return None
+        if status != 200:
+            raise PlaneRequestError("GET", path, status, parsed)
+        return parsed if isinstance(parsed, dict) and parsed.get("id") else None
+
+    def set_work_item_state(self, project_id: str, work_item_id: str, state_id: str) -> dict:
+        """PATCH the state and NOTHING else -- no name, no description."""
+        path = f"/api/v1/workspaces/{self._workspace_slug}/projects/{project_id}/issues/{work_item_id}/"
+        status, parsed = self._request("PATCH", path, json_body={"state": state_id})
+        if status not in (200, 201):
+            raise PlaneRequestError("PATCH", path, status, parsed)
+        return parsed
+
     def list_states(self, project_id: str) -> list:
         """`GET .../states/` -- every workflow State of a project, each
         carrying the `group` (`backlog`/`unstarted`/`started`/`completed`/

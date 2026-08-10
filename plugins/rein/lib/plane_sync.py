@@ -395,6 +395,25 @@ def run_sync(root: str, *, client_factory=None, humanize_cache=None, env=None) -
                     module_ext_id = _pc.make_external_id(workspace_slug, repo_name, change_name, "")
                     module = client.upsert_module(project_id, name, module_ext_id, **payload)
                     module_ids[change_name] = module["id"]
+                elif entity.get("dropped"):
+                    # Its local line is gone, so there is no title to send --
+                    # look the card up by external_id and patch ONLY the
+                    # state. Anything else would overwrite the real title
+                    # with a placeholder built from the id.
+                    task_id = entity["taskId"]
+                    ext_id = _pc.make_external_id(workspace_slug, repo_name, change_name, task_id)
+                    existing = client.find_work_item(project_id, ext_id)
+                    if existing is None:
+                        # Recorded but not in Plane: nothing to close. Treated
+                        # as applied so the record stops carrying a key that
+                        # names nothing.
+                        pass
+                    else:
+                        if states_by_project is None:
+                            states_by_project = client.list_states(project_id)
+                        state_id = _state_id_for_transition(states_by_project, "cancelled")
+                        if state_id:
+                            client.set_work_item_state(project_id, existing["id"], state_id)
                 else:
                     task_id = entity["taskId"]
                     payload = entity["payload"]

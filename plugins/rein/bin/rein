@@ -362,6 +362,9 @@ def cmd_sync(argv: list[str]) -> int:
     except _psync.WorkspaceMissing as exc:
         print(f"rein sync --plane: {exc}", file=sys.stderr)
         return 1
+    except _backlog.BacklogCorrupt as exc:
+        print(f"rein sync --plane: {exc}", file=sys.stderr)
+        return 1
     except _pclient.PlaneConfigError as exc:
         # `plane.json` names where the API key gets sent. A bad value there is
         # a config problem like the three above, not a crash.
@@ -1003,6 +1006,14 @@ def cmd_backlog(argv: list[str]) -> int:
         return 0
 
     root = _positional(rest) or "."
+    try:
+        _backlog.check(root)
+    except _backlog.BacklogCorrupt as exc:
+        # A named message, not a traceback. Duplicate ids mean two lines
+        # answer to one Plane card, so listing them as if all were fine
+        # would be the wrong kind of helpful.
+        print(f"rein backlog: {exc}", file=sys.stderr)
+        return 1
     entries = _backlog.items(root)
     if not entries:
         print("rein backlog: empty (.rein/backlog.md)")

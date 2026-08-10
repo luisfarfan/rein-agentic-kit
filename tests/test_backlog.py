@@ -328,5 +328,113 @@ class BacklogCliTests(unittest.TestCase):
         self.assertIn("usage", result.stdout + result.stderr)
 
 
+class DuplicateIdsAreRefusedTests(unittest.TestCase):
+    """Found on a real repo, not here.
+
+    `IdsAreNeverReusedTests` proves `add` never hands out a used id -- and
+    then the file is hand-edited BY DESIGN, so a copy-paste puts two lines
+    under one id in two seconds. Both build the same `external_id`, so the
+    second silently overwrites the first's card and one idea disappears with
+    no error anywhere. The door was bolted and the window left open.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = self.tmp.name
+        bl.add(self.root, "first")
+        bl.add(self.root, "second")
+
+    def _duplicate_a_line(self):
+        path = bl.backlog_path(self.root)
+        with open(path, encoding="utf-8") as fh:
+            lines = fh.read().splitlines()
+        dup = next(l for l in lines if "[B002]" in l)
+        lines.insert(lines.index(dup) + 1, dup)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write("\n".join(lines) + "\n")
+
+    def test_a_clean_file_reports_no_duplicates(self):
+        self.assertEqual(bl.duplicate_ids(self.root), [])
+        bl.check(self.root)  # must not raise
+
+    def test_duplicates_are_named(self):
+        self._duplicate_a_line()
+        self.assertEqual(bl.duplicate_ids(self.root), ["B002"])
+
+    def test_the_projection_refuses_rather_than_overwriting_a_card(self):
+        self._duplicate_a_line()
+        with self.assertRaises(bl.BacklogCorrupt) as ctx:
+            bl.as_change_record(self.root, [])
+        self.assertIn("B002", str(ctx.exception))
+        self.assertIn(bl.backlog_path(self.root), str(ctx.exception))
+
+    def test_the_cli_reports_it_instead_of_listing_a_corrupt_backlog(self):
+        self._duplicate_a_line()
+        result = subprocess.run([sys.executable, REIN_BIN, "backlog", "list", self.root],
+                                capture_output=True, text=True, timeout=60)
+        self.assertNotEqual(result.returncode, 0)
+        output = result.stdout + result.stderr
+        self.assertIn("B002", output)
+        # A MESSAGE, not a stack trace. The first version of this test passed
+        # on an unhandled exception -- non-zero exit, id in stderr, and a
+        # traceback the operator has to read to learn what to fix.
+        self.assertNotIn("Traceback", output)
+        self.assertIn("rein backlog:", output)
+
+
+class ADeletedItemDoesNotHauntTheBoardTests(unittest.TestCase):
+    """Found on a real repo: three cards for two remaining ideas.
+
+    Deleting a line is the most natural way to drop an idea, and D6 forbids
+    deleting the card -- so it sat in `backlog` forever, indistinguishable
+    from a live item. The derived state covered captured and absorbed and
+    never asked what happens when someone simply removes the line.
+
+    The card is closed once, as `cancelled`, and with NO name: the local text
+    that titled it is gone, so anything sent would replace the real title
+    with a placeholder built from the id.
+    """
+
+    def _state(self, task_ids):
+        return [{
+            "change": "backlog",
+            "lastTouchedDays": None,
+            "tasks": [{"taskId": t, "title": t, "checked": False,
+                       "transition": "planned", "dependsOn": []} for t in task_ids],
+        }]
+
+    def test_a_key_with_no_local_item_is_emitted_once_as_cancelled(self):
+        first = pp.select(self._state(["B001", "B002"]), window_days=30, record={})
+        record = {e["key"]: e["hash"] for e in first}
+
+        after = pp.select(self._state(["B002"]), window_days=30, record=record)
+        dropped = [e for e in after if e.get("dropped")]
+        self.assertEqual([e["taskId"] for e in dropped], ["B001"])
+        self.assertEqual(dropped[0]["payload"], {"transition": "cancelled"})
+        self.assertNotIn("name", dropped[0]["payload"])
+
+    def test_it_happens_once_not_every_run(self):
+        first = pp.select(self._state(["B001", "B002"]), window_days=30, record={})
+        record = {e["key"]: e["hash"] for e in first}
+        second = pp.select(self._state(["B002"]), window_days=30, record=record)
+        record.update({e["key"]: e["hash"] for e in second})
+        third = pp.select(self._state(["B002"]), window_days=30, record=record)
+        self.assertEqual(third, [])
+
+    def test_a_task_the_window_suppressed_is_not_mistaken_for_a_deleted_one(self):
+        """The regression this fix caused on its first attempt: the history
+        branch omits FINISHED tasks on purpose, and treating every unemitted
+        key as gone marked shipped work `cancelled`."""
+        live = [{"change": "c", "lastTouchedDays": 1, "tasks": [
+            {"taskId": "T001", "title": "done", "checked": True,
+             "transition": "verified", "dependsOn": []}]}]
+        first = pp.select(live, window_days=30, record={})
+        record = {e["key"]: e["hash"] for e in first}
+        aged = [{**live[0], "lastTouchedDays": 400}]
+        out = pp.select(aged, window_days=30, record=record)
+        self.assertEqual([e for e in out if e.get("dropped")], [])
+
+
 if __name__ == "__main__":
     unittest.main()

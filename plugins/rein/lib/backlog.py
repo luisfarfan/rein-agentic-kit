@@ -46,6 +46,46 @@ UNCLAIMED = "backlog"
 ABSORBED = "completed"
 
 
+class BacklogCorrupt(Exception):
+    """Two items share an id.
+
+    The high-water marker stops `add` from ever reusing one, but this
+    file is hand-edited BY DESIGN -- the docstring says so -- and a
+    copy-paste produces a duplicate in two seconds. Two lines with the
+    same id build the same `external_id`, so the second silently
+    overwrites the first's card in Plane: one idea disappears without a
+    single error. Found on a real repo, not in a test.
+
+    Refusing to sync is the right response. A backlog with duplicate ids
+    is corrupt, and syncing it destroys data on the board.
+    """
+
+    def __init__(self, duplicates, path):
+        self.duplicates = sorted(duplicates)
+        self.path = path
+        super().__init__(
+            f"{path}: duplicate id(s) {', '.join(self.duplicates)} -- two items "
+            f"cannot share one id, they would collide on the same Plane card"
+        )
+
+
+def duplicate_ids(root: str = ".") -> list:
+    """Ids appearing on more than one line, in file order. `[]` when clean."""
+    seen, dupes = set(), []
+    for item in items(root):
+        if item["id"] in seen and item["id"] not in dupes:
+            dupes.append(item["id"])
+        seen.add(item["id"])
+    return dupes
+
+
+def check(root: str = ".") -> None:
+    """Raise `BacklogCorrupt` when the file cannot be safely projected."""
+    dupes = duplicate_ids(root)
+    if dupes:
+        raise BacklogCorrupt(dupes, backlog_path(root))
+
+
 def backlog_path(root: str = ".") -> str:
     return os.path.join(os.path.abspath(root), BACKLOG_RELATIVE_PATH)
 
@@ -172,6 +212,7 @@ def as_change_record(root: str, changes: list, window_days: int = 30) -> dict | 
     item per entry. `None` when there are no items -- an empty Module is
     noise, and Plane rejects a blank name anyway.
     """
+    check(root)
     entries = items(root)
     if not entries:
         return None

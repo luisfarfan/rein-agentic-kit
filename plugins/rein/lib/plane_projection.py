@@ -246,6 +246,39 @@ def select(state: list, window_days: int | None = None, record: dict | None = No
                 if entity["key"] in record:
                     entities.append(entity)
 
+    # A key the record has and this run did NOT produce is an item whose
+    # local line is gone -- deleted from the backlog, or removed from a plan.
+    # D6 forbids deleting its card, and nothing else would ever touch it
+    # again, so the board kept it sitting in `backlog` looking exactly like a
+    # live idea. Found on a real repo: three cards for two remaining ideas.
+    #
+    # It is closed once, as `cancelled`, and WITHOUT a name: the local text
+    # that titled it no longer exists, so anything we sent would overwrite the
+    # real title with a placeholder. `dropped` tells the sync to look the card
+    # up by external_id and patch the state alone.
+    # NOT "everything this run did not emit" -- the history branch suppresses
+    # finished tasks on purpose, and treating those as gone marked shipped
+    # work `cancelled`. An orphan is a key whose LOCAL ITEM no longer exists,
+    # so the comparison is against every task the state still carries,
+    # emitted or not.
+    known = {
+        f"item:{cs.get('change') or ''}:{t.get('taskId') or ''}"
+        for cs in state for t in (cs.get("tasks") or [])
+    }
+    for change_name in {cs.get("change") or "" for cs in state}:
+        prefix = f"item:{change_name}:"
+        for key in record:
+            if key.startswith(prefix) and key not in known:
+                entities.append({
+                    "type": "work_item",
+                    "change": change_name,
+                    "taskId": key[len(prefix):],
+                    "key": key,
+                    "dropped": True,
+                    "hash": content_hash({"dropped": True}),
+                    "payload": {"transition": "cancelled"},
+                })
+
     return [e for e in entities if record.get(e["key"]) != e["hash"]]
 
 
