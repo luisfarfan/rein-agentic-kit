@@ -181,9 +181,13 @@ rein baseline    # mark the run everything is compared against
 rein dashboard   # 📊 serve it all as a local page
 rein workspace   # discover .rein/workspace.json and report each member repo's
                  # branch and head; one explanatory line, exit 0, when none is found
-rein sync --plane# project local state onto Plane — repo → Project, change → Module,
-                 # task → Work Item. Exits 0 with one line when plane.json is absent:
-                 # state is derived locally, Plane is only a projection of it
+rein linear list # issues from Linear, filtered (--repo / --priority /
+                 # --max-priority / --state / --flow / --label / --parent) and
+                 # ordered urgent-first. Linear numbers priority 1=urgent…4=low
+                 # and reserves 0 for "none", so unprioritised sorts LAST.
+                 # The 14 index cards are excluded unless --groupers
+rein linear show # one issue with its prose, --json for the parsed record.
+                 # Both need REIN_LINEAR_API_KEY
 ```
 
 > **The rule that separates them:** if it's a *parse*, a script does it. If it's a *judgement*,

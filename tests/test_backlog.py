@@ -34,7 +34,6 @@ LIB_DIR = os.path.join(REPO_ROOT, "plugins", "rein", "lib")
 sys.path.insert(0, LIB_DIR)
 import backlog as bl  # noqa: E402
 import plan as _plan  # noqa: E402
-import plane_projection as pp  # noqa: E402
 import product_state as ps  # noqa: E402
 
 
@@ -103,7 +102,7 @@ class BacklogFileRoundTripTests(unittest.TestCase):
 
 class IdsAreNeverReusedTests(unittest.TestCase):
     """D4. An id recycled onto a different idea silently repoints a live
-    Plane card, because `external_id` is built from it."""
+    tracker item, because its external id is built from it."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -210,49 +209,6 @@ class DerivedStateReturnsAnAbandonedItemTests(unittest.TestCase):
         self.assertEqual(self._state(live), "completed")
         self.assertEqual(self._state([_change("c", ["B001"], 400, True)]), "backlog")
         self.assertEqual(self._state(live), "completed")
-
-
-class TheBacklogProjectsThroughTheExistingSyncTests(unittest.TestCase):
-    def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-        self.root = self.tmp.name
-        bl.add(self.root, "paginate the work items")
-        bl.add(self.root, "a dry-run mode")
-
-    def test_the_record_is_what_select_consumes(self):
-        """Asserted by PASSING it to `select()`, not by checking field names
-        and hoping they line up."""
-        record = bl.as_change_record(self.root, [])
-        entities = pp.select([record], window_days=30, record={})
-        keys = {e["key"] for e in entities}
-        self.assertIn("module:backlog", keys)
-        self.assertIn("item:backlog:B001", keys)
-        self.assertIn("item:backlog:B002", keys)
-
-    def test_an_empty_backlog_emits_no_module(self):
-        empty = tempfile.TemporaryDirectory()
-        self.addCleanup(empty.cleanup)
-        self.assertIsNone(bl.as_change_record(empty.name, []))
-
-    def test_the_backlog_never_ages_out_of_the_window(self):
-        """An idea nobody picked up is still an idea; collapsing it to a
-        closed history Module would hide the items most in need of attention."""
-        record = bl.as_change_record(self.root, [])
-        self.assertIsNone(record["lastTouchedDays"])
-        module = next(e for e in pp.select([record], window_days=1, record={})
-                      if e["type"] == "module")
-        self.assertEqual(module["scope"], "live")
-
-    def test_an_absorbed_item_projects_as_completed(self):
-        record = bl.as_change_record(self.root, [_change("c", ["B001"], 1, True)])
-        by_id = {t["taskId"]: t for t in record["tasks"]}
-        self.assertEqual(by_id["B001"]["transition"], "verified")
-        self.assertEqual(by_id["B002"]["transition"], "planned")
-
-    def test_state_all_includes_it_last(self):
-        records = ps.state_all(self.root)
-        self.assertEqual(records[-1]["change"], "backlog")
 
 
 class ABacklogIsNeverExecutableTests(unittest.TestCase):
@@ -381,59 +337,6 @@ class DuplicateIdsAreRefusedTests(unittest.TestCase):
         # traceback the operator has to read to learn what to fix.
         self.assertNotIn("Traceback", output)
         self.assertIn("rein backlog:", output)
-
-
-class ADeletedItemDoesNotHauntTheBoardTests(unittest.TestCase):
-    """Found on a real repo: three cards for two remaining ideas.
-
-    Deleting a line is the most natural way to drop an idea, and D6 forbids
-    deleting the card -- so it sat in `backlog` forever, indistinguishable
-    from a live item. The derived state covered captured and absorbed and
-    never asked what happens when someone simply removes the line.
-
-    The card is closed once, as `cancelled`, and with NO name: the local text
-    that titled it is gone, so anything sent would replace the real title
-    with a placeholder built from the id.
-    """
-
-    def _state(self, task_ids):
-        return [{
-            "change": "backlog",
-            "lastTouchedDays": None,
-            "tasks": [{"taskId": t, "title": t, "checked": False,
-                       "transition": "planned", "dependsOn": []} for t in task_ids],
-        }]
-
-    def test_a_key_with_no_local_item_is_emitted_once_as_cancelled(self):
-        first = pp.select(self._state(["B001", "B002"]), window_days=30, record={})
-        record = {e["key"]: e["hash"] for e in first}
-
-        after = pp.select(self._state(["B002"]), window_days=30, record=record)
-        dropped = [e for e in after if e.get("dropped")]
-        self.assertEqual([e["taskId"] for e in dropped], ["B001"])
-        self.assertEqual(dropped[0]["payload"], {"transition": "cancelled"})
-        self.assertNotIn("name", dropped[0]["payload"])
-
-    def test_it_happens_once_not_every_run(self):
-        first = pp.select(self._state(["B001", "B002"]), window_days=30, record={})
-        record = {e["key"]: e["hash"] for e in first}
-        second = pp.select(self._state(["B002"]), window_days=30, record=record)
-        record.update({e["key"]: e["hash"] for e in second})
-        third = pp.select(self._state(["B002"]), window_days=30, record=record)
-        self.assertEqual(third, [])
-
-    def test_a_task_the_window_suppressed_is_not_mistaken_for_a_deleted_one(self):
-        """The regression this fix caused on its first attempt: the history
-        branch omits FINISHED tasks on purpose, and treating every unemitted
-        key as gone marked shipped work `cancelled`."""
-        live = [{"change": "c", "lastTouchedDays": 1, "tasks": [
-            {"taskId": "T001", "title": "done", "checked": True,
-             "transition": "verified", "dependsOn": []}]}]
-        first = pp.select(live, window_days=30, record={})
-        record = {e["key"]: e["hash"] for e in first}
-        aged = [{**live[0], "lastTouchedDays": 400}]
-        out = pp.select(aged, window_days=30, record=record)
-        self.assertEqual([e for e in out if e.get("dropped")], [])
 
 
 if __name__ == "__main__":

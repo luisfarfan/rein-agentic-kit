@@ -310,8 +310,8 @@ class TestTwoChangesInOneRepoDoNotShareTaskIds(unittest.TestCase):
 
     Filtering events on `repo` only made every change in a repository share
     one namespace: emitting `verified` for `alpha`'s T001 reported `beta`'s
-    T001 as verified too, and the sync then wrote beta's card to Plane as
-    completed — work that had never started, marked done on the board.
+    T001 as verified too, and the sync then reported beta as completed —
+    work that had never started, marked done.
 
     This is the plan's PRIMARY shape, not an edge case: the Why counts 118
     OpenSpec changes in one workspace. The suite was green because no test
@@ -359,8 +359,7 @@ class TestTransitionsEmittedFromAWorktreeSurvive(unittest.TestCase):
     event on the literal path made the two never match — and the worktree is
     removed when the run ends, so the transition was written to a name nobody
     could look up again. Measured before the fix: main repo `planned`,
-    worktree `verified`. Every task would have read `planned` forever and
-    every Plane card would have sat in `backlog` forever.
+    worktree `verified`. Every task would have read `planned` forever.
 
     `test_events_from_a_different_repo_are_not_folded_in` pins the opposite
     direction only, which is why a green suite said nothing about this.
@@ -552,10 +551,10 @@ process.stdout.write(JSON.stringify(out));
 
 @unittest.skipUnless(_NODE, "node not on PATH -- loop.js is a node workflow script")
 class TestMergedIsActuallyEmitted(unittest.TestCase):
-    """`merged` was in the enum, mapped to a Plane group, emitted by nothing.
+    """`merged` was in the enum, mapped downstream, emitted by nothing.
 
-    `events.TASK_TRANSITIONS`, `plane_sync.TRANSITION_GROUP` and
-    `plane_projection`'s history ordering all carried `merged`, and no code
+    `events.TASK_TRANSITIONS` and the Plane sync's transition mapping both
+    carried `merged`, and no code
     path ever produced one -- a state the product could not reach, while the
     plan's Why names it outright ("not when it merged"). No criterion broke,
     because T002 AC2 enumerates started/verified/blocked only.
@@ -675,7 +674,7 @@ class TestStateEnumeratesEveryOpenspecChange(unittest.TestCase):
     """`rein state` is the standalone half of T001-T002, on the corpus the
     Why is written about: 24 repos, 118 openspec changes.
 
-    Enumeration lived only in `plane_sync`, so `state` folded exactly one
+    Enumeration lived only in the Plane sync, so `state` folded exactly one
     change per repo and printed `(no change) / (no tasks in the plan)` for
     every member of a real workspace. Every AC6 fixture used a flat
     `tasks.md`, where one change per repo happens to be the truth.

@@ -15,7 +15,7 @@ Two things make this safe rather than just convenient.
 work, so the loop would try to implement a ten-word note with no verification
 and no acceptance criteria (D2).
 
-**Its Plane state is derived, never stored.** Closing an item when its change
+**Its tracker state is derived, never stored.** Closing an item when its change
 is created is right -- two open cards for one piece of work is double
 counting. But this repo measured 71 of 118 changes in one workspace untouched
 for one to four months, so an item closed at planning time and then abandoned
@@ -36,7 +36,7 @@ ITEM_RE = re.compile(r"^\s*[-*]\s+\[(B\d+)\]\s*(.*)$")
 
 # The high-water mark. Ids are never reused (D4), so the writer records the
 # highest one ever assigned -- otherwise deleting the last line would hand the
-# next item an id that an existing Plane card already answers to, silently
+# next item an id that an existing tracker item already answers to, silently
 # pointing it at a different idea.
 LAST_ID_RE = re.compile(r"^\s*<!--\s*rein:last-id\s+(B\d+)\s*-->\s*$")
 
@@ -52,9 +52,9 @@ class BacklogCorrupt(Exception):
     The high-water marker stops `add` from ever reusing one, but this
     file is hand-edited BY DESIGN -- the docstring says so -- and a
     copy-paste produces a duplicate in two seconds. Two lines with the
-    same id build the same `external_id`, so the second silently
-    overwrites the first's card in Plane: one idea disappears without a
-    single error. Found on a real repo, not in a test.
+    same id build the same external id, so the second silently
+    overwrites the first's item in the tracker: one idea disappears
+    without a single error. Found on a real repo, not in a test.
 
     Refusing to sync is the right response. A backlog with duplicate ids
     is corrupt, and syncing it destroys data on the board.
@@ -65,7 +65,7 @@ class BacklogCorrupt(Exception):
         self.path = path
         super().__init__(
             f"{path}: duplicate id(s) {', '.join(self.duplicates)} -- two items "
-            f"cannot share one id, they would collide on the same Plane card"
+            f"cannot share one id, they would collide on the same tracker item"
         )
 
 
@@ -118,8 +118,8 @@ def _highest_seen(lines: list) -> int:
     """The largest id number in the file, counting the high-water marker.
 
     The marker is what makes an id permanent: without it, deleting the last
-    line would make the next `add` reuse that id, and a Plane card created
-    under it would suddenly describe a different idea (D4).
+    line would make the next `add` reuse that id, and a tracker item
+    created under it would suddenly describe a different idea (D4).
     """
     highest = 0
     for line in lines:
@@ -207,10 +207,10 @@ def _has_unfinished(change: dict) -> bool:
 def as_change_record(root: str, changes: list, window_days: int = 30) -> dict | None:
     """The backlog shaped as a `product_state.state()` record.
 
-    Returned in `state_all()` so `plane_projection.select()` and the entire
-    sync project it with no new code: one Module named `backlog`, one work
-    item per entry. `None` when there are no items -- an empty Module is
-    noise, and Plane rejects a blank name anyway.
+    Returned in `state_all()` so the backlog reads as just another change
+    to every consumer of product state -- `rein state`, the dashboard, and
+    any future tracker projection -- with no new code. `None` when there
+    are no items: an empty change is noise, and a blank name is not a name.
     """
     check(root)
     entries = items(root)
@@ -222,9 +222,9 @@ def as_change_record(root: str, changes: list, window_days: int = 30) -> dict | 
         "change": "backlog",
         "planPath": backlog_path(root),
         "planExists": True,
-        # `lastTouchedDays` is None so the projection always treats the backlog
+        # `lastTouchedDays` is None so a consumer always treats the backlog
         # as live. A backlog does not age out: an idea nobody picked up is
-        # still an idea, and collapsing it to a closed history Module would
+        # still an idea, and collapsing it to closed history would
         # hide exactly the items most in need of attention.
         "lastTouchedDays": None,
         "tasks": [

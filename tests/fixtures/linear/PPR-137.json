@@ -1,0 +1,22 @@
+{
+  "id": "ddfc873b-b6af-4169-9838-bd4bee3f66e2",
+  "identifier": "PPR-137",
+  "title": "D10 · Operación de pedidos",
+  "description": "Defectos que la suite E2E encontró en el flujo **D10**.\n\nCada sub-issue es un bug con su repro completa. La ficha del flujo y el guión que lo recorre viven en `proxima-qa/docs`.",
+  "priority": 0,
+  "branchName": "luchofarfan9/ppr-137-d10-operacion-de-pedidos",
+  "url": "https://linear.app/proximaa/issue/PPR-137/d10-operacion-de-pedidos",
+  "state": {
+    "name": "Backlog",
+    "type": "backlog"
+  },
+  "labels": {
+    "nodes": [
+      {
+        "name": "Flujo"
+      }
+    ]
+  },
+  "parent": null,
+  "assignee": null
+}

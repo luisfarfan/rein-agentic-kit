@@ -91,12 +91,12 @@ def changes_for(repo_root: str) -> list:
     """Every change a repo holds: each `openspec/changes/*` entry, or `[""]`
     for a plain `tasks.md`.
 
-    This lived in `plane_sync` and nowhere else, so `rein state` -- the
+    This lived in the Plane sync and nowhere else, so `rein state` -- the
     command T001/T002 ship as a standalone deliverable -- folded exactly one
     change per repo. On the corpus the Why is written about (24 repos, 118
     openspec changes) it printed `(no change) / (no tasks in the plan)` for
-    every member. Enumerating a repo's changes is product state, not a Plane
-    concern; `plane_sync` now delegates here.
+    every member. Enumerating a repo's changes is product state, not a
+    tracker concern, so it lives here.
     """
     changes_dir = os.path.join(repo_root, "openspec", "changes")
     if os.path.isdir(changes_dir):
@@ -107,9 +107,9 @@ def changes_for(repo_root: str) -> list:
 def state_all(repo_root: str, events_path: str = _events.EVENTS_PATH) -> list:
     """One `state()` record per change in `repo_root`, plus the backlog.
 
-    The backlog arrives as a synthetic change record so `plane_projection`
-    and the whole sync project it with no new code -- one Module named
-    `backlog`, one work item per entry. Appended LAST, and computed from the
+    The backlog arrives as a synthetic change record so every consumer
+    reads it as just another change, with no new code. Appended LAST, and
+    computed from the
     real changes, because each item's state is derived from whether the
     change that absorbed it is still alive (backlog.D1).
     """
@@ -155,7 +155,7 @@ def state(root: str = ".", change: str = "", events_path: str = _events.EVENTS_P
     # Repo AND change. Task ids are always T001..T00N, so filtering on the
     # repo alone makes every change in it share one namespace: closing
     # T001 of `alpha` reported T001 of `beta` as verified, and the sync
-    # then wrote beta's card to Plane as completed. The Why of this change
+    # then reported beta as completed. The Why of this change
     # is "118 OpenSpec changes" in one workspace -- that is the target
     # shape, not an edge case.
     change_key = plan_doc.get("change") or ""
@@ -189,8 +189,8 @@ def state(root: str = ".", change: str = "", events_path: str = _events.EVENTS_P
     # For an openspec change the directory IS the change. For a flat
     # `tasks.md` its directory is the repo root, so the age became "the
     # newest commit to anything" -- a README typo made a year-old plan
-    # look live, and committing `plane.json` changed `rein state` output,
-    # breaking D1 in the usage D4 explicitly calls safe. The pathspec is
+    # look live, and committing a tracker config file changed `rein state`
+    # output. The pathspec is
     # the change directory when there is one, and the PLAN FILE otherwise.
     if plan_path:
         parent = os.path.dirname(plan_path)

@@ -1,0 +1,25 @@
+{
+  "id": "cbd802f1-c5fe-4abc-ab22-1e575c845d43",
+  "identifier": "PPR-84",
+  "title": "/_e2e/reset se cuelga si hay una conexion idle-in-transaction",
+  "description": "**Impacto:** El TRUNCATE del reset deadlockeaba contra conexiones idle-in-transaction. RESUELTO por QA como infra de test (regla aclarada: entorno sí, fixes de producto no): el endpoint sólo-e2e termina backends y fija lock_timeout antes de truncar.\n\n|  |  |\n| -- | -- |\n| Repo dueño | `proxima-api` |\n| Encontrado por | infra |\n\n---\n\n# /_e2e/reset se cuelga si hay una conexion idle-in-transaction\n\n> Encontrado por la suite E2E de proxima-qa · P2 · repo dueño: `proxima-api`\n\n**Impacto:** El TRUNCATE del reset deadlockeaba contra conexiones idle-in-transaction. RESUELTO por QA como infra de test (regla aclarada: entorno sí, fixes de producto no): el endpoint sólo-e2e termina backends y fija lock_timeout antes de truncar.\n\nEl endpoint POST /api/v1/_e2e/reset (src/modules/e2e/api/router.py) hace TRUNCATE de toda la base. Si el pool de SQLAlchemy tiene una conexión en estado 'idle in transaction' (habitual cuando una corrida de tests se interrumpe a mitad de request), el TRUNCATE espera el lock indefinidamente y la request nunca responde — deja el stack e2e inutilizable hasta terminar los backends a mano (pg_terminate_backend).\n\nRepro: interrumpir cualquier request en vuelo contra la API e2e (matar el runner), luego POST /_e2e/reset → cuelga.\n\nFix sugerido: antes del TRUNCATE, o bien (a) SET lock_timeout = '5s' y devolver un error accionable si no se consigue el lock, o (b) pg_terminate_backend() de las demás conexiones a la base e2e (es un entorno desechable, es seguro). La opción (b) hace el reset robusto ante runners muertos, que es el caso real.\n\nContexto: destrabó dos veces la suite QA (proxima-qa) durante el desarrollo de la Ola 1. No es crítico para producción (endpoint sólo-e2e) pero degrada mucho la experiencia de correr la suite.\n\n---\n\n*Repro completa:* `proxima-qa/docs/bugs/proxima-api-h84.md`\n\n*Reportado por la suite E2E (proxima-qa).*",
+  "priority": 3,
+  "branchName": "luchofarfan9/ppr-84-_e2ereset-se-cuelga-si-hay-una-conexion-idle-in-transaction",
+  "url": "https://linear.app/proximaa/issue/PPR-84/e2ereset-se-cuelga-si-hay-una-conexion-idle-in-transaction",
+  "state": {
+    "name": "Done",
+    "type": "completed"
+  },
+  "labels": {
+    "nodes": [
+      {
+        "name": "Bug"
+      },
+      {
+        "name": "proxima-api"
+      }
+    ]
+  },
+  "parent": null,
+  "assignee": null
+}

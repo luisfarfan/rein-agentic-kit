@@ -1,0 +1,28 @@
+{
+  "id": "2215f1ee-920a-4c73-aa2f-81148bad4b62",
+  "identifier": "PPR-142",
+  "title": "'Finalizar Conteo' descarta los conteos si no se guardo el borrador antes: la auditoria cierra en cero",
+  "description": "**Impacto:** Una toma de inventario completa se pierde sin aviso y la auditoria queda registrada como cuadrada cuando nadie la verifico\n\n|  |  |\n| -- | -- |\n| Repo dueño | `proxima-admin` |\n| Encontrado por | G-D15 |\n| Flujos afectados | D15 |\n\n---\n\n## Qué pasa\n\nEn una toma de inventario, si el operario escribe los conteos y pulsa\n**\"Finalizar Conteo\"** sin haber pulsado antes \"Guardar Borrador\", **todo lo****\n****contado se pierde en silencio**. La auditoría se cierra, los ajustes se aplican\ny el stock queda como estaba.\n\nNada avisa. La pantalla venía mostrando la diferencia bien calculada, así que\nno hay motivo para sospechar que el conteo no estaba registrado.\n\n## Repro\n\nComercio con inventario, un producto con **30** unidades en el almacén\nPrincipal.\n\n1. Catálogo → Inventario → Audits → \"Nueva Sesión\" → almacén Principal →\n   \"Empezar Conteo\".\n2. En la hoja de conteo, escribir **27** en \"Físico (Contado)\".\n   → la tabla muestra `Sistema 30 · Diferencia -3 · Estado Desajuste` ✔\n3. Pulsar **\"Finalizar Conteo\"** (sin tocar \"Guardar Borrador\").\n4. Pulsar **\"Aplicar Ajustes\"**.\n\nLo que sale por la red:\n\n```\nPOST /admin/inventory/audits/{id}/complete            {}      ← sin los conteos\nPOST /admin/inventory/audits/{id}/apply-adjustments   {}\nGET  /admin/products/1 → available_stock: 30                  ← el conteo se perdió\n```\n\nCon el camino \"correcto\" sí funciona: al pulsar \"Guardar Borrador\" antes, sale\n`PUT /audits/{id}/counts {\"items\":[{\"product_variant_id\":1,\"counted_quantity\":27}]}`\ny el ajuste deja el stock en 27.\n\n## Impacto\n\nUna toma de inventario es horas de trabajo físico: alguien recorre el almacén\ncontando caja por caja. Perder eso sin aviso es de lo más caro que puede pasar\nen este módulo, y el diseño invita al error:\n\n* \"Finalizar Conteo\" suena a la acción que cierra y guarda.\n* \"Guardar Borrador\" suena opcional — a algo que se hace si uno quiere\n  interrumpir y seguir después, no a un requisito.\n* La pantalla muestra las diferencias calculadas en vivo, lo que refuerza la\n  idea de que el sistema ya tiene los datos.\n\nY el resultado es peor que perder el trabajo: la auditoría queda **COMPLETED****\n****con diferencia neta 0**, es decir, deja constancia de que el inventario cuadra\ncuando nadie verificó que cuadre.\n\n## Causa\n\n`onCompleteAudit()` cierra la auditoría sin persistir antes lo que hay en la\npantalla:\n\n```\ninventory-audit-detail.component.ts:321  onCompleteAudit()\n                                         → await this.api.complete(data.id)\ninventory-audit-detail.component.ts:311  api.updateCounts(data.id, counts)\n                                         ← sólo se llama desde el handler de\n                                           \"Guardar Borrador\"\n```\n\n`updateCounts` es lo único que manda los conteos al servidor, y `complete` no\nlo invoca. Por eso el `POST /complete` viaja vacío y el ajuste posterior no\ntiene nada que aplicar.\n\nEl botón que dispara esto es el primario de la pantalla\n(`inventory-audit-detail.component.ts:59`, `variant=\"primary\"`).\n\n---\n\n*Repro completa:* `proxima-qa/docs/bugs/proxima-admin-di0.md`\n\n*Reportado por la suite E2E (proxima-qa).*",
+  "priority": 2,
+  "branchName": "luchofarfan9/ppr-142-finalizar-conteo-descarta-los-conteos-si-no-se-guardo-el",
+  "url": "https://linear.app/proximaa/issue/PPR-142/finalizar-conteo-descarta-los-conteos-si-no-se-guardo-el-borrador",
+  "state": {
+    "name": "Backlog",
+    "type": "backlog"
+  },
+  "labels": {
+    "nodes": [
+      {
+        "name": "Bug"
+      },
+      {
+        "name": "proxima-admin"
+      }
+    ]
+  },
+  "parent": {
+    "identifier": "PPR-141",
+    "title": "D15 · Auditoría de inventario"
+  },
+  "assignee": null
+}

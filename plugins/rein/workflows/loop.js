@@ -1070,7 +1070,7 @@ const closeCmd =
 const taskEventCmd = (id, transition) =>
   `'${REIN} event task ${id} ${transition} --root ${WD}${CHANGE ? ` --change ${CHANGE}` : ''}'`
 
-// `merged` sat in the transition enum, mapped to a Plane state group, and was
+// `merged` sat in the transition enum, mapped downstream, and was
 // emitted by NOTHING -- a state the product could never reach, while the
 // plan's Why names it outright ("not when it merged"). Integrate is the one
 // moment the loop knows a merge happened.

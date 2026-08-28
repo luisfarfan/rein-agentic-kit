@@ -37,6 +37,13 @@ RENAMED = {
 }
 UNTOUCHED_SKILLS = {"rein-plan", "rein-role", "rein-discover"}
 
+# Skills added AFTER the rename. Kept apart from UNTOUCHED_SKILLS on
+# purpose: "untouched" means the rename did not move it, and a skill that
+# did not yet exist was not untouched by anything. Folding them together
+# would leave this file telling a story about a rename that never covered
+# them.
+ADDED_AFTER_THE_RENAME = {"rein-linear"}
+
 # Old invocation strings, anchored so the `run` skill's pattern does not also
 # match inside the `run-auto` skill's invocation (the same pitfall
 # tests/test_events.py's frontmatter guard already had to close for those
@@ -92,7 +99,7 @@ class TestSkillDirectorySet(unittest.TestCase):
             for d in os.listdir(SKILLS_DIR)
             if os.path.isdir(os.path.join(SKILLS_DIR, d))
         }
-        expected = set(RENAMED.values()) | UNTOUCHED_SKILLS
+        expected = set(RENAMED.values()) | UNTOUCHED_SKILLS | ADDED_AFTER_THE_RENAME
         self.assertEqual(on_disk, expected)
 
 
