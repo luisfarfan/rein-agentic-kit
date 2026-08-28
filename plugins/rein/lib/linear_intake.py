@@ -33,6 +33,15 @@ A squash merge writes a NEW commit, so `git branch --contains <sha>` says
 first issue this ran on. What survives a squash is the identifier in the
 commit subject, so that is what is looked for.
 
+**Beads is opt-in, through the repo's own `tracker.kind`.** The kit already
+had that contract (`flow.config.example.json`: "none = tasks.md checkboxes
+are the state. beads = also sync/close Beads issues -- requires the bd
+CLI") and the first version of this module ignored it, shelling out to `bd`
+on every intake. That is wrong twice: it files a Beads issue in a repo that
+declared it does not use one, and it fails outright in a repo where `bd` is
+not installed. `kind: "beads"` opts in; anything else takes the issue with
+a branch and a board move and no Beads issue at all.
+
 Nothing here deletes anything, in either system.
 """
 
@@ -112,6 +121,26 @@ def resolve_repo(root: str, repo_name: str) -> str:
     return candidate
 
 
+def _flow_config(repo_root: str) -> dict:
+    try:
+        with open(os.path.join(repo_root, "flow.config.json"), encoding="utf-8") as fh:
+            cfg = json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return cfg if isinstance(cfg, dict) else {}
+
+
+def tracker_kind(repo_root: str) -> str:
+    """`flow.config.json`'s `tracker.kind`, defaulting to `"none"` -- the
+    same default `detect.resolve()` applies, so one repo cannot mean two
+    different things depending on which code path asked."""
+    return ((_flow_config(repo_root).get("tracker") or {}).get("kind")) or "none"
+
+
+def uses_beads(repo_root: str) -> bool:
+    return tracker_kind(repo_root) == "beads"
+
+
 def base_branch(repo_root: str) -> str:
     """The repo's own `flow.config.json` decides, defaulting to `main`.
 
@@ -119,14 +148,7 @@ def base_branch(repo_root: str) -> str:
     `develop`, and branching a fix off `main` would put it on top of code
     that is not what ships.
     """
-    try:
-        with open(os.path.join(repo_root, "flow.config.json"), encoding="utf-8") as fh:
-            cfg = json.load(fh)
-    except (OSError, json.JSONDecodeError):
-        return "main"
-    if not isinstance(cfg, dict):
-        return "main"
-    return ((cfg.get("worktree") or {}).get("baseBranch")) or "main"
+    return ((_flow_config(repo_root).get("worktree") or {}).get("baseBranch")) or "main"
 
 
 # ------------------------------------------------------------------- intake
@@ -171,8 +193,12 @@ def intake(identifier: str, *, root: str, client, run=_run, dry_run: bool = Fals
         return report
 
     # Beads first: it is the only step that cannot be undone by re-running,
-    # so a resumed intake must not file a second issue for one bug.
-    if not report["bead"]:
+    # so a resumed intake must not file a second issue for one bug. Skipped
+    # entirely unless the repo declares `tracker.kind: "beads"`.
+    if not uses_beads(repo_root):
+        report["steps"].append(
+            'tracker.kind is not "beads" in this repo -- no Beads issue filed')
+    elif not report["bead"]:
         out, err = run(
             ["bd", "create", parsed["title"], "-t", "bug",
              "-p", str(parsed["priority"] if parsed["priority"] is not None else 2),
@@ -260,7 +286,9 @@ def land(identifier: str, *, root: str, client, run=_run, bead: str = "",
     bead_id = bead or entry.get("bead", "")
     base = entry.get("base") or base_branch(repo_root)
 
-    if not bead_id:
+    if not bead_id and not uses_beads(repo_root):
+        bead_id = ""  # el repo no usa Beads: no hay nada que cerrar
+    elif not bead_id:
         raise IntakeError(
             f"no Beads issue recorded for {identifier} in {RECORD_RELATIVE_PATH} -- "
             f"pass --bead <id> to say which one to close. "
@@ -290,10 +318,13 @@ def land(identifier: str, *, root: str, client, run=_run, bead: str = "",
     reason = (f"Mergeado en {base}"
               + (f" como {report['mergeCommit']}" if report["mergeCommit"] else "")
               + f". Reportado como {identifier} en Linear.")
-    _, err = run(["bd", "close", bead_id, "--reason", reason], repo_root, BD_TIMEOUT)
-    if err:
-        raise IntakeError(f"bd close {bead_id} failed: {err}")
-    report["steps"].append(f"bd close {bead_id}")
+    if bead_id:
+        _, err = run(["bd", "close", bead_id, "--reason", reason], repo_root, BD_TIMEOUT)
+        if err:
+            raise IntakeError(f"bd close {bead_id} failed: {err}")
+        report["steps"].append(f"bd close {bead_id}")
+    else:
+        report["steps"].append('tracker.kind is not "beads" -- nothing to close there')
 
     client.comment(identifier, _land_comment(report, subject))
     client.set_state(identifier, DONE)

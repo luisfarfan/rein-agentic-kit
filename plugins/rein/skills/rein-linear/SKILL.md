@@ -103,7 +103,10 @@ Say which field, and let the user decide whether to fix the board or proceed.
 
 `list`, `show` and `comment` are the whole Linear surface of this skill. Taking
 an issue and closing it are `rein intake` and `rein land`, which also move the
-state, file the Beads issue and cut the branch.
+state, cut the branch and — only where the repo's `flow.config.json` says
+`tracker.kind: "beads"` — file and close the Beads issue. A repo that says
+anything else still gets the branch, the record and the board move; it just does
+not get a Beads issue. That is the repo's declaration, not a degraded run.
 
 There is deliberately **no `rein linear state`**. Moving an issue to Done belongs
 to `rein land`, which refuses when the base branch carries no commit naming the

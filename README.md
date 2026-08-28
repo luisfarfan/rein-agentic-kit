@@ -194,7 +194,8 @@ rein linear comment
                  # API key. There is deliberately no bare `linear state`: moving
                  # to Done belongs to `rein land`, behind its merge check.
                  # All three need REIN_LINEAR_API_KEY
-rein intake      # take an issue: Beads issue in the owning repo, branch named
+rein intake      # take an issue: Beads issue in the owning repo (only when its
+                 # flow.config.json says tracker.kind: "beads"), branch named
                  # the way Linear already named it, Backlog → In Progress, and a
                  # comment saying where the work went. Re-running resumes; it
                  # never files a second Beads issue for one bug

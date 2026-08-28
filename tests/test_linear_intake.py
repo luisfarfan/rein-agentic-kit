@@ -86,13 +86,18 @@ class FakeRun:
         return any(joined in " ".join(c) for c in self.calls)
 
 
-def _workspace(repo="proxima-api", base="develop"):
-    """A container directory holding one repo that looks like a real one."""
+def _workspace(repo="proxima-api", base="develop", tracker="beads"):
+    """A container directory holding one repo that looks like a real one.
+
+    `tracker` defaults to `"beads"` because that is the configuration most
+    of these tests are about. The repos that declare `"none"` get their own
+    tests below -- they are a different contract, not a degraded one.
+    """
     root = tempfile.mkdtemp()
     repo_root = os.path.join(root, repo)
     os.makedirs(os.path.join(repo_root, ".git"))
     with open(os.path.join(repo_root, "flow.config.json"), "w", encoding="utf-8") as fh:
-        json.dump({"worktree": {"baseBranch": base}}, fh)
+        json.dump({"worktree": {"baseBranch": base}, "tracker": {"kind": tracker}}, fh)
     return root, repo_root
 
 
@@ -218,6 +223,62 @@ class ARepeatedIntakeDoesNotFileASecondBeadTests(unittest.TestCase):
         li.intake("PPR-86", root=root, client=client, run=FakeRun())
         self.assertEqual(client.states, [])
         self.assertEqual(len(client.comments), 1)
+
+
+class BeadsIsOptInThroughTheReposOwnConfigTests(unittest.TestCase):
+    """`flow.config.json`'s `tracker.kind` already meant this, and the first
+    version of the module ignored it: it filed a Beads issue in every repo,
+    including the ones that declared `"none"`, and would fail outright where
+    `bd` is not installed."""
+
+    def test_no_bead_is_filed_when_the_repo_says_none(self):
+        root, repo_root = _workspace(tracker="none")
+        run = FakeRun()
+        report = li.intake("PPR-86", root=root, client=FakeClient(), run=run)
+
+        self.assertFalse(run.ran("bd", "create"))
+        self.assertEqual(report["bead"], "")
+        self.assertTrue(any("not \"beads\"" in s for s in report["steps"]))
+
+    def test_the_rest_of_the_intake_still_happens(self):
+        # Skipping Beads is not a degraded intake: the branch, the record and
+        # the board move are the parts that always apply.
+        root, repo_root = _workspace(tracker="none")
+        client, run = FakeClient(), FakeRun()
+        li.intake("PPR-86", root=root, client=client, run=run)
+
+        self.assertTrue(run.ran("git", "checkout", "-b", "luchofarfan9/ppr-86-un-bug"))
+        self.assertEqual(client.states, [("PPR-86", "In Progress")])
+        self.assertIn("PPR-86", li.load_record(repo_root))
+
+    def test_land_does_not_demand_a_bead_the_repo_never_files(self):
+        # Without this, `land` refused for ever on a `none` repo: it asked
+        # for a --bead that intake was right not to create.
+        root, _ = _workspace(tracker="none")
+        li.intake("PPR-86", root=root, client=FakeClient(), run=FakeRun())
+
+        client = FakeClient(_issue(state="In Progress", state_type="started"))
+        run = FakeRun({"--grep": ("4e64f2b1 fix: PPR-86", "")})
+        report = li.land("PPR-86", root=root, client=client, run=run)
+
+        self.assertFalse(run.ran("bd", "close"))
+        self.assertEqual(client.states, [("PPR-86", "Done")])
+        self.assertEqual(report["bead"], "")
+
+    def test_a_beads_repo_still_gets_both(self):
+        root, _ = _workspace(tracker="beads")
+        run = FakeRun()
+        li.intake("PPR-86", root=root, client=FakeClient(), run=run)
+        self.assertTrue(run.ran("bd", "create"))
+
+    def test_an_unreadable_config_reads_as_none_not_as_beads(self):
+        # Guessing "beads" from a missing config would shell out to a CLI
+        # the repo never claimed to have.
+        root, repo_root = _workspace()
+        with open(os.path.join(repo_root, "flow.config.json"), "w", encoding="utf-8") as fh:
+            fh.write("{not json")
+        self.assertEqual(li.tracker_kind(repo_root), "none")
+        self.assertFalse(li.uses_beads(repo_root))
 
 
 class MergedIsCheckedByTheLogNotTheGraphTests(unittest.TestCase):
