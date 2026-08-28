@@ -10,14 +10,40 @@ plugins/rein/
 ├── commands/rein-ping.md              /rein:rein-ping — plumbing self-check for fresh installs
 ├── skills/                       /rein:rein-plan · /rein:rein-apply · /rein:rein-step
 │                                 /rein:rein-steps · /rein:rein-audit · /rein:rein-role
+│                                 /rein:rein-discover · /rein:rein-linear
 ├── workflows/loop.js             the bounded loop (phase 0: resolution stub)
 ├── lib/detect.py                 stack + command resolution
 ├── lib/token_report.py           per-model token accounting + ledger
+├── lib/linear_client.py          Linear GraphQL: read, move state, comment
+├── lib/linear_issue.py           one issue -> its fields (pure)
+├── lib/linear_select.py          which issues, in what order (pure)
+├── lib/linear_intake.py          take an issue, and put it back when it lands
 ├── bin/rein                      CLI: doctor · detect · token-report · ledger
+│                                      linear · intake · land
 ├── bin/token-report              alias, in case plugin bin/ lands on PATH
 ├── settings.json                 empty by default (see note)
 └── flow.config.example.json      every option, annotated
 ```
+
+## The Linear side
+
+`linear_*` is four modules with one rule between them: **Linear is the only
+source** (D3). Nothing reads a second repository, so no clone has to be current
+for an intake to run.
+
+```
+rein linear list|show|comment      read the board, and comment on it
+rein intake <ID>                   Beads issue (opt-in, D6), branch, In Progress
+  … rein-plan / rein-apply / rein-audit — the ordinary flow, unchanged …
+rein land <ID>                     Beads closed, Done. Refuses unmerged work (D5)
+```
+
+All of them need `REIN_LINEAR_API_KEY` in the environment; it is read from
+nowhere else, and no code path deletes anything in either system.
+
+`intake` files a Beads issue only where `flow.config.json` says
+`tracker.kind: "beads"` — see D6. Everything else about the intake is the same
+either way.
 
 ## Constraints that shaped this
 

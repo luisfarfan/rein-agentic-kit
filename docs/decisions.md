@@ -94,3 +94,102 @@ advantage and an unknown effect on what actually costs money.
   origin project. Serena initialises once per environment.
 
 Both were repeated in earlier analysis without verification.
+
+---
+
+## D3 — Linear is the only source an intake reads
+
+**Decided 2026-08-28.**
+
+The 50 bug issues on the `pproxima` board each point at a long-form document in
+a second repository (`proxima-qa/docs/bugs/<id>.md`), and the first design read
+that document: it is cleaner markdown, and 26 of the 50 carry an
+`## Arreglo sugerido` section the board body does not.
+
+**Reading a second repository was rejected anyway**, and the reason is
+operational rather than aesthetic: that repo has to be cloned and current for an
+intake to run. The working clone was two commits stale when this was measured —
+the documents existed on the remote and not on disk. A source that can silently
+be out of date is how one question grows two answers.
+
+What made it the sturdier choice rather than merely the safer one: **most of
+what an intake needs is a typed API field, not markdown.** `title`, `priority`,
+`state`, `labels`, `parent` and `branchName` all arrive structured, and no regex
+can get them wrong. Only two facts live in the body — who found it, and which
+flows it touches.
+
+**Consequence:** when the board is missing something, the board is what gets
+fixed. `## Arreglo sugerido` is absent from every Linear body today and belongs
+upstream, in whatever writes the issues.
+
+---
+
+## D4 — The Linear↔Beads link lives in a record file, because Beads cannot hold it
+
+**Decided 2026-08-28.**
+
+`rein land` has to know which Beads issue closes which Linear issue. Beads looks
+like it can carry that and, measured against `bd 1.1.0`, cannot:
+
+| attempt | result |
+|---|---|
+| `bd create --external-ref` (its help names Linear) | stored, but absent from `bd show --json` **and** `bd export` |
+| `bd search PPR-86` | 0 hits, on an issue whose description contains the string |
+| `bd query 'description=PPR-86'` | 0 hits — while `description=PPR` returns it |
+| `bd query 'description=Reportado'` | 0 hits, for a description containing the word |
+
+The hyphen alone loses it. So the link is `<repo>/.rein/linear_record.json`, and
+`--external-ref` is still written for whoever reads the Beads UI — never relied
+on.
+
+**Consequence:** a lost record is not fatal and must never be guessed around.
+`land` refuses by name and takes `--bead <id>` instead. Closing the wrong issue
+is worse than stopping.
+
+---
+
+## D5 — "Merged" is checked against the base branch log, not the commit graph
+
+**Decided 2026-08-28.**
+
+`rein land` refuses to mark an issue Done when the work did not ship. The obvious
+check is `git branch --contains <sha>`, and it is wrong here: a squash merge
+writes a **new** commit, so the branch's own sha is nowhere in the base.
+
+Measured on PPR-90, which shipped as `08efd151`:
+
+```
+git branch --contains c10f983a  →  only the feature branch. develop absent.
+```
+
+The graph check would have refused to close work that was already on `develop`.
+What survives a squash is the identifier in the commit subject, so that is what
+is searched.
+
+**Consequence:** the check depends on the commit convention naming the issue.
+When it does not, `--force` exists and says so in the refusal message.
+
+---
+
+## D6 — Beads is opt-in through the repo's own `tracker.kind`
+
+**Decided 2026-08-28.**
+
+`flow.config.example.json` already carried this contract — *"none = tasks.md
+checkboxes are the state. beads = also sync/close Beads issues (requires the bd
+CLI)"* — and the first version of `rein intake` ignored it, shelling out to `bd`
+on every run. That is wrong twice: it files a Beads issue in a repo that declared
+it does not use one, and it fails outright where `bd` is not installed. All three
+`proxima` repos declare `"none"` today and got Beads issues anyway.
+
+Skipping Beads is not a degraded intake. The branch, the record and the board
+move are the parts that always apply; the Beads issue is the part the repo opts
+into.
+
+**Related, and decided at the same time: there is no `rein linear state`.**
+Moving an issue to Done belongs to `rein land`, behind D5's check. A free-form
+state command would route around that guard, and the guard is the point. When a
+write is genuinely missing, the answer is a subcommand — `rein linear comment`
+exists because an agent otherwise reached for the raw GraphQL endpoint with the
+personal API key, which spreads the credential across ad-hoc calls with no
+bounded surface and nothing to audit.
