@@ -188,6 +188,13 @@ rein linear list # issues from Linear, filtered (--repo / --priority /
                  # The 14 index cards are excluded unless --groupers
 rein linear show # one issue with its prose, --json for the parsed record.
                  # Both need REIN_LINEAR_API_KEY
+rein intake      # take an issue: Beads issue in the owning repo, branch named
+                 # the way Linear already named it, Backlog → In Progress, and a
+                 # comment saying where the work went. Re-running resumes; it
+                 # never files a second Beads issue for one bug
+rein land        # close it out: Beads closed, Linear → Done, both carrying the
+                 # merge commit. Refuses when the base branch holds no commit
+                 # naming the issue — a squash merge keeps the id, not the sha
 ```
 
 > **The rule that separates them:** if it's a *parse*, a script does it. If it's a *judgement*,
