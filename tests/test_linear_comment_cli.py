@@ -107,6 +107,38 @@ class AWellFormedCallGetsPastValidationTests(unittest.TestCase):
                               stdin="## Hecho\n\n`x` y \"y\"\n")
 
 
+class StdinIsConsumedExactlyOnceTests(unittest.TestCase):
+    """`--body-file -` reads a stream that can only be read once.
+
+    This is a source-level test on purpose, and it exists because the
+    behavioural tests above CANNOT catch the bug it pins. An early version
+    resolved the body twice — once to refuse a usage error before the key
+    was looked up, once inside the action — so the second read got an
+    exhausted stream and reported "empty comment" for a comment that was
+    right there. Every test above still passed: with no API key in the
+    environment the run stops at the credential check, which is BEFORE the
+    second read. It only failed against a real pipe with a real key.
+
+    So the property is pinned where it lives: the resolver is called once.
+    """
+
+    def _source(self) -> str:
+        with open(REIN_BIN, encoding="utf-8") as fh:
+            return fh.read()
+
+    def test_the_resolver_is_defined_once_and_called_once(self):
+        source = self._source()
+        self.assertEqual(source.count("def _comment_request("), 1)
+        self.assertEqual(
+            source.count("_comment_request(rest)"), 1,
+            "the comment body is resolved more than once -- `--body-file -` "
+            "reads stdin, and the second read gets an exhausted stream",
+        )
+
+    def test_stdin_is_read_from_exactly_one_place(self):
+        self.assertEqual(self._source().count("sys.stdin.read()"), 1)
+
+
 class TheWriteSurfaceStaysBoundedTests(unittest.TestCase):
     def test_comment_is_the_only_write_the_linear_subcommand_exposes(self):
         """No bare `rein linear state`, on purpose.

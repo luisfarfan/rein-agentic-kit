@@ -390,7 +390,7 @@ def _comment_request(rest: list[str]) -> tuple:
     return identifier, body, ""
 
 
-def _linear_comment(client, rest: list[str]) -> int:
+def _linear_comment(client, identifier: str, body: str) -> int:
     """Leave a comment. The one write an agent needs that is not a state move.
 
     Exposed because the alternative is every caller hand-rolling GraphQL with
@@ -404,11 +404,6 @@ def _linear_comment(client, rest: list[str]) -> int:
     carries no commit naming it. A free-form state command would route around
     that guard, and the guard is the point.
     """
-    identifier, body, problem = _comment_request(rest)
-    if problem:
-        print(problem, file=sys.stderr)
-        return 2
-
     posted = client.comment(identifier, body)
     print(f"{identifier}  comentado")
     if posted.get("url"):
@@ -433,12 +428,17 @@ def cmd_linear(argv: list[str]) -> int:
     action, rest = argv[0], argv[1:]
     as_json = "--json" in rest
 
-    # A usage error must not require a credential to report itself.
+    # Resolved ONCE, here, and handed down. A usage error must not require a
+    # credential to report itself -- and `--body-file -` consumes stdin, so
+    # resolving it a second time inside the action would read an exhausted
+    # stream and report an empty comment for a comment that was there.
+    comment_request = None
     if action == "comment":
-        _, _, problem = _comment_request(rest)
+        identifier, body, problem = _comment_request(rest)
         if problem:
             print(problem, file=sys.stderr)
             return 2
+        comment_request = (identifier, body)
 
     try:
         client = _lclient.LinearClient()
@@ -448,7 +448,7 @@ def cmd_linear(argv: list[str]) -> int:
 
     try:
         if action == "comment":
-            return _linear_comment(client, rest)
+            return _linear_comment(client, *comment_request)
 
         if action == "show":
             identifier = _positional(rest)
