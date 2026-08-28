@@ -38,6 +38,9 @@ Subcommands:
                       index cards are excluded unless --groupers
   rein linear show <ID>
                       one issue, with its prose. Needs REIN_LINEAR_API_KEY
+  rein linear comment <ID>
+                      leave a comment: --body TEXT, or --body-file PATH (`-` for
+                      stdin, which is what multi-line markdown wants)
   rein intake <ID>    take an issue: Beads issue in the owning repo, branch named
                       the way Linear named it, and Backlog -> In Progress
   rein land <ID>      close it out: Beads closed, Linear -> Done. Refuses when
@@ -356,6 +359,63 @@ def _linear_int(argv: list[str], name: str):
         raise ValueError(f"--{name} takes a number 0-4, not {raw!r}")
 
 
+def _comment_request(rest: list[str]) -> tuple:
+    """(identifier, body, problem). Pure apart from reading the named file.
+
+    Resolved BEFORE the API key is looked up, so a usage mistake answers
+    with the usage mistake instead of demanding a credential it will not
+    use.
+    """
+    identifier = _positional(rest)
+    if not identifier:
+        return "", "", ("usage: rein linear comment <ID> "
+                        "(--body TEXT | --body-file PATH | --body-file -)")
+
+    body = _opt(rest, "body")
+    path = _opt(rest, "body-file")
+    if body and path:
+        return identifier, "", "rein linear comment: pass --body or --body-file, not both"
+    if path:
+        # `-` reads stdin, and it is the option that matters: a comment is
+        # multi-line markdown, and pushing that through shell quoting is how
+        # backticks and quotes get mangled on the way to the board. It cost
+        # two broken heredocs the day this was written.
+        try:
+            body = sys.stdin.read() if path == "-" else open(path, encoding="utf-8").read()
+        except OSError as exc:
+            return identifier, "", f"rein linear comment: cannot read {path}: {exc}"
+    if not (body or "").strip():
+        return identifier, "", ("rein linear comment: empty comment -- "
+                                "nothing to say is not a comment")
+    return identifier, body, ""
+
+
+def _linear_comment(client, rest: list[str]) -> int:
+    """Leave a comment. The one write an agent needs that is not a state move.
+
+    Exposed because the alternative is every caller hand-rolling GraphQL with
+    the personal API key: the credential spread across ad-hoc scripts, with
+    no bounded surface, no tests and nothing to audit. The client already had
+    this method and `rein intake` / `rein land` already used it -- only the
+    subcommand was missing.
+
+    Deliberately NOT accompanied by a bare `rein linear state`: moving an
+    issue to Done belongs to `rein land`, which refuses when the base branch
+    carries no commit naming it. A free-form state command would route around
+    that guard, and the guard is the point.
+    """
+    identifier, body, problem = _comment_request(rest)
+    if problem:
+        print(problem, file=sys.stderr)
+        return 2
+
+    posted = client.comment(identifier, body)
+    print(f"{identifier}  comentado")
+    if posted.get("url"):
+        print(f"  {posted['url']}")
+    return 0
+
+
 def cmd_linear(argv: list[str]) -> int:
     """Read the board. Linear is the source; no other repo is consulted.
 
@@ -363,14 +423,22 @@ def cmd_linear(argv: list[str]) -> int:
     (README's rule). The loop needs a stable, filterable, testable answer;
     an MCP call inside a bounded fresh agent is none of those.
     """
-    if not argv or argv[0] not in ("list", "show"):
+    if not argv or argv[0] not in ("list", "show", "comment"):
         print("usage: rein linear list [--repo R] [--priority N] [--max-priority N]\n"
               "                        [--state S] [--flow F] [--label L] [--parent ID]\n"
               "                        [--groupers] [--json]\n"
-              "       rein linear show <ID> [--json]")
+              "       rein linear show <ID> [--json]\n"
+              "       rein linear comment <ID> (--body TEXT | --body-file PATH | --body-file -)")
         return 2
     action, rest = argv[0], argv[1:]
     as_json = "--json" in rest
+
+    # A usage error must not require a credential to report itself.
+    if action == "comment":
+        _, _, problem = _comment_request(rest)
+        if problem:
+            print(problem, file=sys.stderr)
+            return 2
 
     try:
         client = _lclient.LinearClient()
@@ -379,6 +447,9 @@ def cmd_linear(argv: list[str]) -> int:
         return 1
 
     try:
+        if action == "comment":
+            return _linear_comment(client, rest)
+
         if action == "show":
             identifier = _positional(rest)
             if not identifier:

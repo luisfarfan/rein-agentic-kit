@@ -48,7 +48,20 @@ plan.
    "$R" linear show PPR-86
    ```
 
-5. **Report what the board says, not what you infer from it.** Give the user the
+5. **To leave a comment, use the command — never the API directly.**
+   ```bash
+   "$R" linear comment PPR-86 --body-file - <<'EOF'
+   ## Hecho
+
+   Lo que cambió, y dónde.
+   EOF
+   ```
+
+   `--body-file -` reads stdin, and that is the form to reach for: a comment is
+   multi-line markdown, and pushing it through shell quoting is how backticks and
+   quotes get mangled on the way to the board. `--body TEXT` is fine for one line.
+
+6. **Report what the board says, not what you infer from it.** Give the user the
    issues and their real fields. If they asked "what should I work on", order is
    already urgency-first — say what is at the top and why, and stop there.
 
@@ -62,6 +75,11 @@ plan.
   that can be stale is how two answers to one question start.
 - **It will not invent an identifier.** Every id it reports came from a command
   that ran in this session.
+- **It will not call the Linear API directly.** Not with `curl`, not with a
+  script, not "just this once". `rein linear comment` is the door, and it exists
+  precisely so the API key is not spread across ad-hoc calls with no bounded
+  surface and nothing to audit. If you need a write rein does not expose, say so
+  and stop — a missing subcommand is a thing to add, not to route around.
 
 ## Reading the output honestly
 
@@ -80,3 +98,15 @@ one lands it in the wrong repository, and that is expensive to discover later.
 
 **A `MISSING` line means the issue is malformed**, not that the field is empty.
 Say which field, and let the user decide whether to fix the board or proceed.
+
+## What rein can and cannot write
+
+`list`, `show` and `comment` are the whole Linear surface of this skill. Taking
+an issue and closing it are `rein intake` and `rein land`, which also move the
+state, file the Beads issue and cut the branch.
+
+There is deliberately **no `rein linear state`**. Moving an issue to Done belongs
+to `rein land`, which refuses when the base branch carries no commit naming the
+issue — marking Done what did not ship puts a claim on the board that the code
+does not support. A free-form state command would route around that guard, and
+the guard is the point.

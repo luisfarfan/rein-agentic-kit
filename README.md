@@ -186,8 +186,14 @@ rein linear list # issues from Linear, filtered (--repo / --priority /
                  # ordered urgent-first. Linear numbers priority 1=urgent…4=low
                  # and reserves 0 for "none", so unprioritised sorts LAST.
                  # The 14 index cards are excluded unless --groupers
-rein linear show # one issue with its prose, --json for the parsed record.
-                 # Both need REIN_LINEAR_API_KEY
+rein linear show # one issue with its prose, --json for the parsed record
+rein linear comment
+                 # leave a comment: --body TEXT, or --body-file PATH (`-` for
+                 # stdin, which is what multi-line markdown wants). It exists so
+                 # nothing has to reach for the raw GraphQL endpoint with your
+                 # API key. There is deliberately no bare `linear state`: moving
+                 # to Done belongs to `rein land`, behind its merge check.
+                 # All three need REIN_LINEAR_API_KEY
 rein intake      # take an issue: Beads issue in the owning repo, branch named
                  # the way Linear already named it, Backlog → In Progress, and a
                  # comment saying where the work went. Re-running resumes; it
