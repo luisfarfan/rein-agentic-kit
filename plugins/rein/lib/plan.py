@@ -45,8 +45,8 @@ DECISION_RE = re.compile(r"^\s*[-*]\s+(D\d+)\b[.:) ]*\s*(.*)$", re.I)
 SCOPE_RE = re.compile(r"^\s*[-*]\s+(in|out)\s*:\s*(.*)$", re.I)
 
 # `# Change: <name>` -- the convention every plan in this repo already
-# follows (tests/test_plan.py's FULL fixture, tests/test_plane_projection.py's
-# `_write_tasks_md`). Matched separately from `parse_header()`, whose exact
+# follows (tests/test_plan.py's FULL fixture). Matched separately from
+# `parse_header()`, whose exact
 # key set is pinned by `test_a_plan_with_no_header_still_parses_exactly_
 # as_before`; adding a key there would break that test for every plan that
 # names itself, which is nearly all of them.
@@ -273,8 +273,8 @@ def change_name_from_text(text: str) -> str:
 
     This is what a flat `tasks.md` plan (no `openspec/changes` directory)
     names itself -- `read_plan()` falls back to it when no `change` argument
-    was given, so a flat repo's Module in Plane gets a real name instead of
-    the blank string Plane's API 400s on (round-2 review finding 1).
+    was given, so a flat repo gets a real change name instead of the blank
+    string every downstream consumer chokes on (round-2 review finding 1).
     """
     for raw in text.splitlines():
         if TASK_RE.match(raw):
@@ -395,8 +395,8 @@ def read_plan(root: str = ".", source: str = "", change: str = "", configured: s
     # `change` arrives "" for a flat tasks-md plan (there is no directory to
     # name it from, unlike openspec's `<change>/tasks.md`). Fall back to the
     # plan's own `# Change: <name>` header, then to the repo directory name,
-    # so `product_state.state()["change"]` -- and everything keyed on it,
-    # including the Plane Module's `name` -- is never silently blank.
+    # so `product_state.state()["change"]` -- and everything keyed on it --
+    # is never silently blank.
     resolved_change = change or change_name_from_text(raw) or (os.path.basename(root) or "")
 
     artifacts = []

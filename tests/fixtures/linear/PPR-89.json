@@ -1,0 +1,28 @@
+{
+  "id": "64c75461-4d73-4f34-97aa-70835ecd0cc1",
+  "identifier": "PPR-89",
+  "title": "El worker filtra conexiones DB cuando notification.email falla: el pool se agota y la reconciliación se atasca",
+  "description": "**Impacto:** Con emails imposibles de enviar (e2e sin proveedor), cada fallo del handler deja una conexión sin devolver; el GC de SQLAlchemy las termina ('non-checked-in connection'). Tras cientos de fallos el pool del worker se agota y business_status:reconcile se retrasa >20s — ola de flakiness en QA (corrida 65: toda la reconciliación en timeout). En prod, un proveedor de email caído produciría lo mismo\n\n|  |  |\n| -- | -- |\n| Repo dueño | `proxima-api` |\n| Encontrado por | corrida 65 |\n| Flujos afectados | D2, D3, D4 |\n\n---\n\n# El worker filtra conexiones DB cuando [notification.email](<http://notification.email>) falla: el pool se agota y la reconciliación se atasca\n\n> Encontrado por la suite E2E de proxima-qa · P2 · repo dueño: `proxima-api` · flujos: D2, D3, D4\n\n**Impacto:** Con emails imposibles de enviar (e2e sin proveedor), cada fallo del handler deja una conexión sin devolver; el GC de SQLAlchemy las termina ('non-checked-in connection'). Tras cientos de fallos el pool del worker se agota y business_status:reconcile se retrasa >20s — ola de flakiness en QA (corrida 65: toda la reconciliación en timeout). En prod, un proveedor de email caído produciría lo mismo\n\nEvidencia: 861 'Email delivery failed for template …' en 12 min + repetidos 'The garbage collector is trying to clean up non-checked-in connection … will be terminated' (AsyncAdaptedQueuePool) en proxima-worker-e2e. 63 [notification.email](<http://notification.email>) pending con attempts>=3. El path de error del handler de email (RuntimeError('Email delivery failed…')) no devuelve la conexión/sesión al pool. Fix esperado: context manager/finally que garantice el checkin en el fallo; y valorar backoff mayor para [notification.email](<http://notification.email>). Nota: mitigado parcialmente en QA con pool 20/40, pero el leak lo come igual con el tiempo.\n\n---\n\n*Repro completa:* `proxima-qa/docs/bugs/proxima-api-00p6.md`\n\n*Reportado por la suite E2E (proxima-qa).*",
+  "priority": 3,
+  "branchName": "luchofarfan9/ppr-89-el-worker-filtra-conexiones-db-cuando-notificationemail",
+  "url": "https://linear.app/proximaa/issue/PPR-89/el-worker-filtra-conexiones-db-cuando-notificationemail-falla-el-pool",
+  "state": {
+    "name": "Backlog",
+    "type": "backlog"
+  },
+  "labels": {
+    "nodes": [
+      {
+        "name": "Bug"
+      },
+      {
+        "name": "proxima-api"
+      }
+    ]
+  },
+  "parent": {
+    "identifier": "PPR-131",
+    "title": "D2 · Identidad de la tienda"
+  },
+  "assignee": null
+}

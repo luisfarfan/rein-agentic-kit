@@ -1,0 +1,28 @@
+{
+  "id": "503f0228-d3c5-43d6-9ca0-7961fe5cddd2",
+  "identifier": "PPR-86",
+  "title": "POST /admin/orders da 500 (NotNullViolation customer_phone) en vez de 422",
+  "description": "**Impacto:** El schema declara customer_phone opcional pero la columna es NOT NULL: una orden sin teléfono revienta con 500 en vez de validar\n\n|  |  |\n| -- | -- |\n| Repo dueño | `proxima-api` |\n| Encontrado por | D12-01 |\n| Flujos afectados | D12 |\n\n---\n\n# POST /admin/orders da 500 (NotNullViolation customer_phone) en vez de 422\n\n> Encontrado por la suite E2E de proxima-qa · P3 · repo dueño: `proxima-api` · flujos: D12\n\n**Impacto:** El schema declara customer_phone opcional pero la columna es NOT NULL: una orden sin teléfono revienta con 500 en vez de validar\n\n`AdminOrderCreateRequest.customer_phone` es Optional; `orders.customer_phone` es NOT NULL. POST /admin/orders sin customer_phone → IntegrityError → 500 {request_id}. Esperado: 422 con el campo. Workaround QA: el helper manda customer_phone siempre.\n\n---\n\n*Repro completa:* `proxima-qa/docs/bugs/proxima-api-hf8t.md`\n\n*Reportado por la suite E2E (proxima-qa).*",
+  "priority": 4,
+  "branchName": "luchofarfan9/ppr-86-post-adminorders-da-500-notnullviolation-customer_phone-en",
+  "url": "https://linear.app/proximaa/issue/PPR-86/post-adminorders-da-500-notnullviolation-customer-phone-en-vez-de-422",
+  "state": {
+    "name": "Backlog",
+    "type": "backlog"
+  },
+  "labels": {
+    "nodes": [
+      {
+        "name": "Bug"
+      },
+      {
+        "name": "proxima-api"
+      }
+    ]
+  },
+  "parent": {
+    "identifier": "PPR-127",
+    "title": "D12 · Venta manual y caja en admin"
+  },
+  "assignee": null
+}

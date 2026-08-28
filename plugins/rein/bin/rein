@@ -33,10 +33,11 @@ Subcommands:
   rein workspace      discover `.rein/workspace.json` and report every member
                       repo's branch and head; exits 0 with one line when none
                       is found
-  rein sync --plane   project local state onto Plane (T006); exits 0 with one
-                      line when `plane.json` is absent -- state is derived
-                      locally, Plane is a projection, and this is fully
-                      additive: no other subcommand reads `plane.json` (D1)
+  rein linear list    issues from Linear, filtered (--repo/--priority/--max-priority/
+                      --state/--flow/--label/--parent) and ordered urgent-first;
+                      index cards are excluded unless --groupers
+  rein linear show <ID>
+                      one issue, with its prose. Needs REIN_LINEAR_API_KEY
 
 Kept dependency-free on purpose: a plugin that drags a toolchain along at install
 time is a plugin nobody installs. Python 3 stdlib only.
@@ -49,7 +50,7 @@ import os
 import shutil
 import sys
 
-VERSION = "0.13.3"
+VERSION = "0.14.0"
 
 HERE = os.path.dirname(os.path.abspath(os.path.realpath(__file__)))
 PLUGIN_ROOT = os.path.dirname(HERE)
@@ -63,8 +64,9 @@ import events as _events  # noqa: E402
 import gate as _gate  # noqa: E402
 import plan as _plan  # noqa: E402
 import plan_check as _plan_check  # noqa: E402
-import plane_client as _pclient  # noqa: E402
-import plane_sync as _psync  # noqa: E402
+import linear_client as _lclient  # noqa: E402
+import linear_issue as _lissue  # noqa: E402
+import linear_select as _lselect  # noqa: E402
 import product_state as _pstate  # noqa: E402
 import setup as _setup  # noqa: E402
 import serve as _serve  # noqa: E402
@@ -336,57 +338,122 @@ def cmd_workspace(argv: list[str]) -> int:
     return 0
 
 
-def cmd_sync(argv: list[str]) -> int:
-    """T006: project local state onto Plane. Fully additive -- this is the
-    only subcommand that imports `plane_sync`/`plane_client`, so deleting
-    `plane.json` cannot change what any other subcommand prints (D1).
+def _linear_int(argv: list[str], name: str):
+    """An int option, or `None` when absent. A non-numeric value is refused
+    by name rather than silently treated as absent -- `--priority high`
+    would otherwise return every issue and look like it worked."""
+    raw = _opt(argv, name)
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        raise ValueError(f"--{name} takes a number 0-4, not {raw!r}")
 
-    Three config problems exit differently on purpose (AC3), because they
-    mean different things: not configured is not an error (exit 0); a
-    missing API key or a missing workspace both need a human to act, so
-    they exit non-zero naming what to do.
+
+def cmd_linear(argv: list[str]) -> int:
+    """Read the board. Linear is the source; no other repo is consulted.
+
+    This is a parse, not a judgement, so it is a script and not an agent
+    (README's rule). The loop needs a stable, filterable, testable answer;
+    an MCP call inside a bounded fresh agent is none of those.
     """
-    if not argv or argv[0] != "--plane":
-        print("usage: rein sync --plane [root]")
+    if not argv or argv[0] not in ("list", "show"):
+        print("usage: rein linear list [--repo R] [--priority N] [--max-priority N]\n"
+              "                        [--state S] [--flow F] [--label L] [--parent ID]\n"
+              "                        [--groupers] [--json]\n"
+              "       rein linear show <ID> [--json]")
         return 2
-    root = _positional(argv[1:]) or "."
+    action, rest = argv[0], argv[1:]
+    as_json = "--json" in rest
 
     try:
-        report = _psync.run_sync(root)
-    except _psync.NotConfigured:
-        print("rein sync --plane: not configured (no plane.json in this repo) -- nothing to do")
-        return 0
-    except _pclient.PlaneAuthError as exc:
-        print(f"rein sync --plane: {exc}", file=sys.stderr)
-        return 1
-    except _psync.WorkspaceMissing as exc:
-        print(f"rein sync --plane: {exc}", file=sys.stderr)
-        return 1
-    except _backlog.BacklogCorrupt as exc:
-        print(f"rein sync --plane: {exc}", file=sys.stderr)
-        return 1
-    except _pclient.PlaneConfigError as exc:
-        # `plane.json` names where the API key gets sent. A bad value there is
-        # a config problem like the three above, not a crash.
-        print(f"rein sync --plane: {exc}", file=sys.stderr)
-        return 1
-    except _pclient.PlaneUnreachable as exc:
-        # The fourth and commonest failure: Plane down, wrong host, TLS. AC3
-        # distinguished three CONFIG problems and let this one out as a raw
-        # urllib traceback.
-        print(f"rein sync --plane: {exc}", file=sys.stderr)
-        print("  Plane is optional -- delete plane.json and nothing else changes (D1).",
-              file=sys.stderr)
+        client = _lclient.LinearClient()
+    except _lclient.LinearAuthError as exc:
+        print(f"rein linear: {exc}", file=sys.stderr)
         return 1
 
-    for key in report["applied"]:
-        print(f"  ok    {key}")
-    for item in report["failed"]:
-        print(f"  FAIL  {item['key']}: {item['error']}", file=sys.stderr)
-    total = len(report["applied"]) + len(report["failed"])
-    if total == 0:
-        print("rein sync --plane: nothing changed since the last sync")
-    return 1 if report["failed"] else 0
+    try:
+        if action == "show":
+            identifier = _positional(rest)
+            if not identifier:
+                print("usage: rein linear show <ID>", file=sys.stderr)
+                return 2
+            parsed = _lissue.parse(client.issue(identifier))
+            if as_json:
+                print(json.dumps(parsed, indent=2, ensure_ascii=False))
+                return 0
+            _print_issue(parsed)
+            return 0
+
+        try:
+            priority = _linear_int(rest, "priority")
+            max_priority = _linear_int(rest, "max-priority")
+        except ValueError as exc:
+            print(f"rein linear: {exc}", file=sys.stderr)
+            return 2
+
+        result = _lselect.select(
+            client.issues(),
+            repo=_opt(rest, "repo"), state=_opt(rest, "state"),
+            flow=_opt(rest, "flow"), label=_opt(rest, "label"),
+            parent=_opt(rest, "parent"), priority=priority,
+            max_priority=max_priority, include_groupers="--groupers" in rest,
+        )
+    except _lclient.LinearUnreachable as exc:
+        print(f"rein linear: {exc}", file=sys.stderr)
+        return 1
+    except _lclient.IssueNotFound as exc:
+        print(f"rein linear: {exc}", file=sys.stderr)
+        return 1
+    except _lclient.LinearError as exc:
+        print(f"rein linear: {exc}", file=sys.stderr)
+        return 1
+
+    if as_json:
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        return 0
+
+    # A filter value the board has never seen is the difference between
+    # "nothing to do" and "you typed a repo that does not exist". Both
+    # return zero rows, and only one of them is good news.
+    for miss in result["unknown"]:
+        print(f"rein linear: no issue has {miss['filter']} {miss['value']!r} -- "
+              f"known: {', '.join(miss['known']) or '(none)'}", file=sys.stderr)
+
+    rows = result["issues"]
+    if not rows:
+        print("rein linear: no issues match" if result["filters"] else "rein linear: no issues")
+        return 0
+    for r in rows:
+        warn = "  !" + "; ".join(r["warnings"]) if r["warnings"] else ""
+        print(f'{r["identifier"]:<8} {_lselect.priority_name(r["priority"]):<7} '
+              f'{r["repo"]:<15} {r["state"]:<12} {r["title"][:60]}{warn}')
+    print(f"\n{len(rows)} issue{'s' if len(rows) != 1 else ''}")
+    return 0
+
+
+def _print_issue(r: dict) -> None:
+    print(f'{r["identifier"]}  {r["title"]}')
+    print(f'  state    {r["state"]} ({r["stateType"]})')
+    print(f'  priority {_lselect.priority_name(r["priority"])}')
+    print(f'  repo     {r["repo"] or "(none)"}')
+    if r["flows"]:
+        print(f'  flows    {", ".join(r["flows"])}')
+    if r["foundBy"]:
+        print(f'  found by {r["foundBy"]}')
+    if r["parent"]:
+        print(f'  parent   {r["parent"]}')
+    if r["branchName"]:
+        print(f'  branch   {r["branchName"]}')
+    for w in r["warnings"]:
+        print(f'  WARNING  {w}')
+    for m in r["missing"]:
+        print(f'  MISSING  {m}')
+    if r["impact"]:
+        print(f'\nImpacto: {r["impact"]}')
+    if r["body"]:
+        print(f'\n{r["body"]}')
 
 
 def cmd_next(argv: list[str]) -> int:
@@ -1010,7 +1077,7 @@ def cmd_backlog(argv: list[str]) -> int:
         _backlog.check(root)
     except _backlog.BacklogCorrupt as exc:
         # A named message, not a traceback. Duplicate ids mean two lines
-        # answer to one Plane card, so listing them as if all were fine
+        # answer to the same item, so listing them as if all were fine
         # would be the wrong kind of helpful.
         print(f"rein backlog: {exc}", file=sys.stderr)
         return 1
@@ -1047,8 +1114,8 @@ COMMANDS = {
     "dashboard": cmd_dashboard,
     "serve-probe": cmd_serve_probe,
     "workspace": cmd_workspace,
+    "linear": cmd_linear,
     "backlog": cmd_backlog,
-    "sync": cmd_sync,
 }
 
 
