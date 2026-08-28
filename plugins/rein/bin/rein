@@ -38,6 +38,10 @@ Subcommands:
                       index cards are excluded unless --groupers
   rein linear show <ID>
                       one issue, with its prose. Needs REIN_LINEAR_API_KEY
+  rein intake <ID>    take an issue: Beads issue in the owning repo, branch named
+                      the way Linear named it, and Backlog -> In Progress
+  rein land <ID>      close it out: Beads closed, Linear -> Done. Refuses when
+                      the base branch carries no commit naming the issue
 
 Kept dependency-free on purpose: a plugin that drags a toolchain along at install
 time is a plugin nobody installs. Python 3 stdlib only.
@@ -67,6 +71,7 @@ import plan_check as _plan_check  # noqa: E402
 import linear_client as _lclient  # noqa: E402
 import linear_issue as _lissue  # noqa: E402
 import linear_select as _lselect  # noqa: E402
+import linear_intake as _lintake  # noqa: E402
 import product_state as _pstate  # noqa: E402
 import setup as _setup  # noqa: E402
 import serve as _serve  # noqa: E402
@@ -454,6 +459,90 @@ def _print_issue(r: dict) -> None:
         print(f'\nImpacto: {r["impact"]}')
     if r["body"]:
         print(f'\n{r["body"]}')
+
+
+def _workspace_root(argv: list[str]) -> str:
+    """Where the sibling repos live.
+
+    `--root` wins. Otherwise: the PARENT of the current repository, because
+    the issue names a repo by directory name and that is where its siblings
+    are. Outside a repository, the working directory itself.
+    """
+    explicit = _opt(argv, "root")
+    if explicit:
+        return explicit
+    cwd = os.path.abspath(".")
+    return os.path.dirname(cwd) if os.path.isdir(os.path.join(cwd, ".git")) else cwd
+
+
+def _linear_client_or_exit():
+    try:
+        return _lclient.LinearClient(), 0
+    except _lclient.LinearAuthError as exc:
+        print(f"rein: {exc}", file=sys.stderr)
+        return None, 1
+
+
+def _print_intake_report(report: dict, verb: str) -> None:
+    head = f"{report['identifier']}  {verb}"
+    if report.get("dryRun"):
+        head += "  (dry run)"
+    print(head)
+    print(f"  repo   {report['repo']}")
+    if report.get("branch"):
+        print(f"  rama   {report['branch']} (base {report['base']})")
+    if report.get("bead"):
+        print(f"  bead   {report['bead']}")
+    if report.get("mergeCommit"):
+        print(f"  commit {report['mergeCommit']}")
+    for step in report["steps"]:
+        print(f"  · {step}")
+
+
+def cmd_intake(argv: list[str]) -> int:
+    """Take one issue off the board. Everything between `intake` and `land`
+    is the ordinary flow: rein-plan, rein-apply, rein-audit."""
+    identifier = _positional(argv)
+    if not identifier:
+        print("usage: rein intake <ID> [--root <workspace>] [--dry-run]")
+        return 2
+    client, code = _linear_client_or_exit()
+    if client is None:
+        return code
+    try:
+        report = _lintake.intake(identifier, root=_workspace_root(argv), client=client,
+                                 dry_run="--dry-run" in argv)
+    except _lintake.IntakeError as exc:
+        print(f"rein intake: {exc}", file=sys.stderr)
+        return 1
+    except _lclient.LinearError as exc:
+        print(f"rein intake: {exc}", file=sys.stderr)
+        return 1
+    _print_intake_report(report, "tomado")
+    return 0
+
+
+def cmd_land(argv: list[str]) -> int:
+    """Close it out, once it is actually merged."""
+    identifier = _positional(argv)
+    if not identifier:
+        print("usage: rein land <ID> [--root <workspace>] [--bead <id>] [--force] [--dry-run]")
+        return 2
+    client, code = _linear_client_or_exit()
+    if client is None:
+        return code
+    try:
+        report = _lintake.land(identifier, root=_workspace_root(argv), client=client,
+                               bead=_opt(argv, "bead"), force="--force" in argv,
+                               dry_run="--dry-run" in argv)
+    except _lintake.IntakeError as exc:
+        print(f"rein land: {exc}", file=sys.stderr)
+        return 1
+    except _lclient.LinearError as exc:
+        print(f"rein land: {exc}", file=sys.stderr)
+        return 1
+    _print_intake_report(report, "cerrado")
+    return 0
 
 
 def cmd_next(argv: list[str]) -> int:
@@ -1115,6 +1204,8 @@ COMMANDS = {
     "serve-probe": cmd_serve_probe,
     "workspace": cmd_workspace,
     "linear": cmd_linear,
+    "intake": cmd_intake,
+    "land": cmd_land,
     "backlog": cmd_backlog,
 }
 
