@@ -686,6 +686,16 @@ def cmd_next(argv: list[str]) -> int:
         change=_opt(argv, "change"),
         configured=_opt(argv, "path") or cfg["plan"].get("path", ""),
     )
+    # The plan says what may be worked on; it cannot say whether the gate that
+    # work will be judged against can even run. That check existed only inside
+    # loop.js's Prepare phase, so every other caller of `rein next` was blind
+    # to it. Reads the last persisted `rein verify` report -- runs nothing.
+    result = _gate.decide_claimable(
+        result,
+        _verify.read_state(cfg["root"]),
+        cfg.get("commands") or {},
+        monorepo_unconfigured=_gate.monorepo_unconfigured(cfg),
+    )
     print(json.dumps(result, indent=2))
     # Exit code carries the same signal, so `rein next && ...` works in a shell
     # without parsing anything.

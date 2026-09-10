@@ -381,6 +381,102 @@ def decide_gate(report: dict, review: dict = None, require_review: bool = False)
                     setup, failed, passed, ignored)
 
 
+# ------------------------------------------------------- claimability --
+# `next_task` answers "what may be worked on now" from the PLAN alone. It has
+# no idea whether the gate that task will be judged against can even run.
+#
+# `loop.js` knew: its Prepare phase ran `rein verify` and refused to dispatch
+# an implementer when the test command was not invocable -- "no implementer is
+# paid to work toward a gate that cannot pass". That check lived only inside
+# the loop, so it disappeared for every other caller. This is that rule, in
+# the library, where anything can reach it.
+#
+# Freshness follows this kit's existing convention (see `_annotated_verify_state`
+# in the CLI): a recorded outcome is about the command it was recorded against,
+# so it is fresh only while the currently resolved command is still that one.
+# Not a timestamp -- a lockfile change can rewrite the command out from under a
+# report that ran seconds ago.
+
+
+def monorepo_unconfigured(resolved: dict) -> bool:
+    """A monorepo root with no sub-project chosen, so nothing resolves.
+
+    This used to be a sentence in a prompt -- loop.js asked its Prepare agent
+    to compute `monorepoUnconfigured <- true iff config.stack === "monorepo"
+    AND config.missingCommands`. A boolean a model derives is a boolean a model
+    can get wrong, and this one gates whether any work starts at all.
+    """
+    r = resolved or {}
+    return r.get("stack") == "monorepo" and bool(r.get("missingCommands"))
+
+
+def decide_claimable(
+    result: dict,
+    verify_state: dict = None,
+    commands: dict = None,
+    monorepo_unconfigured: bool = False,
+) -> dict:
+    """`next_task`'s answer, plus whether its gate can actually run. Pure.
+
+    Blocks on a KNOWN-uninvocable test command, warns on lint/typecheck, and
+    when nothing is known says so via `gateProven: False` WITHOUT blocking.
+
+    That last choice is deliberate and it is the opposite of the rule in
+    `decide_gate`. Refusing to claim a task because nobody has run `rein
+    verify` yet would make this unusable on a fresh checkout -- friction that
+    gets the whole command bypassed, which is worse than an unproven gate.
+    Reporting is this command's job; proving is `rein gate`'s, and that one
+    runs the commands rather than reading about them.
+    """
+    out = dict(result or {})
+    warnings = list(out.get("warnings") or [])
+    resolved = commands or {}
+    recorded = ((verify_state or {}).get("results") or {})
+
+    def slot(name):
+        """The recorded outcome for `name`, only if it is still about the
+        command that would run now."""
+        vr = recorded.get(name) or {}
+        if not vr:
+            return None
+        if vr.get("command") != resolved.get(name):
+            return None
+        return vr
+
+    if monorepo_unconfigured:
+        out["ready"] = False
+        out["reason"] = ('this is a monorepo root with no sub-project chosen -- set "subproject" in '
+                         "flow.config.json before any mechanical gate can resolve at all")
+        out["gateProven"] = False
+        out["warnings"] = warnings
+        return out
+
+    test = slot("test")
+    if test is not None and not test.get("invocable", True):
+        out["ready"] = False
+        out["reason"] = (f"the test command is not invocable ({test.get('outcome') or 'unknown'}) -- "
+                         "no implementer is paid to work toward a gate that cannot pass")
+        out["gateProven"] = False
+        out["warnings"] = warnings
+        return out
+
+    for name in ("lint", "typecheck"):
+        vr = slot(name)
+        if vr is not None and not vr.get("invocable", True):
+            warnings.append(f"{name} is not invocable ({vr.get('outcome') or 'unknown'}) -- "
+                            "carried, not required to claim a task")
+
+    if test is None:
+        out["gateProven"] = False
+        out["gateReason"] = ("no fresh `rein verify` for the test command -- run `rein gate` to prove it "
+                             "rather than assuming it")
+    else:
+        out["gateProven"] = True
+
+    out["warnings"] = warnings
+    return out
+
+
 def _verdict(decision, exit_code, reason, setup, failed, passed, ignored) -> dict:
     return {
         "decision": decision,
