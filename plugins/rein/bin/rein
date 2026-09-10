@@ -16,6 +16,9 @@ Subcommands:
                       exits 0 passed / 1 the code is wrong / 126 the environment
                       could not run the checks. --require-review also demands a
                       current APPROVED review episode
+  rein role <name>    one role's operating profile (planner|implementer|reviewer)
+                      as plain markdown -- the same section Claude Code reads via
+                      /rein:rein-role, for any agent that cannot invoke a skill
   rein tasks          parsed plan as JSON (tasks.md or openspec)
   rein plan-check     mechanical findings on a drafted plan's own text, as JSON.
                       Always exits 0 (D5: never a silent skip, never a hard stop) --
@@ -84,6 +87,7 @@ import events as _events  # noqa: E402
 import gate as _gate  # noqa: E402
 import plan as _plan  # noqa: E402
 import plan_check as _plan_check  # noqa: E402
+import roles as _roles  # noqa: E402
 import linear_client as _lclient  # noqa: E402
 import linear_issue as _lissue  # noqa: E402
 import linear_select as _lselect  # noqa: E402
@@ -305,6 +309,46 @@ def cmd_gate(argv: list[str]) -> int:
     if decision["decision"] == _gate.GATE_SETUP:
         print("  fix the environment and run again -- this is not a verdict on the code")
     return decision["exit"]
+
+
+def cmd_role(argv: list[str]) -> int:
+    """One role's operating profile, for an agent that is not Claude Code.
+
+    The profiles live in the `rein-role` SKILL, which Claude Code invokes as
+    `/rein:rein-role`. Nothing else can. This prints the SAME section of the
+    SAME file, so any agent -- codex, opencode, a shell -- can be handed the
+    rules it is expected to be bound by.
+
+    Deliberately not a second copy: this kit already proves one definition has
+    two consumers by matching both shipped files against each other, because
+    two copies of one rule drift apart with nothing failing. Reading the one
+    file makes drift impossible rather than merely detectable.
+
+    Prints and nothing else -- no event is recorded. A command whose job is to
+    emit text should be safe to pipe.
+    """
+    if "--list" in argv or not _positional(argv):
+        found = _roles.available(PLUGIN_ROOT)
+        if not found:
+            print(f"role: SETUP -- no role profiles found at {_roles.skill_path(PLUGIN_ROOT)}")
+            return _gate.EXIT_SETUP
+        print("usage: rein role <" + "|".join(found) + ">")
+        return 0 if "--list" in argv else 2
+
+    result = _roles.profile(_positional(argv), PLUGIN_ROOT)
+    if not result["ok"]:
+        print(f"role: {result['error']}")
+        # An unknown role is the caller's mistake; an unreadable skill file is
+        # this installation's. Different exit codes, because a caller that gets
+        # 126 has been told to fix its machine, not its argument.
+        return 2 if "unknown role" in result["error"] else _gate.EXIT_SETUP
+
+    if "--json" in argv:
+        print(json.dumps(result, indent=2))
+        return 0
+    print(f"# role: {result['role']}\n")
+    print(result["text"])
+    return 0
 
 
 def cmd_tasks(argv: list[str]) -> int:
@@ -1388,6 +1432,7 @@ COMMANDS = {
     "detect": cmd_detect,
     "verify": cmd_verify,
     "gate": cmd_gate,
+    "role": cmd_role,
     "tasks": cmd_tasks,
     "plan-check": cmd_plan_check,
     "context": cmd_context,

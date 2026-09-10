@@ -168,6 +168,9 @@ rein plan-check  # mechanical findings on a drafted plan's own text — what a r
                  # on a BLOCKING finding. `--tasks T001,T002` scopes it — a finding pinned
                  # to a task nobody will run cannot stop it, while one with no task id is
                  # plan-level and always counts
+rein role <name> # ✅ one role's operating profile (planner|implementer|reviewer) as
+                 # markdown — the same section /rein:rein-role reads, for any agent
+                 # that cannot invoke a Claude Code skill
 rein next        # ✅ the gate: is there a task to claim, and may it be
 rein close T001  # tick a checkbox deterministically — no agent hand-edits the plan
 rein review      # record / check a verdict bound to a code state
