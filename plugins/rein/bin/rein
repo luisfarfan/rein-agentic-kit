@@ -17,7 +17,14 @@ Subcommands:
                       could not run the checks. --require-review also demands a
                       current APPROVED review episode
   rein tasks          parsed plan as JSON (tasks.md or openspec)
-  rein plan-check     mechanical findings on a drafted plan's own text, as JSON
+  rein plan-check     mechanical findings on a drafted plan's own text, as JSON.
+                      Always exits 0 (D5: never a silent skip, never a hard stop) --
+                      it runs inside the planning skill, where the judgement is the
+                      planner's. `--gate` is for a RUNNER instead: exits 1 on a
+                      BLOCKING finding, 126 when the file cannot be read. `--tasks
+                      T001,T002` scopes it -- a finding pinned to a task nobody will
+                      execute cannot stop the run, while one with no task id is
+                      plan-level and always counts
   rein context        detect + tasks in ONE call -- what the loop's first agent runs
   rein close <id>     tick a task's checkbox in the plan
   rein next           the DETERMINISTIC gate: is there a task to claim, and may it be
@@ -355,8 +362,34 @@ def cmd_plan_check(argv: list[str]) -> int:
             # module that neither exists nor is promised. Decidable, so BLOCKING.
 
             findings += _plan_check.unbacked_findings(text, os.path.dirname(os.path.abspath(path)) or '.')
-    print(json.dumps({"path": path, "error": error, "findings": findings}, indent=2))
-    return 0
+    # Scoped to the tasks this run will actually execute: a BLOCKING finding
+    # pinned to a task nobody will touch cannot waste an implementer, and
+    # stopping for it is the false stop the scoping exists to prevent. A
+    # finding with NO taskId is plan-level and always counts.
+    only_raw = _opt(argv, "tasks")
+    run_ids = [t.strip() for t in only_raw.split(",") if t.strip()] if only_raw else []
+    decision = _plan_check.decide_plan_check(findings, run_ids)
+
+    print(json.dumps({"path": path, "error": error, "findings": findings,
+                      "decision": decision["decision"], "reason": decision["reason"]}, indent=2))
+
+    # A file that could not be read is a setup problem, not a clean plan. This
+    # returned 0 for a missing path, which is the same silent pass the rest of
+    # this CLI has been losing.
+    # D5 -- "never a silent skip, never a hard stop". This command runs INSIDE
+    # /rein:rein-plan, before the plan is written, where a hard stop would
+    # replace the planner's judgement with a regex's. So by default it reports
+    # and exits 0, missing file included, exactly as it always has.
+    #
+    # A RUNNER is a different consumer of the same findings: loop.js called
+    # decidePlanCheck and stopped before Isolate, because a BLOCKING finding
+    # found there costs nothing and the same one found at Review costs a whole
+    # run. `--gate` is that second consumer, opt-in, so D5 keeps its default.
+    if "--gate" not in argv:
+        return 0
+    if error:
+        return _gate.EXIT_SETUP
+    return 1 if decision["decision"] == _plan_check.DECISION_STOP else 0
 
 
 def cmd_context(argv: list[str]) -> int:
