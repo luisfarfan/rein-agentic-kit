@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -79,6 +80,63 @@ class RoleProfileTestCase(unittest.TestCase):
             self.assertFalse(result["ok"])
             self.assertIn("cannot read", result["error"])
             self.assertEqual(roles.available(empty), [])
+
+
+class RoleIsActionableWithoutClaudeCodeTestCase(unittest.TestCase):
+    """The guarantee that makes `rein role` worth having.
+
+    A profile whose only instruction is `/rein:rein-audit` hands a Codex or
+    OpenCode agent something it cannot run. Naming a real CLI command is what
+    makes the text actionable anywhere, so it is checked rather than trusted —
+    and checked against the CLI's own registry, so a profile naming a command
+    that was renamed or never existed fails here.
+    """
+
+    @staticmethod
+    def _real_subcommands():
+        """Straight from the shipped CLI's dispatch table."""
+        with open(REIN, encoding="utf-8") as fh:
+            src = fh.read()
+        block = re.search(r"^COMMANDS = \{(.*?)^\}", src, re.S | re.M)
+        assert block, "the CLI no longer has a COMMANDS table to check against"
+        return set(re.findall(r'"([\w-]+)":', block.group(1)))
+
+    def test_every_role_names_at_least_one_real_cli_command(self):
+        real = self._real_subcommands()
+        for role in roles.ROLES:
+            with self.subTest(role=role):
+                text = roles.profile(role, PLUGIN_ROOT)["text"]
+                named = {m for m in re.findall(r"`rein ([\w-]+)", text)}
+                self.assertTrue(
+                    named & real,
+                    f"the {role} profile names no runnable command; an agent that cannot "
+                    f"invoke a Claude Code skill is left with nothing to do",
+                )
+
+    def test_no_profile_names_a_command_that_does_not_exist(self):
+        real = self._real_subcommands()
+        for role in roles.ROLES:
+            with self.subTest(role=role):
+                named = set(re.findall(r"`rein ([\w-]+)", roles.profile(role, PLUGIN_ROOT)["text"]))
+                self.assertEqual(named - real, set(),
+                                 "a profile names a subcommand this CLI does not ship")
+
+    def test_each_role_names_the_command_that_is_actually_its_own(self):
+        """Not just any command — the one that role's work turns on."""
+        expected = {"planner": "plan-check", "implementer": "next", "reviewer": "gate"}
+        for role, command in expected.items():
+            with self.subTest(role=role):
+                self.assertIn(f"`rein {command}",
+                              roles.profile(role, PLUGIN_ROOT)["text"])
+
+    def test_a_slash_command_never_appears_without_a_cli_command_beside_it(self):
+        for role in roles.ROLES:
+            with self.subTest(role=role):
+                text = roles.profile(role, PLUGIN_ROOT)["text"]
+                if "/rein:" in text:
+                    self.assertRegex(text, r"`rein [\w-]+",
+                                     "a slash command is Claude Code's front door, not an "
+                                     "instruction every agent can follow")
 
 
 class RoleCliTestCase(unittest.TestCase):

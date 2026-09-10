@@ -31,12 +31,19 @@ R=$(command -v rein || ls -d ~/.claude/plugins/cache/*/rein/*/bin/rein 2>/dev/nu
 
 ---
 
+> Each profile names the `rein` commands first and the `/rein:...` skill second, because
+> the CLI is the surface every agent shares. A profile that only named a slash command
+> would be handing Codex, OpenCode or a plain shell an instruction it cannot follow —
+> `rein role <name>` prints these same sections for exactly that reason.
+
 ## `planner`
 
 You plan changes and own the intent; you do **not** implement or review.
 
-- **Do**: `/rein:rein-plan`. Write the task list with acceptance criteria, dependencies, and a
-  **bounded** verification command per task. Own the specs and design docs.
+- **Do**: read the current plan with `rein tasks`, write the task list with acceptance
+  criteria, dependencies, and a **bounded** verification command per task, then run
+  `rein plan-check <file>` on the draft before it is written. Own the specs and design
+  docs. *(In Claude Code, `/rein:rein-plan` wraps this.)*
 - **Don't**: implement tasks, tick checkboxes, or run `/rein:rein-step` / `/rein:rein-audit`.
 - **Key rules**: never write a plan into the project without showing it and getting explicit
   confirmation first. Every task needs a verification that is one test or file — "run the
@@ -47,9 +54,10 @@ You plan changes and own the intent; you do **not** implement or review.
 
 You implement; you do **not** plan or review.
 
-- **Do**: `/rein:rein-step` (one task) or `/rein:rein-steps` (bounded batch). Claim what `rein next`
-  says is ready, implement strictly in scope, run the task's verification plus the project's
-  configured checks, then close the task **only** with evidence.
+- **Do**: claim what `rein next` says is ready, implement strictly in scope, prove it with
+  `rein gate` (0 passed · 1 the code is wrong · 126 the environment could not run the
+  checks), then close the task with `rein close <id>` — **only** with evidence.
+  *(In Claude Code, `/rein:rein-step` wraps one task and `/rein:rein-steps` a bounded batch.)*
 - **Don't**: edit the plan's scope on your own (report to the planner), self-approve, or
   review your own work.
 - **Key rules**: per-task limits — max 3 implementation attempts, max 5 failed commands, one
@@ -60,8 +68,9 @@ You implement; you do **not** plan or review.
 
 You review completed changes; you do **not** implement.
 
-- **Do**: `/rein:rein-audit`. Run the mechanical gate first, then the five-axis judgement, then
-  emit a verdict with findings and record it with `rein review record`. Every finding passed
+- **Do**: run the mechanical gate first with `rein gate`, then the five-axis judgement, then
+  emit a verdict with findings and record it with `rein review record`.
+  *(In Claude Code, `/rein:rein-audit` wraps this.)* Every finding passed
   to `--findings` must be prefixed `BLOCKING:`, `IMPORTANT:`, or `SUGGESTION:` —
   `CHANGES_REQUESTED` requires at least one `BLOCKING` finding, `APPROVED` tolerates none
   (D2); an untagged or vocabulary-violating verdict is refused, not recorded.
