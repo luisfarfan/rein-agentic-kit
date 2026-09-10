@@ -285,3 +285,109 @@ def check_review(root: str, change: str = "") -> dict:
         "episode": episode.get("path", ""),
         "findings": _normalize_findings(episode.get("findings", [])),
     }
+
+
+# ------------------------------------------------------------------- gate --
+# `rein verify` answers "could these commands be INVOKED at all" -- a precheck,
+# so nobody is paid to work toward a gate that cannot pass. It returns 0 when
+# every command was invocable, which means a test suite that ran and FAILED
+# exits 0 there. That is right for a precheck and useless as a gate.
+#
+# This answers the other question: did they PASS. Same report, different
+# verdict, and the two exit codes stay distinct so a dead environment can never
+# be reported as bad code.
+
+GATE_GREEN = "green"
+GATE_RED = "red"
+GATE_SETUP = "setup"
+
+EXIT_GREEN = 0
+EXIT_RED = 1
+EXIT_SETUP = 126
+
+# What a gate is allowed to be. `testOne` runs against a synthetic target that
+# no suite owns (verify's OUTCOME_INCONCLUSIVE exists for exactly that), and
+# `serve` is a dev server that never runs to completion -- neither proves
+# anything about a change, so neither can hold the gate open or shut.
+GATE_SLOTS = ("test", "lint", "typecheck", "build")
+
+# Outcomes that mean the environment failed, not the code. Kept as names rather
+# than imported from verify so this module stays free of that dependency (it is
+# imported by the CLI alongside verify, never beneath it).
+_SETUP_OUTCOMES = ("not_invocable", "timeout")
+_PASS_OUTCOMES = ("ok",)
+
+
+def decide_gate(report: dict, review: dict = None, require_review: bool = False) -> dict:
+    """Did the configured gate commands pass? Pure -- runs nothing.
+
+    Setup beats red, always. A run where typecheck could not be invoked and
+    the tests failed reports SETUP, because an environment that cannot run
+    half its checks has not earned the right to call the code wrong.
+
+    This is deliberately stricter than `decideGatePrecheck`, which treats an
+    uninvocable lint or typecheck as a warning. That function runs BEFORE the
+    work, deciding whether to start at all, and you can still write code with
+    a broken linter. This one runs AFTER, deciding whether the work is done --
+    and a check that never ran is not a check that passed. Same fact, opposite
+    consequence, because the question is not the same.
+    """
+    results = (report or {}).get("results") or {}
+
+    setup, failed, passed, ignored = [], [], [], []
+    for slot in sorted(results):
+        res = results[slot] or {}
+        outcome = res.get("outcome", "")
+        if slot not in GATE_SLOTS:
+            ignored.append(f"{slot} [{outcome}]")
+            continue
+        if outcome in _SETUP_OUTCOMES or not res.get("invocable", True):
+            setup.append(f"{slot} [{outcome or 'unknown'}]")
+        elif outcome in _PASS_OUTCOMES:
+            passed.append(slot)
+        elif outcome == "skipped":
+            # Configured but deliberately not run this time; it proves nothing
+            # either way, so it neither passes nor blocks.
+            ignored.append(f"{slot} [skipped]")
+        else:
+            failed.append(f"{slot} [{outcome or 'unknown'}] exit={res.get('exitCode')}")
+
+    if setup:
+        return _verdict(GATE_SETUP, EXIT_SETUP,
+                        "could not be invoked: " + ", ".join(setup) +
+                        " -- a setup problem, not a code problem",
+                        setup, failed, passed, ignored)
+
+    if failed:
+        return _verdict(GATE_RED, EXIT_RED, "failed: " + ", ".join(failed),
+                        setup, failed, passed, ignored)
+
+    if not passed:
+        # Nothing ran. Green here would be the loudest possible lie: it is the
+        # shape of every silent pass this kit exists to prevent -- a gate that
+        # reports success because it checked nothing at all.
+        return _verdict(GATE_SETUP, EXIT_SETUP,
+                        "no gate command ran -- nothing was verified, so nothing is proven",
+                        setup, failed, passed, ignored)
+
+    if require_review:
+        rev = review or {}
+        if not rev.get("ok"):
+            return _verdict(GATE_RED, EXIT_RED,
+                            "review gate not satisfied: " + (rev.get("reason") or "no review recorded"),
+                            setup, failed, passed, ignored)
+
+    return _verdict(GATE_GREEN, EXIT_GREEN, "passed: " + ", ".join(passed),
+                    setup, failed, passed, ignored)
+
+
+def _verdict(decision, exit_code, reason, setup, failed, passed, ignored) -> dict:
+    return {
+        "decision": decision,
+        "exit": exit_code,
+        "reason": reason,
+        "setup": setup,
+        "failed": failed,
+        "passed": passed,
+        "ignored": ignored,
+    }

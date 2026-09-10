@@ -157,6 +157,7 @@ rein detect      # stack + commands, with the source of each
 rein tasks       # the plan, parsed
 rein context     # detect + plan in ONE round-trip — what the loop's first agent runs
 rein verify      # actually RUN each resolved command and report the truth — an inference is not a fact
+rein gate        # ✅ did they PASS — 0 green · 1 the code is wrong · 126 the environment could not run them
                  # --plan: run each TASK's own Verification before implementers are paid.
                  # Failing is fine (the work does not exist yet); proving NOTHING is not —
                  # a missing test module or a selector matching zero tests exits non-zero
