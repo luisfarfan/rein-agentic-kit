@@ -79,8 +79,17 @@ def _run_node(args: dict) -> dict:
 
 
 def _sh(cmd: str, cwd: str | None = None) -> subprocess.CompletedProcess:
-    """Run a literal shell command exactly as an implementer agent would."""
-    return subprocess.run(["bash", "-c", cmd], cwd=cwd, capture_output=True, text=True)
+    """Run a literal shell command exactly as an implementer agent would.
+
+    The locale is pinned because two assertions in this file read git's own
+    prose ("invalid reference", "refs/heads/..."), and git translates it: on a
+    Spanish-configured machine the same failure reads "referencia inválida",
+    so the test failed for the language of the developer's shell rather than
+    for anything about the code. A test that passes only in the locale it was
+    written in is a test that reports the wrong thing on the next machine.
+    """
+    env = {**os.environ, "LC_ALL": "C", "LANG": "C", "LANGUAGE": "C"}
+    return subprocess.run(["bash", "-c", cmd], cwd=cwd, capture_output=True, text=True, env=env)
 
 
 def _init_repo(path: str, default_branch: str) -> None:

@@ -25,11 +25,33 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 REIN_BIN = os.path.join(REPO_ROOT, "plugins", "rein", "bin", "rein")
 
 
+_LANGUAGE_KEYS = ("language_servers:", "languages:")
+
+
 def _active_languages(yml_path: str) -> list[str]:
-    """The `languages:` block of a generated project.yml, without a yaml dep."""
+    """The enabled-languages block of a generated project.yml, without a yaml dep.
+
+    Two key names are accepted because this file is serena's output, not
+    rein's: current serena writes `language_servers:`, older versions wrote
+    `languages:`. Pinning to one of them made this test fail for serena's
+    release notes instead of for anything rein does, and the failure mode was
+    a bare ValueError from `list.index` -- which reads as a broken test, not
+    as "the vendor renamed a key".
+    """
     with open(yml_path, encoding="utf-8") as fh:
         lines = fh.read().splitlines()
-    start = lines.index("languages:") + 1
+
+    start = None
+    for key in _LANGUAGE_KEYS:
+        if key in lines:
+            start = lines.index(key) + 1
+            break
+    if start is None:
+        raise AssertionError(
+            f"{yml_path} has none of {_LANGUAGE_KEYS} — serena's project.yml format "
+            f"changed again; keys present: {[l for l in lines if l and not l.startswith((' ', '-', '#'))][:12]}"
+        )
+
     langs = []
     for line in lines[start:]:
         if line.startswith("- "):
