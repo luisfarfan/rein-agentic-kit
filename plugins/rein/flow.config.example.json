@@ -52,8 +52,9 @@
   },
 
   "verify": {
-    "$comment": "mode: 'auto' (default) detects from the stack -- frontend subtypes get 'rendered', infra without a test command gets 'plan-only', everything else gets 'unit'. Set explicitly to override: 'rendered' requires a real observed browser render (Playwright / Claude-in-Chrome) instead of a passing test suite alone -- 'the tests pass but the UI is broken' is the failure this catches. 'plan-only' forbids destructive ops against real infrastructure. 'unit' is today's plain test-suite behavior. url overrides the auto-detected dev-server URL used for rendered checks (e.g. when the app is served under a subpath).",
+    "$comment": "mode: 'auto' (default) detects from the stack -- frontend subtypes get 'rendered', infra without a test command gets 'plan-only', everything else gets 'unit'. Set explicitly to override: 'rendered' requires a real observed browser render (Playwright / Claude-in-Chrome) instead of a passing test suite alone -- 'the tests pass but the UI is broken' is the failure this catches. 'plan-only' forbids destructive ops against real infrastructure. 'unit' is today's plain test-suite behavior. Asking for MORE than detection inferred needs nothing; asking for LESS ('unit' where 'rendered' or 'plan-only' was detected) needs \"until\": \"YYYY-MM-DD\" and stops applying after that date -- an exception without an expiry is not an exception, it is the new default. url overrides the auto-detected dev-server URL used for rendered checks (e.g. when the app is served under a subpath).",
     "mode": "auto",
+    "until": "",
     "url": ""
   }
 }

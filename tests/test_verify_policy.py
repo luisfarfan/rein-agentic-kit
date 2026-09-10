@@ -224,20 +224,41 @@ class TestConfigOverride(unittest.TestCase):
         self.assertEqual(r["verifyPolicy"]["mode"], "rendered")
         self.assertTrue(r["verifyPolicy"]["requires"])
 
-    def test_config_mode_overrides_frontend_detection(self):
-        cfg = json.dumps({"verify": {"mode": "unit"}})
+    def test_a_dated_downgrade_of_frontend_detection_is_honoured(self):
+        """Still possible -- sometimes a frontend genuinely cannot render in CI
+        yet -- but it now carries an expiry."""
+        cfg = json.dumps({"verify": {"mode": "unit", "until": "2099-01-01"}})
         with Project({"package.json": PKG_VITE, "flow.config.json": cfg}) as root:
             r = detect.resolve(root)
         self.assertIn("frontend", r["subtypes"])
         self.assertEqual(r["verifyPolicy"]["mode"], "unit")
         self.assertEqual(r["verifyPolicy"]["requires"], [])
 
-    def test_config_mode_overrides_infra_plan_only(self):
+    def test_an_undated_downgrade_of_frontend_detection_does_not_apply(self):
+        """proxima-storefront-v2 carried exactly this: `verify.mode: "unit"` on
+        an Astro app, two lines below the subtypes it contradicted, turning off
+        the one gate that catches "the tests pass but the UI is broken"."""
         cfg = json.dumps({"verify": {"mode": "unit"}})
+        with Project({"package.json": PKG_VITE, "flow.config.json": cfg}) as root:
+            r = detect.resolve(root)
+        self.assertEqual(r["verifyPolicy"]["mode"], "rendered")
+        self.assertTrue(any("weaker than the detected" in w for w in r["verifyWarnings"]))
+
+    def test_a_dated_downgrade_of_infra_plan_only_is_honoured(self):
+        cfg = json.dumps({"verify": {"mode": "unit", "until": "2099-01-01"}})
         with Project({"serverless.yml": "", "flow.config.json": cfg}) as root:
             r = detect.resolve(root)
         self.assertEqual(r["verifyPolicy"]["mode"], "unit")
         self.assertEqual(r["verifyPolicy"]["forbids"], [])
+
+    def test_an_undated_downgrade_keeps_infra_forbidding_destructive_ops(self):
+        """The prohibition exists because an infra task "verified" by mutating
+        real infrastructure is an incident, not a verification."""
+        cfg = json.dumps({"verify": {"mode": "unit"}})
+        with Project({"serverless.yml": "", "flow.config.json": cfg}) as root:
+            r = detect.resolve(root)
+        self.assertEqual(r["verifyPolicy"]["mode"], "plan-only")
+        self.assertEqual(list(r["verifyPolicy"]["forbids"]), list(detect.DESTRUCTIVE_OPS))
 
 
 class TestServeBlock(unittest.TestCase):
