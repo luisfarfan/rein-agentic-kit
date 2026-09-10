@@ -453,6 +453,30 @@ def _detect_plan_source(root: str) -> str:
     return "tasks-md"
 
 
+# `capabilities` mixes two facts that behave differently, and reading it as one
+# flat list is a real bug this kit already hit. Most entries are PATH probes --
+# `git`, `node`, `serena` -- and they are the same wherever you stand on this
+# machine. These three are about the DIRECTORY that was passed:
+#
+#   serena-project   .serena/ exists here (serena resolves a project by its dir)
+#   graphify-index   graphify-out/ exists here
+#   codegraph-index  .codegraph/codegraph.db exists here
+#
+# loop.js detected capabilities in the base repo and then had its agents work in
+# a WORKTREE, so every graph command answered "graph file not found" -- the
+# capability was true, about the wrong directory. Its fix was two functions that
+# refused to trust the base list. The rule underneath is simpler and needs no
+# function: re-detect where the tools will actually run, and if you cannot, at
+# least know which entries do not travel.
+DIRECTORY_SCOPED_CAPABILITIES = ("serena-project", "graphify-index", "codegraph-index")
+
+
+def directory_scoped(capabilities: list = None) -> list[str]:
+    """The subset of `capabilities` that is only true for the directory it was
+    detected in. Everything else is a property of the machine."""
+    return [c for c in (capabilities or []) if c in DIRECTORY_SCOPED_CAPABILITIES]
+
+
 def _capabilities(root: str) -> list[str]:
     import shutil
 
