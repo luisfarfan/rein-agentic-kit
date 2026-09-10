@@ -318,7 +318,8 @@ _SETUP_OUTCOMES = ("not_invocable", "timeout")
 _PASS_OUTCOMES = ("ok",)
 
 
-def decide_gate(report: dict, review: dict = None, require_review: bool = False) -> dict:
+def decide_gate(report: dict, review: dict = None, require_review: bool = False,
+                verify_policy: dict = None, serve: dict = None, render: dict = None) -> dict:
     """Did the configured gate commands pass? Pure -- runs nothing.
 
     Setup beats red, always. A run where typecheck could not be invoked and
@@ -370,6 +371,34 @@ def decide_gate(report: dict, review: dict = None, require_review: bool = False)
                         "no gate command ran -- nothing was verified, so nothing is proven",
                         setup, failed, passed, ignored)
 
+    # The commands passed. On a frontend subtype that is not enough by policy,
+    # and the old loop said so out loud and then let it slide: a
+    # "rendered-unverified" outcome was documented as NOT blocking approval.
+    # That is the switch this kit exists to remove, so here it blocks.
+    #
+    # A frontend repo with no serve command and no browser tool will therefore
+    # sit at 126 until both are configured. That is not a bug and not
+    # pessimism -- it is true. Nobody has looked at the UI, so nothing about
+    # the UI is proven, and the alternative is the green that hid it.
+    vp = verify_policy or {}
+    if vp.get("mode") == "rendered":
+        if render is not None:
+            # Evidence exists, so whether a render was POSSIBLE is settled --
+            # somebody managed to look. Only its content is in question.
+            outcome = decide_render_outcome(render)
+            if outcome["failed"]:
+                return _verdict(GATE_RED, EXIT_RED, f"the render failed: {outcome['reason']}",
+                                setup, failed, passed, ignored)
+            passed = passed + ["render"]
+        else:
+            dispatch = decide_render_dispatch(vp, serve)
+            reason = (f"cannot be attempted: {dispatch['reason']} -- set commands.serve and make a "
+                      f"browser tool reachable" if dispatch["unverified"]
+                      else "none was recorded -- a passing suite does not show whether the UI works")
+            return _verdict(GATE_SETUP, EXIT_SETUP,
+                            f"a real browser render is required here and {reason}",
+                            setup, failed, passed, ignored)
+
     if require_review:
         rev = review or {}
         if not rev.get("ok"):
@@ -396,6 +425,58 @@ def decide_gate(report: dict, review: dict = None, require_review: bool = False)
 # so it is fresh only while the currently resolved command is still that one.
 # Not a timestamp -- a lockfile change can rewrite the command out from under a
 # report that ran seconds ago.
+
+
+# ------------------------------------------------------------- render --
+# "The tests pass but the UI is broken" is the failure a unit-test gate cannot
+# see, so `detect` gives every frontend subtype `verifyPolicy.mode = "rendered"`
+# with the requirement spelled out: a real browser render must be OBSERVED, not
+# inferred from a green suite.
+#
+# Both rules below were pure functions inside loop.js, tested by extracting them
+# from its source with a regex. They are policy, not orchestration, so they
+# outlive the loop -- and they belong where any caller can reach them.
+
+
+def decide_render_dispatch(verify_policy: dict = None, serve: dict = None) -> dict:
+    """Can a render even be attempted?
+
+    "We could not look" is a different fact from "we looked and it broke", and
+    conflating them is how a frontend repo ends up green on a suite alone.
+    """
+    vp = verify_policy or {}
+    if vp.get("mode") != "rendered":
+        return {"dispatch": False, "unverified": False, "reason": ""}
+    if not (vp.get("tools") or []):
+        return {"dispatch": False, "unverified": True, "reason": "no browser tool reachable"}
+    sv = serve or {}
+    if not sv.get("command") or not sv.get("url"):
+        return {"dispatch": False, "unverified": True,
+                "reason": "no serve command/url is configured"}
+    return {"dispatch": True, "unverified": False, "reason": ""}
+
+
+def decide_render_outcome(render: dict = None) -> dict:
+    """Did the render prove anything?
+
+    `rendered: true` with no facts alongside it is a failed render, whatever
+    the agent claims. Same rule as everywhere else in this module: a claim is
+    not evidence.
+    """
+    r = render or {}
+    status = r.get("httpStatus")
+    status_ok = isinstance(status, int) and not isinstance(status, bool) and 200 <= status < 300
+    evidence = r.get("evidence")
+    evidence = evidence if isinstance(evidence, list) else []
+
+    if not r.get("rendered"):
+        return {"failed": True, "reason": "rendered=false"}
+    if not status_ok:
+        shown = "is absent" if status is None else f"{status} is not 2xx"
+        return {"failed": True, "reason": f"httpStatus {shown}"}
+    if not evidence:
+        return {"failed": True, "reason": "rendered=true but evidence is empty"}
+    return {"failed": False, "reason": ""}
 
 
 def monorepo_unconfigured(resolved: dict) -> bool:

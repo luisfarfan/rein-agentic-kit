@@ -257,7 +257,31 @@ def cmd_gate(argv: list[str]) -> int:
     _verify.write_state(resolved["root"], report)
 
     review = _gate.check_review(resolved["root"], _opt(argv, "change")) if require_review else None
-    decision = _gate.decide_gate(report, review=review, require_review=require_review)
+
+    # Render evidence arrives as a FILE, written by whatever actually drove a
+    # browser -- never as a flag an agent sets. `--render` is the same rule as
+    # everywhere else in this kit: a process writes the facts, and this reads
+    # them. A frontend repo with no evidence and no way to get it stays at 126,
+    # which is what "nobody has looked at the UI" honestly is.
+    render = None
+    render_path = _opt(argv, "render")
+    if render_path:
+        try:
+            with open(render_path, encoding="utf-8") as fh:
+                render = json.load(fh)
+        except (OSError, json.JSONDecodeError) as exc:
+            print(f"gate: SETUP -- could not read --render {render_path}: {type(exc).__name__}: {exc}")
+            return _gate.EXIT_SETUP
+
+    tools_raw = _opt(argv, "browser-tools")
+    policy = dict(resolved.get("verifyPolicy") or {})
+    if tools_raw:
+        policy["tools"] = [t.strip() for t in tools_raw.split(",") if t.strip()]
+    serve = {"command": (resolved.get("commands") or {}).get("serve") or "",
+             "url": _opt(argv, "url")}
+
+    decision = _gate.decide_gate(report, review=review, require_review=require_review,
+                                 verify_policy=policy, serve=serve, render=render)
 
     if "--json" in argv:
         print(json.dumps({"decision": decision, "report": report}, indent=2))

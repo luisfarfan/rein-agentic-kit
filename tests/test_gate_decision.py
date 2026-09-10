@@ -150,5 +150,113 @@ class DecideGateTestCase(unittest.TestCase):
         self.assertEqual(len({gate.EXIT_GREEN, gate.EXIT_RED, gate.EXIT_SETUP}), 3)
 
 
+RENDERED = {"mode": "rendered", "tools": ["browser"], "requires": [], "forbids": []}
+UNIT = {"mode": "unit", "tools": [], "requires": [], "forbids": []}
+SERVE = {"command": "npm run dev", "url": "http://localhost:4321"}
+GOOD_RENDER = {"rendered": True, "httpStatus": 200, "evidence": ["the heading is there"]}
+
+
+class RenderPolicyTestCase(unittest.TestCase):
+    """"The tests pass but the UI is broken" -- the failure a unit gate cannot see.
+
+    `detect` gives every frontend subtype mode "rendered". The old loop honoured
+    that and then let it slide: a rendered-unverified outcome was documented as
+    NOT blocking approval, which is the switch this kit exists to remove.
+    """
+
+    def test_a_unit_policy_ignores_render_entirely(self):
+        d = gate.decide_gate(_report(test=_slot("ok")), verify_policy=UNIT)
+        self.assertEqual(d["exit"], 0)
+
+    def test_a_green_suite_is_not_enough_when_a_render_is_required(self):
+        d = gate.decide_gate(_report(test=_slot("ok")), verify_policy=RENDERED, serve=SERVE)
+        self.assertEqual(d["decision"], gate.GATE_SETUP)
+        self.assertEqual(d["exit"], 126)
+        self.assertIn("none was recorded", d["reason"])
+
+    def test_no_browser_tool_says_so_and_says_what_to_configure(self):
+        d = gate.decide_gate(_report(test=_slot("ok")),
+                             verify_policy={**RENDERED, "tools": []}, serve=SERVE)
+        self.assertEqual(d["exit"], 126)
+        self.assertIn("no browser tool reachable", d["reason"])
+        self.assertIn("commands.serve", d["reason"])
+
+    def test_no_serve_command_is_also_unattemptable(self):
+        d = gate.decide_gate(_report(test=_slot("ok")), verify_policy=RENDERED,
+                             serve={"command": "", "url": ""})
+        self.assertEqual(d["exit"], 126)
+        self.assertIn("serve command/url", d["reason"])
+
+    def test_a_real_render_completes_the_gate(self):
+        d = gate.decide_gate(_report(test=_slot("ok")), verify_policy=RENDERED,
+                             serve=SERVE, render=GOOD_RENDER)
+        self.assertEqual(d["exit"], 0)
+        self.assertIn("render", d["passed"])
+
+    def test_evidence_present_settles_whether_a_render_was_possible(self):
+        """Somebody clearly managed to look, so the dispatch question is moot."""
+        d = gate.decide_gate(_report(test=_slot("ok")),
+                             verify_policy={**RENDERED, "tools": []},
+                             serve={"command": "", "url": ""}, render=GOOD_RENDER)
+        self.assertEqual(d["exit"], 0)
+
+    def test_a_claim_without_facts_is_a_failed_render(self):
+        d = gate.decide_gate(_report(test=_slot("ok")), verify_policy=RENDERED, serve=SERVE,
+                             render={"rendered": True, "httpStatus": 200, "evidence": []})
+        self.assertEqual(d["decision"], gate.GATE_RED)
+        self.assertIn("evidence is empty", d["reason"])
+
+    def test_a_non_2xx_status_fails(self):
+        d = gate.decide_gate(_report(test=_slot("ok")), verify_policy=RENDERED, serve=SERVE,
+                             render={"rendered": True, "httpStatus": 500, "evidence": ["x"]})
+        self.assertEqual(d["exit"], 1)
+        self.assertIn("500 is not 2xx", d["reason"])
+
+    def test_an_absent_status_fails_and_says_absent(self):
+        d = gate.decide_gate(_report(test=_slot("ok")), verify_policy=RENDERED, serve=SERVE,
+                             render={"rendered": True, "evidence": ["x"]})
+        self.assertIn("is absent", d["reason"])
+
+    def test_a_failing_suite_still_outranks_the_render(self):
+        """The more actionable answer wins: fix the tests first."""
+        d = gate.decide_gate(_report(test=_slot("failed", 1)), verify_policy=RENDERED, serve=SERVE)
+        self.assertEqual(d["decision"], gate.GATE_RED)
+        self.assertIn("test", d["reason"])
+
+    def test_broken_setup_still_outranks_the_render(self):
+        d = gate.decide_gate(_report(test=_slot("not_invocable", 127, invocable=False)),
+                             verify_policy=RENDERED, serve=SERVE)
+        self.assertIn("setup problem", d["reason"])
+
+
+class RenderPrimitivesTestCase(unittest.TestCase):
+    """The two functions as they were inside loop.js, now reachable."""
+
+    def test_dispatch_is_silent_when_the_policy_does_not_ask(self):
+        d = gate.decide_render_dispatch(UNIT, SERVE)
+        self.assertFalse(d["dispatch"])
+        self.assertFalse(d["unverified"], "not asked for is not the same as could not look")
+
+    def test_dispatch_when_tools_and_serve_are_both_there(self):
+        self.assertTrue(gate.decide_render_dispatch(RENDERED, SERVE)["dispatch"])
+
+    def test_rendered_false_fails(self):
+        self.assertTrue(gate.decide_render_outcome({"rendered": False})["failed"])
+
+    def test_a_boolean_is_not_an_http_status(self):
+        """`True` is an int in Python; it must not pass for 200."""
+        d = gate.decide_render_outcome({"rendered": True, "httpStatus": True, "evidence": ["x"]})
+        self.assertTrue(d["failed"])
+
+    def test_evidence_must_be_a_list_not_a_string(self):
+        d = gate.decide_render_outcome({"rendered": True, "httpStatus": 200, "evidence": "looks fine"})
+        self.assertTrue(d["failed"], "a sentence is not a list of facts")
+
+    def test_an_empty_render_report_fails_rather_than_crashing(self):
+        for bad in (None, {}):
+            with self.subTest(render=bad):
+                self.assertTrue(gate.decide_render_outcome(bad)["failed"])
+
+
 if __name__ == "__main__":
     unittest.main()
