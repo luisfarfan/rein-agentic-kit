@@ -73,7 +73,7 @@ import os
 import shutil
 import sys
 
-VERSION = "0.14.0"
+VERSION = "0.15.0"
 
 HERE = os.path.dirname(os.path.abspath(os.path.realpath(__file__)))
 PLUGIN_ROOT = os.path.dirname(HERE)
