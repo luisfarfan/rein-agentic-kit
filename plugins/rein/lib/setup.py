@@ -494,12 +494,17 @@ def index_codegraph(root: str = ".") -> dict:
     codegraph cannot parse still gets every other tool provisioned.
     """
     root = os.path.abspath(root)
-    if not _which("codegraph"):
-        return {"ok": False, "attempted": False,
-                "reason": "missing prerequisite: codegraph binary not found"}
+    # The marker is checked BEFORE the binary, and the order is the whole
+    # point: an indexed repo is indexed whether or not this particular
+    # machine can build one. Probing first reported `ok: False` for a repo
+    # that was already fine, which is the installed-vs-usable conflation
+    # backwards -- usable, and called broken because a tool was absent.
     marker = os.path.join(root, TOOLS["codegraph"]["index"])
     if os.path.exists(marker):
         return {"ok": True, "attempted": False, "reason": "already indexed — left untouched"}
+    if not _which("codegraph"):
+        return {"ok": False, "attempted": False,
+                "reason": "missing prerequisite: codegraph binary not found"}
     ok, out = _run(["codegraph", "init", root])
     return {
         "ok": ok,

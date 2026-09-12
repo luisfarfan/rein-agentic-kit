@@ -448,6 +448,34 @@ class TestInstallClosesTheGapItReports(unittest.TestCase):
         self.assertIn("already indexed", res["reason"])
         self.assertEqual(before, after)
 
+    def test_an_indexed_repo_stays_ok_on_a_machine_without_the_binary(self):
+        """The order of the two guards, pinned.
+
+        This passed on CI for weeks by accident: an earlier test called
+        `install(names=[])`, which -- through the `[] or missing` bug -- fetched
+        every missing tool onto the runner, so `codegraph` happened to be on
+        PATH by the time this class ran. Stopping the suite from mutating its
+        host removed the accident and exposed the real defect: an already
+        indexed repo was reported `ok: False` because a binary it did not need
+        was absent. Mocking `_which` is what keeps the answer independent of
+        whichever tools this particular machine has.
+        """
+        with Tree({".codegraph/codegraph.db": "x"}) as root:
+            with mock.patch.object(setup, "_which", return_value=None):
+                res = setup.index_codegraph(root)
+        self.assertTrue(res["ok"], res.get("reason"))
+        self.assertFalse(res["attempted"])
+        self.assertIn("already indexed", res["reason"])
+
+    def test_an_unindexed_repo_without_the_binary_still_names_the_prerequisite(self):
+        """The reordering must not swallow the honest "cannot do this here"."""
+        with Tree({"README.md": "x"}) as root:
+            with mock.patch.object(setup, "_which", return_value=None):
+                res = setup.index_codegraph(root)
+        self.assertFalse(res["ok"])
+        self.assertFalse(res["attempted"])
+        self.assertIn("codegraph", res["reason"])
+
     def test_a_missing_binary_is_named_not_attempted(self):
         original = setup.TOOLS["codegraph"]["probe"]
         setup.TOOLS["codegraph"]["probe"] = ["definitely-not-on-path"]
