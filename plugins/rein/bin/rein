@@ -9,9 +9,25 @@ Subcommands:
                       "installedVersion", "availableVersion")
   rein setup          probe the recommended retrieval tools; --install adds what is missing
   rein detect         resolved stack + commands as JSON (config > runner > auto)
-  rein verify         actually RUN each resolved command and report the truth
+  rein verify         actually RUN each resolved command and report the truth --
+                      "could these be INVOKED", exit 0 when they all could, even
+                      if a suite ran and failed
+  rein gate           the other question: did they PASS. Runs the same commands and
+                      exits 0 passed / 1 the code is wrong / 126 the environment
+                      could not run the checks. --require-review also demands a
+                      current APPROVED review episode
+  rein role <name>    one role's operating profile (planner|implementer|reviewer)
+                      as plain markdown -- the same section Claude Code reads via
+                      /rein:rein-role, for any agent that cannot invoke a skill
   rein tasks          parsed plan as JSON (tasks.md or openspec)
-  rein plan-check     mechanical findings on a drafted plan's own text, as JSON
+  rein plan-check     mechanical findings on a drafted plan's own text, as JSON.
+                      Always exits 0 (D5: never a silent skip, never a hard stop) --
+                      it runs inside the planning skill, where the judgement is the
+                      planner's. `--gate` is for a RUNNER instead: exits 1 on a
+                      BLOCKING finding, 126 when the file cannot be read. `--tasks
+                      T001,T002` scopes it -- a finding pinned to a task nobody will
+                      execute cannot stop the run, while one with no task id is
+                      plan-level and always counts
   rein context        detect + tasks in ONE call -- what the loop's first agent runs
   rein close <id>     tick a task's checkbox in the plan
   rein next           the DETERMINISTIC gate: is there a task to claim, and may it be
@@ -57,7 +73,7 @@ import os
 import shutil
 import sys
 
-VERSION = "0.14.0"
+VERSION = "0.15.0"
 
 HERE = os.path.dirname(os.path.abspath(os.path.realpath(__file__)))
 PLUGIN_ROOT = os.path.dirname(HERE)
@@ -71,6 +87,7 @@ import events as _events  # noqa: E402
 import gate as _gate  # noqa: E402
 import plan as _plan  # noqa: E402
 import plan_check as _plan_check  # noqa: E402
+import roles as _roles  # noqa: E402
 import linear_client as _lclient  # noqa: E402
 import linear_issue as _lissue  # noqa: E402
 import linear_select as _lselect  # noqa: E402
@@ -216,6 +233,124 @@ def cmd_verify(argv: list[str]) -> int:
     return 0 if report["allInvocable"] else 1
 
 
+def cmd_gate(argv: list[str]) -> int:
+    """Did the configured commands PASS -- the question `verify` does not ask.
+
+    `rein verify` reports invocability and exits 0 when everything could be
+    invoked, so a suite that ran and failed exits 0 there. That is right for a
+    precheck (nobody should be paid to work toward a gate that cannot pass)
+    and unusable as a gate. This runs the same commands and applies
+    `gate.decide_gate` to the same report.
+
+    Three exit codes, and the third is the point: 0 passed, 1 the code is
+    wrong, 126 the environment could not run the checks. A caller that gets
+    126 has been told to fix its machine, not its code.
+    """
+    # Root is POSITIONAL here because that is this CLI's convention -- `rein
+    # verify <root>`, `rein next <root>`, `rein doctor <root>`. Accepting
+    # `--root` instead would have failed silently: `_positional` skips
+    # anything starting with `-`, so `rein gate --root=/elsewhere` would have
+    # resolved `.` and reported a confident verdict about the wrong repo.
+    root = _positional(argv) or "."
+    timeout_raw = _opt(argv, "timeout", str(_verify.DEFAULT_TIMEOUT))
+    try:
+        timeout = float(timeout_raw)
+    except ValueError:
+        print(f"gate: --timeout must be a number, got {timeout_raw!r}")
+        return 2
+
+    only_raw = _opt(argv, "only")
+    only = {s.strip() for s in only_raw.split(",") if s.strip()} if only_raw else None
+    require_review = "--require-review" in argv
+
+    resolved = _detect.resolve(root)
+    report = _verify.verify_commands(resolved, timeout, only=only)
+    _verify.write_state(resolved["root"], report)
+
+    review = _gate.check_review(resolved["root"], _opt(argv, "change")) if require_review else None
+
+    # Render evidence arrives as a FILE, written by whatever actually drove a
+    # browser -- never as a flag an agent sets. `--render` is the same rule as
+    # everywhere else in this kit: a process writes the facts, and this reads
+    # them. A frontend repo with no evidence and no way to get it stays at 126,
+    # which is what "nobody has looked at the UI" honestly is.
+    render = None
+    render_path = _opt(argv, "render")
+    if render_path:
+        try:
+            with open(render_path, encoding="utf-8") as fh:
+                render = json.load(fh)
+        except (OSError, json.JSONDecodeError) as exc:
+            print(f"gate: SETUP -- could not read --render {render_path}: {type(exc).__name__}: {exc}")
+            return _gate.EXIT_SETUP
+
+    tools_raw = _opt(argv, "browser-tools")
+    policy = dict(resolved.get("verifyPolicy") or {})
+    if tools_raw:
+        policy["tools"] = [t.strip() for t in tools_raw.split(",") if t.strip()]
+    serve = {"command": (resolved.get("commands") or {}).get("serve") or "",
+             "url": _opt(argv, "url")}
+
+    decision = _gate.decide_gate(report, review=review, require_review=require_review,
+                                 verify_policy=policy, serve=serve, render=render)
+
+    if "--json" in argv:
+        print(json.dumps({"decision": decision, "report": report}, indent=2))
+        return decision["exit"]
+
+    mark = {_gate.GATE_GREEN: "PASS", _gate.GATE_RED: "FAIL", _gate.GATE_SETUP: "SETUP"}[decision["decision"]]
+    print(f"gate: {resolved['root']}")
+    for slot, res in sorted(report["results"].items()):
+        code = res["exitCode"] if res["exitCode"] is not None else "-"
+        print(f"  {slot:<10} [{res['outcome']:<13}] exit={code}  {res['elapsedMs']}ms  $ {res['command']}")
+        for line in res["outputHead"][:5]:
+            print(f"    | {line}")
+    print(f"\n  {mark}: {decision['reason']}")
+    if decision["decision"] == _gate.GATE_SETUP:
+        print("  fix the environment and run again -- this is not a verdict on the code")
+    return decision["exit"]
+
+
+def cmd_role(argv: list[str]) -> int:
+    """One role's operating profile, for an agent that is not Claude Code.
+
+    The profiles live in the `rein-role` SKILL, which Claude Code invokes as
+    `/rein:rein-role`. Nothing else can. This prints the SAME section of the
+    SAME file, so any agent -- codex, opencode, a shell -- can be handed the
+    rules it is expected to be bound by.
+
+    Deliberately not a second copy: this kit already proves one definition has
+    two consumers by matching both shipped files against each other, because
+    two copies of one rule drift apart with nothing failing. Reading the one
+    file makes drift impossible rather than merely detectable.
+
+    Prints and nothing else -- no event is recorded. A command whose job is to
+    emit text should be safe to pipe.
+    """
+    if "--list" in argv or not _positional(argv):
+        found = _roles.available(PLUGIN_ROOT)
+        if not found:
+            print(f"role: SETUP -- no role profiles found at {_roles.skill_path(PLUGIN_ROOT)}")
+            return _gate.EXIT_SETUP
+        print("usage: rein role <" + "|".join(found) + ">")
+        return 0 if "--list" in argv else 2
+
+    result = _roles.profile(_positional(argv), PLUGIN_ROOT)
+    if not result["ok"]:
+        print(f"role: {result['error']}")
+        # An unknown role is the caller's mistake; an unreadable skill file is
+        # this installation's. Different exit codes, because a caller that gets
+        # 126 has been told to fix its machine, not its argument.
+        return 2 if "unknown role" in result["error"] else _gate.EXIT_SETUP
+
+    if "--json" in argv:
+        print(json.dumps(result, indent=2))
+        return 0
+    print(f"# role: {result['role']}\n")
+    print(result["text"])
+    return 0
+
+
 def cmd_tasks(argv: list[str]) -> int:
     root = _positional(argv) or "."
     cfg = _detect.resolve(root)
@@ -271,8 +406,34 @@ def cmd_plan_check(argv: list[str]) -> int:
             # module that neither exists nor is promised. Decidable, so BLOCKING.
 
             findings += _plan_check.unbacked_findings(text, os.path.dirname(os.path.abspath(path)) or '.')
-    print(json.dumps({"path": path, "error": error, "findings": findings}, indent=2))
-    return 0
+    # Scoped to the tasks this run will actually execute: a BLOCKING finding
+    # pinned to a task nobody will touch cannot waste an implementer, and
+    # stopping for it is the false stop the scoping exists to prevent. A
+    # finding with NO taskId is plan-level and always counts.
+    only_raw = _opt(argv, "tasks")
+    run_ids = [t.strip() for t in only_raw.split(",") if t.strip()] if only_raw else []
+    decision = _plan_check.decide_plan_check(findings, run_ids)
+
+    print(json.dumps({"path": path, "error": error, "findings": findings,
+                      "decision": decision["decision"], "reason": decision["reason"]}, indent=2))
+
+    # A file that could not be read is a setup problem, not a clean plan. This
+    # returned 0 for a missing path, which is the same silent pass the rest of
+    # this CLI has been losing.
+    # D5 -- "never a silent skip, never a hard stop". This command runs INSIDE
+    # /rein:rein-plan, before the plan is written, where a hard stop would
+    # replace the planner's judgement with a regex's. So by default it reports
+    # and exits 0, missing file included, exactly as it always has.
+    #
+    # A RUNNER is a different consumer of the same findings: loop.js called
+    # decidePlanCheck and stopped before Isolate, because a BLOCKING finding
+    # found there costs nothing and the same one found at Review costs a whole
+    # run. `--gate` is that second consumer, opt-in, so D5 keeps its default.
+    if "--gate" not in argv:
+        return 0
+    if error:
+        return _gate.EXIT_SETUP
+    return 1 if decision["decision"] == _plan_check.DECISION_STOP else 0
 
 
 def cmd_context(argv: list[str]) -> int:
@@ -625,6 +786,16 @@ def cmd_next(argv: list[str]) -> int:
         source=_opt(argv, "source") or cfg["plan"]["source"],
         change=_opt(argv, "change"),
         configured=_opt(argv, "path") or cfg["plan"].get("path", ""),
+    )
+    # The plan says what may be worked on; it cannot say whether the gate that
+    # work will be judged against can even run. That check existed only inside
+    # loop.js's Prepare phase, so every other caller of `rein next` was blind
+    # to it. Reads the last persisted `rein verify` report -- runs nothing.
+    result = _gate.decide_claimable(
+        result,
+        _verify.read_state(cfg["root"]),
+        cfg.get("commands") or {},
+        monorepo_unconfigured=_gate.monorepo_unconfigured(cfg),
     )
     print(json.dumps(result, indent=2))
     # Exit code carries the same signal, so `rein next && ...` works in a shell
@@ -1260,6 +1431,8 @@ COMMANDS = {
     "setup": cmd_setup,
     "detect": cmd_detect,
     "verify": cmd_verify,
+    "gate": cmd_gate,
+    "role": cmd_role,
     "tasks": cmd_tasks,
     "plan-check": cmd_plan_check,
     "context": cmd_context,

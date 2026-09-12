@@ -283,6 +283,55 @@ def unbacked_findings(text: str, root: str) -> list[dict]:
     ]
 
 
+DECISION_STOP = "stop"
+DECISION_CONTINUE = "continue"
+
+
+def decide_plan_check(findings: list = None, run_ids: list = None) -> dict:
+    """Do these findings stop the run? Pure -- reads nothing, runs nothing.
+
+    `mechanical_findings` and `unbacked_findings` REPORT. Nothing judged, so
+    `rein plan-check` printed BLOCKING defects and exited 0, and a caller
+    running `rein plan-check && ...` walked straight through them. Same shape
+    of gap `rein verify` had: a reporter mistaken for a gate.
+
+    Scoping is the subtle half, and it is not "only findings about my tasks".
+    A finding with no taskId is plan-LEVEL -- a Scope contradiction, a broken
+    dependency order -- so it concerns the whole run and may stop it. A finding
+    pinned to a task this run will not execute cannot waste this run's
+    implementers, and stopping for it would be exactly the false stop that
+    scoping exists to prevent.
+    """
+    listed = []
+    for f in findings or []:
+        if isinstance(f, str):
+            listed.append({"taskId": "", "severity": "IMPORTANT", "text": f})
+        else:
+            listed.append(f)
+
+    scope = [str(t).upper() for t in (run_ids or [])]
+
+    def in_run(f):
+        task_id = str(f.get("taskId") or "")
+        if not task_id:
+            return True          # plan-level: concerns the whole run
+        if not scope:
+            return True          # no scope declared: everything is in play
+        return task_id.upper() in scope
+
+    blocking = [f for f in listed
+                if str(f.get("severity") or "").upper() == "BLOCKING" and in_run(f)]
+
+    if blocking:
+        return {
+            "decision": DECISION_STOP,
+            "findings": listed,
+            "blocking": blocking,
+            "reason": f"{len(blocking)} BLOCKING plan finding(s) -- stop before any implementer is paid",
+        }
+    return {"decision": DECISION_CONTINUE, "findings": listed, "blocking": [], "reason": ""}
+
+
 def mechanical_findings(text: str) -> list[dict]:
     """Everything about a drafted plan's own text that a regex can honestly
     decide -- classes 1 and 3 of BLOCKING_CLASSES. Never raises: a plan that

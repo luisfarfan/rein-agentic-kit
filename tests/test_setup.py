@@ -25,11 +25,33 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 REIN_BIN = os.path.join(REPO_ROOT, "plugins", "rein", "bin", "rein")
 
 
+_LANGUAGE_KEYS = ("language_servers:", "languages:")
+
+
 def _active_languages(yml_path: str) -> list[str]:
-    """The `languages:` block of a generated project.yml, without a yaml dep."""
+    """The enabled-languages block of a generated project.yml, without a yaml dep.
+
+    Two key names are accepted because this file is serena's output, not
+    rein's: current serena writes `language_servers:`, older versions wrote
+    `languages:`. Pinning to one of them made this test fail for serena's
+    release notes instead of for anything rein does, and the failure mode was
+    a bare ValueError from `list.index` -- which reads as a broken test, not
+    as "the vendor renamed a key".
+    """
     with open(yml_path, encoding="utf-8") as fh:
         lines = fh.read().splitlines()
-    start = lines.index("languages:") + 1
+
+    start = None
+    for key in _LANGUAGE_KEYS:
+        if key in lines:
+            start = lines.index(key) + 1
+            break
+    if start is None:
+        raise AssertionError(
+            f"{yml_path} has none of {_LANGUAGE_KEYS} — serena's project.yml format "
+            f"changed again; keys present: {[l for l in lines if l and not l.startswith((' ', '-', '#'))][:12]}"
+        )
+
     langs = []
     for line in lines[start:]:
         if line.startswith("- "):
@@ -425,6 +447,34 @@ class TestInstallClosesTheGapItReports(unittest.TestCase):
         self.assertFalse(res["attempted"])
         self.assertIn("already indexed", res["reason"])
         self.assertEqual(before, after)
+
+    def test_an_indexed_repo_stays_ok_on_a_machine_without_the_binary(self):
+        """The order of the two guards, pinned.
+
+        This passed on CI for weeks by accident: an earlier test called
+        `install(names=[])`, which -- through the `[] or missing` bug -- fetched
+        every missing tool onto the runner, so `codegraph` happened to be on
+        PATH by the time this class ran. Stopping the suite from mutating its
+        host removed the accident and exposed the real defect: an already
+        indexed repo was reported `ok: False` because a binary it did not need
+        was absent. Mocking `_which` is what keeps the answer independent of
+        whichever tools this particular machine has.
+        """
+        with Tree({".codegraph/codegraph.db": "x"}) as root:
+            with mock.patch.object(setup, "_which", return_value=None):
+                res = setup.index_codegraph(root)
+        self.assertTrue(res["ok"], res.get("reason"))
+        self.assertFalse(res["attempted"])
+        self.assertIn("already indexed", res["reason"])
+
+    def test_an_unindexed_repo_without_the_binary_still_names_the_prerequisite(self):
+        """The reordering must not swallow the honest "cannot do this here"."""
+        with Tree({"README.md": "x"}) as root:
+            with mock.patch.object(setup, "_which", return_value=None):
+                res = setup.index_codegraph(root)
+        self.assertFalse(res["ok"])
+        self.assertFalse(res["attempted"])
+        self.assertIn("codegraph", res["reason"])
 
     def test_a_missing_binary_is_named_not_attempted(self):
         original = setup.TOOLS["codegraph"]["probe"]

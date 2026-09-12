@@ -453,6 +453,30 @@ def _detect_plan_source(root: str) -> str:
     return "tasks-md"
 
 
+# `capabilities` mixes two facts that behave differently, and reading it as one
+# flat list is a real bug this kit already hit. Most entries are PATH probes --
+# `git`, `node`, `serena` -- and they are the same wherever you stand on this
+# machine. These three are about the DIRECTORY that was passed:
+#
+#   serena-project   .serena/ exists here (serena resolves a project by its dir)
+#   graphify-index   graphify-out/ exists here
+#   codegraph-index  .codegraph/codegraph.db exists here
+#
+# loop.js detected capabilities in the base repo and then had its agents work in
+# a WORKTREE, so every graph command answered "graph file not found" -- the
+# capability was true, about the wrong directory. Its fix was two functions that
+# refused to trust the base list. The rule underneath is simpler and needs no
+# function: re-detect where the tools will actually run, and if you cannot, at
+# least know which entries do not travel.
+DIRECTORY_SCOPED_CAPABILITIES = ("serena-project", "graphify-index", "codegraph-index")
+
+
+def directory_scoped(capabilities: list = None) -> list[str]:
+    """The subset of `capabilities` that is only true for the directory it was
+    detected in. Everything else is a property of the machine."""
+    return [c for c in (capabilities or []) if c in DIRECTORY_SCOPED_CAPABILITIES]
+
+
 def _capabilities(root: str) -> list[str]:
     import shutil
 
@@ -721,7 +745,45 @@ def _port_from(text: str) -> tuple[str, str]:
 _VALID_VERIFY_MODES = {"rendered", "plan-only", "unit"}
 
 
-def _verify_policy(root: str, subtypes: list[str], commands: dict[str, str], cfg: dict) -> tuple[dict, list[str]]:
+# `unit` is the weakest mode: it demands a passing suite and nothing else.
+# `rendered` additionally demands an observed browser render; `plan-only`
+# additionally forbids destructive ops against real infrastructure. Moving TO
+# unit from either is the only downgrade this needs to recognise -- going the
+# other way is a project asking for more, which never needs permission.
+def _is_downgrade(detected: str, requested: str) -> bool:
+    return requested == "unit" and detected in ("rendered", "plan-only")
+
+
+def _downgrade_verdict(until: str, today: str = "") -> dict:
+    """Is a dated downgrade still in force?
+
+    `today` is injected so this is decidable by a test rather than by the
+    calendar the test happens to run on.
+    """
+    import datetime
+
+    today = today or datetime.date.today().isoformat()
+    raw = str(until or "").strip()
+
+    if not raw:
+        return {"honoured": False, "until": "", "reason": "carries no expiry date"}
+    try:
+        expires = datetime.date.fromisoformat(raw)
+    except ValueError:
+        return {"honoured": False, "until": raw,
+                "reason": f"has an unreadable expiry {raw!r} (expected YYYY-MM-DD)"}
+    try:
+        now = datetime.date.fromisoformat(today)
+    except ValueError:  # pragma: no cover -- only a caller passing nonsense
+        now = datetime.date.today()
+
+    if expires < now:
+        return {"honoured": False, "until": raw, "reason": f"expired on {raw}"}
+    return {"honoured": True, "until": raw, "reason": ""}
+
+
+def _verify_policy(root: str, subtypes: list[str], commands: dict[str, str], cfg: dict,
+                   today: str = "") -> tuple[dict, list[str]]:
     cfg_verify = cfg.get("verify") or {}
     raw_mode = str(cfg_verify.get("mode") or "").strip()
 
@@ -739,18 +801,50 @@ def _verify_policy(root: str, subtypes: list[str], commands: dict[str, str], cfg
         else:
             bad_mode = raw_mode  # surfaced below instead of failing open
 
+    # What the project IS, independent of what its config asks for. Kept
+    # separate from `mode` so a config that asks for less can be recognised as
+    # asking for less.
+    if "frontend" in subtypes:
+        detected = "rendered"
+    elif "infra" in subtypes and not _is_set(commands, "test"):
+        detected = "plan-only"
+    else:
+        detected = "unit"
+
     if not mode:
-        if "frontend" in subtypes:
-            mode = "rendered"
-        elif "infra" in subtypes and not _is_set(commands, "test"):
-            mode = "plan-only"
-        else:
-            mode = "unit"
+        mode = detected
+
 
     requires: list[str] = []
     forbids: list[str] = []
     tools: list[str] = []
     warnings: list[str] = []
+
+    # A downgrade is still allowed -- sometimes a frontend genuinely has no way
+    # to render in CI yet -- but it now expires. `verify.mode: "unit"` sat in
+    # proxima-storefront-v2's flow.config.json on an Astro app, two lines below
+    # the `subtypes: ["frontend", "astro"]` it contradicted, and turned off the
+    # one gate that catches "the tests pass but the UI is broken". Nothing
+    # failed, nothing warned, and it stayed.
+    #
+    # An exception without an expiry is not an exception, it is the new
+    # default. So this one carries a date and enforces it: past it, or without
+    # one, the detected mode comes back.
+    if _is_downgrade(detected, mode):
+        verdict = _downgrade_verdict(cfg_verify.get("until"), today)
+        if verdict["honoured"]:
+            warnings.append(
+                f"verify.mode is downgraded from the detected {detected!r} to {mode!r} "
+                f"until {verdict['until']} -- after that date {detected!r} applies again"
+            )
+        else:
+            warnings.append(
+                f"verify.mode {mode!r} is weaker than the detected {detected!r} and "
+                f"{verdict['reason']}, so {detected!r} applies. To opt out for a while, add "
+                f'"until": "YYYY-MM-DD" next to "mode" in flow.config.json -- an exception '
+                f"without an expiry is not an exception, it is the new default"
+            )
+            mode = detected
 
     if bad_mode:
         warnings.append(

@@ -285,3 +285,286 @@ def check_review(root: str, change: str = "") -> dict:
         "episode": episode.get("path", ""),
         "findings": _normalize_findings(episode.get("findings", [])),
     }
+
+
+# ------------------------------------------------------------------- gate --
+# `rein verify` answers "could these commands be INVOKED at all" -- a precheck,
+# so nobody is paid to work toward a gate that cannot pass. It returns 0 when
+# every command was invocable, which means a test suite that ran and FAILED
+# exits 0 there. That is right for a precheck and useless as a gate.
+#
+# This answers the other question: did they PASS. Same report, different
+# verdict, and the two exit codes stay distinct so a dead environment can never
+# be reported as bad code.
+
+GATE_GREEN = "green"
+GATE_RED = "red"
+GATE_SETUP = "setup"
+
+EXIT_GREEN = 0
+EXIT_RED = 1
+EXIT_SETUP = 126
+
+# What a gate is allowed to be. `testOne` runs against a synthetic target that
+# no suite owns (verify's OUTCOME_INCONCLUSIVE exists for exactly that), and
+# `serve` is a dev server that never runs to completion -- neither proves
+# anything about a change, so neither can hold the gate open or shut.
+GATE_SLOTS = ("test", "lint", "typecheck", "build")
+
+# Outcomes that mean the environment failed, not the code. Kept as names rather
+# than imported from verify so this module stays free of that dependency (it is
+# imported by the CLI alongside verify, never beneath it).
+_SETUP_OUTCOMES = ("not_invocable", "timeout")
+_PASS_OUTCOMES = ("ok",)
+
+
+def decide_gate(report: dict, review: dict = None, require_review: bool = False,
+                verify_policy: dict = None, serve: dict = None, render: dict = None) -> dict:
+    """Did the configured gate commands pass? Pure -- runs nothing.
+
+    Setup beats red, always. A run where typecheck could not be invoked and
+    the tests failed reports SETUP, because an environment that cannot run
+    half its checks has not earned the right to call the code wrong.
+
+    This is deliberately stricter than `decideGatePrecheck`, which treats an
+    uninvocable lint or typecheck as a warning. That function runs BEFORE the
+    work, deciding whether to start at all, and you can still write code with
+    a broken linter. This one runs AFTER, deciding whether the work is done --
+    and a check that never ran is not a check that passed. Same fact, opposite
+    consequence, because the question is not the same.
+    """
+    results = (report or {}).get("results") or {}
+
+    setup, failed, passed, ignored = [], [], [], []
+    for slot in sorted(results):
+        res = results[slot] or {}
+        outcome = res.get("outcome", "")
+        if slot not in GATE_SLOTS:
+            ignored.append(f"{slot} [{outcome}]")
+            continue
+        if outcome in _SETUP_OUTCOMES or not res.get("invocable", True):
+            setup.append(f"{slot} [{outcome or 'unknown'}]")
+        elif outcome in _PASS_OUTCOMES:
+            passed.append(slot)
+        elif outcome == "skipped":
+            # Configured but deliberately not run this time; it proves nothing
+            # either way, so it neither passes nor blocks.
+            ignored.append(f"{slot} [skipped]")
+        else:
+            failed.append(f"{slot} [{outcome or 'unknown'}] exit={res.get('exitCode')}")
+
+    if setup:
+        return _verdict(GATE_SETUP, EXIT_SETUP,
+                        "could not be invoked: " + ", ".join(setup) +
+                        " -- a setup problem, not a code problem",
+                        setup, failed, passed, ignored)
+
+    if failed:
+        return _verdict(GATE_RED, EXIT_RED, "failed: " + ", ".join(failed),
+                        setup, failed, passed, ignored)
+
+    if not passed:
+        # Nothing ran. Green here would be the loudest possible lie: it is the
+        # shape of every silent pass this kit exists to prevent -- a gate that
+        # reports success because it checked nothing at all.
+        return _verdict(GATE_SETUP, EXIT_SETUP,
+                        "no gate command ran -- nothing was verified, so nothing is proven",
+                        setup, failed, passed, ignored)
+
+    # The commands passed. On a frontend subtype that is not enough by policy,
+    # and the old loop said so out loud and then let it slide: a
+    # "rendered-unverified" outcome was documented as NOT blocking approval.
+    # That is the switch this kit exists to remove, so here it blocks.
+    #
+    # A frontend repo with no serve command and no browser tool will therefore
+    # sit at 126 until both are configured. That is not a bug and not
+    # pessimism -- it is true. Nobody has looked at the UI, so nothing about
+    # the UI is proven, and the alternative is the green that hid it.
+    vp = verify_policy or {}
+    if vp.get("mode") == "rendered":
+        if render is not None:
+            # Evidence exists, so whether a render was POSSIBLE is settled --
+            # somebody managed to look. Only its content is in question.
+            outcome = decide_render_outcome(render)
+            if outcome["failed"]:
+                return _verdict(GATE_RED, EXIT_RED, f"the render failed: {outcome['reason']}",
+                                setup, failed, passed, ignored)
+            passed = passed + ["render"]
+        else:
+            dispatch = decide_render_dispatch(vp, serve)
+            reason = (f"cannot be attempted: {dispatch['reason']} -- set commands.serve and make a "
+                      f"browser tool reachable" if dispatch["unverified"]
+                      else "none was recorded -- a passing suite does not show whether the UI works")
+            return _verdict(GATE_SETUP, EXIT_SETUP,
+                            f"a real browser render is required here and {reason}",
+                            setup, failed, passed, ignored)
+
+    if require_review:
+        rev = review or {}
+        if not rev.get("ok"):
+            return _verdict(GATE_RED, EXIT_RED,
+                            "review gate not satisfied: " + (rev.get("reason") or "no review recorded"),
+                            setup, failed, passed, ignored)
+
+    return _verdict(GATE_GREEN, EXIT_GREEN, "passed: " + ", ".join(passed),
+                    setup, failed, passed, ignored)
+
+
+# ------------------------------------------------------- claimability --
+# `next_task` answers "what may be worked on now" from the PLAN alone. It has
+# no idea whether the gate that task will be judged against can even run.
+#
+# `loop.js` knew: its Prepare phase ran `rein verify` and refused to dispatch
+# an implementer when the test command was not invocable -- "no implementer is
+# paid to work toward a gate that cannot pass". That check lived only inside
+# the loop, so it disappeared for every other caller. This is that rule, in
+# the library, where anything can reach it.
+#
+# Freshness follows this kit's existing convention (see `_annotated_verify_state`
+# in the CLI): a recorded outcome is about the command it was recorded against,
+# so it is fresh only while the currently resolved command is still that one.
+# Not a timestamp -- a lockfile change can rewrite the command out from under a
+# report that ran seconds ago.
+
+
+# ------------------------------------------------------------- render --
+# "The tests pass but the UI is broken" is the failure a unit-test gate cannot
+# see, so `detect` gives every frontend subtype `verifyPolicy.mode = "rendered"`
+# with the requirement spelled out: a real browser render must be OBSERVED, not
+# inferred from a green suite.
+#
+# Both rules below were pure functions inside loop.js, tested by extracting them
+# from its source with a regex. They are policy, not orchestration, so they
+# outlive the loop -- and they belong where any caller can reach them.
+
+
+def decide_render_dispatch(verify_policy: dict = None, serve: dict = None) -> dict:
+    """Can a render even be attempted?
+
+    "We could not look" is a different fact from "we looked and it broke", and
+    conflating them is how a frontend repo ends up green on a suite alone.
+    """
+    vp = verify_policy or {}
+    if vp.get("mode") != "rendered":
+        return {"dispatch": False, "unverified": False, "reason": ""}
+    if not (vp.get("tools") or []):
+        return {"dispatch": False, "unverified": True, "reason": "no browser tool reachable"}
+    sv = serve or {}
+    if not sv.get("command") or not sv.get("url"):
+        return {"dispatch": False, "unverified": True,
+                "reason": "no serve command/url is configured"}
+    return {"dispatch": True, "unverified": False, "reason": ""}
+
+
+def decide_render_outcome(render: dict = None) -> dict:
+    """Did the render prove anything?
+
+    `rendered: true` with no facts alongside it is a failed render, whatever
+    the agent claims. Same rule as everywhere else in this module: a claim is
+    not evidence.
+    """
+    r = render or {}
+    status = r.get("httpStatus")
+    status_ok = isinstance(status, int) and not isinstance(status, bool) and 200 <= status < 300
+    evidence = r.get("evidence")
+    evidence = evidence if isinstance(evidence, list) else []
+
+    if not r.get("rendered"):
+        return {"failed": True, "reason": "rendered=false"}
+    if not status_ok:
+        shown = "is absent" if status is None else f"{status} is not 2xx"
+        return {"failed": True, "reason": f"httpStatus {shown}"}
+    if not evidence:
+        return {"failed": True, "reason": "rendered=true but evidence is empty"}
+    return {"failed": False, "reason": ""}
+
+
+def monorepo_unconfigured(resolved: dict) -> bool:
+    """A monorepo root with no sub-project chosen, so nothing resolves.
+
+    This used to be a sentence in a prompt -- loop.js asked its Prepare agent
+    to compute `monorepoUnconfigured <- true iff config.stack === "monorepo"
+    AND config.missingCommands`. A boolean a model derives is a boolean a model
+    can get wrong, and this one gates whether any work starts at all.
+    """
+    r = resolved or {}
+    return r.get("stack") == "monorepo" and bool(r.get("missingCommands"))
+
+
+def decide_claimable(
+    result: dict,
+    verify_state: dict = None,
+    commands: dict = None,
+    monorepo_unconfigured: bool = False,
+) -> dict:
+    """`next_task`'s answer, plus whether its gate can actually run. Pure.
+
+    Blocks on a KNOWN-uninvocable test command, warns on lint/typecheck, and
+    when nothing is known says so via `gateProven: False` WITHOUT blocking.
+
+    That last choice is deliberate and it is the opposite of the rule in
+    `decide_gate`. Refusing to claim a task because nobody has run `rein
+    verify` yet would make this unusable on a fresh checkout -- friction that
+    gets the whole command bypassed, which is worse than an unproven gate.
+    Reporting is this command's job; proving is `rein gate`'s, and that one
+    runs the commands rather than reading about them.
+    """
+    out = dict(result or {})
+    warnings = list(out.get("warnings") or [])
+    resolved = commands or {}
+    recorded = ((verify_state or {}).get("results") or {})
+
+    def slot(name):
+        """The recorded outcome for `name`, only if it is still about the
+        command that would run now."""
+        vr = recorded.get(name) or {}
+        if not vr:
+            return None
+        if vr.get("command") != resolved.get(name):
+            return None
+        return vr
+
+    if monorepo_unconfigured:
+        out["ready"] = False
+        out["reason"] = ('this is a monorepo root with no sub-project chosen -- set "subproject" in '
+                         "flow.config.json before any mechanical gate can resolve at all")
+        out["gateProven"] = False
+        out["warnings"] = warnings
+        return out
+
+    test = slot("test")
+    if test is not None and not test.get("invocable", True):
+        out["ready"] = False
+        out["reason"] = (f"the test command is not invocable ({test.get('outcome') or 'unknown'}) -- "
+                         "no implementer is paid to work toward a gate that cannot pass")
+        out["gateProven"] = False
+        out["warnings"] = warnings
+        return out
+
+    for name in ("lint", "typecheck"):
+        vr = slot(name)
+        if vr is not None and not vr.get("invocable", True):
+            warnings.append(f"{name} is not invocable ({vr.get('outcome') or 'unknown'}) -- "
+                            "carried, not required to claim a task")
+
+    if test is None:
+        out["gateProven"] = False
+        out["gateReason"] = ("no fresh `rein verify` for the test command -- run `rein gate` to prove it "
+                             "rather than assuming it")
+    else:
+        out["gateProven"] = True
+
+    out["warnings"] = warnings
+    return out
+
+
+def _verdict(decision, exit_code, reason, setup, failed, passed, ignored) -> dict:
+    return {
+        "decision": decision,
+        "exit": exit_code,
+        "reason": reason,
+        "setup": setup,
+        "failed": failed,
+        "passed": passed,
+        "ignored": ignored,
+    }

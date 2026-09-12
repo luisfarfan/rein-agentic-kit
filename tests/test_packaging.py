@@ -75,7 +75,12 @@ class TestTheWheelInstallsAndRuns(unittest.TestCase):
         import zipfile
         names = zipfile.ZipFile(self.wheel).namelist()
         for needed in ("rein_kit/_entry.py", "rein_kit/bin/rein", "rein_kit/lib/detect.py",
-                       "rein_kit/workflows/loop.js"):
+                       "rein_kit/workflows/loop.js",
+                       # `rein role` reads this file to hand an operating profile to an
+                       # agent that cannot invoke a skill. A wheel without it installs
+                       # cleanly and then has no roles at all -- the whole point of the
+                       # command is that it works where Claude Code is not.
+                       "rein_kit/skills/rein-role/SKILL.md"):
             self.assertIn(needed, names, f"the wheel is missing {needed}")
 
     def test_the_packaged_cli_is_the_same_code_as_the_plugins(self):

@@ -209,7 +209,15 @@ def _run(cmd: list[str], timeout: int = 900, input_text: str | None = None) -> t
 def install(names: list[str] | None = None, root: str = ".") -> dict:
     """Install only what is missing. One failure never stops the others."""
     state = probe(root)
-    targets = names or state["missing"]
+    # `None` means "decide for me" (install what is missing); an EMPTY LIST
+    # means "install nothing" and must be honoured as such. `names or
+    # state["missing"]` conflated the two, because `[] or x` is `x` -- so a
+    # caller asking for nothing got a full install of every missing tool.
+    # That is how the test suite installed serena-agent onto a developer's
+    # machine: `install(names=[])`, from a test whose own name is "even when
+    # nothing is missing". A suite that mutates the host is a suite whose
+    # result depends on how many times it has been run.
+    targets = state["missing"] if names is None else names
     results = {}
     for name in targets:
         spec = TOOLS.get(name)
@@ -486,12 +494,17 @@ def index_codegraph(root: str = ".") -> dict:
     codegraph cannot parse still gets every other tool provisioned.
     """
     root = os.path.abspath(root)
-    if not _which("codegraph"):
-        return {"ok": False, "attempted": False,
-                "reason": "missing prerequisite: codegraph binary not found"}
+    # The marker is checked BEFORE the binary, and the order is the whole
+    # point: an indexed repo is indexed whether or not this particular
+    # machine can build one. Probing first reported `ok: False` for a repo
+    # that was already fine, which is the installed-vs-usable conflation
+    # backwards -- usable, and called broken because a tool was absent.
     marker = os.path.join(root, TOOLS["codegraph"]["index"])
     if os.path.exists(marker):
         return {"ok": True, "attempted": False, "reason": "already indexed — left untouched"}
+    if not _which("codegraph"):
+        return {"ok": False, "attempted": False,
+                "reason": "missing prerequisite: codegraph binary not found"}
     ok, out = _run(["codegraph", "init", root])
     return {
         "ok": ok,

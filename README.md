@@ -157,11 +157,20 @@ rein detect      # stack + commands, with the source of each
 rein tasks       # the plan, parsed
 rein context     # detect + plan in ONE round-trip — what the loop's first agent runs
 rein verify      # actually RUN each resolved command and report the truth — an inference is not a fact
+rein gate        # ✅ did they PASS — 0 green · 1 the code is wrong · 126 the environment could not run them
                  # --plan: run each TASK's own Verification before implementers are paid.
                  # Failing is fine (the work does not exist yet); proving NOTHING is not —
                  # a missing test module or a selector matching zero tests exits non-zero
 rein plan-check  # mechanical findings on a drafted plan's own text — what a regex can
                  # honestly decide; the semantic call belongs to /rein:rein-plan's critique
+                 # always exits 0 (D5: never a silent skip, never a hard stop) — the
+                 # judgement there is the planner's. ✅ `--gate` is for a RUNNER: exits 1
+                 # on a BLOCKING finding. `--tasks T001,T002` scopes it — a finding pinned
+                 # to a task nobody will run cannot stop it, while one with no task id is
+                 # plan-level and always counts
+rein role <name> # ✅ one role's operating profile (planner|implementer|reviewer) as
+                 # markdown — the same section /rein:rein-role reads, for any agent
+                 # that cannot invoke a Claude Code skill
 rein next        # ✅ the gate: is there a task to claim, and may it be
 rein close T001  # tick a checkbox deterministically — no agent hand-edits the plan
 rein review      # record / check a verdict bound to a code state
