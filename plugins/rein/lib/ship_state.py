@@ -10,11 +10,16 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import time
 from dataclasses import asdict, dataclass, field, fields
 from typing import Optional
 
 TASK_STATUSES = ("pending", "running", "gating", "gated", "done", "failed")
 PHASES = ("running", "auditing", "fixing", "braked", "done")
+
+
+class ShipStateCorrupt(Exception):
+    """An existing ship-state file could not be read; it was moved aside, not discarded."""
 
 
 @dataclass
@@ -123,7 +128,14 @@ def _known(cls, data: dict) -> dict:
 
 
 def load(path: str) -> Optional[ShipState]:
-    """The saved state, or None when absent or unreadable (callers start fresh)."""
+    """The saved state; None only when no file exists.
+
+    An existing file that cannot be parsed is quarantined next to itself as
+    `<name>.corrupt-<epoch>` and `ShipStateCorrupt` is raised: silently starting
+    fresh would create a second Run and orphan live workers.
+    """
+    if not os.path.exists(path):
+        return None
     try:
         with open(path, encoding="utf-8") as fh:
             data = json.load(fh)
@@ -133,5 +145,12 @@ def load(path: str) -> Optional[ShipState]:
         }
         data = _known(ShipState, {**data, "tasks": tasks})
         return ShipState(**data)
-    except (OSError, ValueError, TypeError, AttributeError):
-        return None
+    except (OSError, ValueError, TypeError, AttributeError) as exc:
+        quarantined = f"{path}.corrupt-{int(time.time())}"
+        try:
+            os.replace(path, quarantined)
+        except OSError:
+            quarantined = path
+        raise ShipStateCorrupt(
+            f"ship state unreadable ({exc}); kept at {quarantined}"
+        ) from exc

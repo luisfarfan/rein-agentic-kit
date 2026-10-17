@@ -80,7 +80,7 @@ class ArgvTests(unittest.TestCase):
             ["ORCA", "account", "list", "--json"],
             ["ORCA", "repo", "list", "--json"],
             ["ORCA", "orchestration", "run-create", "--objective", "obj", "--json"],
-            ["ORCA", "orchestration", "run-use", "--run", "run_1", "--json"],
+            ["ORCA", "orchestration", "run-use", "--id", "run_1", "--json"],
             ["ORCA", "orchestration", "worker-show", "--dispatch", "d1", "--json"],
             ["ORCA", "orchestration", "worker-list", "--json"],
             ["ORCA", "orchestration", "worker-list", "--run", "run_1", "--json"],
@@ -95,7 +95,7 @@ class ArgvTests(unittest.TestCase):
         c.task_create("s", "T002", [])
         c.gate_create("task_a", "ok?", ["yes", "no"])
         c.reply("msg_1", "go ahead")
-        c.worktree_set("id:wt1", status="in-review", comment="auditing")
+        c.worktree_set("id:wt1", workspace_status="in-review", comment="auditing")
         c.worktree_set("id:wt1")
         self.assertEqual(fake.calls, [
             ["ORCA", "orchestration", "task-create", "--task-title", "T001",
@@ -106,7 +106,7 @@ class ArgvTests(unittest.TestCase):
              "--question", "ok?", "--options", '["yes", "no"]', "--json"],
             ["ORCA", "orchestration", "reply", "--id", "msg_1", "--body", "go ahead", "--json"],
             ["ORCA", "worktree", "set", "--worktree", "id:wt1",
-             "--status", "in-review", "--comment", "auditing", "--json"],
+             "--workspace-status", "in-review", "--comment", "auditing", "--json"],
             ["ORCA", "worktree", "set", "--worktree", "id:wt1", "--json"],
         ])
 
@@ -167,6 +167,15 @@ class ErrorTests(unittest.TestCase):
         with self.assertRaises(OrcaError) as cm:
             OrcaClient(executable="ORCA", runner=runner).status()
         self.assertEqual(cm.exception.code, "exit_3")
+
+    def test_nonzero_exit_unparseable_includes_stderr(self):
+        def runner(argv):
+            return 2, "", "unknown option --bogus\n" + "x" * 3000
+        with self.assertRaises(OrcaError) as cm:
+            OrcaClient(executable="ORCA", runner=runner).status()
+        self.assertEqual(cm.exception.code, "exit_2")
+        self.assertTrue(cm.exception.message.startswith("unknown option --bogus"))
+        self.assertEqual(len(cm.exception.message), 2000)
 
     def test_zero_exit_unparseable(self):
         def runner(argv):

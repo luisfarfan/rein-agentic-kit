@@ -106,12 +106,28 @@ class PersistenceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             self.assertIsNone(ship_state.load(os.path.join(d, "nope.json")))
 
-    def test_load_corrupt_returns_none(self):
+    def test_load_corrupt_quarantines_and_raises(self):
         with tempfile.TemporaryDirectory() as d:
             p = os.path.join(d, "s.json")
             with open(p, "w") as fh:
                 fh.write("{broken")
+            with self.assertRaises(ship_state.ShipStateCorrupt) as cm:
+                ship_state.load(p)
+            self.assertFalse(os.path.exists(p))
+            moved = [n for n in os.listdir(d) if n.startswith("s.json.corrupt-")]
+            self.assertEqual(len(moved), 1)
+            self.assertIn(moved[0], str(cm.exception))
+            with open(os.path.join(d, moved[0])) as fh:
+                self.assertEqual(fh.read(), "{broken")
             self.assertIsNone(ship_state.load(p))
+
+    def test_load_wrong_shape_is_corrupt(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "s.json")
+            with open(p, "w") as fh:
+                fh.write("[1, 2]")
+            with self.assertRaises(ship_state.ShipStateCorrupt):
+                ship_state.load(p)
 
     def test_state_path(self):
         self.assertEqual(

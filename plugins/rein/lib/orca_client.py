@@ -28,8 +28,9 @@ class OrcaError(Exception):
 
 
 def _default_runner(argv: list) -> tuple:
+    """`(exit code, stdout, stderr)`. A custom runner may return just `(code, stdout)`."""
     proc = subprocess.run(argv, capture_output=True, text=True)
-    return proc.returncode, proc.stdout
+    return proc.returncode, proc.stdout, proc.stderr
 
 
 class OrcaClient:
@@ -44,16 +45,19 @@ class OrcaClient:
     def _call(self, *args: str) -> dict:
         argv = [self.executable, *args, "--json"]
         try:
-            code, out = self._runner(argv)
+            ran = self._runner(argv)
         except OSError as exc:
             raise OrcaError("unavailable", f"cannot run {self.executable}: {exc}", argv)
+        code, out = ran[0], ran[1]
+        err_text = ran[2] if len(ran) > 2 else ""
         try:
             envelope = json.loads(out)
         except (ValueError, TypeError):
             envelope = None
         if not isinstance(envelope, dict):
             if code != 0:
-                raise OrcaError(f"exit_{code}", (out or "").strip()[:500], argv)
+                detail = (err_text or "").strip() or (out or "").strip()
+                raise OrcaError(f"exit_{code}", detail[:2000], argv)
             raise OrcaError("bad_json", "orca did not return a JSON object", argv)
         if code != 0 or not envelope.get("ok", False):
             err = envelope.get("error")
@@ -81,7 +85,7 @@ class OrcaClient:
         return self._call("orchestration", "run-create", "--objective", objective)
 
     def run_use(self, run_id: str) -> dict:
-        return self._call("orchestration", "run-use", "--run", run_id)
+        return self._call("orchestration", "run-use", "--id", run_id)
 
     def task_create(self, spec: str, title: str, deps: list) -> dict:
         args = ["orchestration", "task-create", "--task-title", title, "--spec", spec]
@@ -156,10 +160,13 @@ class OrcaClient:
         return self._call("orchestration", "gate-list")
 
     # -- worktrees --------------------------------------------------------
-    def worktree_set(self, selector: str, *, status: str = "", comment: str = "") -> dict:
+    def worktree_set(
+        self, selector: str, *, workspace_status: str = "", comment: str = ""
+    ) -> dict:
+        """`workspace_status` is a workspace-status id (todo, in-progress, in-review, completed, ...)."""
         args = ["worktree", "set", "--worktree", selector]
-        if status:
-            args += ["--status", status]
+        if workspace_status:
+            args += ["--workspace-status", workspace_status]
         if comment:
             args += ["--comment", comment]
         return self._call(*args)
