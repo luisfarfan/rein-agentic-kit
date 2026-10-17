@@ -71,6 +71,22 @@ class TestSkillBudget(unittest.TestCase):
             self.assertTrue(result["ok"], result["error"])
             self.assertTrue(result["text"].strip())
 
+    def test_audit_round_cap_matches_the_spec(self):
+        text = _read(os.path.join(SKILLS, "rein-audit", "SKILL.md"))
+        self.assertNotIn("3 rounds", text)
+        self.assertIn("2 rounds", text)
+        self.assertNotIn("verifyPolicy", text)
+        self.assertNotIn("Verify-phase", text)
+
+    def test_ship_and_plan_pass_the_change_and_root(self):
+        ship = _read(os.path.join(SKILLS, "ship", "SKILL.md"))
+        self.assertIn("rein tasks <root> --change <change>", ship)
+        self.assertIn("background", ship)
+        self.assertIn("/rein:ship", ship)
+        plan = _read(os.path.join(SKILLS, "rein-plan", "SKILL.md"))
+        self.assertIn("rein tasks <root> --change <c>", plan)
+        self.assertIn("/rein:ship", plan)
+
     def test_ship_runs_the_cli_and_never_edits(self):
         text = _read(os.path.join(SKILLS, "ship", "SKILL.md"))
         self.assertIn("rein ship", text)

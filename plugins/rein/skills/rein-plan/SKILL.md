@@ -70,10 +70,11 @@ Usage: `/rein:rein-plan <change-name> [description]`
 6. **Dry run.** Show tasks in dependency order with each `Repo:`, verification and
    human-review gate, and the target path.
 7. **Ask for explicit confirmation.** Never write without it.
-8. On confirmation, write it to the step 3 location, then re-parse it: `rein tasks . --change <c>`. Report the order; a
-   dependency cycle (`unresolvableDeps`) is fixed now.
-9. **End the session.** Tell the user implementation runs with `/ship <change>` in an Orca
-   terminal.
+8. On confirmation, write it to the step 3 location, then re-parse it from the repo that
+   holds the plan (`proxima-engineering` for multi-repo): `rein tasks <root> --change <c>`.
+   Report the order; a dependency cycle (`unresolvableDeps`) is fixed now.
+9. **End the session.** Tell the user implementation runs with `/ship <change>`
+   (`/rein:ship` when namespaced) in an Orca terminal.
 
 ## What makes a task good
 

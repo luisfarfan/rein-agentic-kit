@@ -6,21 +6,19 @@ license: MIT
 
 # /ship
 
-Hands a planned change to `rein ship`, which dispatches workers through Orca, gates every task
-with `rein gate`, then audits. **This skill never edits code, never plans, and never pushes,
-merges or opens a PR.**
+Hands a planned change to `rein ship`, which dispatches Orca workers, gates each task, then
+audits. Reachable as `/ship` (`/rein:ship` when namespaced). **Never
+edits code, plans, pushes, merges or opens a PR.**
 
 Usage: `/ship <change> [--root <plan repo>] [--dry-run]`
 
 ## Steps
 
-1. Confirm a plan exists: `rein tasks .`. None: stop and suggest `/rein:rein-plan`.
-2. Run it in this Orca terminal and wait:
-   ```bash
-   rein ship <change>
-   ```
-   Use `--dry-run` first to see placement and models without spending tokens.
+1. Confirm a plan: `rein tasks <root> --change <change>` (root `.` or the user's `--root`).
+   None: stop, suggest `/rein:rein-plan`.
+2. Run `rein ship <change> [--root <root>]` in the background (a long foreground call times
+   out), or ask the user to run it in their Orca terminal; report progress from its output.
+   Never re-run it while live; re-running after it exits resumes. `--dry-run` previews.
 3. Tell the user worker questions arrive as **Orca decision gates**; they answer there.
 4. Report the exit code: 0 approved, 1 failed tasks or rejected audit, 2 usage, 126 preflight
-   error (not an Orca terminal, or an unresolvable `Repo:`). On failure show what `rein ship`
-   printed; never retry or fix code yourself.
+   error. On failure show its output; never retry or fix code yourself.

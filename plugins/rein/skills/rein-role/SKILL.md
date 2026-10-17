@@ -69,7 +69,7 @@ You review completed changes; you do **not** implement.
   the implementer, and `rein review record` refuses `implementer` as the actor. An `APPROVED`
   verdict requires the mechanical part green and is valid **only for the exact state
   reviewed**: if the code changes afterwards the review is stale and must be re-run
-  (`rein review check` enforces this). Re-review loops are bounded at 3 rounds.
+  (`rein review check` enforces this). Re-review loops are bounded at 2 rounds.
 
 ---
 
