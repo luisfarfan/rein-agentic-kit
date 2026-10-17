@@ -1,0 +1,507 @@
+"""The pure decision core of `rein ship`.
+
+`decide(state, event, cfg)` answers one question: given the ship state and one
+thing that just happened, what must the driver do next? It returns a new state
+and a list of actions. It performs no I/O, reads no clock (time arrives as
+`Tick.now`), uses no randomness and never mutates the state it is given, so
+every rule is testable with a hand-built `ShipState`.
+
+The driver owns everything with a side effect or an identifier it must obtain
+from Orca: dispatch ids, Orca task ids, worktree ids and gate ids. It writes
+those into the state it gets back (`dispatch_id`, `orca_task_id`, `worktrees`,
+`worktree_paths`, `gates[gate_id] = {"task_id", "kind", "message_id"}`) before
+the next event.
+"""
+
+from __future__ import annotations
+
+import copy
+from dataclasses import dataclass, field
+from fnmatch import fnmatch
+
+import quota
+from ship_state import ShipState, TaskState
+
+_DEFAULT_RISKY = ["**/auth/**", "**/payments/**", "**/migrations/**"]
+_FAILURE_CAP = 2000
+_BUSY = ("running", "gating", "gated")  # statuses that hold a repo's worktree
+_FIX_PREFIX = "AUDIT"
+
+
+# --- configuration ----------------------------------------------------------
+
+@dataclass
+class ShipConfig:
+    claude_weekly_threshold: float = 60
+    max_concurrent_workers: int = 3
+    max_retries: int = 2
+    max_audit_rounds: int = 2
+    task_timeout_minutes: float = 45
+    large_change_files: int = 25
+    risky_paths: list = field(default_factory=lambda: list(_DEFAULT_RISKY))
+    override: tuple | None = None
+
+    @classmethod
+    def from_flow_config(cls, cfg: dict) -> "ShipConfig":
+        """Read the `ship` block of flow.config.json; absent keys keep their defaults."""
+        block = cfg.get("ship") if isinstance(cfg, dict) else None
+        if not isinstance(block, dict):
+            block = {}
+        names = {
+            "claudeWeeklyThreshold": "claude_weekly_threshold",
+            "maxConcurrentWorkers": "max_concurrent_workers",
+            "maxRetries": "max_retries",
+            "maxAuditRounds": "max_audit_rounds",
+            "taskTimeoutMinutes": "task_timeout_minutes",
+            "largeChangeFiles": "large_change_files",
+            "riskyPaths": "risky_paths",
+        }
+        kwargs = {}
+        for key, attr in names.items():
+            value = block.get(key)
+            if value is None:
+                continue
+            kwargs[attr] = list(value) if attr == "risky_paths" else value
+        return cls(**kwargs)
+
+
+# --- events -----------------------------------------------------------------
+
+@dataclass
+class Tick:
+    now: float
+    limits: dict
+
+
+@dataclass
+class WorkerDone:
+    dispatch_id: str
+    outcome: str
+
+
+@dataclass
+class GateVerdict:
+    task_id: str
+    exit_code: int
+    reason: str
+
+
+@dataclass
+class Question:
+    dispatch_id: str
+    message_id: str
+    text: str
+
+
+@dataclass
+class GateResolved:
+    gate_id: str
+    resolution: str
+
+
+@dataclass
+class AuditVerdict:
+    verdict: str
+    blocking: int
+    changed_files: list
+    findings: list = field(default_factory=list)
+
+
+# --- actions ----------------------------------------------------------------
+
+@dataclass
+class Dispatch:
+    task_id: str
+    repo: str
+    worktree: str  # "new-top-level" or "id:<worktree id>"
+    agent: str
+    model: str
+
+
+@dataclass
+class RunGate:
+    task_id: str
+    unit_only: bool
+
+
+@dataclass
+class CloseTask:
+    task_id: str
+
+
+@dataclass
+class Release:
+    dispatch_id: str
+
+
+@dataclass
+class OpenGate:
+    task_id: str | None
+    question: str
+    options: list
+    kind: str
+    message_id: str = ""
+
+
+@dataclass
+class Relay:
+    message_id: str
+    body: str
+
+
+@dataclass
+class StartAudit:
+    agent: str
+    model: str
+
+
+@dataclass
+class Brake:
+    reason: str
+
+
+@dataclass
+class Finish:
+    pass
+
+
+# --- audit model ------------------------------------------------------------
+
+def _matches(path: str, pattern: str) -> bool:
+    # "**/auth/**" must also catch a repo-relative "auth/x.py".
+    return fnmatch(path, pattern) or fnmatch("/" + path, pattern)
+
+
+def audit_model(changed_files: list, implementer_agents: list, cfg: ShipConfig) -> tuple:
+    """Opus for risky or large changes; otherwise a provider that did not implement."""
+    if len(changed_files) > cfg.large_change_files:
+        return quota.OPUS
+    if any(_matches(f, p) for f in changed_files for p in cfg.risky_paths):
+        return quota.OPUS
+    used = set(implementer_agents)
+    if used == {"codex"}:
+        return quota.SONNET
+    if used == {"claude"}:
+        return quota.CODEX
+    return quota.SONNET
+
+
+# --- helpers ----------------------------------------------------------------
+
+def _implementer(state: ShipState, limits: dict, cfg: ShipConfig) -> tuple:
+    if state.forced_implementer:
+        return tuple(state.forced_implementer)
+    return quota.choose_implementer(limits, cfg.claude_weekly_threshold, cfg.override)
+
+
+def _worktree(state: ShipState, repo: str) -> str:
+    wt = state.worktrees.get(repo)
+    return "id:%s" % wt if wt else "new-top-level"
+
+
+def _holder(state: ShipState, dispatch_id: str):
+    if not dispatch_id:
+        return None
+    for task in state.tasks.values():
+        if task.dispatch_id == dispatch_id:
+            return task
+    return None
+
+
+def _is_fix(task: TaskState) -> bool:
+    return task.id.startswith(_FIX_PREFIX)
+
+
+def _deps_done(state: ShipState, task: TaskState) -> bool:
+    return all(
+        d in state.tasks and state.tasks[d].status == "done" for d in task.deps
+    )
+
+
+def _ready(state: ShipState, task: TaskState) -> bool:
+    return task.status == "pending" and _deps_done(state, task)
+
+
+def _all_done(state: ShipState) -> bool:
+    return bool(state.tasks) and all(t.status == "done" for t in state.tasks.values())
+
+
+def _record_agent(state: ShipState, agent: str) -> None:
+    if agent not in state.implementer_agents:
+        state.implementer_agents.append(agent)
+
+
+def _release_held(task: TaskState, actions: list) -> None:
+    if task.dispatch_id:
+        actions.append(Release(task.dispatch_id))
+        task.dispatch_id = ""
+
+
+def _settle(state: ShipState, actions: list) -> None:
+    """Move the run forward once nothing more can happen for the tasks.
+
+    Everything done starts the audit. A failed task blocks the audit: once
+    nothing is in flight, nothing is ready and no gate is open, the run ends.
+    """
+    if state.phase not in ("running", "fixing"):
+        return
+    if _all_done(state):
+        state.phase = "auditing"
+        # The changed files are only known once the auditor reports, so the first
+        # choice rests on who implemented; the verdict carries the real list.
+        actions.append(StartAudit(*audit_model([], state.implementer_agents, ShipConfig())))
+        return
+    if not any(t.status == "failed" for t in state.tasks.values()):
+        return
+    if state.gates:
+        return
+    if any(t.status in _BUSY for t in state.tasks.values()):
+        return
+    if any(_ready(state, t) for t in state.tasks.values()):
+        return
+    state.phase = "done"
+    actions.append(Finish())
+
+
+# --- decide -----------------------------------------------------------------
+
+def decide(state: ShipState, event, cfg: ShipConfig) -> tuple:
+    """Fold one event into the state. Returns `(new_state, actions)`; the input is untouched."""
+    state = copy.deepcopy(state)
+    actions: list = []
+    if isinstance(event, Tick):
+        _on_tick(state, event, cfg, actions)
+    elif isinstance(event, WorkerDone):
+        _on_worker_done(state, event, cfg, actions)
+    elif isinstance(event, GateVerdict):
+        _on_gate_verdict(state, event, cfg, actions)
+    elif isinstance(event, Question):
+        _on_question(state, event, actions)
+    elif isinstance(event, GateResolved):
+        _on_gate_resolved(state, event, cfg, actions)
+    elif isinstance(event, AuditVerdict):
+        _on_audit_verdict(state, event, cfg, actions)
+    return state, actions
+
+
+def _on_tick(state: ShipState, event: Tick, cfg: ShipConfig, actions: list) -> None:
+    if state.phase not in ("running", "fixing"):
+        return
+    now = event.now
+
+    # A task re-dispatched by a verdict has no clock yet; start it now.
+    for task in state.tasks.values():
+        if task.status == "running" and task.started_at == 0.0:
+            task.started_at = now
+
+    for task in state.tasks.values():
+        if task.status == "running" and now - task.started_at > cfg.task_timeout_minutes * 60:
+            task.status = "gated"
+            actions.append(OpenGate(
+                task.id,
+                "Task %s has run for more than %g minutes. Retry it, or skip it?"
+                % (task.id, cfg.task_timeout_minutes),
+                ["retry", "skip"], "timeout",
+            ))
+
+    for task in state.tasks.values():
+        if task.human_review and _ready(state, task):
+            task.status = "gated"
+            actions.append(OpenGate(
+                task.id,
+                "Task %s needs human review before it can be closed." % task.id,
+                ["approve", "reject"], "human_review",
+            ))
+
+    settled = len(actions)
+    _settle(state, actions)
+    if len(actions) > settled or state.phase == "done":
+        return
+
+    candidates = [t for t in state.tasks.values() if not t.human_review and _ready(state, t)]
+    if not candidates:
+        return
+
+    agent, model = _implementer(state, event.limits, cfg)
+    reason = quota.brake_reason(event.limits, agent)
+    if reason:
+        state.phase = "braked"
+        actions.append(Brake(reason))
+        actions.append(OpenGate(None, reason, ["switch-to-codex", "pause"], "brake"))
+        return
+
+    active = [t for t in state.tasks.values() if t.status in _BUSY and not t.human_review]
+    busy_repos = {t.repo for t in active}
+    slots = cfg.max_concurrent_workers - len(active)
+    for task in candidates:
+        if slots <= 0:
+            break
+        if task.repo in busy_repos:
+            continue
+        actions.append(Dispatch(task.id, task.repo, _worktree(state, task.repo), agent, model))
+        task.status = "running"
+        task.agent, task.model = agent, model
+        task.started_at = now
+        _record_agent(state, agent)
+        busy_repos.add(task.repo)
+        slots -= 1
+
+
+def _red(state: ShipState, task: TaskState, reason: str, cfg: ShipConfig, actions: list) -> None:
+    task.last_failure = reason[:_FAILURE_CAP]
+    if task.attempts < cfg.max_retries:
+        _release_held(task, actions)
+        task.attempts += 1
+        task.status = "running"
+        task.started_at = 0.0  # stamped by the next Tick
+        actions.append(Dispatch(task.id, task.repo, _worktree(state, task.repo), task.agent, task.model))
+        return
+    task.status = "failed"
+    actions.append(OpenGate(
+        task.id,
+        "Task %s failed after %d retries: %s" % (task.id, task.attempts, task.last_failure[:300]),
+        ["retry", "skip"], "retry_exhausted",
+    ))
+
+
+def _on_worker_done(state: ShipState, event: WorkerDone, cfg: ShipConfig, actions: list) -> None:
+    task = _holder(state, event.dispatch_id)
+    if task is None or task.status != "running":
+        return
+    if event.outcome == "succeeded":
+        task.status = "gating"
+        actions.append(RunGate(task.id, task.type != "verification"))
+    else:
+        _red(state, task, "worker %s" % (event.outcome or "failed"), cfg, actions)
+
+
+def _on_gate_verdict(state: ShipState, event: GateVerdict, cfg: ShipConfig, actions: list) -> None:
+    task = state.tasks.get(event.task_id)
+    if task is None or task.status != "gating":
+        return
+    if event.exit_code == 0:
+        if not _is_fix(task):  # synthetic fix tasks have no checkbox in the plan
+            actions.append(CloseTask(task.id))
+        if task.dispatch_id:
+            actions.append(Release(task.dispatch_id))
+        task.status = "done"
+        _settle(state, actions)
+    elif event.exit_code == 126:
+        task.status = "gated"
+        actions.append(OpenGate(
+            task.id,
+            "The check for task %s could not run: %s" % (task.id, event.reason[:300]),
+            ["retry", "skip"], "setup",
+        ))
+    else:
+        _red(state, task, event.reason, cfg, actions)
+
+
+def _on_question(state: ShipState, event: Question, actions: list) -> None:
+    task = _holder(state, event.dispatch_id)
+    if task is None:
+        return
+    task.status = "gated"
+    actions.append(OpenGate(task.id, event.text, [], "question", event.message_id))
+
+
+_RESOLUTIONS = {
+    "human_review": ("approve", "reject"),
+    "retry_exhausted": ("retry", "skip"),
+    "setup": ("retry", "skip"),
+    "timeout": ("retry", "skip"),
+    "brake": ("switch-to-codex", "pause"),
+    "audit_exhausted": ("accept", "reject"),
+}
+
+
+def _on_gate_resolved(state: ShipState, event: GateResolved, cfg: ShipConfig, actions: list) -> None:
+    gate = state.gates.get(event.gate_id)
+    if gate is None:
+        return
+    kind, resolution = gate.get("kind"), event.resolution
+    allowed = _RESOLUTIONS.get(kind)
+    if allowed is not None and resolution not in allowed:
+        return
+    if allowed is None and kind != "question":
+        return
+    del state.gates[event.gate_id]
+    task = state.tasks.get(gate.get("task_id"))
+
+    if kind == "question":
+        actions.append(Relay(gate.get("message_id", ""), resolution))
+        if task is not None and task.status == "gated":
+            task.status = "running"
+    elif kind == "human_review":
+        if task is not None:
+            if resolution == "approve":
+                actions.append(CloseTask(task.id))
+                task.status = "done"
+            else:
+                task.status = "failed"
+        _settle(state, actions)
+    elif kind in ("retry_exhausted", "setup", "timeout"):
+        if task is not None:
+            _release_held(task, actions)
+            if resolution == "retry":
+                task.status, task.attempts = "pending", 0
+            else:
+                task.status = "failed"
+        _settle(state, actions)
+    elif kind == "brake":
+        if resolution == "switch-to-codex":
+            state.forced_implementer = list(quota.CODEX)
+        state.phase = "running"
+        if resolution == "pause":
+            actions.append(Finish())
+    elif kind == "audit_exhausted":
+        state.phase = "done"
+        actions.append(Finish())
+
+
+def _in_repo(state: ShipState, repo: str, path: str) -> bool:
+    root = state.worktree_paths.get(repo)
+    prefixes = [repo.rstrip("/") + "/"]
+    if root:
+        prefixes.append(root.rstrip("/") + "/")
+    return any(path.startswith(p) for p in prefixes)
+
+
+def _fix_repos(state: ShipState, changed_files: list) -> list:
+    repos = []
+    for task in state.tasks.values():
+        if task.repo not in repos:
+            repos.append(task.repo)
+    touched = [r for r in repos if any(_in_repo(state, r, f) for f in changed_files)]
+    return touched or repos
+
+
+def _on_audit_verdict(state: ShipState, event: AuditVerdict, cfg: ShipConfig, actions: list) -> None:
+    if state.phase != "auditing":
+        return
+    approved = event.verdict == "APPROVED" or (
+        event.verdict == "CHANGES_REQUESTED" and event.blocking <= 0
+    )
+    if approved:
+        state.phase = "done"
+        actions.append(Finish())
+        return
+    if state.audit_rounds >= cfg.max_audit_rounds:
+        summary = "\n".join(event.findings)[:600]
+        actions.append(OpenGate(
+            None,
+            "The audit still has %d blocking finding(s) after %d fix round(s). %s"
+            % (event.blocking, state.audit_rounds, summary),
+            ["accept", "reject"], "audit_exhausted",
+        ))
+        actions.append(Finish())
+        return
+    state.audit_rounds += 1
+    findings = "\n".join(event.findings)[:_FAILURE_CAP]
+    for repo in _fix_repos(state, event.changed_files):
+        fix_id = "%s%d-%s" % (_FIX_PREFIX, state.audit_rounds, repo)
+        state.tasks[fix_id] = TaskState(
+            id=fix_id, repo=repo, deps=[], human_review=False, verification="",
+            type="implementation", last_failure=findings,
+        )
+    state.phase = "fixing"

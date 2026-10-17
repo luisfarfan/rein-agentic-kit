@@ -53,6 +53,7 @@ class ShipState:
     audit_rounds: int = 0
     audit_dispatch: str = ""
     implementer_agents: list = field(default_factory=list)
+    forced_implementer: list = field(default_factory=list)
 
 
 def state_path(repo_root: str) -> str:
