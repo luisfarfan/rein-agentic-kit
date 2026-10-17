@@ -588,12 +588,19 @@ class _Driver:
         covered = {g.get("task_id") for g in list(self.state.gates.values()) + self.state.pending_gates}
         for t in self.state.tasks.values():
             if t.status == "gated" and t.id not in covered:
-                review = t.human_review
+                if t.dispatch_id:
+                    # A worker may still be running (a lost timeout or question): retry/skip must
+                    # stop it and see proof of exit, exactly like a timeout gate.
+                    kind, options = "timeout", ["retry", "skip"]
+                    question = "Task %s was waiting on a decision that was lost. Retry it, or skip it?" % t.id
+                elif t.human_review:
+                    kind, options = "human_review", ["approve", "reject"]
+                    question = "Task %s needs human review before it can be closed." % t.id
+                else:
+                    kind, options = "setup", ["retry", "skip"]
+                    question = "Task %s was waiting on a decision that was lost. Retry it, or skip it?" % t.id
                 self.state.pending_gates.append({
-                    "task_id": t.id, "kind": "human_review" if review else "setup", "message_id": "",
-                    "options": ["approve", "reject"] if review else ["retry", "skip"],
-                    "question": ("Task %s needs human review before it can be closed." % t.id) if review
-                    else "Task %s was waiting on a decision that was lost. Retry it, or skip it?" % t.id})
+                    "task_id": t.id, "kind": kind, "message_id": "", "options": options, "question": question})
         if self.state.phase == "braked" and not any(
                 g.get("kind") == "brake" for g in list(self.state.gates.values()) + self.state.pending_gates):
             self.state.pending_gates.append({

@@ -652,6 +652,14 @@ class TestGateDurability(ShipCase):
         self.assertEqual(self.run_ship(fake, scripted_gate()), 1)  # nothing left to do: the run ends
         self.assertEqual([c for c in fake.calls if c[:2] == ["orchestration", "gate-create"]], [])
 
+    def test_a_lost_gate_of_a_task_with_a_held_worker_comes_back_as_a_timeout_gate(self):
+        """So the owner's retry/skip stops that worker and waits for proof, instead of releasing it blind."""
+        ship_state.save(self.one_task_state(status="gated", dispatch_id="d1"), self.state_file)
+        fake = FakeOrca(self.root, autocomplete=False)
+        with self.assertRaises(Drained):
+            self.run_ship(fake, scripted_gate())
+        self.assertEqual([g["kind"] for g in ship_state.load(self.state_file).gates.values()], ["timeout"])
+
     def test_resume_reopens_the_gate_of_a_braked_run(self):
         state = self.one_task_state()
         state.phase = "braked"
