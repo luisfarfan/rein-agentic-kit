@@ -72,6 +72,7 @@ class FakeOrca:
         self.calls = []
         self.autocomplete = autocomplete
         self.repos = repos
+        self.wt_base = os.path.join(os.path.dirname(root), "wt")
         self.capabilities = ["orchestration.contract.v1"] if capabilities is None else capabilities
         self.tasks = {}        # task id -> spec
         self.dispatches = {}   # dispatch id -> {"task", "worktree", "status", "reported", "title"}
@@ -126,7 +127,7 @@ class FakeOrca:
             sel = _flag(a, "--worktree")
             if sel == "new-top-level":
                 repo = _flag(a, "--repo").split(":", 1)[-1].replace("repo-", "", 1)
-                wt = "wtid-%s::/wt/%s" % (repo, repo)
+                wt = "wtid-%s::%s/%s" % (repo, self.wt_base, repo)
             else:
                 wt = sel[len("id:"):]
             self.dispatches[did] = {"task": _flag(a, "--task"), "worktree": wt, "reported": False, "live": True}
@@ -215,7 +216,8 @@ class ShipCase(unittest.TestCase):
         self.root = os.path.join(self.tmp.name, "plan-repo")
         os.makedirs(self.root)
         self.write_plan(PLAN)
-        self.state_file = os.path.join(self.root, ".rein", "ship-state.json")
+        self.state_file = os.path.join(self.root, ".rein", "ship", "demo.json")
+        self.wt = os.path.join(self.tmp.name, "wt")
         self.ledger = os.path.join(self.tmp.name, "runs.jsonl")
         self._saved = (ship._tr.PROJECTS, ship._tr.LEDGER_PATH, ship.changed_files)
         ship._tr.PROJECTS = os.path.join(self.tmp.name, "projects")
@@ -235,12 +237,20 @@ class ShipCase(unittest.TestCase):
         self.clock_value += 1
         return self.clock_value
 
-    def approve_audit(self, verdict="APPROVED", findings=()):
+    def wtpath(self, repo):
+        return os.path.join(self.wt, repo)
+
+    def wtid(self, repo):
+        return "wtid-%s::%s" % (repo, self.wtpath(repo))
+
+    def approve_audit(self, verdict="APPROVED", findings=(), root=None):
+        """What the auditor does: record a verdict in the audit worktree (the first repo's)."""
         def hook():
-            target = os.path.join(self.root, "reviewed.txt")
-            with open(target, "w", encoding="utf-8") as fh:
+            where = root or self.wtpath("proxima-api")
+            os.makedirs(where, exist_ok=True)
+            with open(os.path.join(where, "reviewed.txt"), "w", encoding="utf-8") as fh:
                 fh.write("x")
-            gate.record_review(self.root, "demo", verdict, ["reviewed.txt"], list(findings), "reviewer-1")
+            gate.record_review(where, "demo", verdict, ["reviewed.txt"], list(findings), "reviewer-1")
         return hook
 
     def run_ship(self, fake, gates, **kw):
@@ -324,7 +334,7 @@ class TestEndToEnd(ShipCase):
         first_other = min(i for tid, i in idx.items() if tid in self._orca_ids_for(fake, "T002", "T003"))
         self.assertGreater(first_other, starts.index(t001_starts[1]))
         t003_start = [s for s in starts if _flag(s, "--task") in self._orca_ids_for(fake, "T003")][0]
-        self.assertEqual(_flag(t003_start, "--worktree"), "id:wtid-proxima-api::/wt/proxima-api")
+        self.assertEqual(_flag(t003_start, "--worktree"), "id:" + self.wtid("proxima-api"))
         t002_start = [s for s in starts if _flag(s, "--task") in self._orca_ids_for(fake, "T002")][0]
         self.assertEqual(_flag(t002_start, "--worktree"), "new-top-level")
         self.assertEqual(_flag(t002_start, "--repo"), "id:repo-proxima-admin")
@@ -367,7 +377,7 @@ class TestEndToEnd(ShipCase):
         self.run_ship(fake, scripted_gate())
         state = ship_state.load(self.state_file)
         self.assertEqual(sorted(state.worktrees), ["proxima-admin", "proxima-api"])
-        self.assertEqual(state.worktree_paths["proxima-api"], "/wt/proxima-api")
+        self.assertEqual(state.worktree_paths["proxima-api"], self.wtpath("proxima-api"))
         self.assertEqual(state.phase, "done")
 
 
@@ -416,8 +426,8 @@ class TestResume(ShipCase):
         state = self.saved_state(run_id="run_1")
         t1 = state.tasks["T001"]
         t1.status, t1.dispatch_id, t1.orca_task_id, t1.agent, t1.model = "running", "d1", "task_x", "codex", "m"
-        state.worktrees["proxima-api"] = "wtid-proxima-api::/wt/proxima-api"
-        state.worktree_paths["proxima-api"] = "/wt/proxima-api"
+        state.worktrees["proxima-api"] = self.wtid("proxima-api")
+        state.worktree_paths["proxima-api"] = self.wtpath("proxima-api")
         ship_state.save(state, self.state_file)
 
         fake = FakeOrca(self.root, autocomplete=False)
@@ -434,8 +444,8 @@ class TestResume(ShipCase):
         state = self.saved_state(run_id="run_1", phase="auditing")
         t1 = state.tasks["T001"]
         t1.status, t1.orca_task_id = "done", "task_x"
-        state.worktrees["proxima-api"] = "wtid-proxima-api::/wt/proxima-api"
-        state.worktree_paths["proxima-api"] = "/wt/proxima-api"
+        state.worktrees["proxima-api"] = self.wtid("proxima-api")
+        state.worktree_paths["proxima-api"] = self.wtpath("proxima-api")
         state.implementer_agents = ["codex"]
         ship_state.save(state, self.state_file)
         fake = FakeOrca(self.root, autocomplete=True)
@@ -448,8 +458,8 @@ class TestResume(ShipCase):
         self.write_plan(PLAN.split("- [ ] T002")[0])
         state = self.saved_state(run_id="run_1", phase="auditing", audit_dispatch="d_audit")
         state.tasks["T001"].status = "done"
-        state.worktrees["proxima-api"] = "wtid-proxima-api::/wt/proxima-api"
-        state.worktree_paths["proxima-api"] = "/wt/proxima-api"
+        state.worktrees["proxima-api"] = self.wtid("proxima-api")
+        state.worktree_paths["proxima-api"] = self.wtpath("proxima-api")
         ship_state.save(state, self.state_file)
         fake = FakeOrca(self.root, autocomplete=False)
         with self.assertRaises(Drained):
@@ -477,8 +487,8 @@ class TestNextAction(ShipCase):
         state.run_id = "run_1"
         t1 = state.tasks["T001"]
         t1.status, t1.dispatch_id, t1.orca_task_id, t1.agent, t1.model = "running", "d1", "task_x", "codex", "m"
-        state.worktrees["proxima-api"] = "wtid-proxima-api::/wt/proxima-api"
-        state.worktree_paths["proxima-api"] = "/wt/proxima-api"
+        state.worktrees["proxima-api"] = self.wtid("proxima-api")
+        state.worktree_paths["proxima-api"] = self.wtpath("proxima-api")
         ship_state.save(state, self.state_file)
 
     def rows(self, *items):
@@ -530,8 +540,8 @@ class TestGateDurability(ShipCase):
         t1.orca_task_id, t1.agent, t1.model = "task_x", "codex", "m"
         for k, v in task_kw.items():
             setattr(t1, k, v)
-        state.worktrees["proxima-api"] = "wtid-proxima-api::/wt/proxima-api"
-        state.worktree_paths["proxima-api"] = "/wt/proxima-api"
+        state.worktrees["proxima-api"] = self.wtid("proxima-api")
+        state.worktree_paths["proxima-api"] = self.wtpath("proxima-api")
         return state
 
     def test_gate_create_failure_is_retried_on_the_next_iteration(self):
@@ -615,10 +625,11 @@ class TestAuditSupervision(ShipCase):
         plan = ship._plan.read_plan(self.root, source="tasks-md", change="demo")
         state = ship_state.from_plan(plan, "plan-repo")
         state.run_id, state.phase, state.audit_dispatch = "run_1", "auditing", "d_audit"
+        state.audit_root = self.wtpath("proxima-api")
         t1 = state.tasks["T001"]
         t1.status, t1.orca_task_id, t1.agent, t1.model = "done", "task_x", "codex", "m"
-        state.worktrees["proxima-api"] = "wtid-proxima-api::/wt/proxima-api"
-        state.worktree_paths["proxima-api"] = "/wt/proxima-api"
+        state.worktrees["proxima-api"] = self.wtid("proxima-api")
+        state.worktree_paths["proxima-api"] = self.wtpath("proxima-api")
         state.implementer_agents = ["codex"]
         for k, v in kw.items():
             setattr(state, k, v)
@@ -757,7 +768,7 @@ class TestAuditSupervision(ShipCase):
 
     def test_resume_does_not_accept_an_episode_from_before_the_audit_started(self):
         self.approve_audit()()  # a previous round's APPROVED episode
-        baseline = ship._episode_stamp(gate.latest_episode(self.root, "demo"))
+        baseline = ship._episode_stamp(gate.latest_episode(self.wtpath("proxima-api"), "demo"))
         self.audit_state(audit_baseline=baseline)
         fake = FakeOrca(self.root, autocomplete=False)
         fake.pending = [self.audit_done()]
@@ -767,6 +778,125 @@ class TestAuditSupervision(ShipCase):
         self.assertEqual(len(creates), 1)
         self.assertEqual(_flag(creates[0], "--options"), '["retry-audit", "accept", "reject"]')
         self.assertEqual(ship_state.load(self.state_file).audit_result, "")
+
+
+class TestAuditVerdictLocation(ShipCase):
+    """C1: the verdict lives in the audit worktree; the plan repo's primary checkout is never read or written."""
+
+    def test_the_audit_is_told_where_to_record_and_the_verdict_is_read_from_there(self):
+        fake = FakeOrca(self.root)
+        fake.on_audit = self.approve_audit()
+        self.assertEqual(self.run_ship(fake, scripted_gate()), 0, self.out)
+        state = ship_state.load(self.state_file)
+        self.assertEqual(state.audit_root, self.wtpath("proxima-api"))
+        spec = next(t["spec"] for t in fake.tasks.values() if "rein-audit" in t["spec"])
+        self.assertIn("rein review record --root %s --change demo" % self.wtpath("proxima-api"), spec)
+        self.assertIn(os.path.join(self.wtpath("proxima-admin"), "src", "x.py").replace("/src/x.py", ""), spec)
+        self.assertFalse(os.path.exists(os.path.join(self.root, ".rein", "reviews")))
+
+    def test_an_episode_in_the_plan_repo_is_not_a_verdict(self):
+        fake = FakeOrca(self.root, autocomplete=False)
+        self.write_plan(PLAN.split("- [ ] T002")[0])
+        plan = ship._plan.read_plan(self.root, source="tasks-md", change="demo")
+        state = ship_state.from_plan(plan, "plan-repo", "demo")
+        state.run_id, state.phase, state.audit_dispatch = "run_1", "auditing", "d_audit"
+        state.audit_root = self.wtpath("proxima-api")
+        state.tasks["T001"].status, state.tasks["T001"].orca_task_id = "done", "task_x"
+        state.worktrees["proxima-api"] = self.wtid("proxima-api")
+        state.worktree_paths["proxima-api"] = self.wtpath("proxima-api")
+        ship_state.save(state, self.state_file)
+        self.approve_audit(root=self.root)()  # the auditor wrote into the primary checkout
+        fake.pending = [lambda f: [{"id": "m", "type": "worker_done", "from_handle": "t", "subject": "d", "body": "",
+                                    "payload": json.dumps({"dispatchId": "d_audit", "outcome": "succeeded"})}]]
+        with self.assertRaises(Drained):
+            self.run_ship(fake, scripted_gate())
+        creates = [c for c in fake.calls if c[:2] == ["orchestration", "gate-create"]]
+        self.assertEqual(_flag(creates[0], "--options"), '["retry-audit", "accept", "reject"]')
+        self.assertIn(self.wtpath("proxima-api"), _flag(creates[0], "--question"))
+
+
+class TestChangesFailure(ShipCase):
+    """C2(c): a failing git diff opens an owner gate instead of auditing nothing."""
+
+    def test_a_failing_diff_queues_a_setup_gate_and_starts_no_audit(self):
+        self.write_plan(PLAN.split("- [ ] T002")[0])
+        fake = FakeOrca(self.root)
+
+        def boom(path, base):
+            raise RuntimeError("fatal: bad revision 'origin/develop...HEAD'")
+        ship.changed_files = boom
+        with self.assertRaises(Drained):
+            fake.autocomplete = False
+            fake.pending = [lambda f: [fake.done_message(next(iter(f.dispatches)))]]
+            self.run_ship(fake, scripted_gate())
+        creates = [c for c in fake.calls if c[:2] == ["orchestration", "gate-create"]]
+        self.assertEqual(len(creates), 1)
+        question = _flag(creates[0], "--question")
+        self.assertIn("proxima-api", question)
+        self.assertIn("bad revision", question)
+        self.assertEqual(_flag(creates[0], "--options"), '["retry", "skip"]')
+        self.assertEqual([t for t in fake.tasks.values() if "rein-audit" in t["spec"]], [])
+        self.assertEqual([g["kind"] for g in ship_state.load(self.state_file).gates.values()], ["setup"])
+
+    def test_the_missing_base_ref_warning_is_printed(self):
+        fake = FakeOrca(self.root)
+        fake.on_audit = self.approve_audit()
+        real = fake._answer
+
+        def answer(a):
+            result = real(a)
+            if a[0] == "repo":
+                for repo in result["repos"]:
+                    repo.pop("worktreeBaseRef", None)
+            return result
+        fake._answer = answer
+        self.run_ship(fake, scripted_gate())
+        self.assertIn("warning: Orca has no worktreeBaseRef for proxima-api", self.out)
+
+
+class TestStatePerChange(ShipCase):
+    """C3: a state file belongs to one change."""
+
+    def test_the_default_state_file_is_per_change(self):
+        fake = FakeOrca(self.root, autocomplete=False)
+        client = OrcaClient(executable="ORCA", runner=fake)
+        buf = io.StringIO()
+        with redirect_stdout(buf), self.assertRaises(Drained):
+            ship.run_ship(self.root, "demo", client, scripted_gate(), env=ENV, clock=self.clock)
+        self.assertTrue(os.path.isfile(os.path.join(self.root, ".rein", "ship", "demo.json")))
+        self.assertFalse(os.path.exists(os.path.join(self.root, ".rein", "ship-state.json")))
+
+    def test_a_state_of_another_change_is_refused_with_126(self):
+        os.makedirs(os.path.dirname(self.state_file), exist_ok=True)
+        other = ship_state.ShipState(change="other", plan_path="p", run_id="run_other")
+        ship_state.save(other, self.state_file)
+        fake = FakeOrca(self.root)
+        self.assertEqual(self.run_ship(fake, scripted_gate()), 126)
+        self.assertIn("belongs to change 'other'", self.out)
+        self.assertEqual(fake.starts(), [])
+        self.assertEqual([c for c in fake.calls if c[1:2] == ["run-create"]], [])
+        self.assertEqual(ship_state.load(self.state_file).change, "other")  # untouched
+
+
+class TestWorkerStartFlags(ShipCase):
+    """C4: a fresh worktree is set up and named; a reused one is neither."""
+
+    def test_new_top_level_dispatches_run_setup_and_name_the_change(self):
+        fake = FakeOrca(self.root)
+        fake.on_audit = self.approve_audit()
+        self.run_ship(fake, scripted_gate())
+        task_ids = self_ids = {t for t, v in fake.tasks.items() if v["title"].split(" ")[0] in ("T001", "T002", "T003")}
+        starts = [s for s in fake.starts() if _flag(s, "--task") in task_ids]
+        fresh = [s for s in starts if _flag(s, "--worktree") == "new-top-level"]
+        reused = [s for s in starts if _flag(s, "--worktree").startswith("id:")]
+        self.assertEqual(len(fresh), 2)
+        self.assertTrue(reused)
+        for s in fresh:
+            self.assertEqual((_flag(s, "--setup"), _flag(s, "--name")), ("run", "demo"))
+        for s in reused:
+            self.assertNotIn("--setup", s)
+        audit_start = [s for s in fake.starts() if "rein-audit" in fake.tasks[_flag(s, "--task")]["spec"]][0]
+        self.assertNotIn("--setup", audit_start)
 
 
 class TestDryRun(ShipCase):
@@ -820,12 +950,26 @@ class TestSpecs(unittest.TestCase):
         fix = self.task(id="AUDIT1-proxima-api", last_failure="BLOCKING: missing test", verification="")
         self.assertIn("missing test", ship.build_task_spec(fix, self.PLAN, "P"))
 
-    def test_audit_spec_names_every_worktree_and_the_record_command(self):
-        spec = ship.build_audit_spec(self.PLAN, {"/wt/a": ["x.py"], "/wt/b": ["y.py"]}, "REVIEWER")
+    def test_audit_spec_names_every_worktree_and_the_exact_record_command(self):
+        spec = ship.build_audit_spec(self.PLAN, {"/wt/a": ["x.py"], "/wt/b": ["y.py"]}, "REVIEWER",
+                                     "/wt/a", "demo")
         self.assertIn("REVIEWER", spec)
         self.assertIn("Run the rein-audit skill on /wt/a", spec)
         self.assertIn("Run the rein-audit skill on /wt/b", spec)
-        self.assertIn("Record the verdict with rein review record", spec)
+        # The verdict goes to the audit worktree, with the change, never to the plan repo.
+        self.assertIn("rein review record --root /wt/a --change demo --verdict", spec)
+        # Files of the audit worktree are relative to it; files of other repos are absolute.
+        self.assertIn("  changed: x.py", spec)
+        self.assertIn("  changed: /wt/b/y.py", spec)
+        self.assertIn("absolute paths for files outside /wt/a", spec)
+
+    def test_audit_spec_quotes_paths_with_spaces(self):
+        spec = ship.build_audit_spec(self.PLAN, {"/w t/a": ["x.py"]}, "R", "/w t/a", "demo")
+        self.assertIn("--root '/w t/a' --change demo", spec)
+
+    def test_task_spec_tells_the_worker_to_commit_but_never_push(self):
+        spec = ship.build_task_spec(self.task(), self.PLAN, "P")
+        self.assertIn("Commit your work on this worktree's branch when the verification passes. Never push.", spec)
 
 
 class TestCli(unittest.TestCase):
@@ -868,6 +1012,31 @@ class TestChangedFiles(unittest.TestCase):
             self.assertEqual(ship.changed_files(d, "main"), ["b.txt"])
             with self.assertRaises(RuntimeError):
                 ship.changed_files(d, "no-such-ref")
+
+    def test_uncommitted_and_untracked_work_is_a_change_too(self):
+        with tempfile.TemporaryDirectory() as d:
+            def git(*a):
+                subprocess.run(["git", "-C", d, *a], check=True, capture_output=True)
+
+            def write(name, text):
+                os.makedirs(os.path.dirname(os.path.join(d, name)), exist_ok=True)
+                with open(os.path.join(d, name), "w") as fh:
+                    fh.write(text)
+            git("init", "-q", "-b", "main")
+            git("config", "user.email", "t@example.com")
+            git("config", "user.name", "t")
+            write("a.txt", "1")
+            write("c.txt", "1")
+            git("add", ".")
+            git("commit", "-qm", "base")
+            git("checkout", "-qb", "work")
+            write("b.txt", "committed")
+            git("add", ".")
+            git("commit", "-qm", "work")
+            write("c.txt", "edited but never committed")   # tracked, uncommitted
+            write("new/d.txt", "never added")               # untracked
+            write(".rein/reviews/x/episode.json", "{}")     # Rein's own state is not a change
+            self.assertEqual(ship.changed_files(d, "main"), ["b.txt", "c.txt", "new/d.txt"])
 
 
 if __name__ == "__main__":

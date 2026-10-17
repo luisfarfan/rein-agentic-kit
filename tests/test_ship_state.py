@@ -142,9 +142,26 @@ class PersistenceTests(unittest.TestCase):
             with self.assertRaises(ship_state.ShipStateCorrupt):
                 ship_state.load(p)
 
-    def test_state_path(self):
+    def test_state_path_is_per_change(self):
         self.assertEqual(
-            ship_state.state_path("/r"), os.path.join("/r", ".rein", "ship-state.json"))
+            ship_state.state_path("/r", "add-cart"), os.path.join("/r", ".rein", "ship", "add-cart.json"))
+        self.assertNotEqual(ship_state.state_path("/r", "a"), ship_state.state_path("/r", "b"))
+
+    def test_state_path_cannot_escape_the_ship_directory(self):
+        for change in ("../x", "a/b", "..", "", "."):
+            path = ship_state.state_path("/r", change)
+            self.assertEqual(os.path.dirname(path), os.path.join("/r", ".rein", "ship"), change)
+
+    def test_from_plan_prefers_the_requested_change_name(self):
+        plan = _plan(_task("T001"), change="")
+        self.assertEqual(ship_state.from_plan(plan, "api", "demo").change, "demo")
+        self.assertEqual(ship_state.from_plan(_plan(_task("T001")), "api").change, "c1")
+
+    def test_audit_root_round_trips(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "s.json")
+            ship_state.save(ShipState(change="c", plan_path="p", audit_root="/wt/api"), path)
+            self.assertEqual(ship_state.load(path).audit_root, "/wt/api")
 
 
 if __name__ == "__main__":

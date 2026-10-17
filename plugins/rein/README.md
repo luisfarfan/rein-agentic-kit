@@ -17,7 +17,7 @@ plugins/rein/
 ├── lib/roles.py                  implementer / reviewer profiles sent to workers
 ├── lib/ship.py                   the `rein ship` driver (thin loop around the decision core)
 ├── lib/ship_decide.py            pure decision core: (state, event) -> action
-├── lib/ship_state.py             .rein/ship-state.json: plan tasks -> Orca task / dispatch ids
+├── lib/ship_state.py             .rein/ship/<change>.json: plan tasks -> Orca task / dispatch ids
 ├── lib/orca_client.py            the only module that shells out to `orca`
 ├── lib/quota.py                  reads `orca account list`: implementer choice, brakes, usage delta
 ├── lib/migrate_config.py         v1 -> v2 flow.config.json rewrite

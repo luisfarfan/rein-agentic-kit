@@ -776,7 +776,7 @@ def cmd_doctor(argv: list[str]) -> int:
 
 
 def cmd_ship(argv: list[str]) -> int:
-    """Run a planned change through Orca workers, resuming from .rein/ship-state.json.
+    """Run a planned change through Orca workers, resuming from .rein/ship/<change>.json.
 
     Put the change name first: `_positional` treats the word after a bare flag
     as that flag's value, so `--dry-run <change>` is filtered out below.

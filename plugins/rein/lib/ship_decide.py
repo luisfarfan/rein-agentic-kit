@@ -26,6 +26,8 @@ _DEFAULT_RISKY = ["**/auth/**", "**/payments/**", "**/migrations/**"]
 _FAILURE_CAP = 2000
 _BUSY = ("running", "gating", "gated")  # statuses that hold a repo's worktree
 _FIX_PREFIX = "AUDIT"
+# Task-less owner gates that hold the audit: no audit may start behind one.
+AUDIT_HOLDS = ("audit_failed", "audit_timeout", "audit_exhausted", "setup")
 
 
 # --- configuration ----------------------------------------------------------
@@ -102,6 +104,12 @@ class GateResolved:
 @dataclass
 class ChangesComputed:
     changed_files: list
+
+
+@dataclass
+class ChangesFailed:
+    """The driver could not list the changed files (a git failure), so nothing may be audited."""
+    error: str
 
 
 @dataclass
@@ -308,6 +316,8 @@ def decide(state: ShipState, event, cfg: ShipConfig) -> tuple:
         _on_gate_resolved(state, event, cfg, actions)
     elif isinstance(event, ChangesComputed):
         _on_changes_computed(state, event, cfg, actions)
+    elif isinstance(event, ChangesFailed):
+        _on_changes_failed(state, event, actions)
     elif isinstance(event, AuditVerdict):
         _on_audit_verdict(state, event, cfg, actions)
     return state, actions
@@ -491,6 +501,13 @@ def _on_gate_resolved(state: ShipState, event: GateResolved, cfg: ShipConfig, ac
             else:
                 task.status = "failed"
         _settle(state, actions)
+    elif kind == "setup" and gate.get("task_id") is None:
+        # The changed files could not be listed. Retry lists them again; skip ends the audit unapproved.
+        if state.phase == "auditing":
+            if resolution == "retry":
+                actions.append(ComputeChanges())
+            else:
+                _end_audit(state, actions, "skipped")
     elif kind in ("retry_exhausted", "setup", "timeout"):
         if task is not None:
             _release_held(task, actions)
@@ -563,10 +580,20 @@ def _fix_repos(state: ShipState, changed_files: list) -> list:
 def _on_changes_computed(state: ShipState, event: ChangesComputed, cfg: ShipConfig, actions: list) -> None:
     if state.phase != "auditing":
         return
-    if state.audit_dispatch or _owner_gate_open(state, "audit_failed", "audit_timeout"):
+    if state.audit_dispatch or _owner_gate_open(state, *AUDIT_HOLDS):
         return  # an audit is running, or the owner has not yet decided about the last one
     state.changed_files = list(event.changed_files)
     actions.append(StartAudit(*audit_model(state.changed_files, state.implementer_agents, cfg)))
+
+
+def _on_changes_failed(state: ShipState, event: ChangesFailed, actions: list) -> None:
+    if state.phase != "auditing":
+        return
+    if state.audit_dispatch or _owner_gate_open(state, *AUDIT_HOLDS):
+        return
+    _open(state, actions, None,
+          "Rein could not list the changed files, so the audit cannot start: %s" % event.error[:600],
+          ["retry", "skip"], "setup")
 
 
 def _on_audit_verdict(state: ShipState, event: AuditVerdict, cfg: ShipConfig, actions: list) -> None:

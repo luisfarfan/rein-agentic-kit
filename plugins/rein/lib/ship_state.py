@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import tempfile
 import time
 from dataclasses import asdict, dataclass, field, fields
@@ -64,10 +65,21 @@ class ShipState:
     audit_result: str = ""
     # Owner gates decide asked for that the driver has not yet created in Orca.
     pending_gates: list = field(default_factory=list)
+    # The audit worktree: where the auditor records its verdict and where the
+    # driver reads it. Never the plan repo's primary checkout.
+    audit_root: str = ""
 
 
-def state_path(repo_root: str) -> str:
-    return os.path.join(repo_root, ".rein", "ship-state.json")
+def state_path(repo_root: str, change: str) -> str:
+    """One file per change: `<root>/.rein/ship/<change>.json`.
+
+    A second change shipped from the same plan repo must never pick up (or
+    overwrite) the first one's Run.
+    """
+    name = re.sub(r"[^A-Za-z0-9._-]", "_", change or "")
+    if name in ("", ".", ".."):
+        name = "_" + name
+    return os.path.join(repo_root, ".rein", "ship", name + ".json")
 
 
 def _task_state(task: dict, default_repo: str) -> TaskState:
@@ -82,8 +94,9 @@ def _task_state(task: dict, default_repo: str) -> TaskState:
     )
 
 
-def from_plan(plan: dict, default_repo: str) -> ShipState:
-    state = ShipState(change=plan.get("change") or "", plan_path=plan.get("path") or "")
+def from_plan(plan: dict, default_repo: str, change: str = "") -> ShipState:
+    """`change` is the name the owner asked to ship; it wins over the plan's own header."""
+    state = ShipState(change=change or plan.get("change") or "", plan_path=plan.get("path") or "")
     for task in plan.get("tasks") or []:
         state.tasks[task["id"]] = _task_state(task, default_repo)
     return state

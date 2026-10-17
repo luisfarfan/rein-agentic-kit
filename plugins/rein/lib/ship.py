@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -60,30 +61,51 @@ def build_task_spec(task: ss.TaskState, plan: dict, implementer_profile: str) ->
     elif task.last_failure and task.id.startswith("AUDIT"):
         lines += ["", "The audit found these blocking problems; fix them:", task.last_failure]
     lines += ["", "Edit only the %s repository." % task.repo,
+              "Commit your work on this worktree's branch when the verification passes. Never push.",
               "Never push, merge, open a pull request or deploy.",
               "Never read or print .env* files or credentials."]
     return "\n".join(lines)
 
 
-def build_audit_spec(plan: dict, changed: dict, reviewer_profile: str) -> str:
+def build_audit_spec(plan: dict, changed: dict, reviewer_profile: str,
+                     audit_root: str = "", change: str = "") -> str:
+    """The auditor's brief. The verdict is recorded in the audit worktree, never the plan repo."""
     lines = [reviewer_profile.strip(), "", "Audit the change as a whole; you wrote none of it."]
     if plan.get("why"):
         lines.append("Why: %s" % plan["why"])
+    lines.append("Audit worktree (your working directory): %s" % audit_root)
     for path, files in changed.items():
         lines.append("Run the rein-audit skill on %s" % path)
-        lines += ["  changed: %s" % f for f in files[:50]]
-    lines += ["Record the verdict with rein review record (from the plan repository, with --change).",
+        # Files outside the audit worktree are listed absolute, so --files can name them.
+        lines += ["  changed: %s" % (f if path == audit_root else os.path.join(path, f)) for f in files[:50]]
+    lines += ["Record the verdict with exactly this command, run in the audit worktree:",
+              "  rein review record --root %s --change %s --verdict <APPROVED|CHANGES_REQUESTED> "
+              "--reviewer <your name> --files <comma-separated changed files that still exist; "
+              "absolute paths for files outside %s> --findings \"BLOCKING: ...|IMPORTANT: ...\""
+              % (shlex.quote(audit_root), shlex.quote(change), audit_root),
+              "Never record into any other checkout. If `rein` is not on PATH, run: python3 %s" % BIN,
               "Never push, merge, open a pull request or deploy.",
               "Never read or print .env* files or credentials."]
     return "\n".join(lines)
 
 
-def changed_files(worktree_path: str, base_ref: str) -> list:
-    proc = subprocess.run(["git", "-C", worktree_path, "diff", "--name-only", "%s...HEAD" % base_ref],
-                          capture_output=True, text=True)
+def _git_lines(path: str, *args: str) -> list:
+    proc = subprocess.run(["git", "-C", path, *args], capture_output=True, text=True)
     if proc.returncode != 0:
-        raise RuntimeError((proc.stderr or proc.stdout).strip()[:500] or "git diff failed")
+        raise RuntimeError((proc.stderr or proc.stdout).strip()[:500] or "git %s failed" % args[0])
     return [line for line in proc.stdout.splitlines() if line.strip()]
+
+
+def changed_files(worktree_path: str, base_ref: str) -> list:
+    """Everything the workers changed: commits since the base, uncommitted edits and new files.
+
+    A worker that forgot to commit must not make its change invisible to the
+    audit, so all three are united. Rein's own `.rein/` state is not a change.
+    """
+    found = set(_git_lines(worktree_path, "diff", "--name-only", "%s...HEAD" % base_ref))
+    found.update(_git_lines(worktree_path, "diff", "--name-only", "HEAD"))
+    found.update(_git_lines(worktree_path, "ls-files", "--others", "--exclude-standard"))
+    return sorted(f for f in found if not f.startswith(".rein/"))
 
 
 def default_gate_runner(path: str, unit_only: bool) -> tuple:
@@ -208,7 +230,7 @@ class _Driver:
         self.ctx, self.state, self.client = ctx, state, client
         self.gate_runner, self.clock, self.spath, self.dry_run = gate_runner, clock, spath, dry_run
         self.root, self.cfg, self.plan = ctx["root"], ctx["cfg"], ctx["plan"]
-        self.change = state.change
+        self.change = state.change  # run_ship refuses a state that belongs to another change
         self.finished = False
         self.before = None
         self.changed_by_wt: dict = {}
@@ -292,9 +314,11 @@ class _Driver:
             if not task.orca_task_id or task.attempts > 0:
                 self.create_task(task)
             repo = self.ctx["repos"].get(a.repo) or {}
+            fresh = a.worktree == "new-top-level"  # a reused worktree is already set up and named
             res = self.client.worker_start(
                 task.orca_task_id, worktree=a.worktree, agent=a.agent, model=a.model,
-                repo="id:%s" % repo["id"] if a.worktree == "new-top-level" and repo.get("id") else "")
+                repo="id:%s" % repo["id"] if fresh and repo.get("id") else "",
+                name=self.change if fresh else "", setup="run" if fresh else "")
         except OrcaError as exc:
             task.dispatch_id = ""
             task.status = "gated"
@@ -355,17 +379,22 @@ class _Driver:
     def compute_changes(self):
         if self.state.audit_dispatch:
             return None
-        flat, by_wt = set(), {}
+        flat, by_wt, errors = set(), {}, []
         for repo, wt in self.state.worktrees.items():
             path = self.state.worktree_paths.get(repo) or oc.worktree_path_of(wt)
-            base = (self.ctx["repos"].get(repo) or {}).get("worktreeBaseRef") or DEFAULT_BASE_REF
+            base = (self.ctx["repos"].get(repo) or {}).get("worktreeBaseRef")
+            if not base:
+                base = DEFAULT_BASE_REF
+                self.say("warning: Orca has no worktreeBaseRef for %s; diffing %s against %s" % (repo, path, base))
             try:
                 files = changed_files(path, base)
             except (RuntimeError, OSError) as exc:
-                self.say("could not diff %s against %s: %s" % (path, base, exc))
-                files = []
+                errors.append("%s (%s) against %s: %s" % (repo, path, base, exc))
+                continue
             by_wt[path] = files
             flat.update("%s/%s" % (repo, f) for f in files)
+        if errors:  # auditing nothing would pass an unreviewed change
+            return sd.ChangesFailed("; ".join(errors))
         self.changed_by_wt = by_wt
         return sd.ChangesComputed(sorted(flat))
 
@@ -375,16 +404,19 @@ class _Driver:
                 self.say("no worktree was used; nothing to audit")
                 self.state.phase, self.finished = "done", True
             return
-        spec = build_audit_spec(self.plan, self.changed_by_wt, self.ctx["reviewer_profile"])
+        repo, first = next(iter(self.state.worktrees.items()))
+        audit_root = self.state.worktree_paths.get(repo) or oc.worktree_path_of(first)
+        spec = build_audit_spec(self.plan, self.changed_by_wt, self.ctx["reviewer_profile"],
+                                audit_root, self.change)
         task_id = oc.task_id_of(self.client.task_create(
             spec, "%s audit round %d" % (self.change, self.state.audit_rounds + 1), []))
-        first = next(iter(self.state.worktrees.values()))
         res = self.client.worker_start(task_id, worktree="id:%s" % first, agent=a.agent, model=a.model)
         self.state.audit_dispatch = oc.dispatch_id_of(res)
-        self.state.audit_baseline = _episode_stamp(_gate.latest_episode(self.root, self.change))
+        self.state.audit_root = audit_root
+        self.state.audit_baseline = _episode_stamp(_gate.latest_episode(audit_root, self.change))
         self.state.audit_started_at = 0.0
         self.save()
-        self.say("audit started on %s/%s (%s)" % (a.agent, a.model, self.state.audit_dispatch))
+        self.say("audit started on %s/%s in %s (%s)" % (a.agent, a.model, audit_root, self.state.audit_dispatch))
 
     # -- events from Orca
     def poll_gates(self):
@@ -428,11 +460,13 @@ class _Driver:
 
     def read_verdict(self, outcome):
         changed = list(self.state.changed_files)
-        episode = _gate.latest_episode(self.root, self.change)
+        audit_root = self.state.audit_root
+        episode = _gate.latest_episode(audit_root, self.change) if audit_root else None
         if outcome != "succeeded" or episode is None or _episode_stamp(episode) == self.state.audit_baseline:
             return sd.AuditVerdict("NO_VERDICT", 1, changed,
-                                   ["the audit worker ended (%s) without recording a review episode" % (outcome or "?")])
-        findings = _gate.check_review(self.root, self.change).get("findings") or []
+                                   ["the audit worker ended (%s) without recording a review episode in %s"
+                                    % (outcome or "?", audit_root or "(no audit worktree)")])
+        findings = _gate.check_review(audit_root, self.change).get("findings") or []
         blocking = sum(1 for f in findings if f["severity"] == "BLOCKING")
         return sd.AuditVerdict(str(episode.get("verdict")), blocking, changed,
                                ["%s: %s" % (f["severity"], f["text"]) for f in findings])
@@ -529,7 +563,7 @@ class _Driver:
         if self.state.phase == "auditing":
             if self.state.audit_dispatch:
                 self.probe_audit()
-            elif any(g.get("kind") in ("audit_failed", "audit_timeout") and g.get("task_id") is None
+            elif any(g.get("kind") in sd.AUDIT_HOLDS and g.get("task_id") is None
                      for g in list(self.state.gates.values()) + self.state.pending_gates):
                 self.say("waiting for the owner about the audit; not restarting it")
             else:
@@ -615,15 +649,19 @@ def run_ship(root: str, change: str, client: OrcaClient, gate_runner: Callable, 
             print("ship: preflight: %s" % e)
         return 126
     ctx["cfg"].override = override
-    spath = state_path or ss.state_path(ctx["root"])
+    spath = state_path or ss.state_path(ctx["root"], change)
     plan = ctx["plan"]
     try:
         state = None if dry_run else ss.load(spath)
     except ss.ShipStateCorrupt as exc:
         print("ship: %s" % exc)
         return 126
+    if state is not None and state.change != change:
+        print("ship: %s belongs to change %r, not %r; move it aside or ship that change"
+              % (spath, state.change, change))
+        return 126
     if state is None:
-        state = ss.from_plan(plan, ctx["default_repo"])
+        state = ss.from_plan(plan, ctx["default_repo"], change)
     else:
         ss.reconcile(state, plan, ctx["default_repo"])
     driver = _Driver(ctx, state, client, gate_runner, clock, spath, dry_run)

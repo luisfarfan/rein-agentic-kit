@@ -702,6 +702,33 @@ class AuditSupervision(unittest.TestCase):
             _, actions = sd.decide(queued, sd.ChangesComputed(["a/x"]), CFG)
             self.assertEqual(actions, [], kind)
 
+    # -- C2(c): a failed diff is an owner decision, never "nothing changed"
+
+    def test_changes_failed_opens_a_taskless_setup_gate_once(self):
+        state = self.auditing(audit_dispatch="")
+        new, actions = sd.decide(state, sd.ChangesFailed("a: bad revision"), CFG)
+        self.assertEqual(len(actions), 1)
+        self.assertEqual((actions[0].kind, actions[0].task_id, actions[0].options),
+                         ("setup", None, ["retry", "skip"]))
+        self.assertIn("a: bad revision", actions[0].question)
+        _, again = sd.decide(new, sd.ChangesFailed("a: bad revision"), CFG)
+        self.assertEqual(again, [])
+        _, started = sd.decide(new, sd.ChangesComputed(["a/x"]), CFG)
+        self.assertEqual(started, [], "no audit behind an open setup gate")
+
+    def test_changes_failed_is_ignored_outside_auditing_or_behind_a_running_audit(self):
+        _, actions = sd.decide(ship(task("1", status="done"), phase="running"), sd.ChangesFailed("x"), CFG)
+        self.assertEqual(actions, [])
+        _, actions = sd.decide(self.auditing(), sd.ChangesFailed("x"), CFG)
+        self.assertEqual(actions, [])
+
+    def test_changes_setup_gate_retry_recomputes_and_skip_ends_the_audit_unapproved(self):
+        state = self.open_gate(self.auditing(audit_dispatch=""), kind="setup")
+        new, actions = sd.decide(state, sd.GateResolved("g1", "retry"), CFG)
+        self.assertEqual((actions, new.phase), ([sd.ComputeChanges()], "auditing"))
+        new, actions = sd.decide(state, sd.GateResolved("g1", "skip"), CFG)
+        self.assertEqual((actions, new.phase, new.audit_result), ([sd.Finish()], "done", "skipped"))
+
     def test_no_audit_starts_while_one_is_running(self):
         _, actions = sd.decide(self.auditing(), sd.ChangesComputed(["a/x"]), CFG)
         self.assertEqual(actions, [])
