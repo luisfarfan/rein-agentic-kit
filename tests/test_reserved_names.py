@@ -184,6 +184,9 @@ class TestTheSkillSweepIsProvenToo(unittest.TestCase):
 
 
 PREFIX = "rein-"
+# v2's one deliberate exception: the execution entry point is `/ship`, a short
+# verb the owner types constantly. No built-in or known plugin ships `ship`.
+UNPREFIXED_ALLOWED = {"ship"}
 
 
 class TestEveryIdentifierIsNamespaced(unittest.TestCase):
@@ -208,7 +211,8 @@ class TestEveryIdentifierIsNamespaced(unittest.TestCase):
         return _skill_dir_names(SKILLS_DIR) + _command_names(COMMANDS_DIR)
 
     def test_every_shipped_identifier_carries_the_prefix(self):
-        offenders = [n for n in self._identifiers() if not n.startswith(PREFIX)]
+        offenders = [n for n in self._identifiers()
+                     if not n.startswith(PREFIX) and n not in UNPREFIXED_ALLOWED]
         self.assertEqual(
             offenders, [],
             f"unprefixed identifiers can be reinterpreted as another plugin's or a built-in's: "
@@ -263,4 +267,5 @@ class TestDiscoverIsAStanceNotAWorkflow(unittest.TestCase):
         body = self._skill()
         self.assertIn("codegraph query", body)
         self.assertIn("offset/limit", body)
-        self.assertIn('"$R" context .', body)
+        self.assertIn("rein context .", body)
+        self.assertIn("read-only workers", body)

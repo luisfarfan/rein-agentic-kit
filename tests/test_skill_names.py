@@ -4,7 +4,7 @@ Three of this kit's skills shipped under names Claude Code already reserves
 (`loop`, `run`, `review`); a fourth (`run-auto`) rode along so the family
 reads as one. The rename is `loop -> apply`, `run -> step`, `run-auto ->
 steps`, `review -> audit`. v2 removed apply/step/steps (and the `ping` /
-`setup` commands); `plan`, `role` and `discover` are untouched.
+`setup` commands); `plan`, `role` and `discover` are untouched, and `ship` is the one new skill.
 
 Globs the real skills directory and reads what actually ships, not a
 restatement of it.
@@ -27,7 +27,7 @@ RENAMED = {
     "review": "rein-audit",
     "audit": "rein-audit",
 }
-UNTOUCHED_SKILLS = {"rein-plan", "rein-role", "rein-discover"}
+UNTOUCHED_SKILLS = {"rein-plan", "rein-role", "rein-discover", "ship"}
 RETIRED = set(RENAMED) | {
     "loop", "run", "run-auto", "apply", "step", "steps",
     "rein-apply", "rein-step", "rein-steps", "rein-linear",

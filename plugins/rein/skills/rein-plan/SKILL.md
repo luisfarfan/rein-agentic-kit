@@ -1,166 +1,84 @@
 ---
 name: rein-plan
-description: "Plan a change into verifiable tasks with acceptance criteria, dependencies and a bounded verification command each — dry-run and explicit confirmation before anything is written. Never implements. Use when the user asks to plan or break down work, or invokes /rein:rein-plan."
+description: "Plan a change into verifiable tasks with acceptance criteria, a Repo, dependencies and a runnable verification each — dry-run and explicit confirmation before anything is written. Never implements. Use when the user asks to plan or break down work, or invokes /rein:rein-plan."
 license: MIT
 ---
 
 # /rein:rein-plan
 
-Thin orchestration for the **planner** role. Turns a request into a task list `/rein:rein-step` can
-execute without re-deriving intent. **This skill never implements, never ticks a checkbox and
-never invokes `/rein:rein-step`.**
+The **planner** role. Turns a request into a task list that `/ship` can execute without
+re-deriving intent. **Never implements, never ticks a checkbox.**
 
 Usage: `/rein:rein-plan <change-name> [description]`
 
-```bash
-R=$(command -v rein || ls -d ~/.claude/plugins/cache/*/rein/*/bin/rein 2>/dev/null | sort -V | tail -1)
-```
-
 ## Steps
 
-1. **Record this invocation** — never blocks, never fails the run. Shell state does NOT
-   persist between tool calls, so `R` is resolved and used in the SAME block or it is
-   empty and nothing is recorded:
-   ```bash
-   R=$(command -v rein || ls -d ~/.claude/plugins/cache/*/rein/*/bin/rein 2>/dev/null | sort -V | tail -1); "$R" event rein-plan
-   ```
-2. Resolve the project so the plan lands where the loop will look for it and the verification
-   commands are real: `"$R" context .` — note `plan.source`, `plan.path`,
-   `config.commands` and `verifyPolicy.mode`.
-3. Understand the request before decomposing it. Use bounded search and precise reads, not
-   whole files. If scope, an interface or a trade-off is genuinely ambiguous, **ask now** — a
-   wrong assumption here is paid for by every implementation step after it.
-4. Draft the plan. It opens with a **short header** and then the tasks:
+1. Resolve the project: `rein context .` — note `plan.source`, `plan.path`, `config.commands`.
+2. Understand the request with bounded searches and offset reads. If scope, an interface or a
+   trade-off is ambiguous, **ask now**: a wrong assumption is paid for by every worker after it.
+3. **Decide `Repo:` per task.** One repo: write to `<repo>/openspec/changes/<c>/`. Several:
+   write to `proxima-engineering/openspec/changes/<c>/`. A task edits exactly one repo.
+4. Draft: a short header, then tasks.
 
    ```markdown
    # Change: add-widget
 
    ## Why
-   One or two sentences: what problem this solves, and what happens if it is not
-   done. This is what the reviewer judges the work against.
+   One or two sentences: the problem, and what happens if it is not solved.
 
    ## Scope
    - In: the parser and its tests
-   - Out: the CLI surface — that is a separate change
+   - Out: the CLI surface
 
    ## Decisions
-   - D1 Constraints live in tasks.md — a separate file is an artifact nobody reads
+   - D1 Constraints live in tasks.md, not a separate file
 
    ---
-   ```
-
-   Then each task:
-
-   ```markdown
    - [ ] T001 Parse the config file
      - Type: implementation
+     - Repo: proxima-api
      - Depends on: none
      - Human review: false
      - Verification: `python3 -m unittest tests.test_config`
      - Acceptance:
        - reads flow.config.json when present
-       - falls back to autodetect otherwise
    ```
 
-   **Why / Scope / Decisions are short on purpose.** `Out` and the decision titles
-   travel in *every* agent's prompt and are re-read on every turn — with ten agents
-   at fifty turns, a thousand extra tokens there costs half a million per run. Say
-   the constraint, not the essay.
+   The header is short: `Out` and decision titles ride in every worker's prompt. Decisions
+   only where a worker could plausibly reverse a choice unnoticed.
+5. **Critique the draft before it is shown or written.** UNCONDITIONAL: every invocation, never
+   behind a flag, never only when the user asks for it.
+   a. If `plan.source` is `openspec` and `command -v openspec` finds it, run
+      `openspec validate --strict` and report its output VERBATIM, labeled as openspec's own;
+      this skill reimplements none of openspec's structural checks. A missing `openspec` binary
+      skips this half silently: not a failure.
+   b. Save the draft to a scratch file (`mktemp`) and run `rein plan-check --gate <file>`.
+      Exit 1 means a BLOCKING finding; `IMPORTANT` ones are shown beside the plan.
+   c. Critique every task yourself against the two classes no command can decide:
+      - a criterion no command can check
+      - a criterion that contradicts a stated decision
 
-   **Why the header exists at all:** a plan whose criteria have nothing above them
-   gives the reviewer nothing to check intent against. That is measured, not
-   theoretical — it is how a criterion satisfied in letter, by a test whose fixture
-   avoided the real case, survived six review rounds here.
+      With (b)'s two, these are the ONLY four BLOCKING classes:
+      - a verification that cannot mechanically confirm the criteria it is attached to
+      - a dependency that is circular or names a task that does not exist
 
-   **Decisions are conditional.** Include the section only when the plan contains a
-   choice an implementer could plausibly reverse without noticing. A two-task change
-   usually has none, and inventing them is ceremony.
+      Style and wording are SUGGESTIONS, never a stop.
+   d. If the critique cannot run (no critique agent is available, it times out, or its
+      response is malformed) do NOT skip it silently and do NOT hard-stop: write the plan
+      anyway, naming the failure beside it.
+   e. Report BLOCKING findings and fix them first; never dry-run or write with one open.
+6. **Dry run.** Show tasks in dependency order with each `Repo:`, verification and
+   human-review gate, and the target path.
+7. **Ask for explicit confirmation.** Never write without it.
+8. On confirmation, write it to the step 3 location, then re-parse it: `rein tasks . --change <c>`. Report the order; a
+   dependency cycle (`unresolvableDeps`) is fixed now.
+9. **End the session.** Tell the user implementation runs with `/ship <change>` in an Orca
+   terminal.
 
-5. **Critique the draft before it is shown or written — every single time.** This step is
-   UNCONDITIONAL: it runs on every invocation of this skill, never behind a flag, never skipped
-   because the request looked simple, and never only when the user asks for it (D1). Skipping it
-   is exactly how the defect below reached the loop in the first place.
+## What makes a task good
 
-   a. If `plan.source` is `openspec` and an `openspec` binary is on `PATH`
-      (`command -v openspec`), run `openspec validate --strict` FIRST and report its output
-      VERBATIM, labeled as openspec's own — this skill reimplements none of openspec's structural
-      checks (compose, missing sections, malformed delta headers); that is openspec's job, not
-      re-derived here (D4). A missing `openspec` binary skips this half silently — that is not a
-      failure, just a fact stated beside the plan (D5).
-   b. Run the mechanical half as a concrete, named command — not a judgement call — BEFORE
-      critiquing anything yourself. Write the drafted plan text to a scratch file and run:
-      ```bash
-      # One block, because shell state does NOT persist between tool calls:
-      # `$R` or `$DRAFT` set in an earlier block arrive EMPTY here. Verified
-      # in this project — five skills once recorded with an empty `$R`.
-      # And mktemp, never a fixed path: two /rein:rein-plan sessions (or one in a
-      # worktree while another runs in the main checkout, the normal mode of
-      # this kit) would write and read the SAME file, and one would critique
-      # the other's draft. A predictable name in a shared temp dir is also
-      # redirectable through a pre-created symlink.
-      R=$(command -v rein || ls -d ~/.claude/plugins/cache/*/rein/*/bin/rein 2>/dev/null | sort -V | tail -1)
-      DRAFT=$(mktemp -t rein-plan-draft) && cat > "$DRAFT" <<'PLAN'
-      <the drafted plan text, verbatim>
-PLAN
-      "$R" plan-check "$DRAFT"; rm -f "$DRAFT"
-      ```
-      This deterministically decides two of the four BLOCKING classes against the plan's own text:
-      1. a verification that cannot mechanically confirm the criteria it is attached to — a
-         Verification command reused verbatim from an earlier task
-      3. a dependency that is circular or names a task that does not exist
-
-      `rein plan-check` never fails this step (D5): a missing scratch file, an unreadable one, or
-      text that fails to parse each yield an empty `findings` list in its JSON output rather than a
-      nonzero exit — proceed to (c) regardless. Any `BLOCKING` finding it prints carries into (e)
-      exactly like an agent-found one. Any `IMPORTANT` finding it prints (e.g. a reused whole-suite
-      Verification command that is honestly shared rather than the BLOCKING per-module defect) is
-      reported beside the plan for the author to accept or ignore, same as (e) — visible, never a
-      reason by itself to stop (D2).
-   c. Critique every task yourself against the two classes no command can decide — semantic calls
-      only an agent can honestly make:
-      2. a criterion no command can check
-      4. a criterion that contradicts a stated decision
-
-      Together with (b)'s two, these are the ONLY four classes that may BLOCK — the SAME four the
-      loop's own PlanCheck applies before Isolate (D3), so the two gates cannot drift. Everything
-      else — style, wording, taste, a criterion that could be worded better — is at most a
-      SUGGESTION: shown beside the plan for the author to accept or ignore, never a reason to stop
-      (D2). A check that always finds something stops being read, and the plan goes back to being
-      unreviewed in practice.
-   d. If the agent critique in (c) cannot run — no critique agent is available, it times out, or
-      its response is malformed — do NOT skip it silently and do NOT hard-stop the skill: proceed
-      to write the plan anyway, with that failure named plainly beside it, e.g. "critique agent
-      timed out — plan written unreviewed" (D5). A gate meant to save money must never itself
-      become the reason nothing gets written.
-   e. Report any BLOCKING finding — from (b) or (c) — to the user before the dry run, naming which
-      of the four classes it violates and which criterion it fails to prove. Fix the plan before
-      continuing — never show a dry run, and never write, with an open BLOCKING finding still
-      standing. Also report any `IMPORTANT` finding from (b) beside the plan, distinct from
-      BLOCKING: it does not stop the write, it is for the author to accept or ignore (D2).
-6. **Dry run.** Show the user the full draft: tasks in dependency order, each verification
-   command, which tasks are gated on human review, and anything the plan assumes.
-7. **Ask for explicit confirmation.** Never write the plan into the project without it.
-8. On confirmation, write it to `plan.path`, then verify it parses the way the loop will read
-   it: `"$R" tasks .` and `"$R" next .`. Report the resolved order.
-
-## What makes a task good here
-
-| Rule | Why |
-|---|---|
-| One **bounded** verification per task — one test file or id, never "the suite" | An implementation step that runs the whole suite dumps a huge output into a context re-read on every later turn |
-| Acceptance criteria are **checkable**, not aspirational | The reviewer checks them literally; "works well" cannot be checked |
-| A task fits in a few bounded steps | The cap is `maxTaskSteps`. A task that cannot finish inside it is really several tasks |
-| `Depends on` is real | It drives execution order, and a failed dependency parks its dependents instead of cascading breakage |
-| `Human review: true` when acceptance is a judgement only the user can give | The loop parks it rather than faking a verdict |
-| Criteria name the **guarantee**, not a proxy for it | A criterion satisfiable by a test whose fixture dodges the real case will be satisfied that way. Say what must hold, not what must pass |
-
-## Guardrails
-
-- Do not implement. Do not tick a checkbox. Do not call `/rein:rein-step` or `/rein:rein-audit`.
-- Never write the plan without a dry run and explicit confirmation first.
-- Do not invent verification commands the project cannot run — check them against
-  `config.commands` first, and say which are missing rather than substituting one.
-- If `"$R" tasks .` reports `unresolvableDeps`, there is a dependency cycle: fix it now rather
-  than letting the loop run a best-effort order.
-- If the request is too vague to produce checkable criteria, say so and ask — a plan that
-  reads well and cannot be verified is worse than no plan.
+- Every task has a **runnable** `Verification` (one test file or id, never "the suite") or
+  `Human review: true`. Check commands against `config.commands`; say which are missing.
+- Criteria are checkable and name the **guarantee**, not a proxy a fixture can dodge.
+- A task fits one worker session; `Depends on` is real and drives the order.
+- If the request is too vague for checkable criteria, say so and ask.

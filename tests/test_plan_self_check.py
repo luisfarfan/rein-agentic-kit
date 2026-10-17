@@ -84,7 +84,7 @@ class TestCritiqueIsUnconditional(unittest.TestCase):
     def test_critique_step_precedes_dry_run_and_write(self):
         critique_at = self.text.index("Critique the draft before it is shown or written")
         dry_run_at = self.text.index("**Dry run.**")
-        write_at = self.text.index("write it to `plan.path`")
+        write_at = self.text.index("write it to the step 3 location")
         self.assertLess(critique_at, dry_run_at, "critique must run before the dry run")
         self.assertLess(dry_run_at, write_at, "the dry run/confirm gate must still precede the write")
 
@@ -187,11 +187,11 @@ class TestPlanCheckIsShippedAndReachable(unittest.TestCase):
 
     def test_skill_names_the_plan_check_command(self):
         src = _read(SKILL_MD)
-        self.assertIn('"$R" plan-check', src, "SKILL.md step 5 must name the concrete `rein plan-check` command")
+        self.assertIn("rein plan-check --gate", src, "SKILL.md step 5 must name the concrete `rein plan-check` command")
 
     def test_plan_check_command_precedes_the_agent_critique(self):
         flat = _flatten(_read(SKILL_MD))
-        mechanical_at = flat.index('"$R" plan-check')
+        mechanical_at = flat.index("rein plan-check --gate")
         agent_at = flat.index("Critique every task yourself against the two classes no command can decide")
         self.assertLess(mechanical_at, agent_at, "the mechanical command must run before the agent critique")
 
