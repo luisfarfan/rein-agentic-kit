@@ -1,0 +1,22 @@
+{
+  "id": "55ca7980-e260-4532-9b64-c29f9e9cc5e6",
+  "ok": true,
+  "result": {
+    "run": {
+      "id": "run_bc7b9b8da771",
+      "objective": "rein fixture capture",
+      "coordinator_handle": "term_8c1e93ae-53e8-47fe-abac-374ccb7a83fa",
+      "consumer_generation": 1,
+      "legacy": 0,
+      "created_at": "2026-10-17T20:56:56Z",
+      "updated_at": "2026-10-17T20:56:56Z"
+    },
+    "mutation": {
+      "requestId": "7545f216-ef76-4a35-9d91-cbdc2e4ee0e1",
+      "replayed": false
+    }
+  },
+  "_meta": {
+    "runtimeId": "e924d25f-fb5e-4a12-85ed-ca9f052bab29"
+  }
+}
