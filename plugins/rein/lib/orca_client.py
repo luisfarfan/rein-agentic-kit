@@ -20,11 +20,15 @@ from typing import Callable, Optional
 
 
 class OrcaError(Exception):
-    def __init__(self, code: str, message: str, argv: Optional[list] = None):
+    def __init__(self, code: str, message: str, argv: Optional[list] = None,
+                 envelope: Optional[dict] = None):
         super().__init__(f"{code}: {message}")
         self.code = code
         self.message = message
         self.argv = list(argv or [])
+        # The whole failure envelope: a failed `worker-start` reports what it
+        # left behind (`residualResources`, `failedStage`) alongside the error.
+        self.envelope = envelope if isinstance(envelope, dict) else {}
 
 
 def _default_runner(argv: list) -> tuple:
@@ -66,6 +70,7 @@ class OrcaClient:
                 str(err.get("code") or f"exit_{code}"),
                 str(err.get("message") or "orca command failed"),
                 argv,
+                envelope,
             )
         result = envelope.get("result")
         return result if isinstance(result, dict) else {}
@@ -137,6 +142,10 @@ class OrcaClient:
     def worker_release(self, dispatch_id: str) -> dict:
         return self._call("orchestration", "worker-release", "--dispatch", dispatch_id)
 
+    def worker_stop(self, dispatch_id: str) -> dict:
+        """Ask Orca to stop the worker. Not proof that it exited: confirm with `worker_show`."""
+        return self._call("orchestration", "worker-stop", "--dispatch", dispatch_id)
+
     # -- inbox ------------------------------------------------------------
     def check(
         self,
@@ -159,10 +168,10 @@ class OrcaClient:
 
     # -- gates ------------------------------------------------------------
     def gate_create(self, task_id: str, question: str, options: list) -> dict:
-        return self._call(
-            "orchestration", "gate-create", "--task", task_id,
-            "--question", question, "--options", json.dumps(list(options)),
-        )
+        args = ["orchestration", "gate-create", "--task", task_id, "--question", question]
+        if options:  # a free-text question has no options; an empty array is not a valid choice list
+            args += ["--options", json.dumps(list(options))]
+        return self._call(*args)
 
     def gate_list(self) -> dict:
         return self._call("orchestration", "gate-list")
@@ -221,10 +230,6 @@ def _effect_id(result: dict, kind: str) -> str:
     return ""
 
 
-def terminal_of(worker_start_result: dict) -> str:
-    return _effect_id(worker_start_result, "terminal")
-
-
 def worktree_of(result: dict) -> str:
     """Worktree id from a `worker-start` (effects[kind=worktree]) or `worker-show` result."""
     result = _dict(result)
@@ -238,6 +243,26 @@ def worktree_path_of(worktree_id: str) -> str:
     if "::" not in worktree_id:
         return ""
     return worktree_id.split("::", 1)[1]
+
+
+def residual_resources_of(error) -> list:
+    """What a failed `worker-start` left behind, as `kind id` strings.
+
+    Orca documents `residualResources[]` for a failed start; where in the error
+    envelope it sits is not pinned down by the recorded fixtures, so the usual
+    places are all searched.
+    """
+    envelope = _dict(getattr(error, "envelope", error))
+    err = _dict(envelope.get("error"))
+    holders = [err, _dict(err.get("details")), _dict(err.get("data")), _dict(envelope.get("result")), envelope]
+    for holder in holders:
+        found = holder.get("residualResources")
+        if isinstance(found, list) and found:
+            return [
+                " ".join(str(part) for part in (r.get("kind"), r.get("id")) if part) or json.dumps(r, sort_keys=True)
+                for r in found if isinstance(r, dict)
+            ]
+    return []
 
 
 def effective_launch_of(worker_start_result: dict) -> dict:

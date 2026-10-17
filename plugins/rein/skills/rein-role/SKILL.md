@@ -44,15 +44,19 @@ You plan changes and own the intent; you do **not** implement or review.
 
 You implement; you do **not** plan or review.
 
-- **Do**: claim what `rein next` says is ready, implement strictly in scope, prove it with
-  `rein gate` (0 passed · 1 the code is wrong · 126 the environment could not run the
-  checks), then close the task with `rein close <id>` — **only** with evidence.
-  *(`/ship` runs this loop through Orca workers.)*
+- **Under `rein ship`** (Orca workers): the driver claims the task, runs the gate, retries
+  and closes it. Implement strictly in scope, run the task's Verification, commit on the
+  worktree's branch, never push, one task only. Blocked? Ask the owner with
+  `orca orchestration ask`; do not run `rein next` or `rein close` yourself.
+- **Manual mode only** (no driver): claim what `rein next` says is ready, implement strictly
+  in scope, prove it with `rein gate` (0 passed · 1 the code is wrong · 126 the environment
+  could not run the checks), then close the task with `rein close <id>` — **only** with
+  evidence. Limits per task: max 3 implementation attempts, max 5 failed commands. Stop on
+  failure, on a human-review gate, or on the cap.
 - **Don't**: edit the plan's scope on your own (report to the planner), self-approve, or
   review your own work.
-- **Key rules**: per-task limits — max 3 implementation attempts, max 5 failed commands, one
-  task per invocation. Stop on failure, on a human-review gate, or on the cap. Never simulate
-  success: an honest blocker is worth more than a false green.
+- **Key rules**: one task per invocation. Never simulate success: an honest blocker is worth
+  more than a false green.
 
 ## `reviewer`
 

@@ -107,6 +107,19 @@ class ChangesComputed:
 
 
 @dataclass
+class WorkerStopped:
+    """The driver asked Orca to stop a worker and looked again.
+
+    `confirmed` is true only when Orca reports the worker settled: a stop that
+    was merely accepted is not proof that the worker exited.
+    """
+    task_id: str
+    resolution: str
+    confirmed: bool
+    detail: str = ""
+
+
+@dataclass
 class ChangesFailed:
     """The driver could not list the changed files (a git failure), so nothing may be audited."""
     error: str
@@ -149,11 +162,25 @@ class Release:
 
 @dataclass
 class OpenGate:
+    """Informational: decide asked for an owner gate.
+
+    The durable channel is `state.pending_gates`, which `decide` fills in the
+    same step; the driver creates each queued request in Orca and retries it
+    until it exists. Executing this action does nothing.
+    """
     task_id: str | None
     question: str
     options: list
     kind: str
     message_id: str = ""
+
+
+@dataclass
+class StopWorker:
+    """Stop the task's worker and report back with `WorkerStopped(task_id, resolution, ...)`."""
+    task_id: str
+    dispatch_id: str
+    resolution: str
 
 
 @dataclass
@@ -265,6 +292,33 @@ def _owner_gate_open(state: ShipState, *kinds: str) -> bool:
                for g in list(state.gates.values()) + state.pending_gates)
 
 
+def _direct_review(task: TaskState) -> bool:
+    """Human review with nothing to run: the owner decides, no worker is involved."""
+    return task.human_review and not task.verification.strip()
+
+
+def _task_gate_open(state: ShipState, task_id: str, kind: str) -> bool:
+    return any(g.get("kind") == kind and g.get("task_id") == task_id
+               for g in list(state.gates.values()) + state.pending_gates)
+
+
+def _drop_task_gate(state: ShipState, task_id: str, kind: str) -> None:
+    keep = lambda g: not (g.get("kind") == kind and g.get("task_id") == task_id)  # noqa: E731
+    state.gates = {k: g for k, g in state.gates.items() if keep(g)}
+    state.pending_gates = [g for g in state.pending_gates if keep(g)]
+
+
+def _live_workers(state: ShipState) -> bool:
+    """A worker may still be running: executing, being gated, or waiting on a question/timeout answer."""
+    for task in state.tasks.values():
+        if task.status in ("running", "gating"):
+            return True
+        if (task.status == "gated" and task.dispatch_id
+                and (_task_gate_open(state, task.id, "question") or _task_gate_open(state, task.id, "timeout"))):
+            return True
+    return False
+
+
 def _release_held(task: TaskState, actions: list) -> None:
     if task.dispatch_id:
         actions.append(Release(task.dispatch_id))
@@ -280,6 +334,8 @@ def _settle(state: ShipState, actions: list) -> None:
     if state.phase not in ("running", "fixing"):
         return
     if _all_done(state):
+        if state.paused:
+            return  # the owner paused the run; the audit starts on the next one
         state.phase = "auditing"
         state.changed_files = []
         # The diff is I/O: the driver computes it and answers with ChangesComputed,
@@ -318,6 +374,8 @@ def decide(state: ShipState, event, cfg: ShipConfig) -> tuple:
         _on_changes_computed(state, event, cfg, actions)
     elif isinstance(event, ChangesFailed):
         _on_changes_failed(state, event, actions)
+    elif isinstance(event, WorkerStopped):
+        _on_worker_stopped(state, event, actions)
     elif isinstance(event, AuditVerdict):
         _on_audit_verdict(state, event, cfg, actions)
     return state, actions
@@ -359,7 +417,7 @@ def _on_tick(state: ShipState, event: Tick, cfg: ShipConfig, actions: list) -> N
                   ["retry", "skip"], "timeout")
 
     for task in state.tasks.values():
-        if task.human_review and _ready(state, task):
+        if _direct_review(task) and _ready(state, task):
             task.status = "gated"
             _open(state, actions, task.id,
                   "Task %s needs human review before it can be closed." % task.id,
@@ -370,14 +428,20 @@ def _on_tick(state: ShipState, event: Tick, cfg: ShipConfig, actions: list) -> N
     if len(actions) > settled or state.phase == "done":
         return
 
-    active = [t for t in state.tasks.values() if t.status in _BUSY and not t.human_review]
+    if state.paused:  # no new work; leave once every running worker has settled
+        if not _live_workers(state):
+            state.paused = False
+            actions.append(Finish())
+        return
+
+    active = [t for t in state.tasks.values() if t.status in _BUSY and not _direct_review(t)]
     busy_repos = {t.repo for t in active}
     slots = cfg.max_concurrent_workers - len(active)
     batch = []
     for task in state.tasks.values():
         if slots <= 0:
             break
-        if task.human_review or not _ready(state, task) or task.repo in busy_repos:
+        if _direct_review(task) or not _ready(state, task) or task.repo in busy_repos:
             continue
         batch.append(task)
         busy_repos.add(task.repo)
@@ -404,11 +468,13 @@ def _on_tick(state: ShipState, event: Tick, cfg: ShipConfig, actions: list) -> N
 def _red(state: ShipState, task: TaskState, reason: str, cfg: ShipConfig, actions: list) -> None:
     task.last_failure = reason[:_FAILURE_CAP]
     if task.attempts < cfg.max_retries:
+        # Back to pending: the next Tick re-dispatches it, so a retry meets the
+        # same brake, caps, one-worker-per-repo rule and implementer choice as
+        # any other dispatch.
         _release_held(task, actions)
         task.attempts += 1
-        task.status = "running"
-        task.started_at = 0.0  # stamped by the next Tick
-        actions.append(Dispatch(task.id, task.repo, _worktree(state, task.repo), task.agent, task.model))
+        task.status = "pending"
+        task.started_at = 0.0
         return
     task.status = "failed"
     _open(state, actions, task.id,
@@ -418,7 +484,13 @@ def _red(state: ShipState, task: TaskState, reason: str, cfg: ShipConfig, action
 
 def _on_worker_done(state: ShipState, event: WorkerDone, cfg: ShipConfig, actions: list) -> None:
     task = _holder(state, event.dispatch_id)
-    if task is None or task.status != "running":
+    if task is None:
+        return
+    if task.status == "gated" and _task_gate_open(state, task.id, "timeout"):
+        # It finished after all: the timeout question is moot.
+        _drop_task_gate(state, task.id, "timeout")
+        task.status = "running"
+    if task.status != "running":
         return
     if event.outcome == "succeeded":
         task.status = "gating"
@@ -432,6 +504,13 @@ def _on_gate_verdict(state: ShipState, event: GateVerdict, cfg: ShipConfig, acti
     if task is None or task.status != "gating":
         return
     if event.exit_code == 0:
+        if task.human_review:  # the gate is green; a person still has to say so
+            _release_held(task, actions)
+            task.status = "gated"
+            _open(state, actions, task.id,
+                  "Task %s passed its gate. Approve it to close it, or reject it." % task.id,
+                  ["approve", "reject"], "human_review")
+            return
         if not _is_fix(task):  # synthetic fix tasks have no checkbox in the plan
             actions.append(CloseTask(task.id))
         _release_held(task, actions)
@@ -508,7 +587,13 @@ def _on_gate_resolved(state: ShipState, event: GateResolved, cfg: ShipConfig, ac
                 actions.append(ComputeChanges())
             else:
                 _end_audit(state, actions, "skipped")
-    elif kind in ("retry_exhausted", "setup", "timeout"):
+    elif kind == "timeout":
+        if task is not None:
+            if task.dispatch_id:  # the worker may still be running: stop it, and wait for proof
+                actions.append(StopWorker(task.id, task.dispatch_id, resolution))
+            else:
+                _after_stop(state, task, resolution, actions)
+    elif kind in ("retry_exhausted", "setup"):
         if task is not None:
             _release_held(task, actions)
             if resolution == "retry":
@@ -521,10 +606,14 @@ def _on_gate_resolved(state: ShipState, event: GateResolved, cfg: ShipConfig, ac
             state.forced_implementer = list(quota.CODEX)
         state.phase = "running"
         if resolution == "pause":
-            actions.append(Finish())
+            # Nothing new starts, but running workers stay supervised until they settle.
+            state.paused = True
+            if not _live_workers(state):
+                state.paused = False
+                actions.append(Finish())
     elif kind == "audit_exhausted":
-        state.phase = "done"
-        actions.append(Finish())
+        if state.phase == "auditing":
+            _end_audit(state, actions, "approved" if resolution == "accept" else "rejected")
     elif kind in ("audit_timeout", "audit_failed") and state.phase != "auditing":
         pass  # the audit moved on while the owner was deciding
     elif kind == "audit_timeout" and gate.get("audit") != state.audit_dispatch:
@@ -541,6 +630,29 @@ def _on_gate_resolved(state: ShipState, event: GateResolved, cfg: ShipConfig, ac
             actions.append(ComputeChanges())
         else:
             _end_audit(state, actions, "approved" if resolution == "accept" else "rejected")
+
+
+def _after_stop(state: ShipState, task: TaskState, resolution: str, actions: list) -> None:
+    _release_held(task, actions)
+    if resolution == "retry":
+        task.status, task.attempts = "pending", 0
+    else:
+        task.status = "failed"
+    _settle(state, actions)
+
+
+def _on_worker_stopped(state: ShipState, event: WorkerStopped, actions: list) -> None:
+    task = state.tasks.get(event.task_id)
+    if task is None or task.status != "gated":
+        return
+    if event.confirmed:
+        _after_stop(state, task, event.resolution, actions)
+        return
+    # No proof the worker is gone: re-running or abandoning the task could leave
+    # two workers on one worktree. Keep the task and ask again.
+    _open(state, actions, task.id,
+          "Rein could not confirm that the worker of %s has stopped (%s). Check Orca, then retry it or skip it."
+          % (task.id, event.detail[:300] or "no detail"), ["retry", "skip"], "timeout")
 
 
 def _drop_audit(state: ShipState, actions: list) -> None:
@@ -620,14 +732,16 @@ def _on_audit_verdict(state: ShipState, event: AuditVerdict, cfg: ShipConfig, ac
     if approved:
         _end_audit(state, actions, "approved")
         return
-    if state.audit_rounds >= cfg.max_audit_rounds:
+    # maxAuditRounds counts audits: with the default 2, one fix round and a second, final audit.
+    if state.audit_rounds + 1 >= cfg.max_audit_rounds:
+        if _owner_gate_open(state, "audit_exhausted"):
+            return
         summary = "\n".join(event.findings)[:600]
+        # The run ends only when the owner answers: accept makes the audit approved, reject rejected.
         _open(state, actions, None,
-              "The audit still has %d blocking finding(s) after %d fix round(s). %s"
-              % (event.blocking, state.audit_rounds, summary),
+              "The audit still has %d blocking finding(s) after %d audit(s). Accept the change anyway, or reject it? %s"
+              % (event.blocking, state.audit_rounds + 1, summary),
               ["accept", "reject"], "audit_exhausted")
-        state.audit_result = "rejected"
-        actions.append(Finish())
         return
     state.audit_rounds += 1
     findings = "\n".join(event.findings)[:_FAILURE_CAP]

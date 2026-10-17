@@ -45,9 +45,20 @@ _TAIL = 2000
 
 # --- specs ---------------------------------------------------------------------
 
-def build_task_spec(task: ss.TaskState, plan: dict, implementer_profile: str) -> str:
+# What a ship worker needs to know about its role. Deliberately not the rein-role
+# profile: that one describes a manual session (`rein next`, `rein close`, attempt
+# caps), and here the driver claims, gates, retries and closes.
+WORKER_PREAMBLE = (
+    "You are a Rein ship worker with exactly one task. The driver runs the gate, retries and "
+    "closes the task: do not run `rein gate`, `rein close` or tick the plan. Run the task's "
+    "Verification command, fix what it reports, then commit as instructed below. "
+    "If you are blocked, ask the owner with `orca orchestration ask --question <text>`."
+)
+
+
+def build_task_spec(task: ss.TaskState, plan: dict) -> str:
     entry = next((t for t in plan.get("tasks") or [] if t.get("id") == task.id), {})
-    lines = [implementer_profile.strip(), "", "Task %s: %s" % (task.id, entry.get("title") or task.id)]
+    lines = [WORKER_PREAMBLE, "", "Task %s: %s" % (task.id, entry.get("title") or task.id)]
     if entry.get("acceptance"):
         lines += ["Acceptance criteria:"] + ["- %s" % c for c in entry["acceptance"]]
     if task.verification:
@@ -167,11 +178,10 @@ def preflight(root: str, change: str, client: OrcaClient, env: dict) -> tuple:
             if name not in ctx["repos"]:
                 errors.append("task %s: repo %r is not registered in Orca (registered: %s)"
                               % (t["id"], name, ", ".join(sorted(n for n in ctx["repos"] if n)) or "none"))
-    for role in ("implementer", "reviewer"):
-        prof = _roles.profile(role, PLUGIN)
-        ctx["%s_profile" % role] = prof["text"]
-        if not prof["ok"]:
-            errors.append(prof["error"])
+    prof = _roles.profile("reviewer", PLUGIN)  # the auditor's brief; workers get WORKER_PREAMBLE
+    ctx["reviewer_profile"] = prof["text"]
+    if not prof["ok"]:
+        errors.append(prof["error"])
     ctx["cfg"] = sd.ShipConfig.from_flow_config(_detect.resolve(root))
     return ctx, errors
 
@@ -213,6 +223,24 @@ def dry_run_client(root: str, change: str, record: Callable[[str], None]) -> Orc
     return OrcaClient(executable="orca", runner=DryRunRunner(sorted(names), record))
 
 
+_GONE = ("succeeded", "failed", "stopped", "cancelled", "canceled", "abandoned", "exited", "terminated")
+
+
+def settled_outcome(show: dict):
+    """`"succeeded"`/`"failed"` once `worker-show` proves the worker is no longer running, else None.
+
+    Positive proof only: a worker that is merely not listed, or a stop that was
+    merely accepted, is not settled.
+    """
+    show = show if isinstance(show, dict) else {}
+    worker, dispatch = show.get("worker") or {}, show.get("dispatch") or {}
+    state = worker.get("state")
+    if (worker.get("stage") == "settled" or dispatch.get("status") == "completed"
+            or state in _GONE or dispatch.get("status") in _GONE):
+        return "succeeded" if state == "succeeded" else "failed"
+    return None
+
+
 def _episode_stamp(episode) -> str:
     """Identity of a review episode: its path plus mtime, so a rewrite in the same second differs."""
     if not episode:
@@ -232,7 +260,6 @@ class _Driver:
         self.root, self.cfg, self.plan = ctx["root"], ctx["cfg"], ctx["plan"]
         self.change = state.change  # run_ship refuses a state that belongs to another change
         self.finished = False
-        self.before = None
         self.changed_by_wt: dict = {}
         self.ignored: set = set()
         self.noted: set = set()
@@ -251,6 +278,13 @@ class _Driver:
         except OrcaError as exc:
             self.say("could not read rate limits (%s); treating usage as unknown" % exc)
             return quota.parse_rate_limits({})
+
+    def note_quota_before(self, limits):
+        """Persist the run's first usable quota snapshot; deltas are measured from it, across resumes."""
+        known = any(v is not None for window in limits.values() for v in window.values())
+        if known and not self.state.quota_before:
+            self.state.quota_before = {p: dict(w) for p, w in limits.items()}
+            self.save()
 
     def feed(self, event):
         queue = [event]
@@ -274,6 +308,8 @@ class _Driver:
                 self.say("could not tick %s in %s" % (a.task_id, self.state.plan_path))
         elif isinstance(a, sd.Release):
             self.release(a.dispatch_id)
+        elif isinstance(a, sd.StopWorker):
+            return self.stop_worker(a)
         elif isinstance(a, sd.OpenGate):
             pass  # decide queued it in state.pending_gates; open_pending() creates it in Orca
         elif isinstance(a, sd.Relay):
@@ -297,22 +333,29 @@ class _Driver:
         except OrcaError as exc:
             self.say("could not release %s: %s" % (dispatch_id, exc))
 
+    def orca_deps(self, task):
+        """The CURRENT Orca task ids of this task's dependencies (a retried dependency has a new one)."""
+        return [self.state.tasks[d].orca_task_id for d in task.deps
+                if d in self.state.tasks and self.state.tasks[d].orca_task_id]
+
     def create_task(self, task):
-        spec = build_task_spec(task, self.plan, self.ctx["implementer_profile"])
+        spec = build_task_spec(task, self.plan)
         entry = next((t for t in self.plan.get("tasks") or [] if t["id"] == task.id), {})
-        # A retry is dispatched directly, so it carries no Orca dependencies.
-        deps = [] if task.attempts else [
-            self.state.tasks[d].orca_task_id for d in task.deps
-            if d in self.state.tasks and self.state.tasks[d].orca_task_id and self.state.tasks[d].status != "done"]
+        deps = self.orca_deps(task)
         task.orca_task_id = oc.task_id_of(self.client.task_create(
             spec, ("%s %s" % (task.id, entry.get("title") or "")).strip(), deps))
+        task.orca_deps = deps
         self.save()
 
     def dispatch(self, a):
         task = self.state.tasks[a.task_id]
         try:
-            if not task.orca_task_id or task.attempts > 0:
+            # Every worker start consumes an Orca task, so each dispatch gets a fresh one; so does a
+            # task created against a dependency id that has since been replaced by a retry.
+            if not task.orca_task_id or task.dispatches > 0 or task.orca_deps != self.orca_deps(task):
                 self.create_task(task)
+            task.dispatches += 1
+            self.save()
             repo = self.ctx["repos"].get(a.repo) or {}
             fresh = a.worktree == "new-top-level"  # a reused worktree is already set up and named
             res = self.client.worker_start(
@@ -322,9 +365,13 @@ class _Driver:
         except OrcaError as exc:
             task.dispatch_id = ""
             task.status = "gated"
+            question = "Orca could not start a worker for %s: %s" % (task.id, exc)
+            residual = oc.residual_resources_of(exc)
+            if residual:
+                question += " (left behind in Orca: %s)" % ", ".join(residual)
             self.state.pending_gates.append({
                 "task_id": task.id, "kind": "setup", "message_id": "", "options": ["retry", "skip"],
-                "question": "Orca could not start a worker for %s: %s" % (task.id, exc)})
+                "question": question})
             self.save()
             self.open_pending()
             return
@@ -339,6 +386,21 @@ class _Driver:
             task.agent, task.model = launch["agent"], launch.get("model") or a.model
         self.save()
         self.say("%s dispatched to %s/%s (%s)" % (task.id, task.agent, task.model, task.dispatch_id))
+
+    def stop_worker(self, a):
+        """Stop a timed-out worker and report whether Orca proves it is gone."""
+        detail = ""
+        try:
+            self.client.worker_stop(a.dispatch_id)
+        except OrcaError as exc:  # it may already have exited; the look below decides
+            detail = "worker-stop failed: %s" % exc
+        try:
+            confirmed = settled_outcome(self.client.worker_show(a.dispatch_id)) is not None
+        except OrcaError as exc:
+            return sd.WorkerStopped(a.task_id, a.resolution, False, "worker-show failed: %s" % exc)
+        self.say("%s: worker %s %s" % (a.task_id, a.dispatch_id, "stopped" if confirmed else "not confirmed stopped"))
+        return sd.WorkerStopped(a.task_id, a.resolution, confirmed,
+                                detail or "Orca still reports the worker as running")
 
     def open_pending(self):
         """Create every owner gate decide asked for and Orca does not have yet.
@@ -420,12 +482,16 @@ class _Driver:
 
     # -- events from Orca
     def poll_gates(self):
+        """Feed every newly resolved gate; True when one was, so the loop acts on it before it waits."""
+        fed = False
         for g in oc.gates_of(self.client.gate_list()):
             gid = g.get("id")
             if g.get("status") == "resolved" and gid in self.state.gates and gid not in self.ignored:
                 self.feed(sd.GateResolved(gid, str(g.get("resolution") or "")))
+                fed = True
                 if gid in self.state.gates:  # decide refused this resolution; do not replay it forever
                     self.ignored.add(gid)
+        return fed
 
     def rows(self):
         res = self.client.worker_list(self.state.run_id)
@@ -476,10 +542,9 @@ class _Driver:
         did = self.state.audit_dispatch
         if not did:
             return
-        show = self.client.worker_show(did)
-        worker_state = (show.get("worker") or {}).get("state")
-        if (show.get("dispatch") or {}).get("status") == "completed" or worker_state in ("succeeded", "failed"):
-            self.worker_done(did, "succeeded" if worker_state == "succeeded" else "failed")
+        outcome = settled_outcome(self.client.worker_show(did))
+        if outcome is not None:
+            self.worker_done(did, outcome)
 
     def idle_poll(self):
         held = {t.dispatch_id for t in self.state.tasks.values()
@@ -538,6 +603,7 @@ class _Driver:
         self.save()
 
     def resume(self):
+        self.state.paused = False  # running `rein ship` again is the owner asking to continue
         self.requeue_orphans()
         self.open_pending()
         rows = {str(r.get("dispatchId")): r for r in self.rows()}
@@ -548,7 +614,17 @@ class _Driver:
             elif t.status == "running":
                 row = rows.get(t.dispatch_id)
                 if row is None:
-                    events.append(sd.WorkerDone(t.dispatch_id, "failed"))
+                    # Not listed is not the same as exited: only Orca's word that it settled retries the task.
+                    try:
+                        outcome = settled_outcome(self.client.worker_show(t.dispatch_id))
+                    except OrcaError as exc:
+                        outcome = None
+                        self.say("%s: cannot look up %s (%s)" % (t.id, t.dispatch_id, exc))
+                    if outcome is None:
+                        self.say("%s: %s is not in worker-list and Orca does not confirm it exited; "
+                                 "leaving it running (the task timeout covers it)" % (t.id, t.dispatch_id))
+                    else:
+                        events.append(sd.WorkerDone(t.dispatch_id, outcome))
                 elif row.get("dispatchStatus") == "completed" or row.get("workerState") in ("succeeded", "failed"):
                     events.append(sd.WorkerDone(t.dispatch_id, str((row.get("projection") or {}).get("outcome")
                                                                  or row.get("workerState") or "failed")))
@@ -583,11 +659,12 @@ class _Driver:
         while not self.finished:
             self.open_pending()
             limits = self.limits()
-            self.before = self.before or limits
+            self.note_quota_before(limits)
             self.feed(sd.Tick(self.clock(), limits))
             if self.finished:
                 break
-            self.poll_gates()
+            if self.poll_gates() and not self.finished:
+                continue  # the owner's answer may free work: Tick before waiting for the next message
             if self.finished:
                 break
             res = self.client.check(wait=True, timeout_ms=WAIT_MS)
@@ -609,23 +686,29 @@ class _Driver:
         summary = "rein ship %s: %d/%d tasks done, audit %s" % (
             self.change, sum(t.status == "done" for t in tasks), len(self.state.tasks),
             "approved" if approved else "not approved")
-        for repo, wt in self.state.worktrees.items():
-            try:
-                self.client.worktree_set(wt, workspace_status="in-review", comment=summary)
-            except OrcaError as exc:
-                self.say("could not mark %s in-review: %s" % (repo, exc))
+        if self.state.phase == "done":  # a paused run is not in review: it will be resumed
+            for repo, wt in self.state.worktrees.items():
+                try:
+                    self.client.worktree_set("id:%s" % wt, workspace_status="in-review", comment=summary)
+                except OrcaError as exc:
+                    self.say("could not mark %s in-review: %s" % (repo, exc))
+        else:
+            self.say("stopped before the audit; re-run `rein ship %s` to continue" % self.change)
         self.say(summary)
+        delta = {}
         try:
-            delta = quota.usage_delta(self.before or {}, self.limits())
+            delta = quota.usage_delta(self.state.quota_before, self.limits())
             for provider, windows in delta.items():
                 self.say("usage %s: %s" % (provider, ", ".join(
                     "%s %s" % (w, "n/a" if v is None else "%+g%%" % v) for w, v in windows.items())))
         except Exception as exc:  # best effort, never crash a finished run
             self.say("usage report unavailable: %s" % exc)
-        self.token_report()
+        self.token_report(delta)
         return 0 if ok else 1
 
-    def token_report(self):
+    def token_report(self, delta=None):
+        # Quota use is per provider for the whole run, so every repo's ledger row carries the same figures.
+        used = {p: w for p, w in (delta or {}).items() if any(v is not None for v in w.values())}
         for repo, path in self.state.worktree_paths.items():
             try:
                 folder = os.path.join(_tr.PROJECTS, re.sub(r"[^A-Za-z0-9]", "-", path))
@@ -634,6 +717,8 @@ class _Driver:
                     self.say("tokens: no Claude transcripts for %s" % path)
                     continue
                 summary["wf_id"], summary["change"] = "ship-%s-%s" % (self.state.run_id, repo), self.change
+                if used:
+                    summary["quota"] = used
                 recorded = _tr.append_to_ledger(summary, _tr.LEDGER_PATH)
                 print(_tr.render_text(summary, recorded), flush=True)
             except Exception as exc:

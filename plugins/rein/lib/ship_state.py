@@ -15,9 +15,6 @@ import time
 from dataclasses import asdict, dataclass, field, fields
 from typing import Optional
 
-TASK_STATUSES = ("pending", "running", "gating", "gated", "done", "failed")
-PHASES = ("running", "auditing", "fixing", "braked", "done")
-
 
 class ShipStateCorrupt(Exception):
     """An existing ship-state file could not be read; it was moved aside, not discarded."""
@@ -39,6 +36,11 @@ class TaskState:
     model: str = ""
     started_at: float = 0.0
     last_failure: str = ""
+    # Worker starts attempted on this plan task. Every start consumes an Orca task,
+    # so a re-dispatch creates a fresh one rather than reusing a spent task.
+    dispatches: int = 0
+    # The Orca task ids this task's Orca task was created depending on.
+    orca_deps: list = field(default_factory=list)
 
 
 @dataclass
@@ -68,6 +70,10 @@ class ShipState:
     # The audit worktree: where the auditor records its verdict and where the
     # driver reads it. Never the plan repo's primary checkout.
     audit_root: str = ""
+    # The first quota snapshot of the run (`{provider: {window: pct|None}}`); usage deltas are measured from it.
+    quota_before: dict = field(default_factory=dict)
+    # Set by the brake's "pause": dispatch nothing new, exit once running workers settle.
+    paused: bool = False
 
 
 def state_path(repo_root: str, change: str) -> str:

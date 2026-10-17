@@ -157,6 +157,19 @@ class PersistenceTests(unittest.TestCase):
         self.assertEqual(ship_state.from_plan(plan, "api", "demo").change, "demo")
         self.assertEqual(ship_state.from_plan(_plan(_task("T001")), "api").change, "c1")
 
+    def test_dispatch_bookkeeping_quota_and_pause_round_trip(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "s.json")
+            state = ShipState(change="c", plan_path="p", paused=True,
+                              quota_before={"claude": {"session": 1.0, "weekly": None}})
+            state.tasks["T1"] = TaskState("T1", "r", [], False, "", "feature", dispatches=3, orca_deps=["task_a"])
+            ship_state.save(state, path)
+            loaded = ship_state.load(path)
+            self.assertEqual(loaded, state)
+            self.assertEqual((loaded.tasks["T1"].dispatches, loaded.tasks["T1"].orca_deps), (3, ["task_a"]))
+            self.assertEqual(ShipState(change="c", plan_path="p").quota_before, {})
+            self.assertFalse(ShipState(change="c", plan_path="p").paused)
+
     def test_audit_root_round_trips(self):
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "s.json")

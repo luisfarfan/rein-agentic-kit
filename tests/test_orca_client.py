@@ -74,6 +74,7 @@ class ArgvTests(unittest.TestCase):
         c.worker_list()
         c.worker_list("run_1")
         c.worker_release("d1")
+        c.worker_stop("d1")
         c.gate_list()
         self.assertEqual(fake.calls, [
             ["ORCA", "status", "--json"],
@@ -85,6 +86,7 @@ class ArgvTests(unittest.TestCase):
             ["ORCA", "orchestration", "worker-list", "--json"],
             ["ORCA", "orchestration", "worker-list", "--run", "run_1", "--json"],
             ["ORCA", "orchestration", "worker-release", "--dispatch", "d1", "--json"],
+            ["ORCA", "orchestration", "worker-stop", "--dispatch", "d1", "--json"],
             ["ORCA", "orchestration", "gate-list", "--json"],
         ])
 
@@ -94,6 +96,7 @@ class ArgvTests(unittest.TestCase):
         c.task_create("the spec", "T001", ["task_a", "task_b"])
         c.task_create("s", "T002", [])
         c.gate_create("task_a", "ok?", ["yes", "no"])
+        c.gate_create("task_a", "free text?", [])
         c.reply("msg_1", "go ahead")
         c.worktree_set("id:wt1", workspace_status="in-review", comment="auditing")
         c.worktree_set("id:wt1")
@@ -104,6 +107,8 @@ class ArgvTests(unittest.TestCase):
              "--spec", "s", "--json"],
             ["ORCA", "orchestration", "gate-create", "--task", "task_a",
              "--question", "ok?", "--options", '["yes", "no"]', "--json"],
+            ["ORCA", "orchestration", "gate-create", "--task", "task_a",
+             "--question", "free text?", "--json"],
             ["ORCA", "orchestration", "reply", "--id", "msg_1", "--body", "go ahead", "--json"],
             ["ORCA", "worktree", "set", "--worktree", "id:wt1",
              "--workspace-status", "in-review", "--comment", "auditing", "--json"],
@@ -160,6 +165,20 @@ class ErrorTests(unittest.TestCase):
         with self.assertRaises(OrcaError) as cm:
             _client(fake).worker_show("d")
         self.assertEqual(cm.exception.code, "stage")
+
+    def test_the_failure_envelope_is_kept_and_residual_resources_are_found(self):
+        residual = [{"kind": "terminal", "id": "term_9"}, {"kind": "worktree", "id": "wt_3"}]
+        for envelope in (
+            {"ok": False, "error": {"code": "stage", "message": "m", "residualResources": residual}},
+            {"ok": False, "error": {"code": "stage", "message": "m", "details": {"residualResources": residual}}},
+            {"ok": False, "error": {"code": "stage", "message": "m"}, "result": {"residualResources": residual}},
+        ):
+            with self.subTest(envelope):
+                with self.assertRaises(OrcaError) as cm:
+                    _client(_Fake(envelope, code=1)).worker_show("d")
+                self.assertEqual(orca_client.residual_resources_of(cm.exception),
+                                 ["terminal term_9", "worktree wt_3"])
+        self.assertEqual(orca_client.residual_resources_of(OrcaError("x", "y")), [])
 
     def test_nonzero_exit_unparseable(self):
         def runner(argv):

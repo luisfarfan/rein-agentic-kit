@@ -43,6 +43,11 @@ def running(tid, repo="a", dispatch_id="d1", started_at=NOW - 60, **kw):
                 agent="claude", model="sonnet", **kw)
 
 
+def copy_state(state):
+    import copy
+    return copy.deepcopy(state)
+
+
 def tick(state, limits=OK, now=NOW, cfg=CFG):
     return sd.decide(state, sd.Tick(now=now, limits=limits), cfg)
 
@@ -126,8 +131,9 @@ class TickDispatch(unittest.TestCase):
 
 
 class TickGates(unittest.TestCase):
-    def test_human_review_opens_gate(self):
-        state = ship(task("1", human_review=True, status="pending"), task("2", "b", deps=["1"]))
+    def test_human_review_without_a_verification_opens_the_gate_and_runs_no_worker(self):
+        state = ship(task("1", human_review=True, verification="", status="pending"),
+                     task("2", "b", deps=["1"]))
         new, actions = tick(state)
         self.assertEqual(len(actions), 1)
         gate = actions[0]
@@ -140,10 +146,22 @@ class TickGates(unittest.TestCase):
         self.assertEqual(again, [])
 
     def test_human_review_waits_for_deps(self):
-        state = ship(task("1"), task("2", "b", deps=["1"], human_review=True))
+        state = ship(task("1"), task("2", "b", deps=["1"], human_review=True, verification=""))
         new, actions = tick(state)
         self.assertEqual([type(a) for a in actions], [sd.Dispatch])
         self.assertEqual(new.tasks["2"].status, "pending")
+
+    def test_human_review_with_a_verification_is_dispatched_like_any_task(self):
+        state = ship(task("1", human_review=True, verification="make test"))
+        new, actions = tick(state)
+        self.assertEqual(actions, [sd.Dispatch("1", "a", "new-top-level", "claude", "sonnet")])
+        self.assertEqual(new.tasks["1"].status, "running")
+
+    def test_a_direct_human_review_task_does_not_hold_a_slot_or_its_repo(self):
+        state = ship(task("1", "a", human_review=True, verification="", status="gated"),
+                     task("2", "a"), task("3", "b"), task("4", "c"), task("5", "d"))
+        _, actions = tick(state)
+        self.assertEqual([a.task_id for a in actions], ["2", "3", "4"])
 
     def test_quota_brake(self):
         limits = {"claude": {"session": 95.0, "weekly": 10.0}, "codex": {"session": 5.0, "weekly": 5.0}}
@@ -216,16 +234,41 @@ class WorkerEvents(unittest.TestCase):
         new, actions = sd.decide(new, sd.WorkerDone("d2", "succeeded"), CFG)
         self.assertEqual(actions, [sd.RunGate("2", False)])
 
-    def test_failed_outcome_is_red(self):
+    def test_failed_outcome_is_red_and_the_retry_goes_through_tick(self):
         state = ship(running("1", attempts=0), worktrees={"a": "wt-a"})
         new, actions = sd.decide(state, sd.WorkerDone("d1", "failed"), CFG)
-        self.assertEqual(actions, [
-            sd.Release("d1"),
-            sd.Dispatch("1", "a", "id:wt-a", "claude", "sonnet"),
-        ])
+        self.assertEqual(actions, [sd.Release("d1")], "a retry is not dispatched by the event itself")
         t = new.tasks["1"]
-        self.assertEqual((t.status, t.attempts, t.dispatch_id, t.started_at), ("running", 1, "", 0.0))
+        self.assertEqual((t.status, t.attempts, t.dispatch_id, t.started_at), ("pending", 1, "", 0.0))
         self.assertTrue(t.last_failure)
+        again, actions = tick(new)
+        self.assertEqual(actions, [sd.Dispatch("1", "a", "id:wt-a", "claude", "sonnet")])
+        self.assertEqual((again.tasks["1"].status, again.tasks["1"].attempts), ("running", 1))
+
+    def test_a_retry_meets_the_brake(self):
+        limits = {"claude": {"session": 95.0, "weekly": 10.0}, "codex": {"session": 5.0, "weekly": 5.0}}
+        state = ship(running("1", attempts=0), worktrees={"a": "wt-a"})
+        red, _ = sd.decide(state, sd.WorkerDone("d1", "failed"), CFG)
+        new, actions = tick(red, limits)
+        self.assertEqual([type(a) for a in actions], [sd.Brake, sd.OpenGate])
+        self.assertEqual((new.phase, new.tasks["1"].status), ("braked", "pending"))
+
+    def test_a_retry_obeys_the_cap_and_one_worker_per_repo(self):
+        state = ship(running("1", "a", attempts=0), running("2", "b", dispatch_id="d2"),
+                     running("3", "c", dispatch_id="d3"), task("4", "d"))
+        red, _ = sd.decide(state, sd.WorkerDone("d1", "failed"), CFG)
+        _, actions = tick(red)
+        self.assertEqual([a.task_id for a in actions], ["1"], "the freed slot goes to the first ready task")
+        busy = ship(running("1", "a", attempts=0), task("2", "a"))
+        red, _ = sd.decide(busy, sd.WorkerDone("d1", "failed"), CFG)
+        _, actions = tick(red)
+        self.assertEqual([a.task_id for a in actions], ["1"], "task 1 keeps its place; 2 waits on the repo")
+
+    def test_a_retry_honours_the_forced_implementer(self):
+        state = ship(running("1", attempts=0), forced_implementer=["codex", "gpt-6.1-sol"])
+        red, _ = sd.decide(state, sd.WorkerDone("d1", "failed"), CFG)
+        _, actions = tick(red)
+        self.assertEqual((actions[0].agent, actions[0].model), ("codex", "gpt-6.1-sol"))
 
     def test_failed_outcome_with_retries_exhausted_opens_gate(self):
         state = ship(running("1", attempts=2))
@@ -244,12 +287,12 @@ class WorkerEvents(unittest.TestCase):
         self.assertEqual(actions, [sd.CloseTask("1"), sd.Release("d1")])
         self.assertEqual((new.tasks["1"].status, new.tasks["1"].dispatch_id), ("done", ""))
 
-        # red with retries left
+        # red with retries left: back to pending for the next Tick
         state = ship(gating(attempts=1), worktrees={"a": "wt-a"})
         new, actions = sd.decide(state, sd.GateVerdict("1", 1, "x" * 3000), CFG)
-        self.assertEqual(actions, [sd.Release("d1"), sd.Dispatch("1", "a", "id:wt-a", "claude", "sonnet")])
+        self.assertEqual(actions, [sd.Release("d1")])
         t = new.tasks["1"]
-        self.assertEqual((t.status, t.attempts, len(t.last_failure)), ("running", 2, 2000))
+        self.assertEqual((t.status, t.attempts, len(t.last_failure)), ("pending", 2, 2000))
 
         # red, retries exhausted
         new, actions = sd.decide(ship(gating(attempts=2)), sd.GateVerdict("1", 1, "boom"), CFG)
@@ -352,7 +395,7 @@ class QuestionsAndGates(unittest.TestCase):
         self.assertEqual(new.phase, "auditing")
 
     def test_retry_resets_attempts_and_releases_the_held_worker(self):
-        for kind, status in (("retry_exhausted", "failed"), ("setup", "gated"), ("timeout", "gated")):
+        for kind, status in (("retry_exhausted", "failed"), ("setup", "gated")):
             state = ship(task("1", status=status, attempts=2, dispatch_id="d1", last_failure="x"))
             new, actions = self.resolve(state, kind, "1", "retry")
             self.assertEqual(actions, [sd.Release("d1")], kind)
@@ -377,10 +420,90 @@ class QuestionsAndGates(unittest.TestCase):
         self.assertEqual(actions, [])
         self.assertEqual(new.phase, "running")
 
-    def test_skip_of_a_timed_out_task_releases_it(self):
-        state = ship(task("1", status="gated", dispatch_id="d1"))
-        new, actions = self.resolve(state, "timeout", "1", "skip")
+    # -- I4: a timed-out worker is stopped, and only proof that it exited frees the task
+
+    def timed_out(self, resolution):
+        state = ship(task("1", status="gated", dispatch_id="d1", attempts=1))
+        return self.resolve(state, "timeout", "1", resolution)
+
+    def test_timeout_retry_or_skip_stops_the_worker_before_anything_else(self):
+        for resolution in ("retry", "skip"):
+            new, actions = self.timed_out(resolution)
+            self.assertEqual(actions, [sd.StopWorker("1", "d1", resolution)], resolution)
+            t = new.tasks["1"]
+            self.assertEqual((t.status, t.dispatch_id, t.attempts), ("gated", "d1", 1), "nothing changes yet")
+
+    def test_a_confirmed_stop_then_retries_or_fails_the_task(self):
+        gated, _ = self.timed_out("retry")
+        new, actions = sd.decide(gated, sd.WorkerStopped("1", "retry", True), CFG)
+        self.assertEqual(actions, [sd.Release("d1")])
+        t = new.tasks["1"]
+        self.assertEqual((t.status, t.attempts, t.dispatch_id), ("pending", 0, ""))
+        gated, _ = self.timed_out("skip")
+        new, actions = sd.decide(gated, sd.WorkerStopped("1", "skip", True), CFG)
         self.assertEqual(actions, [sd.Release("d1"), sd.Finish()])
+        self.assertEqual(new.tasks["1"].status, "failed")
+
+    def test_an_unconfirmed_stop_keeps_the_task_and_asks_again(self):
+        for resolution in ("retry", "skip"):
+            gated, _ = self.timed_out(resolution)
+            new, actions = sd.decide(gated, sd.WorkerStopped("1", resolution, False, "still working"), CFG)
+            self.assertEqual([(a.kind, a.task_id, a.options) for a in actions],
+                             [("timeout", "1", ["retry", "skip"])], resolution)
+            self.assertIn("still working", actions[0].question)
+            t = new.tasks["1"]
+            self.assertEqual((t.status, t.dispatch_id), ("gated", "d1"))
+            self.assertEqual(len(new.pending_gates), 1)
+
+    def test_a_timeout_gate_without_a_worker_needs_no_stop(self):
+        state = ship(task("1", status="gated", dispatch_id=""))
+        new, actions = self.resolve(state, "timeout", "1", "retry")
+        self.assertEqual(actions, [])
+        self.assertEqual(new.tasks["1"].status, "pending")
+
+    def test_a_late_worker_done_cancels_the_timeout_gate_and_runs_the_gate(self):
+        state = ship(task("1", status="gated", dispatch_id="d1", agent="claude", model="sonnet"))
+        state.gates["g"] = {"task_id": "1", "kind": "timeout", "message_id": ""}
+        new, actions = sd.decide(state, sd.WorkerDone("d1", "succeeded"), CFG)
+        self.assertEqual(actions, [sd.RunGate("1", True)])
+        self.assertEqual((new.tasks["1"].status, new.gates), ("gating", {}))
+        # The same for a request the driver has not created in Orca yet.
+        queued = ship(task("1", status="gated", dispatch_id="d1", agent="claude", model="sonnet"),
+                      pending_gates=[{"task_id": "1", "kind": "timeout"}])
+        new, actions = sd.decide(queued, sd.WorkerDone("d1", "failed"), CFG)
+        self.assertEqual((new.pending_gates, new.tasks["1"].status), ([], "pending"))
+
+    def test_a_worker_done_for_a_task_gated_on_something_else_is_still_ignored(self):
+        state = ship(task("1", status="gated", dispatch_id="d1"))
+        state.gates["g"] = {"task_id": "1", "kind": "question", "message_id": "m"}
+        new, actions = sd.decide(state, sd.WorkerDone("d1", "succeeded"), CFG)
+        self.assertEqual((actions, new), ([], state))
+
+    def test_a_stop_report_for_a_task_that_moved_on_is_ignored(self):
+        state = ship(task("1", status="pending"))
+        new, actions = sd.decide(state, sd.WorkerStopped("1", "retry", True), CFG)
+        self.assertEqual((actions, new), ([], state))
+
+    # -- I8: human review with a verification closes only after the gate is green and a person approves
+
+    def test_green_gate_of_a_human_review_task_opens_the_approval_gate_before_closing(self):
+        state = ship(task("1", status="gating", dispatch_id="d1", human_review=True, agent="claude", model="sonnet"),
+                     task("2", "b", deps=["1"]))
+        new, actions = sd.decide(state, sd.GateVerdict("1", 0, ""), CFG)
+        self.assertEqual([type(a) for a in actions], [sd.Release, sd.OpenGate])
+        self.assertEqual((actions[1].task_id, actions[1].options, actions[1].kind),
+                         ("1", ["approve", "reject"], "human_review"))
+        self.assertNotIn(sd.CloseTask("1"), actions)
+        self.assertEqual((new.tasks["1"].status, new.tasks["1"].dispatch_id), ("gated", ""))
+        # approve closes it; reject fails it
+        new.gates["g"] = {"task_id": "1", "kind": "human_review", "message_id": ""}
+        done, actions = sd.decide(new, sd.GateResolved("g", "approve"), CFG)
+        self.assertEqual((actions, done.tasks["1"].status), ([sd.CloseTask("1")], "done"))
+
+    def test_a_red_gate_of_a_human_review_task_retries_without_asking_a_person(self):
+        state = ship(task("1", status="gating", dispatch_id="d1", human_review=True, attempts=0))
+        new, actions = sd.decide(state, sd.GateVerdict("1", 1, "red"), CFG)
+        self.assertEqual((actions, new.tasks["1"].status), ([sd.Release("d1")], "pending"))
 
     def test_a_failed_task_with_an_open_gate_does_not_end_the_run_on_tick(self):
         state = ship(task("1", status="failed"))
@@ -398,15 +521,43 @@ class QuestionsAndGates(unittest.TestCase):
         self.assertEqual(actions[0].agent, "codex")
 
         new, actions = self.resolve(ship(task("1"), phase="braked"), "brake", None, "pause")
-        self.assertEqual(actions, [sd.Finish()])
-        self.assertEqual(new.phase, "running", "paused work resumes on the next run")
+        self.assertEqual(actions, [sd.Finish()], "nothing is running: leave now")
+        self.assertEqual((new.phase, new.paused), ("running", False), "paused work resumes on the next run")
 
-    def test_audit_exhausted_accept_and_reject_both_finish(self):
-        for resolution in ("accept", "reject"):
-            state = ship(task("1", status="done"), phase="auditing", audit_rounds=2)
+    def test_pause_keeps_supervising_running_workers_until_they_settle(self):
+        state = ship(running("1"), task("2", "b"), phase="braked")
+        new, actions = self.resolve(state, "brake", None, "pause")
+        self.assertEqual((actions, new.paused, new.phase), ([], True, "running"))
+        # Ticks dispatch nothing new while paused...
+        later, actions = tick(new)
+        self.assertEqual(actions, [])
+        # ...a timeout is still noticed...
+        late, actions = tick(new, now=NOW + 3600)
+        self.assertEqual([a.kind for a in actions], ["timeout"])
+        # ...the worker settling (green gate) lets the run leave, without starting task 2 or the audit.
+        gating = copy_state(new)
+        gating.tasks["1"].status, gating.tasks["1"].agent = "gating", "claude"
+        done, actions = sd.decide(gating, sd.GateVerdict("1", 0, ""), CFG)
+        self.assertEqual([type(a) for a in actions], [sd.CloseTask, sd.Release])
+        done, actions = tick(done)
+        self.assertEqual(actions, [sd.Finish()])
+        self.assertEqual((done.paused, done.phase, done.tasks["2"].status), (False, "running", "pending"))
+
+    def test_a_paused_run_never_starts_the_audit(self):
+        state = ship(task("1", status="gating", dispatch_id="d1", agent="claude", model="sonnet"),
+                     phase="running", paused=True)
+        new, actions = sd.decide(state, sd.GateVerdict("1", 0, ""), CFG)
+        self.assertNotIn(sd.ComputeChanges(), actions)
+        self.assertEqual(new.phase, "running")
+        _, actions = tick(new)
+        self.assertEqual(actions, [sd.Finish()])
+
+    def test_audit_exhausted_accept_approves_and_reject_rejects(self):
+        for resolution, result in (("accept", "approved"), ("reject", "rejected")):
+            state = ship(task("1", status="done"), phase="auditing", audit_rounds=1)
             new, actions = self.resolve(state, "audit_exhausted", None, resolution)
             self.assertEqual(actions, [sd.Finish()])
-            self.assertEqual(new.phase, "done")
+            self.assertEqual((new.phase, new.audit_result), ("done", result))
 
     def test_an_invalid_resolution_changes_nothing(self):
         state = ship(task("1", status="gated", human_review=True))
@@ -514,7 +665,7 @@ class Audit(unittest.TestCase):
                          ("a", "implementation", [], "", False, "pending"))
         self.assertEqual(fix.last_failure, "bug one\nbug two")
 
-        # the fix tasks dispatch on the next tick, then the audit restarts when they are done
+        # the fix tasks dispatch on the next tick, then the second (final) audit starts when they are done
         new.worktrees = {"a": "wt-a", "b": "wt-b"}
         new, actions = tick(new)
         self.assertEqual([a.task_id for a in actions], ["AUDIT1-a", "AUDIT1-b"])
@@ -526,21 +677,43 @@ class Audit(unittest.TestCase):
         self.assertEqual(actions, [sd.ComputeChanges()])
         self.assertEqual(new.phase, "auditing")
 
-        # round 2 is still allowed
-        new, actions = sd.decide(new, verdict, CFG)
-        self.assertEqual((new.phase, new.audit_rounds), ("fixing", 2))
-        self.assertIn("AUDIT2-a", new.tasks)
-
-        # round 3 is not: the cap is two rounds
+        # maxAuditRounds counts audits: the second audit is the last, so its findings go to the owner
         for t in new.tasks.values():
             t.status = "done"
         new.phase = "auditing"
         new, actions = sd.decide(new, verdict, CFG)
-        self.assertEqual([type(a) for a in actions], [sd.OpenGate, sd.Finish])
+        self.assertEqual([type(a) for a in actions], [sd.OpenGate], "the run does not finish before the owner answers")
         self.assertEqual((actions[0].task_id, actions[0].options, actions[0].kind),
                          (None, ["accept", "reject"], "audit_exhausted"))
         self.assertIn("bug one", actions[0].question)
-        self.assertEqual(new.audit_rounds, 2)
+        self.assertIn("2 audit(s)", actions[0].question)
+        self.assertEqual((new.audit_rounds, new.phase, new.audit_result), (1, "auditing", ""))
+        self.assertEqual(set(new.tasks) - {"1", "2", "AUDIT1-a", "AUDIT1-b"}, set(), "no second fix round")
+
+    def test_max_audit_rounds_counts_total_audits(self):
+        verdict = sd.AuditVerdict("CHANGES_REQUESTED", 1, ["a/x.py"], ["bug"])
+        for cap, rounds_done, expect_gate in ((1, 0, True), (2, 0, False), (2, 1, True),
+                                              (3, 1, False), (3, 2, True)):
+            with self.subTest(cap=cap, fix_rounds=rounds_done):
+                state = self.audited(audit_rounds=rounds_done)
+                _, actions = sd.decide(state, verdict, sd.ShipConfig(max_audit_rounds=cap))
+                self.assertEqual(any(isinstance(a, sd.OpenGate) for a in actions), expect_gate)
+
+    def test_audit_exhausted_waits_for_the_owner_and_the_answer_sets_the_result(self):
+        state = self.audited(audit_rounds=1)
+        gated, actions = sd.decide(state, sd.AuditVerdict("CHANGES_REQUESTED", 1, ["a/x"], ["bug"]), CFG)
+        self.assertNotIn(sd.Finish(), actions)
+        # While the gate is queued or open, a replayed verdict opens no second one and no audit starts.
+        _, again = sd.decide(gated, sd.AuditVerdict("CHANGES_REQUESTED", 1, ["a/x"], ["bug"]), CFG)
+        self.assertEqual(again, [])
+        _, started = sd.decide(gated, sd.ChangesComputed(["a/x"]), CFG)
+        self.assertEqual(started, [])
+        for resolution, result in (("accept", "approved"), ("reject", "rejected")):
+            state = self.audited(audit_rounds=1)
+            state.gates["g"] = {"task_id": None, "kind": "audit_exhausted", "message_id": ""}
+            new, actions = sd.decide(state, sd.GateResolved("g", resolution), CFG)
+            self.assertEqual(actions, [sd.Finish()])
+            self.assertEqual((new.phase, new.audit_result), ("done", result))
 
     def test_fix_tasks_only_for_repos_with_changed_files(self):
         state = self.audited(worktree_paths={"a": "/w/a", "b": "/w/b"})
