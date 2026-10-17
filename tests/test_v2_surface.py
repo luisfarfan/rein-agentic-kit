@@ -29,7 +29,7 @@ class TestV2Surface(unittest.TestCase):
     def test_cli_commands_are_the_v2_surface(self):
         self.assertEqual(sorted(rein_cli.COMMANDS), sorted([
             "detect", "verify", "gate", "role", "tasks", "plan-check", "context", "close",
-            "next", "review", "token-report", "ledger", "baseline", "serve-probe", "doctor"]))
+            "next", "review", "token-report", "ledger", "baseline", "serve-probe", "doctor", "ship"]))
 
     def test_removed_modules_are_gone(self):
         for name in ("dashboard", "events", "product_state", "backlog", "workspace", "setup",

@@ -70,6 +70,14 @@ class OrcaClient:
         result = envelope.get("result")
         return result if isinstance(result, dict) else {}
 
+    def call(self, *args: str) -> dict:
+        """Run one orca subcommand given as argv tail (without `orca`/`--json`).
+
+        For executing an argv Orca itself proposed (a worker's `nextAction`);
+        the caller is responsible for allow-listing what it passes.
+        """
+        return self._call(*args)
+
     # -- environment ------------------------------------------------------
     def status(self) -> dict:
         return self._call("status")

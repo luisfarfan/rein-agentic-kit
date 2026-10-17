@@ -34,6 +34,10 @@ Subcommands:
   rein ledger         summary of recorded runs (per project / per session);
                       --json returns {"runs": [...]}
   rein baseline       mark/show/clear the reference run compared against
+  rein ship <change>  drive a plan through Orca workers: dispatch, gate, audit.
+                      [--root <plan repo>] [--agent <id> --model <m>] [--dry-run]
+                      exit 0 shipped and approved / 1 failed tasks or rejected audit /
+                      2 usage / 126 preflight or environment. Never pushes or merges
 
 Kept dependency-free on purpose: a plugin that drags a toolchain along at install
 time is a plugin nobody installs. Python 3 stdlib only.
@@ -45,6 +49,7 @@ import json
 import os
 import shutil
 import sys
+import time
 
 VERSION = "0.15.0"
 
@@ -58,6 +63,7 @@ import plan as _plan  # noqa: E402
 import plan_check as _plan_check  # noqa: E402
 import roles as _roles  # noqa: E402
 import serve as _serve  # noqa: E402
+import ship as _ship  # noqa: E402
 import token_report as _tr  # noqa: E402
 import verify as _verify  # noqa: E402
 
@@ -765,6 +771,31 @@ def cmd_doctor(argv: list[str]) -> int:
     return 0
 
 
+def cmd_ship(argv: list[str]) -> int:
+    """Run a planned change through Orca workers, resuming from .rein/ship-state.json.
+
+    Put the change name first: `_positional` treats the word after a bare flag
+    as that flag's value, so `--dry-run <change>` is filtered out below.
+    """
+    change = _positional([a for a in argv if a != "--dry-run"])
+    agent, model = _opt(argv, "agent"), _opt(argv, "model")
+    if not change or bool(agent) != bool(model):
+        print("usage: rein ship <change> [--root <plan repo>] [--agent <id> --model <m>] [--dry-run]")
+        return 2
+    root = _opt(argv, "root", ".")
+    env = dict(os.environ)
+    dry_run = "--dry-run" in argv
+    if dry_run:
+        env.setdefault("ORCA_TERMINAL_HANDLE", "dry-run")
+        client = _ship.dry_run_client(root, change, lambda line: print(f"dry-run: {line}"))
+    else:
+        client = _ship.OrcaClient()
+    return _ship.run_ship(
+        root, change, client, _ship.default_gate_runner, env=env, clock=time.time,
+        dry_run=dry_run, override=(agent, model) if agent else None,
+    )
+
+
 COMMANDS = {
     "doctor": cmd_doctor,
     "detect": cmd_detect,
@@ -781,6 +812,7 @@ COMMANDS = {
     "ledger": cmd_ledger,
     "baseline": cmd_baseline,
     "serve-probe": cmd_serve_probe,
+    "ship": cmd_ship,
 }
 
 
