@@ -3,17 +3,15 @@
 Three of this kit's skills shipped under names Claude Code already reserves
 (`loop`, `run`, `review`); a fourth (`run-auto`) rode along so the family
 reads as one. The rename is `loop -> apply`, `run -> step`, `run-auto ->
-steps`, `review -> audit`. `plan`, `role` and the `ping` / `setup` commands
-are untouched (Scope).
+steps`, `review -> audit`. v2 removed apply/step/steps (and the `ping` /
+`setup` commands); `plan`, `role` and `discover` are untouched.
 
-Mirrors tests/test_events.py's discipline for shipped SKILL.md files: glob
-over the real skills directory and read what actually ships, not a
+Globs the real skills directory and reads what actually ships, not a
 restatement of it.
 """
 
 from __future__ import annotations
 
-import glob
 import os
 import re
 import subprocess
@@ -21,33 +19,23 @@ import unittest
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SKILLS_DIR = os.path.join(REPO_ROOT, "plugins", "rein", "skills")
-LOOP_JS = os.path.join(REPO_ROOT, "plugins", "rein", "workflows", "loop.js")
 
-# Both renames, in order: first the collision fix (loop/run/run-auto/review),
-# then the namespacing that made a collision impossible by construction.
+# The renames that survive v2 (the Workflow loop and its apply/step/steps
+# skills are gone, so only `review -> audit` still has a shipped target), and
+# every name that must no longer exist as a skill directory.
 RENAMED = {
-    "loop": "rein-apply",
-    "run": "rein-step",
-    "run-auto": "rein-steps",
     "review": "rein-audit",
-    "apply": "rein-apply",
-    "step": "rein-step",
-    "steps": "rein-steps",
     "audit": "rein-audit",
 }
 UNTOUCHED_SKILLS = {"rein-plan", "rein-role", "rein-discover"}
-
-# Skills added AFTER the rename. Kept apart from UNTOUCHED_SKILLS on
-# purpose: "untouched" means the rename did not move it, and a skill that
-# did not yet exist was not untouched by anything. Folding them together
-# would leave this file telling a story about a rename that never covered
-# them.
-ADDED_AFTER_THE_RENAME = {"rein-linear"}
+RETIRED = set(RENAMED) | {
+    "loop", "run", "run-auto", "apply", "step", "steps",
+    "rein-apply", "rein-step", "rein-steps", "rein-linear",
+}
 
 # Old invocation strings, anchored so the `run` skill's pattern does not also
 # match inside the `run-auto` skill's invocation (the same pitfall
-# tests/test_events.py's frontmatter guard already had to close for those
-# two skill names).
+# earlier frontmatter guard already had to close for those two skill names).
 OLD_INVOCATION_PATTERN = re.compile(
     r"/rein:(?:loop|run-auto|run(?![\w-])|review)"
 )
@@ -99,7 +87,7 @@ class TestSkillDirectorySet(unittest.TestCase):
             for d in os.listdir(SKILLS_DIR)
             if os.path.isdir(os.path.join(SKILLS_DIR, d))
         }
-        expected = set(RENAMED.values()) | UNTOUCHED_SKILLS | ADDED_AFTER_THE_RENAME
+        expected = set(RENAMED.values()) | UNTOUCHED_SKILLS
         self.assertEqual(on_disk, expected)
 
 
@@ -113,16 +101,16 @@ class TestNoCollidingAliasLeftBehind(unittest.TestCase):
             for d in os.listdir(SKILLS_DIR)
             if os.path.isdir(os.path.join(SKILLS_DIR, d))
         }
-        for retired in RENAMED:
+        for retired in RETIRED:
             self.assertNotIn(retired, on_disk, f"retired skill dir {retired!r} still exists")
 
 
 class TestSkillFrontmatterNameMatchesDirectory(unittest.TestCase):
     """D3 of the Scope: `name:` stays the bare identifier and stays equal to
-    the directory -- this repo's own guard (test_events.py) reads it."""
+    the directory -- this repo's own guards read it."""
 
     def test_every_renamed_skills_frontmatter_name_equals_its_directory(self):
-        for new_name in RENAMED.values():
+        for new_name in set(RENAMED.values()) | UNTOUCHED_SKILLS:
             path = os.path.join(SKILLS_DIR, new_name, "SKILL.md")
             with open(path, encoding="utf-8") as fh:
                 text = fh.read()
@@ -154,53 +142,6 @@ class TestNoOldInvocationSurvivesInTheRepo(unittest.TestCase):
         """Guard on the guard: an empty walk would make the test above vacuous."""
         count = sum(1 for _ in _iter_repo_files())
         self.assertGreater(count, 20)
-
-
-class TestLoopPromptsNameNoRetiredSkill(unittest.TestCase):
-    """AC5 -- buildIsolatePrompt, the step prompts (stepPrompt,
-    buildTaskWorktreePrompt, buildTaskMergePrompt) and the review prompts
-    (implementerPolicyBlock, reviewerPolicyBlock) name no retired skill.
-    Extracted straight out of loop.js's shipped source by regex, the same
-    technique tests/test_loop_policy.py uses for decideRound, so this proves
-    the actual shipped strings rather than a restatement of them."""
-
-    FUNCTIONS = [
-        ("buildIsolatePrompt", r"root, base, wd, branch, rein"),
-        ("buildTaskWorktreePrompt", r"root, runBranch, wd, branch, rein"),
-        ("buildTaskMergePrompt", r"wd, branch, runBranch, taskId, taskWd"),
-        ("stepPrompt", r"task, proxied, ledger, step, wtOverride, closesOwnTask = true"),
-        ("implementerPolicyBlock", r""),
-        ("reviewerPolicyBlock", r""),
-    ]
-
-    @classmethod
-    def setUpClass(cls):
-        with open(LOOP_JS, encoding="utf-8") as fh:
-            cls.src = fh.read()
-
-    def _extract(self, name: str, params: str) -> str:
-        pattern = re.compile(
-            rf"function {re.escape(name)}\({re.escape(params)}\) \{{\n([\s\S]*?)\n\}}\n"
-        )
-        m = pattern.search(self.src)
-        self.assertIsNotNone(m, f"{name} not found in loop.js with the expected signature")
-        return m.group(1)
-
-    def test_every_prompt_builder_is_still_extractable(self):
-        """Guard on the guard: if a signature drifts, extraction below would
-        silently check nothing."""
-        for name, params in self.FUNCTIONS:
-            self._extract(name, params)
-
-    def test_no_prompt_builder_names_a_retired_skill(self):
-        survivors = []
-        for name, params in self.FUNCTIONS:
-            body = self._extract(name, params)
-            if OLD_INVOCATION_PATTERN.search(body):
-                for i, line in enumerate(body.splitlines(), 1):
-                    if OLD_INVOCATION_PATTERN.search(line):
-                        survivors.append(f"{name}:{i}: {line.strip()}")
-        self.assertEqual(survivors, [], "\n".join(survivors))
 
 
 if __name__ == "__main__":

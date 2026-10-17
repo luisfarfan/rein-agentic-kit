@@ -147,12 +147,8 @@ You come back when it finished, not before.
 
 ```bash
 rein doctor      # 🩺 start here: stack, resolved commands, and the source of each
-                 # plus a "version : <verdict> -- <reason>" line -- up-to-date / stale /
-                 # unknown against the marketplace clone, with fix commands when stale
                  # --json: {"version", "pluginRoot", "project", "plan", "verifyState",
-                 # "ledger", "staleness"} -- staleness is {"verdict", "reason",
-                 # "installedVersion", "availableVersion"}
-rein setup       # probe the optional tools · --install provisions what is missing
+                 # "ledger"}
 rein detect      # stack + commands, with the source of each
 rein tasks       # the plan, parsed
 rein context     # detect + plan in ONE round-trip — what the loop's first agent runs
@@ -176,41 +172,9 @@ rein close T001  # tick a checkbox deterministically — no agent hand-edits the
 rein review      # record / check a verdict bound to a code state
 rein token-report# what a run really cost, per agent and per model, plus its wall clock,
                  # agent-minutes and their ratio (1.00x = nothing overlapped)
-rein event <name># record a skill invocation — an EVENT, never folded into a run total
-rein event task <id> <started|verified|blocked|merged>
-                 # record a task TRANSITION as it happens — rejects any other word
-                 # by name, without writing
-rein state       # per-task transitions folded from the event log + plan; given a
-                 # workspace, folds every member into one table
 rein ledger      # history across projects, with deltas vs a marked baseline
-                 # --json: {"runs": [...], "events_by_project": {...}} -- runs are
-                 # unchanged row objects; events (D3) are counted separately, never
-                 # folded into a run total
+                 # --json: {"runs": [...]}
 rein baseline    # mark the run everything is compared against
-rein dashboard   # 📊 serve it all as a local page
-rein workspace   # discover .rein/workspace.json and report each member repo's
-                 # branch and head; one explanatory line, exit 0, when none is found
-rein linear list # issues from Linear, filtered (--repo / --priority /
-                 # --max-priority / --state / --flow / --label / --parent) and
-                 # ordered urgent-first. Linear numbers priority 1=urgent…4=low
-                 # and reserves 0 for "none", so unprioritised sorts LAST.
-                 # The 14 index cards are excluded unless --groupers
-rein linear show # one issue with its prose, --json for the parsed record
-rein linear comment
-                 # leave a comment: --body TEXT, or --body-file PATH (`-` for
-                 # stdin, which is what multi-line markdown wants). It exists so
-                 # nothing has to reach for the raw GraphQL endpoint with your
-                 # API key. There is deliberately no bare `linear state`: moving
-                 # to Done belongs to `rein land`, behind its merge check.
-                 # All three need REIN_LINEAR_API_KEY
-rein intake      # take an issue: Beads issue in the owning repo (only when its
-                 # flow.config.json says tracker.kind: "beads"), branch named
-                 # the way Linear already named it, Backlog → In Progress, and a
-                 # comment saying where the work went. Re-running resumes; it
-                 # never files a second Beads issue for one bug
-rein land        # close it out: Beads closed, Linear → Done, both carrying the
-                 # merge commit. Refuses when the base branch holds no commit
-                 # naming the issue — a squash merge keeps the id, not the sha
 ```
 
 > **The rule that separates them:** if it's a *parse*, a script does it. If it's a *judgement*,

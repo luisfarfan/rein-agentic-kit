@@ -32,9 +32,7 @@ PLUGIN = os.path.join(REPO, "plugins", "rein")
 
 def _files_resolving_the_cli() -> list:
     out = []
-    for path in (glob.glob(os.path.join(PLUGIN, "skills", "*", "SKILL.md"))
-                 + glob.glob(os.path.join(PLUGIN, "commands", "*.md"))
-                 + [os.path.join(PLUGIN, "workflows", "loop.js")]):
+    for path in glob.glob(os.path.join(PLUGIN, "skills", "*", "SKILL.md")):
         with open(path, encoding="utf-8") as fh:
             body = fh.read()
         if "plugins/cache/*/rein/*/bin/rein" in body:
@@ -58,7 +56,7 @@ class TestVersionResolutionSurvivesTwoDigitMinors(unittest.TestCase):
 
     def test_the_sweep_found_the_files_it_is_meant_to_check(self):
         """A guard on the guard: zero files scanned passes vacuously."""
-        self.assertGreaterEqual(len(_files_resolving_the_cli()), 6)
+        self.assertGreaterEqual(len(_files_resolving_the_cli()), 4)
 
     def test_sort_v_actually_orders_these_versions_correctly(self):
         """Asserting the FIX works, not just that the string is present --
@@ -72,14 +70,8 @@ class TestVersionResolutionSurvivesTwoDigitMinors(unittest.TestCase):
 
 
 class TestTheHumanEntryPointsAreSlashCommands(unittest.TestCase):
-    """The two commands a person runs by hand must not require a shell where
-    `rein` is on PATH, because in a plain terminal it is not."""
-
-    def test_ping_and_setup_ship_as_commands(self):
-        names = {os.path.basename(p)[:-3]
-                 for p in glob.glob(os.path.join(PLUGIN, "commands", "*.md"))}
-        self.assertIn("rein-ping", names)
-        self.assertIn("rein-setup", names)
+    """What a person runs by hand must not require a shell where `rein` is
+    on PATH, because in a plain terminal it is not."""
 
     def test_the_readme_does_not_tell_people_to_run_rein_in_a_terminal(self):
         with open(os.path.join(REPO, "README.md"), encoding="utf-8") as fh:
@@ -90,9 +82,3 @@ class TestTheHumanEntryPointsAreSlashCommands(unittest.TestCase):
             stripped = line.strip()
             if stripped.startswith("rein ") or stripped == "rein":
                 self.fail(f"Quickstart tells the reader to run `rein` in a shell: {stripped!r}")
-
-    def test_setup_never_provisions_without_asking(self):
-        with open(os.path.join(PLUGIN, "commands", "rein-setup.md"), encoding="utf-8") as fh:
-            body = fh.read()
-        self.assertIn("--install", body)
-        self.assertIn("without asking", body)

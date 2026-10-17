@@ -4,9 +4,9 @@ Three kinds of proof, matching the three kinds of claim in the acceptance
 criteria:
   * D1 (unconditional step) and D5 (never a silent skip, never a hard stop)
     are prose the SHIPPED skill must contain -- read as text, the same way
-    tests/test_loop_policy.py reads the shipped loop.js as text.
-  * D3 (one definition, two consumers) is a substring match against BOTH
-    shipped files -- the moment either one's wording drifts, this fails.
+    other tests here read shipped files as text.
+  * D3 (one definition) is a substring match against the shipped skill --
+    the moment its wording drifts from plan_check, this fails.
   * The two fixtures are the mechanical half (plan_check.mechanical_findings)
     exercised against real, checked-in plan text: the actual defect that cost
     81k tokens, and a plan that was actually approved.
@@ -19,13 +19,11 @@ import os
 import shutil
 import subprocess
 import sys
-import tempfile
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LIB = os.path.join(ROOT, "plugins", "rein", "lib")
 REIN_BIN = os.path.join(ROOT, "plugins", "rein", "bin", "rein")
-LOOP_JS = os.path.join(ROOT, "plugins", "rein", "workflows", "loop.js")
 SKILL_MD = os.path.join(ROOT, "plugins", "rein", "skills", "rein-plan", "SKILL.md")
 FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
 
@@ -33,40 +31,8 @@ sys.path.insert(0, LIB)
 
 import plan_check  # noqa: E402
 
-_NODE = shutil.which("node")
-
-# Same discipline as tests/test_loop_policy.py: extract buildPlanCheckPrompt
-# straight out of the shipped source by regex and RUN it with `new Function`,
-# so this proves the actual rendered prompt text -- not a reimplementation,
-# and not a raw-source-text match that a `+`-concatenated template literal
-# could dodge by wrapping mid-phrase.
-_EXTRACT_JS = r"""
-const fs = require('fs');
-const [, , loopPath] = process.argv;
-const src = fs.readFileSync(loopPath, 'utf8');
-function extract(name, params) {
-  const re = new RegExp(`function ${name}\\(${params}\\) \\{\\n([\\s\\S]*?)\\n\\}\\n`);
-  const m = src.match(re);
-  if (!m) throw new Error('not found in loop.js: ' + name);
-  return m[1];
-}
-const buildPlanCheckPrompt = new Function('planPath', 'taskIds', extract('buildPlanCheckPrompt', 'planPath, taskIds'));
-process.stdout.write(buildPlanCheckPrompt('tasks.md', []));
-"""
-
-
-def _build_plan_check_prompt() -> str:
-    with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False, encoding="utf-8") as f:
-        f.write(_EXTRACT_JS)
-        script_path = f.name
-    try:
-        proc = subprocess.run([_NODE, script_path, LOOP_JS], capture_output=True, text=True, check=True)
-    finally:
-        os.unlink(script_path)
-    return proc.stdout
-
 # D3: verbatim-identical to plan_check.BLOCKING_CLASSES and to the four
-# lenses embedded in loop.js's buildPlanCheckPrompt.
+# classes named in the plan skill's critique step.
 CANONICAL_CLASSES = (
     "a verification that cannot mechanically confirm the criteria it is attached to",
     "a criterion no command can check",
@@ -87,35 +53,17 @@ def _flatten(text: str) -> str:
     return " ".join(text.split())
 
 
-@unittest.skipUnless(_NODE, "node not on PATH -- loop.js is a node workflow script")
 class TestBlockingClassesDefinedOnce(unittest.TestCase):
-    """D2/D3: one definition, two consumers -- the loop's PlanCheck prompt and
-    the plan skill must name the SAME four, or the two gates drift."""
+    """D2/D3: one definition -- the plan skill must name the SAME four classes
+    plan_check defines, or the gates drift."""
 
     def test_plan_check_module_defines_the_four_classes(self):
         self.assertEqual(plan_check.BLOCKING_CLASSES, CANONICAL_CLASSES)
-
-    def test_loop_js_plan_check_prompt_names_all_four(self):
-        prompt = _build_plan_check_prompt()
-        for cls in CANONICAL_CLASSES:
-            self.assertIn(cls, prompt, f"loop.js's rendered PlanCheck prompt is missing: {cls!r}")
 
     def test_plan_skill_names_all_four(self):
         src = _read(SKILL_MD)
         for cls in CANONICAL_CLASSES:
             self.assertIn(cls, src, f"plan skill's critique step is missing: {cls!r}")
-
-    def test_neither_shipped_text_paraphrases_a_class_away(self):
-        """A test that only checked ONE side could pass while the other side
-        drifted -- this is the "test asserts...name the SAME four" itself,
-        run against BOTH the loop's actual rendered prompt and the shipped
-        skill file, with the identical class strings."""
-        prompt = _build_plan_check_prompt()
-        skill_src = _read(SKILL_MD)
-        for cls in CANONICAL_CLASSES:
-            self.assertIn(cls, prompt)
-            self.assertIn(cls, skill_src)
-
 
 class TestCritiqueIsUnconditional(unittest.TestCase):
     """D1: the critique runs on every invocation, not behind a flag or a
@@ -381,28 +329,6 @@ class TestDependencyClassMechanics(unittest.TestCase):
             "  - Verification: `python3 -m unittest tests.test_b`\n"
         )
         self.assertEqual(plan_check.mechanical_findings(text), [])
-
-
-class TestLoopLensAsymmetryIsRecorded(unittest.TestCase):
-    """Round-1 finding 4: D3 ("the two gates cannot drift") was only checked
-    in one direction -- both shipped texts contain the four canonical
-    classes, but nothing asserted the converse. loop.js's lens 2 (unbounded
-    verification) has no counterpart in plan_check.BLOCKING_CLASSES or in
-    SKILL.md step 5's mechanical/agent split, and that asymmetry was
-    undocumented. This test is the record: the loop's lens-2 wording is
-    pinned, confirmed absent from the shared mechanical classes, and its
-    exclusion carries a reason -- so a REAL, unrecorded drift (a fifth loop
-    lens nobody decided to exclude) still fails this test."""
-
-    def test_unbounded_verification_lens_is_pinned_and_excluded_with_a_reason(self):
-        prompt = _build_plan_check_prompt()
-        self.assertIn(
-            plan_check.UNBOUNDED_VERIFICATION_LENS, prompt,
-            "the loop's lens-2 wording moved -- update the pinned copy in plan_check.py",
-        )
-        self.assertNotIn(plan_check.UNBOUNDED_VERIFICATION_LENS, plan_check.BLOCKING_CLASSES)
-        self.assertIn(plan_check.UNBOUNDED_VERIFICATION_LENS, plan_check.LOOP_ONLY_LENSES)
-        self.assertTrue(plan_check.LOOP_ONLY_LENSES[plan_check.UNBOUNDED_VERIFICATION_LENS].strip())
 
 
 if __name__ == "__main__":

@@ -7,7 +7,7 @@ name Claude Code already ships (the bug T001 fixed for `loop`/`run`/
 sweeps `plugins/rein/skills/*/` and `plugins/rein/commands/*.md` and fails,
 naming the offender, if any basename matches the reserved list.
 
-Mirrors tests/test_events.py's and tests/test_skill_names.py's discipline:
+Mirrors tests/test_skill_names.py's discipline:
 glob over what actually ships, not a restatement of it.
 """
 
@@ -94,11 +94,6 @@ class TestSweepActuallyReadsTheShippedDirectories(unittest.TestCase):
         names = _skill_dir_names(SKILLS_DIR)
         self.assertTrue(names, f"no SKILL.md found under {SKILLS_DIR}")
         self.assertIn("rein-plan", names)
-
-    def test_the_commands_sweep_is_non_empty(self):
-        names = _command_names(COMMANDS_DIR)
-        self.assertTrue(names, f"no command file found under {COMMANDS_DIR}")
-        self.assertIn("rein-ping", names)
 
 
 class TestNoShippedSkillOrCommandTakesAReservedName(unittest.TestCase):
@@ -222,7 +217,7 @@ class TestEveryIdentifierIsNamespaced(unittest.TestCase):
 
     def test_the_sweep_actually_found_the_identifiers(self):
         """Zero identifiers would pass the check above vacuously."""
-        self.assertGreaterEqual(len(self._identifiers()), 8)
+        self.assertGreaterEqual(len(self._identifiers()), 4)
 
     def test_a_prefixed_name_cannot_hit_the_reserved_list(self):
         """The property that makes the snapshot unnecessary: no reserved name
