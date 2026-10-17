@@ -597,6 +597,114 @@ class Config(unittest.TestCase):
         self.assertEqual(actions[0].kind, "retry_exhausted")
 
 
+class AuditSupervision(unittest.TestCase):
+    """The audit worker can stall, ask, or produce nothing; none of that may be silent."""
+
+    def auditing(self, **kw):
+        kw.setdefault("phase", "auditing")
+        kw.setdefault("audit_dispatch", "da")
+        return ship(task("1", status="done"), **kw)
+
+    def open_gate(self, state, gate_id="g1", kind="audit_timeout", **extra):
+        state.gates[gate_id] = {"task_id": None, "kind": kind, "message_id": extra.get("message_id", "")}
+        return state
+
+    def test_first_tick_stamps_the_audit_clock_and_nothing_else(self):
+        new, actions = tick(self.auditing())
+        self.assertEqual(new.audit_started_at, NOW)
+        self.assertEqual(actions, [])
+
+    def test_no_clock_without_an_audit_dispatch(self):
+        new, actions = tick(self.auditing(audit_dispatch=""))
+        self.assertEqual((new.audit_started_at, actions), (0.0, []))
+
+    def test_timeout_opens_one_owner_gate(self):
+        state = self.auditing(audit_started_at=NOW - 45 * 60 - 1)
+        new, actions = tick(state)
+        self.assertEqual(len(actions), 1)
+        self.assertEqual((actions[0].kind, actions[0].task_id, actions[0].options),
+                         ("audit_timeout", None, ["retry", "skip"]))
+        self.assertEqual(len(new.pending_gates), 1)
+        # Not reopened while the request is still queued or the gate is open.
+        _, again = tick(new)
+        self.assertEqual(again, [])
+        opened = self.auditing(audit_started_at=NOW - 99999)
+        _, again = tick(self.open_gate(opened))
+        self.assertEqual(again, [])
+
+    def test_within_the_limit_nothing_happens(self):
+        _, actions = tick(self.auditing(audit_started_at=NOW - 60))
+        self.assertEqual(actions, [])
+
+    def test_timeout_retry_releases_clears_and_recomputes(self):
+        state = self.open_gate(self.auditing(audit_started_at=5.0, changed_files=["a/x"]))
+        new, actions = sd.decide(state, sd.GateResolved("g1", "retry"), CFG)
+        self.assertEqual(actions, [sd.Release("da"), sd.ComputeChanges()])
+        self.assertEqual((new.audit_dispatch, new.audit_started_at, new.phase), ("", 0.0, "auditing"))
+        self.assertEqual(new.gates, {})
+
+    def test_timeout_skip_finishes_not_approved(self):
+        state = self.open_gate(self.auditing(audit_started_at=5.0))
+        new, actions = sd.decide(state, sd.GateResolved("g1", "skip"), CFG)
+        self.assertEqual(actions, [sd.Release("da"), sd.Finish()])
+        self.assertEqual((new.phase, new.audit_result, new.audit_dispatch), ("done", "skipped", ""))
+
+    def test_a_stale_audit_gate_is_dropped_when_the_audit_already_moved_on(self):
+        state = self.open_gate(self.auditing(phase="fixing", audit_dispatch=""))
+        new, actions = sd.decide(state, sd.GateResolved("g1", "skip"), CFG)
+        self.assertEqual((actions, new.phase, new.gates), ([], "fixing", {}))
+
+    def test_question_from_the_auditor_opens_a_taskless_gate_and_relays(self):
+        new, actions = sd.decide(self.auditing(), sd.Question("da", "m1", "which file?"), CFG)
+        self.assertEqual(actions, [sd.OpenGate(None, "which file?", [], "question", "m1")])
+        # A second question while one is pending is ignored.
+        _, again = sd.decide(new, sd.Question("da", "m2", "again?"), CFG)
+        self.assertEqual(again, [])
+        state = self.open_gate(self.auditing(audit_started_at=7.0), kind="question", message_id="m1")
+        new, actions = sd.decide(state, sd.GateResolved("g1", "the api one"), CFG)
+        self.assertEqual(actions, [sd.Relay("m1", "the api one")])
+        self.assertEqual(new.audit_started_at, 0.0)  # time spent waiting on the owner does not count
+
+    def test_no_timeout_gate_while_the_auditor_waits_on_a_question(self):
+        state = self.open_gate(self.auditing(audit_started_at=NOW - 99999), kind="question")
+        _, actions = tick(state)
+        self.assertEqual(actions, [])
+
+    def test_no_verdict_asks_the_owner_and_starts_no_fix_round(self):
+        state = self.auditing(audit_dispatch="", audit_started_at=3.0, audit_rounds=0)
+        new, actions = sd.decide(state, sd.AuditVerdict("NO_VERDICT", 1, ["a/x"], ["no episode"]), CFG)
+        self.assertEqual(len(actions), 1)
+        self.assertEqual((actions[0].kind, actions[0].task_id, actions[0].options),
+                         ("audit_failed", None, ["retry-audit", "accept", "reject"]))
+        self.assertEqual((new.phase, new.audit_rounds, sorted(new.tasks)), ("auditing", 0, ["1"]))
+        self.assertEqual(new.audit_started_at, 0.0)
+
+    def test_audit_failed_resolutions(self):
+        state = self.open_gate(self.auditing(audit_dispatch=""), kind="audit_failed")
+        new, actions = sd.decide(state, sd.GateResolved("g1", "retry-audit"), CFG)
+        self.assertEqual((actions, new.phase), ([sd.ComputeChanges()], "auditing"))
+        new, actions = sd.decide(state, sd.GateResolved("g1", "accept"), CFG)
+        self.assertEqual((actions, new.phase, new.audit_result), ([sd.Finish()], "done", "approved"))
+        new, actions = sd.decide(state, sd.GateResolved("g1", "reject"), CFG)
+        self.assertEqual((actions, new.phase, new.audit_result), ([sd.Finish()], "done", "rejected"))
+        _, ignored = sd.decide(state, sd.GateResolved("g1", "bogus"), CFG)
+        self.assertEqual(ignored, [])
+
+    def test_approval_records_the_result(self):
+        new, _ = sd.decide(self.auditing(), sd.AuditVerdict("APPROVED", 0, []), CFG)
+        self.assertEqual(new.audit_result, "approved")
+
+    def test_every_opened_gate_is_queued_until_the_driver_creates_it(self):
+        state = ship(task("1", status="gating", dispatch_id="d1", agent="claude", model="sonnet"))
+        new, actions = sd.decide(state, sd.GateVerdict("1", 126, "no docker"), CFG)
+        self.assertEqual([g["kind"] for g in new.pending_gates], ["setup"])
+        self.assertEqual(new.pending_gates[0]["task_id"], "1")
+        # While a request is queued the run cannot finish around it.
+        done = ship(task("1", status="failed"), pending_gates=[{"task_id": "1", "kind": "setup"}])
+        _, actions = sd.decide(done, sd.Tick(NOW, OK), CFG)
+        self.assertNotIn(sd.Finish(), actions)
+
+
 class Purity(unittest.TestCase):
     def test_decide_does_not_mutate_its_input(self):
         state = ship(task("1"), running("2", "b", dispatch_id="d2"))

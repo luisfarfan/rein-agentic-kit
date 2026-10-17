@@ -81,6 +81,8 @@ class FakeOrca:
         self.on_audit = None
         self.acked = []
         self.replies = []
+        self.fail_gate_creates = 0
+        self.show_status = "dispatched"
         self.n = 0
 
     # runner protocol
@@ -140,10 +142,14 @@ class FakeOrca:
                              "workerState": "working", "dispatchStatus": "dispatched", "projection": {}})
             return {"workers": rows}
         if verb == "worker-show":
-            return {"dispatch": {"status": "dispatched"}, "worker": {"state": "working", "worktreeId": ""}}
+            return {"dispatch": {"status": self.show_status},
+                    "worker": {"state": "succeeded" if self.show_status == "completed" else "working", "worktreeId": ""}}
         if verb in ("worker-release", "worker-retain"):
             return {"state": "released"}
         if verb == "gate-create":
+            if self.fail_gate_creates:
+                self.fail_gate_creates -= 1
+                raise OSError("orca is restarting")
             gid = self._id("gate")
             self.gates.append({"id": gid, "task_id": _flag(a, "--task"), "question": _flag(a, "--question"),
                                "options": _flag(a, "--options"), "status": "pending", "resolution": None})
@@ -240,11 +246,12 @@ class ShipCase(unittest.TestCase):
     def run_ship(self, fake, gates, **kw):
         client = OrcaClient(executable="ORCA", runner=fake)
         buf = io.StringIO()
-        with redirect_stdout(buf):
-            code = ship.run_ship(self.root, "demo", client, gates, env=kw.pop("env", ENV),
-                                 clock=self.clock, state_path=self.state_file, **kw)
-        self.out = buf.getvalue()
-        return code
+        try:
+            with redirect_stdout(buf):
+                return ship.run_ship(self.root, "demo", client, gates, env=kw.pop("env", ENV),
+                                     clock=self.clock, state_path=self.state_file, **kw)
+        finally:
+            self.out = buf.getvalue()
 
 
 class TestPreflight(ShipCase):
@@ -483,7 +490,7 @@ class TestNextAction(ShipCase):
         self.running_state()
         fake = FakeOrca(self.root, autocomplete=False)
         fake.rows_override = self.rows(
-            ("d1", {"kind": "keep"}),
+            ("d1", {"kind": "wait"}),
             ("d_old", {"kind": "release", "argv": ["orchestration", "worker-release", "--dispatch", "d_old"]}),
             ("d_old2", {"kind": "retain", "argv": ["orchestration", "worker-retain", "--dispatch", "d_old2"]}),
             ("d_evil", {"kind": "release", "argv": ["worktree", "rm", "--worktree", "x"]}),
@@ -494,12 +501,10 @@ class TestNextAction(ShipCase):
         self.assertIn(["orchestration", "worker-release", "--dispatch", "d_old"], fake.calls)
         self.assertIn(["orchestration", "worker-retain", "--dispatch", "d_old2"], fake.calls)
         self.assertNotIn(["worktree", "rm", "--worktree", "x"], fake.calls)
-        # An unknown kind on the task's own live dispatch becomes an owner gate of kind "setup".
-        gate_calls = [c for c in fake.calls if c[:2] == ["orchestration", "gate-create"]]
-        self.assertEqual(len(gate_calls), 1)
-        state = ship_state.load(self.state_file)
-        self.assertEqual([g["kind"] for g in state.gates.values()], ["setup"])
-        self.assertEqual(state.tasks["T001"].status, "gated")
+        # An unknown kind is logged and ignored: it never gates (or touches) a running task.
+        self.assertEqual([c for c in fake.calls if c[:2] == ["orchestration", "gate-create"]], [])
+        self.assertEqual(ship_state.load(self.state_file).tasks["T001"].status, "running")
+        self.assertEqual(self.out.count("ignoring unknown nextAction 'wait' for d1"), 1)
 
     def test_worker_list_is_not_polled_before_three_empty_waits(self):
         self.running_state()
@@ -511,6 +516,222 @@ class TestNextAction(ShipCase):
             self.run_ship(fake, scripted_gate())
         released = [c for c in fake.calls if c[1:2] == ["worker-release"] and "d_old" in c]
         self.assertEqual(released, [])
+
+
+class TestGateDurability(ShipCase):
+    """A gate decide asked for must reach Orca eventually, even if gate-create fails or the run dies."""
+
+    def one_task_state(self, **task_kw):
+        self.write_plan(PLAN.split("- [ ] T002")[0])
+        plan = ship._plan.read_plan(self.root, source="tasks-md", change="demo")
+        state = ship_state.from_plan(plan, "plan-repo")
+        state.run_id = "run_1"
+        t1 = state.tasks["T001"]
+        t1.orca_task_id, t1.agent, t1.model = "task_x", "codex", "m"
+        for k, v in task_kw.items():
+            setattr(t1, k, v)
+        state.worktrees["proxima-api"] = "wtid-proxima-api::/wt/proxima-api"
+        state.worktree_paths["proxima-api"] = "/wt/proxima-api"
+        return state
+
+    def test_gate_create_failure_is_retried_on_the_next_iteration(self):
+        self.write_plan(PLAN.split("- [ ] T002")[0])
+        fake = FakeOrca(self.root, autocomplete=False)
+        fake.fail_gate_creates = 1
+
+        def question(f):
+            did = next(iter(f.dispatches))
+            return [{"id": "msg_q", "type": "question", "from_handle": "term_" + did, "subject": "?",
+                     "body": "REST?", "payload": json.dumps({"dispatchId": did})}]
+
+        fake.pending = [question, lambda f: [], lambda f: f.resolve_gate(0, "yes") or []]
+        with self.assertRaises(Drained):
+            self.run_ship(fake, scripted_gate())
+        creates = [c for c in fake.calls if c[:2] == ["orchestration", "gate-create"]]
+        self.assertEqual(len(creates), 2)
+        self.assertIn("will retry", self.out)
+        self.assertEqual(fake.replies, [("msg_q", "yes")])
+        state = ship_state.load(self.state_file)
+        self.assertEqual((state.pending_gates, state.gates), ([], {}))
+
+    def test_queued_gate_survives_a_restart_and_is_opened_on_resume(self):
+        state = self.one_task_state(status="gated")
+        state.pending_gates = [{"task_id": "T001", "kind": "retry_exhausted", "message_id": "",
+                                "options": ["retry", "skip"], "question": "T001 failed"}]
+        ship_state.save(state, self.state_file)
+        fake = FakeOrca(self.root, autocomplete=False)
+        with self.assertRaises(Drained):
+            self.run_ship(fake, scripted_gate())
+        creates = [c for c in fake.calls if c[:2] == ["orchestration", "gate-create"]]
+        self.assertEqual([_flag(c, "--question") for c in creates], ["T001 failed"])
+        self.assertEqual([g["kind"] for g in ship_state.load(self.state_file).gates.values()], ["retry_exhausted"])
+
+    def test_resume_reopens_a_gated_task_that_has_no_gate_at_all(self):
+        ship_state.save(self.one_task_state(status="gated"), self.state_file)
+        fake = FakeOrca(self.root, autocomplete=False)
+        with self.assertRaises(Drained):
+            self.run_ship(fake, scripted_gate())
+        creates = [c for c in fake.calls if c[:2] == ["orchestration", "gate-create"]]
+        self.assertEqual(len(creates), 1)
+        self.assertEqual(_flag(creates[0], "--options"), '["retry", "skip"]')
+        # A skipped (failed) task is the owner's decision and is left alone.
+        ship_state.save(self.one_task_state(status="failed"), self.state_file)
+        fake = FakeOrca(self.root, autocomplete=False)
+        self.assertEqual(self.run_ship(fake, scripted_gate()), 1)  # nothing left to do: the run ends
+        self.assertEqual([c for c in fake.calls if c[:2] == ["orchestration", "gate-create"]], [])
+
+    def test_resume_reopens_the_gate_of_a_braked_run(self):
+        state = self.one_task_state()
+        state.phase = "braked"
+        ship_state.save(state, self.state_file)
+        fake = FakeOrca(self.root, autocomplete=False)
+        with self.assertRaises(Drained):
+            self.run_ship(fake, scripted_gate())
+        creates = [c for c in fake.calls if c[:2] == ["orchestration", "gate-create"]]
+        self.assertEqual(_flag(creates[0], "--options"), '["switch-to-codex", "pause"]')
+
+    def test_a_failed_worker_start_and_a_failed_gate_create_do_not_crash_the_run(self):
+        self.write_plan(PLAN.split("- [ ] T002")[0])
+        fake = FakeOrca(self.root, autocomplete=False)
+        fake.fail_gate_creates = 1
+        real = fake._answer
+
+        def answer(a):
+            if a[1:2] == ["worker-start"]:
+                raise OSError("start failed")
+            return real(a)
+
+        fake._answer = answer
+        with self.assertRaises(Drained):
+            self.run_ship(fake, scripted_gate())
+        creates = [c for c in fake.calls if c[:2] == ["orchestration", "gate-create"]]
+        self.assertGreaterEqual(len(creates), 2)
+        self.assertIn("could not start a worker for T001", _flag(creates[-1], "--question"))
+
+
+class TestAuditSupervision(ShipCase):
+    def audit_state(self, **kw):
+        self.write_plan(PLAN.split("- [ ] T002")[0])
+        plan = ship._plan.read_plan(self.root, source="tasks-md", change="demo")
+        state = ship_state.from_plan(plan, "plan-repo")
+        state.run_id, state.phase, state.audit_dispatch = "run_1", "auditing", "d_audit"
+        t1 = state.tasks["T001"]
+        t1.status, t1.orca_task_id, t1.agent, t1.model = "done", "task_x", "codex", "m"
+        state.worktrees["proxima-api"] = "wtid-proxima-api::/wt/proxima-api"
+        state.worktree_paths["proxima-api"] = "/wt/proxima-api"
+        state.implementer_agents = ["codex"]
+        for k, v in kw.items():
+            setattr(state, k, v)
+        ship_state.save(state, self.state_file)
+
+    def gate_creates(self, fake):
+        return [c for c in fake.calls if c[:2] == ["orchestration", "gate-create"]]
+
+    def audit_done(self, outcome="succeeded"):
+        return lambda f: [{"id": "msg_a", "type": "worker_done", "from_handle": "term_a", "subject": "d",
+                           "body": "", "payload": json.dumps({"dispatchId": "d_audit", "outcome": outcome})}]
+
+    def test_audit_timeout_opens_a_gate_and_skip_ends_the_run_not_approved(self):
+        self.audit_state(audit_started_at=-100000.0)
+        fake = FakeOrca(self.root, autocomplete=False)
+        fake.pending = [lambda f: f.resolve_gate(0, "skip") or []]
+        code = self.run_ship(fake, scripted_gate())
+        self.assertEqual(code, 1, self.out)
+        creates = self.gate_creates(fake)
+        self.assertEqual(len(creates), 1)
+        self.assertIn("audit has run for more than", _flag(creates[0], "--question"))
+        self.assertIn(["orchestration", "worker-release", "--dispatch", "d_audit"], fake.calls)
+        state = ship_state.load(self.state_file)
+        self.assertEqual((state.phase, state.audit_result, state.audit_dispatch), ("done", "skipped", ""))
+
+    def test_audit_timeout_retry_starts_a_fresh_audit(self):
+        self.audit_state(audit_started_at=-100000.0)
+        fake = FakeOrca(self.root, autocomplete=False)
+        fake.pending = [lambda f: f.resolve_gate(0, "retry") or [], lambda f: []]
+        with self.assertRaises(Drained):
+            self.run_ship(fake, scripted_gate())
+        self.assertEqual(len(self.gate_creates(fake)), 1)
+        self.assertIn(["orchestration", "worker-release", "--dispatch", "d_audit"], fake.calls)
+        audits = [t for t in fake.tasks.values() if "rein-audit" in t["spec"]]
+        self.assertEqual(len(audits), 1)
+        self.assertEqual(len(fake.starts()), 1)
+        self.assertNotEqual(ship_state.load(self.state_file).audit_dispatch, "d_audit")
+
+    def test_the_audit_clock_starts_on_the_first_tick(self):
+        self.audit_state()
+        fake = FakeOrca(self.root, autocomplete=False)
+        with self.assertRaises(Drained):
+            self.run_ship(fake, scripted_gate())
+        self.assertGreater(ship_state.load(self.state_file).audit_started_at, 0)
+        self.assertEqual(self.gate_creates(fake), [])
+
+    def test_a_question_from_the_auditor_becomes_a_gate_and_is_relayed(self):
+        self.audit_state()
+        fake = FakeOrca(self.root, autocomplete=False)
+        fake.pending = [lambda f: [{"id": "msg_q", "type": "question", "from_handle": "term_a", "subject": "?",
+                                    "body": "which diff?", "payload": json.dumps({"dispatchId": "d_audit"})}],
+                        lambda f: f.resolve_gate(0, "the api one") or []]
+        with self.assertRaises(Drained):
+            self.run_ship(fake, scripted_gate())
+        creates = self.gate_creates(fake)
+        self.assertEqual(len(creates), 1)
+        self.assertIn("which diff?", _flag(creates[0], "--question"))
+        self.assertEqual(fake.replies, [("msg_q", "the api one")])
+
+    def test_idle_polls_probe_the_audit_worker(self):
+        self.audit_state()
+        fake = FakeOrca(self.root, autocomplete=False)
+        fake.pending = [lambda f: []] * 3
+        with self.assertRaises(Drained):
+            self.run_ship(fake, scripted_gate())
+        shows = [c for c in fake.calls if c[1:2] == ["worker-show"]]
+        self.assertGreaterEqual(len(shows), 2)  # once on resume, once after three empty waits
+
+    def test_a_finished_audit_found_by_the_probe_is_read(self):
+        self.audit_state()
+        fake = FakeOrca(self.root, autocomplete=False)
+        fake.show_status = "completed"
+        fake.on_audit = self.approve_audit()
+        fake.on_audit()  # an episode exists, written after the baseline ("" = none at start)
+        code = self.run_ship(fake, scripted_gate())
+        self.assertEqual(code, 0, self.out)
+
+    def test_no_verdict_asks_the_owner_instead_of_starting_fix_rounds(self):
+        for resolution, code in (("accept", 0), ("reject", 1)):
+            with self.subTest(resolution):
+                self.audit_state()
+                fake = FakeOrca(self.root, autocomplete=False)
+                fake.pending = [self.audit_done(), lambda f: f.resolve_gate(0, resolution) or []]
+                self.assertEqual(self.run_ship(fake, scripted_gate()), code, self.out)
+                creates = self.gate_creates(fake)
+                self.assertEqual(len(creates), 1)
+                self.assertEqual(_flag(creates[0], "--options"), '["retry-audit", "accept", "reject"]')
+                self.assertEqual([t for t in fake.tasks.values()], [])  # no fix task, no new audit
+                state = ship_state.load(self.state_file)
+                self.assertEqual(sorted(state.tasks), ["T001"])
+                self.assertEqual(state.audit_rounds, 0)
+
+    def test_failed_audit_worker_is_also_a_no_verdict_and_retry_audit_restarts_it(self):
+        self.audit_state()
+        fake = FakeOrca(self.root, autocomplete=False)
+        fake.pending = [self.audit_done("failed"), lambda f: f.resolve_gate(0, "retry-audit") or [], lambda f: []]
+        with self.assertRaises(Drained):
+            self.run_ship(fake, scripted_gate())
+        self.assertEqual(len([t for t in fake.tasks.values() if "rein-audit" in t["spec"]]), 1)
+        self.assertEqual(ship_state.load(self.state_file).audit_rounds, 0)
+
+    def test_resume_does_not_accept_an_episode_from_before_the_audit_started(self):
+        self.approve_audit()()  # a previous round's APPROVED episode
+        baseline = ship._episode_stamp(gate.latest_episode(self.root, "demo"))
+        self.audit_state(audit_baseline=baseline)
+        fake = FakeOrca(self.root, autocomplete=False)
+        fake.pending = [self.audit_done()]
+        with self.assertRaises(Drained):
+            self.run_ship(fake, scripted_gate())
+        creates = self.gate_creates(fake)
+        self.assertEqual(len(creates), 1)
+        self.assertEqual(_flag(creates[0], "--options"), '["retry-audit", "accept", "reject"]')
+        self.assertEqual(ship_state.load(self.state_file).audit_result, "")
 
 
 class TestDryRun(ShipCase):

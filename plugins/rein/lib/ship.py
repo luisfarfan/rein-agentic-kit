@@ -200,6 +200,16 @@ def dry_run_client(root: str, change: str, record: Callable[[str], None]) -> Orc
     return OrcaClient(executable="orca", runner=DryRunRunner(sorted(names), record))
 
 
+def _episode_stamp(episode) -> str:
+    """Identity of a review episode: its path plus mtime, so a rewrite in the same second differs."""
+    if not episode:
+        return ""
+    try:
+        return "%s@%d" % (episode["path"], os.stat(episode["path"]).st_mtime_ns)
+    except (OSError, KeyError):
+        return str(episode.get("path", ""))
+
+
 # --- the driver ----------------------------------------------------------------
 
 class _Driver:
@@ -209,11 +219,10 @@ class _Driver:
         self.root, self.cfg, self.plan = ctx["root"], ctx["cfg"], ctx["plan"]
         self.change = state.change
         self.finished = False
-        self.approved = None
         self.before = None
         self.changed_by_wt: dict = {}
-        self.audit_baseline = ""
         self.ignored: set = set()
+        self.noted: set = set()
 
     # -- plumbing
     def say(self, text):
@@ -239,6 +248,7 @@ class _Driver:
                 follow = self.execute(action)
                 if follow is not None:
                     queue.append(follow)
+            self.open_pending()
 
     # -- actions
     def execute(self, a):
@@ -252,7 +262,7 @@ class _Driver:
         elif isinstance(a, sd.Release):
             self.release(a.dispatch_id)
         elif isinstance(a, sd.OpenGate):
-            self.open_gate(a.task_id, a.question, a.options, a.kind, a.message_id)
+            pass  # decide queued it in state.pending_gates; open_pending() creates it in Orca
         elif isinstance(a, sd.Relay):
             try:
                 self.client.reply(a.message_id, a.body)
@@ -297,9 +307,11 @@ class _Driver:
         except OrcaError as exc:
             task.dispatch_id = ""
             task.status = "gated"
+            self.state.pending_gates.append({
+                "task_id": task.id, "kind": "setup", "message_id": "", "options": ["retry", "skip"],
+                "question": "Orca could not start a worker for %s: %s" % (task.id, exc)})
             self.save()
-            self.open_gate(task.id, "Orca could not start a worker for %s: %s" % (task.id, exc),
-                           ["retry", "skip"], "setup")
+            self.open_pending()
             return
         task.dispatch_id = oc.dispatch_id_of(res)
         wt = oc.worktree_of(res)
@@ -313,16 +325,29 @@ class _Driver:
         self.save()
         self.say("%s dispatched to %s/%s (%s)" % (task.id, task.agent, task.model, task.dispatch_id))
 
-    def open_gate(self, task_id, question, options, kind, message_id=""):
-        anchor = (self.state.tasks.get(task_id) if task_id else None) or next(
-            (t for t in self.state.tasks.values() if t.orca_task_id), None)
-        if anchor is None:
-            self.say("owner decision needed (%s): %s" % (kind, question))
-            return
-        res = self.client.gate_create(anchor.orca_task_id, question[:2000], options)
-        self.state.gates[oc.gate_id_of(res)] = {"task_id": task_id, "kind": kind, "message_id": message_id}
-        self.save()
-        self.say("waiting for the owner (%s): %s" % (kind, question[:200]))
+    def open_pending(self):
+        """Create every owner gate decide asked for and Orca does not have yet.
+
+        A failed gate-create leaves the request in `state.pending_gates`; the
+        next call (every loop iteration, and on resume) tries again.
+        """
+        for entry in list(self.state.pending_gates):
+            task_id = entry.get("task_id")
+            anchor = (self.state.tasks.get(task_id) if task_id else None) or next(
+                (t for t in self.state.tasks.values() if t.orca_task_id), None)
+            if anchor is None:
+                continue
+            try:
+                gate_id = oc.gate_id_of(self.client.gate_create(
+                    anchor.orca_task_id, str(entry.get("question"))[:2000], entry.get("options") or []))
+            except OrcaError as exc:
+                self.say("could not open the %s gate, will retry: %s" % (entry.get("kind"), exc))
+                continue
+            self.state.gates[gate_id] = {"task_id": task_id, "kind": entry.get("kind"),
+                                         "message_id": entry.get("message_id", "")}
+            self.state.pending_gates.remove(entry)
+            self.save()
+            self.say("waiting for the owner (%s): %s" % (entry.get("kind"), str(entry.get("question"))[:200]))
 
     def run_gate(self, a):
         task = self.state.tasks[a.task_id]
@@ -365,8 +390,8 @@ class _Driver:
         first = next(iter(self.state.worktrees.values()))
         res = self.client.worker_start(task_id, worktree="id:%s" % first, agent=a.agent, model=a.model)
         self.state.audit_dispatch = oc.dispatch_id_of(res)
-        latest = _gate.latest_episode(self.root, self.change)
-        self.audit_baseline = (latest or {}).get("path", "")
+        self.state.audit_baseline = _episode_stamp(_gate.latest_episode(self.root, self.change))
+        self.state.audit_started_at = 0.0
         self.save()
         self.say("audit started on %s/%s (%s)" % (a.agent, a.model, self.state.audit_dispatch))
 
@@ -413,17 +438,26 @@ class _Driver:
     def read_verdict(self, outcome):
         changed = list(self.state.changed_files)
         episode = _gate.latest_episode(self.root, self.change)
-        if outcome != "succeeded" or episode is None or episode.get("path") == self.audit_baseline:
+        if outcome != "succeeded" or episode is None or _episode_stamp(episode) == self.state.audit_baseline:
             return sd.AuditVerdict("NO_VERDICT", 1, changed,
                                    ["the audit worker ended (%s) without recording a review episode" % (outcome or "?")])
         findings = _gate.check_review(self.root, self.change).get("findings") or []
         blocking = sum(1 for f in findings if f["severity"] == "BLOCKING")
-        self.approved = episode.get("verdict") == "APPROVED" or blocking == 0 and episode.get("verdict") == "CHANGES_REQUESTED"
         return sd.AuditVerdict(str(episode.get("verdict")), blocking, changed,
                                ["%s: %s" % (f["severity"], f["text"]) for f in findings])
 
+    def probe_audit(self):
+        """Ask Orca about the audit worker; a finished one whose message we missed is read now."""
+        did = self.state.audit_dispatch
+        if not did:
+            return
+        show = self.client.worker_show(did)
+        worker_state = (show.get("worker") or {}).get("state")
+        if (show.get("dispatch") or {}).get("status") == "completed" or worker_state in ("succeeded", "failed"):
+            self.worker_done(did, "succeeded" if worker_state == "succeeded" else "failed")
+
     def idle_poll(self):
-        held = {t.dispatch_id: t for t in self.state.tasks.values()
+        held = {t.dispatch_id for t in self.state.tasks.values()
                 if t.dispatch_id and t.status in ("running", "gating")}
         for row in self.rows():
             action = (row.get("projection") or {}).get("nextAction")
@@ -431,15 +465,14 @@ class _Driver:
             did = str(row.get("dispatchId") or "")
             if not kind or did == self.state.audit_dispatch:
                 continue
-            if kind in SAFE_NEXT_ACTIONS:
-                if did not in held and action.get("argv") == ["orchestration", "worker-%s" % kind, "--dispatch", did]:
-                    self.client.call(*action["argv"])
-                    self.say("%s %s" % (kind, did))
-            elif did in held and held[did].status == "running":
-                held[did].status = "gated"
-                self.save()
-                self.open_gate(held[did].id, "Orca reports %s needs attention (%s). Retry it, or skip?"
-                               % (held[did].id, kind), ["retry", "skip"], "setup")
+            if kind not in SAFE_NEXT_ACTIONS:
+                if (did, kind) not in self.noted:  # never acted on: only release/retain run
+                    self.noted.add((did, kind))
+                    self.say("ignoring unknown nextAction %r for %s" % (kind, did))
+            elif did not in held and action.get("argv") == ["orchestration", "worker-%s" % kind, "--dispatch", did]:
+                self.client.call(*action["argv"])
+                self.say("%s %s" % (kind, did))
+        self.probe_audit()
 
     # -- start, resume, loop, finish
     def setup(self):
@@ -456,7 +489,32 @@ class _Driver:
                 self.create_task(t)
                 pending.remove(t)
 
+    def requeue_orphans(self):
+        """A task `gated` with no gate (open or queued) was left by an interrupted run: ask again.
+
+        Only `gated` counts. A `failed` task is also what a skipped one looks
+        like, and reopening those would undo the owner's decision.
+        """
+        covered = {g.get("task_id") for g in list(self.state.gates.values()) + self.state.pending_gates}
+        for t in self.state.tasks.values():
+            if t.status == "gated" and t.id not in covered:
+                review = t.human_review
+                self.state.pending_gates.append({
+                    "task_id": t.id, "kind": "human_review" if review else "setup", "message_id": "",
+                    "options": ["approve", "reject"] if review else ["retry", "skip"],
+                    "question": ("Task %s needs human review before it can be closed." % t.id) if review
+                    else "Task %s was waiting on a decision that was lost. Retry it, or skip it?" % t.id})
+        if self.state.phase == "braked" and not any(
+                g.get("kind") == "brake" for g in list(self.state.gates.values()) + self.state.pending_gates):
+            self.state.pending_gates.append({
+                "task_id": None, "kind": "brake", "message_id": "",
+                "options": ["switch-to-codex", "pause"],
+                "question": "The run was braked on quota. Switch to Codex, or pause?"})
+        self.save()
+
     def resume(self):
+        self.requeue_orphans()
+        self.open_pending()
         rows = {str(r.get("dispatchId")): r for r in self.rows()}
         events = []
         for t in self.state.tasks.values():
@@ -481,10 +539,7 @@ class _Driver:
             if not self.state.audit_dispatch:
                 self.feed_changes()
             else:
-                show = self.client.worker_show(self.state.audit_dispatch)
-                if (show.get("dispatch") or {}).get("status") == "completed":
-                    self.worker_done(self.state.audit_dispatch,
-                                     "succeeded" if (show.get("worker") or {}).get("state") == "succeeded" else "failed")
+                self.probe_audit()
 
     def feed_gate(self, run_gate):
         verdict = self.run_gate(run_gate)
@@ -498,6 +553,7 @@ class _Driver:
     def loop(self):
         idle = 0
         while not self.finished:
+            self.open_pending()
             limits = self.limits()
             self.before = self.before or limits
             self.feed(sd.Tick(self.clock(), limits))
@@ -520,12 +576,11 @@ class _Driver:
 
     def finish(self):
         tasks = self.state.tasks.values()
-        if self.approved is None and self.state.phase == "done":
-            self.approved = _gate.check_review(self.root, self.change).get("verdict") == "APPROVED"
-        ok = all(t.status == "done" for t in tasks) and bool(self.approved)
+        approved = self.state.audit_result == "approved"
+        ok = all(t.status == "done" for t in tasks) and approved
         summary = "rein ship %s: %d/%d tasks done, audit %s" % (
             self.change, sum(t.status == "done" for t in tasks), len(self.state.tasks),
-            "approved" if self.approved else "not approved")
+            "approved" if approved else "not approved")
         for repo, wt in self.state.worktrees.items():
             try:
                 self.client.worktree_set(wt, workspace_status="in-review", comment=summary)

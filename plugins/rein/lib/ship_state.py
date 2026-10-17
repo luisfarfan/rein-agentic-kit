@@ -55,6 +55,15 @@ class ShipState:
     implementer_agents: list = field(default_factory=list)
     forced_implementer: list = field(default_factory=list)
     changed_files: list = field(default_factory=list)
+    # Stamped by the first Tick after StartAudit; 0.0 = not started / reset.
+    audit_started_at: float = 0.0
+    # Newest review episode present when the audit started; a verdict is only
+    # accepted from a different (newer) one, so a resume cannot take a stale one.
+    audit_baseline: str = ""
+    # "", "approved", "rejected" or "skipped": how the audit ended.
+    audit_result: str = ""
+    # Owner gates decide asked for that the driver has not yet created in Orca.
+    pending_gates: list = field(default_factory=list)
 
 
 def state_path(repo_root: str) -> str:

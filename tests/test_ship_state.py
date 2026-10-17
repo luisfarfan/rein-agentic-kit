@@ -102,6 +102,19 @@ class PersistenceTests(unittest.TestCase):
             self.assertEqual(os.listdir(os.path.dirname(path)), ["ship-state.json"])
             self.assertEqual(ship_state.load(path), st)
 
+    def test_audit_supervision_fields_round_trip_and_old_files_load(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "s.json")
+            state = ShipState(change="c", plan_path="p", audit_started_at=12.5, audit_baseline="x@1",
+                              audit_result="skipped",
+                              pending_gates=[{"task_id": None, "kind": "audit_timeout", "question": "q", "options": []}])
+            ship_state.save(state, path)
+            loaded = ship_state.load(path)
+            self.assertEqual((loaded.audit_started_at, loaded.audit_baseline, loaded.audit_result),
+                             (12.5, "x@1", "skipped"))
+            self.assertEqual(loaded.pending_gates[0]["kind"], "audit_timeout")
+            self.assertEqual(ShipState(change="c", plan_path="p").pending_gates, [])
+
     def test_load_missing_returns_none(self):
         with tempfile.TemporaryDirectory() as d:
             self.assertIsNone(ship_state.load(os.path.join(d, "nope.json")))

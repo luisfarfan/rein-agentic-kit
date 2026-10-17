@@ -241,6 +241,21 @@ def _record_agent(state: ShipState, agent: str) -> None:
         state.implementer_agents.append(agent)
 
 
+def _open(state: ShipState, actions: list, task_id, question: str, options: list,
+          kind: str, message_id: str = "") -> None:
+    """Ask the owner. The driver creates the gate in Orca; until it has, the
+    request waits in `state.pending_gates`, so a failed or interrupted
+    gate-create is retried instead of lost."""
+    actions.append(OpenGate(task_id, question, options, kind, message_id))
+    state.pending_gates.append({"task_id": task_id, "question": question, "options": list(options),
+                                "kind": kind, "message_id": message_id})
+
+
+def _owner_gate_open(state: ShipState, kind: str) -> bool:
+    return (any(g.get("kind") == kind and g.get("task_id") is None for g in state.gates.values())
+            or any(g.get("kind") == kind and g.get("task_id") is None for g in state.pending_gates))
+
+
 def _release_held(task: TaskState, actions: list) -> None:
     if task.dispatch_id:
         actions.append(Release(task.dispatch_id))
@@ -264,7 +279,7 @@ def _settle(state: ShipState, actions: list) -> None:
         return
     if not any(t.status == "failed" for t in state.tasks.values()):
         return
-    if state.gates:
+    if state.gates or state.pending_gates:
         return
     if any(t.status in _BUSY for t in state.tasks.values()):
         return
@@ -297,7 +312,24 @@ def decide(state: ShipState, event, cfg: ShipConfig) -> tuple:
     return state, actions
 
 
+def _audit_clock(state: ShipState, event: Tick, cfg: ShipConfig, actions: list) -> None:
+    if not state.audit_dispatch:
+        return
+    if state.audit_started_at == 0.0:
+        state.audit_started_at = event.now
+        return
+    if (event.now - state.audit_started_at > cfg.task_timeout_minutes * 60
+            and not _owner_gate_open(state, "audit_timeout")
+            and not _owner_gate_open(state, "question")):
+        _open(state, actions, None,
+              "The audit has run for more than %g minutes. Retry it, or skip it?" % cfg.task_timeout_minutes,
+              ["retry", "skip"], "audit_timeout")
+
+
 def _on_tick(state: ShipState, event: Tick, cfg: ShipConfig, actions: list) -> None:
+    if state.phase == "auditing":
+        _audit_clock(state, event, cfg, actions)
+        return
     if state.phase not in ("running", "fixing"):
         return
     now = event.now
@@ -310,21 +342,17 @@ def _on_tick(state: ShipState, event: Tick, cfg: ShipConfig, actions: list) -> N
     for task in state.tasks.values():
         if task.status == "running" and now - task.started_at > cfg.task_timeout_minutes * 60:
             task.status = "gated"
-            actions.append(OpenGate(
-                task.id,
-                "Task %s has run for more than %g minutes. Retry it, or skip it?"
-                % (task.id, cfg.task_timeout_minutes),
-                ["retry", "skip"], "timeout",
-            ))
+            _open(state, actions, task.id,
+                  "Task %s has run for more than %g minutes. Retry it, or skip it?"
+                  % (task.id, cfg.task_timeout_minutes),
+                  ["retry", "skip"], "timeout")
 
     for task in state.tasks.values():
         if task.human_review and _ready(state, task):
             task.status = "gated"
-            actions.append(OpenGate(
-                task.id,
-                "Task %s needs human review before it can be closed." % task.id,
-                ["approve", "reject"], "human_review",
-            ))
+            _open(state, actions, task.id,
+                  "Task %s needs human review before it can be closed." % task.id,
+                  ["approve", "reject"], "human_review")
 
     settled = len(actions)
     _settle(state, actions)
@@ -351,7 +379,7 @@ def _on_tick(state: ShipState, event: Tick, cfg: ShipConfig, actions: list) -> N
     if reason:
         state.phase = "braked"
         actions.append(Brake(reason))
-        actions.append(OpenGate(None, reason, ["switch-to-codex", "pause"], "brake"))
+        _open(state, actions, None, reason, ["switch-to-codex", "pause"], "brake")
         return
 
     for task in batch:
@@ -372,11 +400,9 @@ def _red(state: ShipState, task: TaskState, reason: str, cfg: ShipConfig, action
         actions.append(Dispatch(task.id, task.repo, _worktree(state, task.repo), task.agent, task.model))
         return
     task.status = "failed"
-    actions.append(OpenGate(
-        task.id,
-        "Task %s failed after %d retries: %s" % (task.id, task.attempts, task.last_failure[:300]),
-        ["retry", "skip"], "retry_exhausted",
-    ))
+    _open(state, actions, task.id,
+          "Task %s failed after %d retries: %s" % (task.id, task.attempts, task.last_failure[:300]),
+          ["retry", "skip"], "retry_exhausted")
 
 
 def _on_worker_done(state: ShipState, event: WorkerDone, cfg: ShipConfig, actions: list) -> None:
@@ -402,23 +428,26 @@ def _on_gate_verdict(state: ShipState, event: GateVerdict, cfg: ShipConfig, acti
         _settle(state, actions)
     elif event.exit_code == 126:
         task.status = "gated"
-        actions.append(OpenGate(
-            task.id,
-            "The check for task %s could not run: %s" % (task.id, event.reason[:300]),
-            ["retry", "skip"], "setup",
-        ))
+        _open(state, actions, task.id,
+              "The check for task %s could not run: %s" % (task.id, event.reason[:300]),
+              ["retry", "skip"], "setup")
     else:
         _red(state, task, event.reason, cfg, actions)
 
 
 def _on_question(state: ShipState, event: Question, actions: list) -> None:
+    if event.dispatch_id and event.dispatch_id == state.audit_dispatch:
+        if not _owner_gate_open(state, "question"):  # the auditor asks; the owner answers
+            _open(state, actions, None, event.text, [], "question", event.message_id)
+        return
     task = _holder(state, event.dispatch_id)
     if task is None or task.status != "running":
         return
-    if any(g.get("kind") == "question" and g.get("task_id") == task.id for g in state.gates.values()):
+    if any(g.get("kind") == "question" and g.get("task_id") == task.id
+           for g in list(state.gates.values()) + state.pending_gates):
         return
     task.status = "gated"
-    actions.append(OpenGate(task.id, event.text, [], "question", event.message_id))
+    _open(state, actions, task.id, event.text, [], "question", event.message_id)
 
 
 _RESOLUTIONS = {
@@ -428,6 +457,8 @@ _RESOLUTIONS = {
     "timeout": ("retry", "skip"),
     "brake": ("switch-to-codex", "pause"),
     "audit_exhausted": ("accept", "reject"),
+    "audit_timeout": ("retry", "skip"),
+    "audit_failed": ("retry-audit", "accept", "reject"),
 }
 
 
@@ -449,6 +480,8 @@ def _on_gate_resolved(state: ShipState, event: GateResolved, cfg: ShipConfig, ac
         if task is not None and task.status == "gated":
             task.status = "running"
             task.started_at = 0.0  # time spent waiting on the human does not count
+        if task is None and state.audit_dispatch:
+            state.audit_started_at = 0.0  # likewise for the auditor
     elif kind == "human_review":
         if task is not None:
             if resolution == "approve":
@@ -474,6 +507,34 @@ def _on_gate_resolved(state: ShipState, event: GateResolved, cfg: ShipConfig, ac
     elif kind == "audit_exhausted":
         state.phase = "done"
         actions.append(Finish())
+    elif kind in ("audit_timeout", "audit_failed") and state.phase != "auditing":
+        pass  # the audit moved on while the owner was deciding
+    elif kind == "audit_timeout":
+        _drop_audit(state, actions)
+        if resolution == "retry":
+            actions.append(ComputeChanges())
+        else:
+            _end_audit(state, actions, "skipped")
+    elif kind == "audit_failed":
+        if resolution == "retry-audit":
+            _drop_audit(state, actions)
+            actions.append(ComputeChanges())
+        else:
+            _end_audit(state, actions, "approved" if resolution == "accept" else "rejected")
+
+
+def _drop_audit(state: ShipState, actions: list) -> None:
+    """Forget the running audit worker (releasing it) so a new one can start."""
+    if state.audit_dispatch:
+        actions.append(Release(state.audit_dispatch))
+    state.audit_dispatch, state.audit_started_at = "", 0.0
+    state.changed_files = []
+
+
+def _end_audit(state: ShipState, actions: list, result: str) -> None:
+    state.audit_result = result
+    state.phase = "done"
+    actions.append(Finish())
 
 
 def _in_repo(state: ShipState, repo: str, path: str) -> bool:
@@ -503,21 +564,27 @@ def _on_changes_computed(state: ShipState, event: ChangesComputed, cfg: ShipConf
 def _on_audit_verdict(state: ShipState, event: AuditVerdict, cfg: ShipConfig, actions: list) -> None:
     if state.phase != "auditing":
         return
+    state.audit_started_at = 0.0
+    if event.verdict == "NO_VERDICT":
+        # The auditor produced nothing usable. That is not the implementer's
+        # fault, so no fix round: the owner decides.
+        _open(state, actions, None,
+              "The audit produced no usable verdict: %s" % "; ".join(event.findings)[:400],
+              ["retry-audit", "accept", "reject"], "audit_failed")
+        return
     approved = event.verdict == "APPROVED" or (
         event.verdict == "CHANGES_REQUESTED" and event.blocking <= 0
     )
     if approved:
-        state.phase = "done"
-        actions.append(Finish())
+        _end_audit(state, actions, "approved")
         return
     if state.audit_rounds >= cfg.max_audit_rounds:
         summary = "\n".join(event.findings)[:600]
-        actions.append(OpenGate(
-            None,
-            "The audit still has %d blocking finding(s) after %d fix round(s). %s"
-            % (event.blocking, state.audit_rounds, summary),
-            ["accept", "reject"], "audit_exhausted",
-        ))
+        _open(state, actions, None,
+              "The audit still has %d blocking finding(s) after %d fix round(s). %s"
+              % (event.blocking, state.audit_rounds, summary),
+              ["accept", "reject"], "audit_exhausted")
+        state.audit_result = "rejected"
         actions.append(Finish())
         return
     state.audit_rounds += 1
