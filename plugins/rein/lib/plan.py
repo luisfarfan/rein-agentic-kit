@@ -72,6 +72,7 @@ FIELDS = {
     "humanReview": ("human review", "humanreview", "supervised"),
     "verification": ("verification", "verify"),
     "area": ("area",),
+    "repo": ("repo",),
 }
 _LOOKUP = {spelling: canon for canon, spellings in FIELDS.items() for spelling in spellings}
 
@@ -123,6 +124,7 @@ def parse_tasks_md(text: str) -> list[dict]:
                 "humanReview": False,
                 "verification": "",
                 "area": "",
+                "repo": "",
                 "acceptance": [],
                 "_indent": indent,
             }
