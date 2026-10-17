@@ -16,9 +16,9 @@ Usage: `/ship <change> [--root <plan repo>] [--dry-run]`
 
 1. Confirm a plan: `rein tasks <root> --change <change>` (root `.` or the user's `--root`).
    None: stop, suggest `/rein:rein-plan`.
-2. Run `rein ship <change> [--root <root>]` in the background (a long foreground call times
-   out), or ask the user to run it in their Orca terminal; report progress from its output.
-   Never re-run it while live; re-running after it exits resumes. `--dry-run` previews.
+2. Ask the owner to run `rein ship <change> [--root <root>]` in their Orca terminal. Only if
+   they cannot, run it in the background (a foreground call times out). Never re-run it while
+   live; re-running after it exits resumes. `--dry-run` previews.
 3. Tell the user worker questions arrive as **Orca decision gates**; they answer there.
 4. Report the exit code: 0 approved, 1 failed tasks or rejected audit, 2 usage, 126 preflight
    error. On failure show its output; never retry or fix code yourself.
