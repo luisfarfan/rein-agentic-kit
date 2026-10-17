@@ -606,7 +606,8 @@ class AuditSupervision(unittest.TestCase):
         return ship(task("1", status="done"), **kw)
 
     def open_gate(self, state, gate_id="g1", kind="audit_timeout", **extra):
-        state.gates[gate_id] = {"task_id": None, "kind": kind, "message_id": extra.get("message_id", "")}
+        state.gates[gate_id] = {"task_id": None, "kind": kind, "message_id": extra.get("message_id", ""),
+                                "audit": extra.get("audit", state.audit_dispatch)}
         return state
 
     def test_first_tick_stamps_the_audit_clock_and_nothing_else(self):
@@ -689,6 +690,63 @@ class AuditSupervision(unittest.TestCase):
         self.assertEqual((actions, new.phase, new.audit_result), ([sd.Finish()], "done", "rejected"))
         _, ignored = sd.decide(state, sd.GateResolved("g1", "bogus"), CFG)
         self.assertEqual(ignored, [])
+
+    # -- a resumed or repeated audit must not run behind an open owner gate
+
+    def test_no_second_audit_starts_behind_an_open_or_queued_owner_gate(self):
+        for kind in ("audit_failed", "audit_timeout"):
+            opened = self.open_gate(self.auditing(audit_dispatch=""), kind=kind)
+            _, actions = sd.decide(opened, sd.ChangesComputed(["a/x"]), CFG)
+            self.assertEqual(actions, [], kind)
+            queued = self.auditing(audit_dispatch="", pending_gates=[{"task_id": None, "kind": kind}])
+            _, actions = sd.decide(queued, sd.ChangesComputed(["a/x"]), CFG)
+            self.assertEqual(actions, [], kind)
+
+    def test_no_audit_starts_while_one_is_running(self):
+        _, actions = sd.decide(self.auditing(), sd.ChangesComputed(["a/x"]), CFG)
+        self.assertEqual(actions, [])
+
+    def test_changes_computed_starts_the_audit_once_nothing_blocks_it(self):
+        _, actions = sd.decide(self.auditing(audit_dispatch=""), sd.ChangesComputed(["a/x"]), CFG)
+        self.assertEqual([type(a) for a in actions], [sd.StartAudit])
+
+    def test_a_second_no_verdict_does_not_open_a_duplicate_gate(self):
+        state = self.auditing(audit_dispatch="")
+        first, actions = sd.decide(state, sd.AuditVerdict("NO_VERDICT", 1, [], ["x"]), CFG)
+        self.assertEqual(len(actions), 1)
+        second, again = sd.decide(first, sd.AuditVerdict("NO_VERDICT", 1, [], ["y"]), CFG)
+        self.assertEqual((again, len(second.pending_gates)), ([], 1))
+        opened = self.open_gate(self.auditing(audit_dispatch=""), kind="audit_failed")
+        _, again = sd.decide(opened, sd.AuditVerdict("NO_VERDICT", 1, [], ["y"]), CFG)
+        self.assertEqual(again, [])
+
+    def test_ending_the_audit_releases_a_held_auditor(self):
+        for resolution, result in (("accept", "approved"), ("reject", "rejected")):
+            state = self.open_gate(self.auditing(), kind="audit_failed")
+            new, actions = sd.decide(state, sd.GateResolved("g1", resolution), CFG)
+            self.assertEqual(actions, [sd.Release("da"), sd.Finish()])
+            self.assertEqual((new.audit_dispatch, new.audit_result), ("", result))
+
+    # -- a timeout gate belongs to one audit
+
+    def test_a_verdict_clears_the_timeout_gate_open_or_queued(self):
+        state = self.open_gate(self.auditing(audit_dispatch=""))
+        state.pending_gates = [{"task_id": None, "kind": "audit_timeout"}, {"task_id": "1", "kind": "setup"}]
+        new, _ = sd.decide(state, sd.AuditVerdict("CHANGES_REQUESTED", 1, ["a/x"], ["bug"]), CFG)
+        self.assertEqual(new.gates, {})
+        self.assertEqual([g["kind"] for g in new.pending_gates], ["setup"])
+
+    def test_resolving_a_stale_timeout_gate_does_nothing_to_a_later_audit(self):
+        state = self.open_gate(self.auditing(audit_dispatch="d_new", audit_started_at=5.0), audit="d_old")
+        new, actions = sd.decide(state, sd.GateResolved("g1", "skip"), CFG)
+        self.assertEqual(actions, [])
+        self.assertEqual((new.phase, new.audit_dispatch, new.audit_started_at, new.audit_result),
+                         ("auditing", "d_new", 5.0, ""))
+        self.assertEqual(new.gates, {})
+
+    def test_the_timeout_gate_remembers_which_audit_it_is_about(self):
+        new, _ = tick(self.auditing(audit_started_at=NOW - 99999))
+        self.assertEqual(new.pending_gates[0]["audit"], "da")
 
     def test_approval_records_the_result(self):
         new, _ = sd.decide(self.auditing(), sd.AuditVerdict("APPROVED", 0, []), CFG)

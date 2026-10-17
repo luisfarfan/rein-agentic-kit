@@ -242,18 +242,19 @@ def _record_agent(state: ShipState, agent: str) -> None:
 
 
 def _open(state: ShipState, actions: list, task_id, question: str, options: list,
-          kind: str, message_id: str = "") -> None:
+          kind: str, message_id: str = "", audit: str = "") -> None:
     """Ask the owner. The driver creates the gate in Orca; until it has, the
     request waits in `state.pending_gates`, so a failed or interrupted
     gate-create is retried instead of lost."""
     actions.append(OpenGate(task_id, question, options, kind, message_id))
     state.pending_gates.append({"task_id": task_id, "question": question, "options": list(options),
-                                "kind": kind, "message_id": message_id})
+                                "kind": kind, "message_id": message_id, "audit": audit})
 
 
-def _owner_gate_open(state: ShipState, kind: str) -> bool:
-    return (any(g.get("kind") == kind and g.get("task_id") is None for g in state.gates.values())
-            or any(g.get("kind") == kind and g.get("task_id") is None for g in state.pending_gates))
+def _owner_gate_open(state: ShipState, *kinds: str) -> bool:
+    """A task-less gate of one of these kinds is open in Orca or queued for it."""
+    return any(g.get("kind") in kinds and g.get("task_id") is None
+               for g in list(state.gates.values()) + state.pending_gates)
 
 
 def _release_held(task: TaskState, actions: list) -> None:
@@ -323,7 +324,7 @@ def _audit_clock(state: ShipState, event: Tick, cfg: ShipConfig, actions: list) 
             and not _owner_gate_open(state, "question")):
         _open(state, actions, None,
               "The audit has run for more than %g minutes. Retry it, or skip it?" % cfg.task_timeout_minutes,
-              ["retry", "skip"], "audit_timeout")
+              ["retry", "skip"], "audit_timeout", audit=state.audit_dispatch)
 
 
 def _on_tick(state: ShipState, event: Tick, cfg: ShipConfig, actions: list) -> None:
@@ -509,6 +510,8 @@ def _on_gate_resolved(state: ShipState, event: GateResolved, cfg: ShipConfig, ac
         actions.append(Finish())
     elif kind in ("audit_timeout", "audit_failed") and state.phase != "auditing":
         pass  # the audit moved on while the owner was deciding
+    elif kind == "audit_timeout" and gate.get("audit") != state.audit_dispatch:
+        pass  # it belonged to an earlier audit; resolving it must not touch this one
     elif kind == "audit_timeout":
         _drop_audit(state, actions)
         if resolution == "retry":
@@ -532,6 +535,9 @@ def _drop_audit(state: ShipState, actions: list) -> None:
 
 
 def _end_audit(state: ShipState, actions: list, result: str) -> None:
+    if state.audit_dispatch:  # never end the run with an auditor still running
+        actions.append(Release(state.audit_dispatch))
+        state.audit_dispatch = ""
     state.audit_result = result
     state.phase = "done"
     actions.append(Finish())
@@ -557,6 +563,8 @@ def _fix_repos(state: ShipState, changed_files: list) -> list:
 def _on_changes_computed(state: ShipState, event: ChangesComputed, cfg: ShipConfig, actions: list) -> None:
     if state.phase != "auditing":
         return
+    if state.audit_dispatch or _owner_gate_open(state, "audit_failed", "audit_timeout"):
+        return  # an audit is running, or the owner has not yet decided about the last one
     state.changed_files = list(event.changed_files)
     actions.append(StartAudit(*audit_model(state.changed_files, state.implementer_agents, cfg)))
 
@@ -565,7 +573,14 @@ def _on_audit_verdict(state: ShipState, event: AuditVerdict, cfg: ShipConfig, ac
     if state.phase != "auditing":
         return
     state.audit_started_at = 0.0
+    # Any verdict ends the audit a timeout gate was about.
+    state.gates = {k: g for k, g in state.gates.items()
+                   if not (g.get("kind") == "audit_timeout" and g.get("task_id") is None)}
+    state.pending_gates = [g for g in state.pending_gates
+                           if not (g.get("kind") == "audit_timeout" and g.get("task_id") is None)]
     if event.verdict == "NO_VERDICT":
+        if _owner_gate_open(state, "audit_failed"):
+            return
         # The auditor produced nothing usable. That is not the implementer's
         # fault, so no fix round: the owner decides.
         _open(state, actions, None,

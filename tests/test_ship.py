@@ -720,6 +720,41 @@ class TestAuditSupervision(ShipCase):
         self.assertEqual(len([t for t in fake.tasks.values() if "rein-audit" in t["spec"]]), 1)
         self.assertEqual(ship_state.load(self.state_file).audit_rounds, 0)
 
+    def test_resume_does_not_restart_the_audit_behind_an_open_audit_failed_gate(self):
+        self.audit_state(audit_dispatch="")
+        state = ship_state.load(self.state_file)
+        state.gates = {"gate_9": {"task_id": None, "kind": "audit_failed", "message_id": "", "audit": ""}}
+        ship_state.save(state, self.state_file)
+        fake = FakeOrca(self.root, autocomplete=False)
+        with self.assertRaises(Drained):
+            self.run_ship(fake, scripted_gate())
+        self.assertEqual(fake.starts(), [])
+        self.assertEqual([c for c in fake.calls if c[1:2] == ["task-create"]], [])
+        self.assertIn("not restarting it", self.out)
+
+    def test_resume_does_not_restart_the_audit_behind_a_queued_audit_failed_gate(self):
+        self.audit_state(audit_dispatch="")
+        state = ship_state.load(self.state_file)
+        state.pending_gates = [{"task_id": None, "kind": "audit_failed", "message_id": "", "audit": "",
+                                "options": ["retry-audit", "accept", "reject"], "question": "no verdict"}]
+        ship_state.save(state, self.state_file)
+        fake = FakeOrca(self.root, autocomplete=False)
+        with self.assertRaises(Drained):
+            self.run_ship(fake, scripted_gate())
+        self.assertEqual(fake.starts(), [])
+        self.assertEqual(len(self.gate_creates(fake)), 1)
+
+    def test_stale_timeout_gate_is_dropped_by_the_verdict_and_cannot_touch_the_next_audit(self):
+        self.audit_state(audit_started_at=-100000.0)
+        fake = FakeOrca(self.root, autocomplete=False)
+        # The timeout gate opens; before the owner answers, the audit finishes with a rejection.
+        fake.pending = [lambda f: [], self.audit_done("failed")]
+        with self.assertRaises(Drained):
+            self.run_ship(fake, scripted_gate())
+        state = ship_state.load(self.state_file)
+        self.assertEqual([g["kind"] for g in state.gates.values()], ["audit_failed"])  # the timeout gate is gone
+        self.assertEqual(len(self.gate_creates(fake)), 2)
+
     def test_resume_does_not_accept_an_episode_from_before_the_audit_started(self):
         self.approve_audit()()  # a previous round's APPROVED episode
         baseline = ship._episode_stamp(gate.latest_episode(self.root, "demo"))

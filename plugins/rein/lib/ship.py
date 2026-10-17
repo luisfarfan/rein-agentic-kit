@@ -344,7 +344,7 @@ class _Driver:
                 self.say("could not open the %s gate, will retry: %s" % (entry.get("kind"), exc))
                 continue
             self.state.gates[gate_id] = {"task_id": task_id, "kind": entry.get("kind"),
-                                         "message_id": entry.get("message_id", "")}
+                                         "message_id": entry.get("message_id", ""), "audit": entry.get("audit", "")}
             self.state.pending_gates.remove(entry)
             self.save()
             self.say("waiting for the owner (%s): %s" % (entry.get("kind"), str(entry.get("question"))[:200]))
@@ -536,10 +536,13 @@ class _Driver:
             else:
                 self.feed(e)
         if self.state.phase == "auditing":
-            if not self.state.audit_dispatch:
-                self.feed_changes()
-            else:
+            if self.state.audit_dispatch:
                 self.probe_audit()
+            elif any(g.get("kind") in ("audit_failed", "audit_timeout") and g.get("task_id") is None
+                     for g in list(self.state.gates.values()) + self.state.pending_gates):
+                self.say("waiting for the owner about the audit; not restarting it")
+            else:
+                self.feed_changes()
 
     def feed_gate(self, run_gate):
         verdict = self.run_gate(run_gate)
