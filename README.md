@@ -171,6 +171,8 @@ rein ship <change> # drive a plan through Orca workers: dispatch, gate each task
                  # Resumes from .rein/ship-state.json. --dry-run prints every orca call and runs
                  # nothing. Exits 0 shipped and approved · 1 failed tasks or rejected audit · 126
                  # preflight. Never pushes, merges or deploys
+rein migrate-config # v1 -> v2 flow.config.json: drop models/limits/worktree, add `ship`.
+                 # Prints a diff; writes only with --write
 rein next        # ✅ the gate: is there a task to claim, and may it be
 rein close T001  # tick a checkbox deterministically — no agent hand-edits the plan
 rein review      # record / check a verdict bound to a code state

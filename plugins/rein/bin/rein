@@ -38,6 +38,9 @@ Subcommands:
                       [--root <plan repo>] [--agent <id> --model <m>] [--dry-run]
                       exit 0 shipped and approved / 1 failed tasks or rejected audit /
                       2 usage / 126 preflight or environment. Never pushes or merges
+  rein migrate-config [root] [--write]
+                      v1 -> v2 flow.config.json: drop models/limits/worktree, add the
+                      ship block. Prints a diff; writes only with --write
 
 Kept dependency-free on purpose: a plugin that drags a toolchain along at install
 time is a plugin nobody installs. Python 3 stdlib only.
@@ -59,6 +62,7 @@ sys.path.insert(0, os.path.join(PLUGIN_ROOT, "lib"))
 
 import detect as _detect  # noqa: E402
 import gate as _gate  # noqa: E402
+import migrate_config as _migrate_config  # noqa: E402
 import plan as _plan  # noqa: E402
 import plan_check as _plan_check  # noqa: E402
 import roles as _roles  # noqa: E402
@@ -796,6 +800,38 @@ def cmd_ship(argv: list[str]) -> int:
     )
 
 
+def cmd_migrate_config(argv: list[str]) -> int:
+    """Show (and with --write, apply) the v1 -> v2 rewrite of flow.config.json."""
+    usage = "usage: rein migrate-config [root] [--write]"
+    flags = [a for a in argv if a.startswith("-")]
+    paths = [a for a in argv if not a.startswith("-")]
+    if any(f != "--write" for f in flags) or len(paths) > 1:
+        print(usage)
+        return 2
+    path = os.path.join(paths[0] if paths else ".", "flow.config.json")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            before = fh.read()
+        cfg = json.loads(before)
+        if not isinstance(cfg, dict):
+            raise ValueError("top level is not an object")
+    except (OSError, ValueError) as exc:
+        print(f"cannot read {path}: {exc}")
+        return 1
+    after = _migrate_config.render(_migrate_config.migrate(cfg))
+    if _migrate_config.render(cfg) == after:
+        print(f"{path}: nothing to change")
+        return 0
+    print(_migrate_config.diff(_migrate_config.render(cfg), after), end="")
+    if "--write" not in flags:
+        print("(dry run: pass --write to apply)")
+        return 0
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(after)
+    print(f"wrote {path}")
+    return 0
+
+
 COMMANDS = {
     "doctor": cmd_doctor,
     "detect": cmd_detect,
@@ -813,6 +849,7 @@ COMMANDS = {
     "baseline": cmd_baseline,
     "serve-probe": cmd_serve_probe,
     "ship": cmd_ship,
+    "migrate-config": cmd_migrate_config,
 }
 
 

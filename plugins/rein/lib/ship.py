@@ -101,15 +101,6 @@ def _load_plan(root: str, change: str) -> dict:
                            configured=plan_cfg.get("path", ""))
 
 
-def _flow_config(root: str) -> dict:
-    try:
-        with open(os.path.join(root, "flow.config.json"), encoding="utf-8") as fh:
-            data = json.load(fh)
-        return data if isinstance(data, dict) else {}
-    except (OSError, ValueError):
-        return {}
-
-
 def preflight(root: str, change: str, client: OrcaClient, env: dict) -> tuple:
     """`(context, errors)`; any error means nothing may be started."""
     root = os.path.abspath(root)
@@ -159,7 +150,7 @@ def preflight(root: str, change: str, client: OrcaClient, env: dict) -> tuple:
         ctx["%s_profile" % role] = prof["text"]
         if not prof["ok"]:
             errors.append(prof["error"])
-    ctx["cfg"] = sd.ShipConfig.from_flow_config(_flow_config(root))
+    ctx["cfg"] = sd.ShipConfig.from_flow_config(_detect.resolve(root))
     return ctx, errors
 
 

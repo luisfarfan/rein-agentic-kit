@@ -26,24 +26,15 @@
     "kind": "none"
   },
 
-  "models": {
-    "$comment": "Per-agent routing. On a subscription this does not lower the bill -- it frees the scarce Opus quota. Mechanical work does not need Opus; review does.",
-    "aux": "haiku",
-    "impl": "sonnet",
-    "review": "opus"
-  },
-
-  "limits": {
-    "$comment": "maxTaskSteps is the anti-runaway cap: a task is implemented as at most N short, FRESH agents handing off a compact ledger, instead of one agent running 200+ turns and re-reading a bloated context every turn.",
-    "maxTaskSteps": 8,
-    "maxReviewRounds": 3
-  },
-
-  "worktree": {
-    "$comment": "Each run gets its own git worktree + branch, merged to the base branch only on approval. A bad run leaves an ugly branch, not a broken main.",
-    "enabled": true,
-    "prefix": "rein-wt",
-    "baseBranch": "main"
+  "ship": {
+    "$comment": "rein ship tuning (all optional; these are the defaults). claudeWeeklyThreshold: Claude weekly usage % above which workers go to Codex. maxConcurrentWorkers: live workers at once. maxRetries: fresh retries of a red task. maxAuditRounds: fix-and-reaudit rounds before escalating. taskTimeoutMinutes: wall time per task before a gate opens. largeChangeFiles: changed-file count that routes the audit to Opus. riskyPaths: globs that also route the audit to Opus.",
+    "claudeWeeklyThreshold": 60,
+    "maxConcurrentWorkers": 3,
+    "maxRetries": 2,
+    "maxAuditRounds": 2,
+    "taskTimeoutMinutes": 45,
+    "largeChangeFiles": 25,
+    "riskyPaths": ["**/auth/**", "**/payments/**", "**/migrations/**"]
   },
 
   "retrieval": {
