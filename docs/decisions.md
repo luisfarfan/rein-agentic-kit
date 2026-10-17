@@ -193,3 +193,33 @@ write is genuinely missing, the answer is a subcommand — `rein linear comment`
 exists because an agent otherwise reached for the raw GraphQL endpoint with the
 personal API key, which spreads the credential across ad-hoc calls with no
 bounded surface and nothing to audit.
+
+---
+
+## v2 — Orca is the runtime
+
+**Decided 2026-10-17.** Design: [`docs/superpowers/specs/2026-10-17-rein-v2-orca-design.md`](superpowers/specs/2026-10-17-rein-v2-orca-design.md).
+
+Rein v1 reimplemented orchestration in `workflows/loop.js`, tied to Claude Code's `Workflow`
+tool. Measured on the owner's machine (14 days, PROXIMA + forma, 52.2B tokens), the thesis
+held but the loop was barely used and the spend it was built to remove was still there:
+
+- **Opus share 98.7%** of all tokens (main sessions 99.3%, subagents 97.1%).
+- **Median peak context 417k tokens** per session; 50 of 115 sessions exceeded 500k.
+- Over 30 days `rein-apply` ran in ~5 sessions against ~12-22 for `rein-plan`: plans were made
+  with Rein and executed without it.
+- Claude weekly quota was at 77% while Codex sat at 15%, and `loop.js` cannot use Codex.
+
+Orca (1.4.227) now provides natively what `loop.js` reimplemented: worktrees, fresh Claude and
+Codex worker terminals with per-worker model, supervised orchestration (Run, Task DAG, gates)
+and per-provider quota. **Decision:** Rein keeps what it decides and drops what Orca runs.
+`rein ship <change>` is a Python driver with a pure decision core and no LLM in the loop; it
+dispatches Orca workers, gates each task with `rein gate`, audits with a different model, and
+never pushes, merges or opens a PR. Removed: `workflows/loop.js`, the dashboard, events,
+backlog, Linear intake, `rein-setup`/`rein-ping` and the `rein-apply`/`step`/`steps` skills.
+`flow.config.json` loses `models`, `limits` and `worktree` and gains `ship`
+(`rein migrate-config`). Audience is the owner and PROXIMA only: no compatibility promises.
+
+**Kept, against the spec:** the flat `tasks.md` plan source. Rein plans itself with it and
+`parse_tasks_md` is shared with openspec, so removing it saved ~10 lines and cost the dogfood.
+

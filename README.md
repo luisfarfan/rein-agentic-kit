@@ -4,8 +4,8 @@
 
 **Keep your Claude Code agents lean and in control.**
 
-A Claude Code plugin that turns agent work into a bounded, measured, independently-reviewed flow —
-and tells you what it actually cost, per model.
+A Claude Code plugin and a small CLI that turn a plan into shipped, independently-audited work —
+by driving fresh Orca workers task by task, with no LLM in the middle.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![CI](https://github.com/luisfarfan/rein-agentic-kit/actions/workflows/ci.yml/badge.svg)](https://github.com/luisfarfan/rein-agentic-kit/actions/workflows/ci.yml)
@@ -35,42 +35,38 @@ every single turn, was most of a 112M-token run.
 And Claude Code has **no native eviction of stale tool results** — only `/compact`, which is
 lossy and breaks the prompt cache. A long agent's context only grows.
 
-> **Measured effect of this kit: 241 turns → 26 · Opus 100% → 0% · ~7× less context per turn.**
+Measured on the owner's machine over 14 days (52.2B tokens): **98.7% of all tokens ran on Opus**, the
+median session peaked at **417k tokens of context**, and the part of Rein built to avoid this
+(`rein-apply`) ran in ~5 sessions against 12–22 for `rein-plan` over 30 days. Plans were made with
+Rein and executed without it. v2 fixes that by making execution one command.
+
+> **Measured effect of the original loop: 241 turns → 26 · Opus 100% → 0% · ~7× less context per turn.**
 
 ---
 
-## 🔁 The flow
+## 🔁 The lifecycle
 
-```mermaid
-flowchart TD
-    A["🧭 /rein:rein-plan<br/><i>Why · Scope · Decisions · Tasks</i>"]
-    B{{"rein next<br/><i>deterministic gate</i>"}}
-    C["⚙️ Implement<br/><i>bounded loop of FRESH agents</i><br/><i>context resets each step</i>"]
-    D{{"Verify<br/><i>ask the plan, not the agent</i>"}}
-    E["🔍 /rein:rein-audit<br/><i>whole change · 5 axes</i>"]
-    F["✅ merge"]
-    G["✋ escalate to you"]
-    X["🛑 stop"]
-
-    A -->|you confirm| B
-    B -->|ready| C
-    C --> D
-    D -->|contradiction| X
-    D -->|consistent| E
-    E -->|"APPROVED + gate green"| F
-    E -->|"needs your judgement"| G
-    E -->|"CHANGES_REQUESTED · max 3"| C
-
-    style A fill:#1e3a5f,stroke:#4a90d9,color:#fff
-    style C fill:#1e4620,stroke:#4caf50,color:#fff
-    style E fill:#5f1e3a,stroke:#d94a90,color:#fff
-    style F fill:#2d4a1e,stroke:#8bc34a,color:#fff
-    style X fill:#4a1e1e,stroke:#d94a4a,color:#fff
-    style G fill:#4a3a1e,stroke:#d9a94a,color:#fff
+```
+ ① DISCOVER        ② PLAN             ③ SHIP                  ④ AUDIT + PR
+ rein-discover  →  rein-plan      →   rein ship <change>  →   rein-audit  →  you open the PR
+ (reads, asks,     (verifiable        (Python, no LLM:        (a different
+  never edits)      tasks, each        Orca workers, one       model reviews;
+                    with a Repo)       gate per task)          one fix round)
+ └──── one short Claude session ────┘ └─── you only answer Orca gates ───┘
 ```
 
-Three roles, and **no agent approves its own implementation**. Every run works in its own git
-worktree; unapproved work is never merged.
+1. **Discover** (`/rein:rein-discover`) thinks the problem through. It writes no plan.
+2. **Plan** (`/rein:rein-plan`) turns it into tasks, each with acceptance criteria, a bounded
+   verification command and a `Repo:`. Nothing is written without your confirmation.
+3. **Ship** (`/ship <change>`, or `/rein:ship`) runs `rein ship <change>`. Python dispatches one
+   fresh Orca worker per task (Codex when Claude's weekly quota is high, Sonnet otherwise), runs
+   `rein gate` on each result, retries a red task with a fresh worker, and opens an **Orca
+   decision gate** whenever a worker has a question or something needs your judgement.
+4. **Audit** (`rein-audit`) is run by the model that did *not* implement (Opus for risky paths or
+   large changes). The final state is `in-review`: **Rein never pushes, merges, opens a PR or
+   deploys.** You open the PR.
+
+No agent approves its own work, and every worker starts with an empty context.
 
 ---
 
@@ -84,100 +80,81 @@ claude plugin marketplace add luisfarfan/rein-agentic-kit
 claude plugin install rein@rein-agentic-kit --scope user
 ```
 
-**Restart Claude Code**, then run inside it:
+**Restart Claude Code**, then, per change:
 
 ```
-/rein:rein-ping     →  is it wired here, and what did it detect?
-/rein:rein-setup    →  probe the optional tools · confirm to provision them
+/rein:rein-discover   →   think it through, until the unknowns that matter are closed
+/rein:rein-plan       →   you confirm the plan
+/ship <change>        →   workers implement, each task is gated, then the audit
 ```
 
-`ping` reports the detected stack, the resolved commands and where each one
-came from. **If it got everything right, you configure nothing.**
+> **`rein ship` must run inside an Orca terminal** (it refuses unless `ORCA_TERMINAL_HANDLE` is set,
+> and unless `orca status` reports the orchestration contract). It also needs Orca's `orca` CLI
+> (or `$ORCA_CLI_COMMAND`) and each task's repo registered in Orca.
 
-> **Everything runs inside Claude Code — there is nothing to add to your `$PATH`.**
-> Claude Code puts the plugin's `bin/` on the path of its own sessions, which is
-> where the skills, the commands and the agents call `rein`. In a plain terminal
-> `rein` will *not* be found, and that is expected: the CLI exists to be called by
-> the flow, and the two commands a person runs by hand have slash commands above.
 ### Want `rein` in your own terminal too?
 
-The plugin's `bin/` is only on the path of Claude Code's own sessions — a plugin
-cannot add anything to your shell. For `rein dashboard`, `rein ledger` or
-`rein doctor` from a terminal, install the CLI the way every tool this kit
-integrates ships (serena and graphify via `uv`, codegraph and openspec via `npm`):
+Claude Code puts the plugin's `bin/` on the path of its own sessions only. For `rein ship`,
+`rein gate` or `rein doctor` from an Orca terminal, install the CLI:
 
 ```bash
 uv tool install rein-agentic-kit    # or: pipx install rein-agentic-kit
 ```
 
-Same code, same version, zero dependencies. The two channels cannot drift: a
-test fails the build if their version strings ever disagree.
+Same code, same version, zero dependencies. A test fails the build if the two channels'
+version strings ever disagree.
 
 > To update: `claude plugin marketplace update rein-agentic-kit` then
 > `claude plugin update rein@rein-agentic-kit` — qualified with the marketplace,
 > or it reports `Plugin "rein" not found`.
 
-Then, per change:
-
-```
-/rein:rein-discover   →   think it through, until the unknowns that matter are closed
-/rein:rein-plan       →   you confirm the plan
-/rein:rein-apply      →   read the verdict
-```
-
-You come back when it finished, not before.
+Coming from v1? `rein migrate-config` rewrites `flow.config.json` (drops `models`, `limits`,
+`worktree`; adds `ship`) and shows a diff first.
 
 ---
 
 ## 🧰 What you get
 
-### Skills — the three roles
+### Skills
 
 | | |
 |---|---|
-| 🔭 **`/rein:rein-discover`** | Think a problem through before committing to a shape — investigate, ask, produce understanding. **Writes no plan, implements nothing** |
-| 🎭 **`/rein:rein-role`** | Assign this session's role: planner · implementer · reviewer |
+| 🔭 **`/rein:rein-discover`** | Think a problem through before committing to a shape. **Writes no plan, implements nothing** |
 | 🧭 **`/rein:rein-plan`** | Plan into verifiable tasks — dry-run and **explicit confirmation** before writing |
-| 🔨 **`/rein:rein-step`** | Exactly **one** task. Max 3 attempts, max 5 failed commands, no self-approval |
-| 🔁 **`/rein:rein-steps`** | Bounded loop of `step`, stopping on **verifiable signals** only |
+| 🚢 **`/ship`** (`/rein:ship`) | Run `rein ship <change>` for a planned change. Never edits code or opens a PR |
 | 🔍 **`/rein:rein-audit`** | The independent gate: mechanical checks first, then five-axis judgement |
-| ♾️ **`/rein:rein-apply`** | Runs all three end-to-end in an isolated worktree |
+| 🎭 **`/rein:rein-role`** | Assign this session's role: planner · implementer · reviewer |
 
 ### CLI — the deterministic half
 
 ```bash
+rein ship <change> [--root <plan repo>] [--agent <id> --model <m>] [--dry-run]
+                 # drive a plan through Orca workers: dispatch, gate each task, audit.
+                 # Resumes from .rein/ship-state.json. --dry-run prints every orca call and
+                 # runs nothing. Never pushes, merges or deploys.
+                 # Exit: 0 shipped and approved · 1 failed tasks or rejected audit
+                 #       2 usage · 126 preflight or environment (e.g. not in an Orca terminal)
+rein migrate-config # v1 -> v2 flow.config.json: drop models/limits/worktree, add `ship`.
+                 # Prints a diff; writes only with --write
 rein doctor      # 🩺 start here: stack, resolved commands, and the source of each
                  # --json: {"version", "pluginRoot", "project", "plan", "verifyState",
                  # "ledger"}
 rein detect      # stack + commands, with the source of each
 rein tasks       # the plan, parsed
-rein context     # detect + plan in ONE round-trip — what the loop's first agent runs
+rein context     # detect + plan in ONE round-trip
 rein verify      # actually RUN each resolved command and report the truth — an inference is not a fact
 rein gate        # ✅ did they PASS — 0 green · 1 the code is wrong · 126 the environment could not run them
                  # --plan: run each TASK's own Verification before implementers are paid.
                  # Failing is fine (the work does not exist yet); proving NOTHING is not —
                  # a missing test module or a selector matching zero tests exits non-zero
-rein plan-check  # mechanical findings on a drafted plan's own text — what a regex can
-                 # honestly decide; the semantic call belongs to /rein:rein-plan's critique
-                 # always exits 0 (D5: never a silent skip, never a hard stop) — the
-                 # judgement there is the planner's. ✅ `--gate` is for a RUNNER: exits 1
-                 # on a BLOCKING finding. `--tasks T001,T002` scopes it — a finding pinned
-                 # to a task nobody will run cannot stop it, while one with no task id is
-                 # plan-level and always counts
-rein role <name> # ✅ one role's operating profile (planner|implementer|reviewer) as
-                 # markdown — the same section /rein:rein-role reads, for any agent
-                 # that cannot invoke a Claude Code skill
-rein ship <change> # drive a plan through Orca workers: dispatch, gate each task, audit.
-                 # Resumes from .rein/ship-state.json. --dry-run prints every orca call and runs
-                 # nothing. Exits 0 shipped and approved · 1 failed tasks or rejected audit · 126
-                 # preflight. Never pushes, merges or deploys
-rein migrate-config # v1 -> v2 flow.config.json: drop models/limits/worktree, add `ship`.
-                 # Prints a diff; writes only with --write
+rein plan-check  # mechanical findings on a drafted plan's own text. Always exits 0 (it runs
+                 # inside the planning skill); `--gate` exits 1 on a BLOCKING finding, which
+                 # is how `rein ship` refuses a bad plan. `--tasks T001,T002` scopes it
+rein role <name> # ✅ one role's operating profile (planner|implementer|reviewer) as markdown
 rein next        # ✅ the gate: is there a task to claim, and may it be
 rein close T001  # tick a checkbox deterministically — no agent hand-edits the plan
 rein review      # record / check a verdict bound to a code state
-rein token-report# what a run really cost, per agent and per model, plus its wall clock,
-                 # agent-minutes and their ratio (1.00x = nothing overlapped)
+rein token-report# what a run really cost, per agent and per model
 rein ledger      # history across projects, with deltas vs a marked baseline
                  # --json: {"runs": [...]}
 rein baseline    # mark the run everything is compared against
@@ -190,29 +167,26 @@ rein baseline    # mark the run everything is compared against
 
 ## ⚖️ The three levers
 
-**1️⃣ Bounded loop of fresh agents.** Each task is at most *N* short, fresh agents handing off a
-**compact ledger** (`progress` / `remaining` / `filesTouched` / `verification`) — never one agent
-running 200+ turns. Context **resets at every boundary**, so spend stops growing without a ceiling.
+**1️⃣ Fresh workers, one task each.** Every plan task gets a new Orca worker with an empty
+context, so spend stops growing without a ceiling.
 
-**2️⃣ Per-agent model routing.** Mechanical → Haiku · code → Sonnet · the review gate → Opus. On a
-subscription this doesn't lower the bill — it frees the **scarce Opus quota**, which is the limit
-you actually hit.
+**2️⃣ Route by quota, not habit.** Claude's weekly usage ≥ `ship.claudeWeeklyThreshold` (60%) sends
+implementation to Codex; otherwise Sonnet. Opus is reserved for the audit of risky or large changes.
+A brake opens a gate when Claude's session usage or the chosen provider's weekly usage passes 90%.
 
-**3️⃣ Verifiable signals, not model judgement.** A loop that stops when the model *feels* finished
-has no gate. `rein next` answers "is there work to claim" from the plan; `rein review check`
-answers "does this approval still apply" from content hashes. Neither asks a model anything.
+**3️⃣ Verifiable signals, not model judgement.** `rein gate` answers "did it pass" from exit codes;
+`rein review check` answers "does this approval still apply" from content hashes. Neither asks a
+model anything.
 
 ### ❌ Deliberately not included
 
 Tried and discarded **with data**, not taste:
 
 - **Output compressors** — they attack the 0.3%.
-- **Multi-provider API swarms** — the saving doesn't apply on a subscription, and more agents means
-  more contexts re-read.
+- **Multi-provider API swarms** — the saving doesn't apply on a subscription.
 - **Cross-session memory tools** — orthogonal to the actual cost driver.
 - **Cache-aware proxies** — no-op on already-cached traffic.
-- **Persona prompts** ("you are a hexagonal architecture expert") — the same model with the same
-  weights. Constraints that can be *violated* are useful; job titles are not.
+- **Persona prompts** — constraints that can be *violated* are useful; job titles are not.
 
 ---
 
@@ -228,10 +202,22 @@ Everything is optional. Drop a `flow.config.json` at your project root to overri
     "lint": "uv run ruff check .",
     "typecheck": "uv run mypy ."
   },
-  "models": { "aux": "haiku", "impl": "sonnet", "review": "opus" },
-  "limits": { "maxTaskSteps": 8, "maxReviewRounds": 3 }
+  "ship": {
+    "claudeWeeklyThreshold": 60,
+    "maxConcurrentWorkers": 3,
+    "maxRetries": 2,
+    "maxAuditRounds": 2,
+    "taskTimeoutMinutes": 45,
+    "largeChangeFiles": 25,
+    "riskyPaths": ["**/auth/**", "**/payments/**", "**/migrations/**"]
+  }
 }
 ```
+
+The `ship` block shows its defaults. `maxRetries` is how many times a red task is retried with a
+fresh worker, `maxAuditRounds` bounds audit and fix rounds, `taskTimeoutMinutes` opens a gate
+instead of waiting forever, and a change that touches `riskyPaths` or more than
+`largeChangeFiles` files gets an Opus audit.
 
 **Precedence:** `flow.config.json` › task runner (`justfile` / `Makefile` / `Taskfile` / `mise`) ›
 autodetection. A project that already declares how it is built is never second-guessed.
@@ -246,92 +232,40 @@ autodetection. A project that already declares how it is built is never second-g
 | 🐹 Go | `go.mod` | go test · vet |
 | 🎨 **Frontend** *(Next, Vite, Astro, SvelteKit, Nuxt, Remix)* | dependencies | **rendered verification** — unit tests alone don't catch "the tests pass but the UI is broken" |
 | ☁️ Serverless / infra | `serverless.yml`, `sst.config.ts`, `*.tf` | `plan` / `validate` — **never deploy** |
-| 📦 Monorepo | sub-projects one or two levels down, no root manifest | two or more candidates are reported — **it never picks one for you**; exactly one candidate is not a choice, so it is resolved directly, reporting that project's own stack with its path carried (`cd <dir> && ...`) |
+| 📦 Monorepo | sub-projects one or two levels down, no root manifest | two or more candidates are reported — **it never picks one for you**; exactly one candidate is resolved directly with its path carried (`cd <dir> && ...`) |
 
 > **A resolved command is an inference until something runs it.** `rein verify` executes each one
 > and reports what happened, distinguishing *"the binary is missing"* (a **setup** problem) from
 > *"the suite ran and failed"* (a **code** problem) — conflating them sends you to the wrong file.
-> The loop runs it at Prepare: a broken gate found there costs nothing, the same one found at
-> review costs a whole run.
-
-Optional tools (`serena`, `codegraph`, `graphify`, `openspec`) are **probed, never
-required**: if one is absent the flow degrades, it does not break. `rein setup` reports
-what is missing and installs it on request — and distinguishes *installed* from *usable*,
-because graphify without an index and a just-registered MCP server are both present and
-inert.
-
-> **No retrieval speedup is claimed.** With codegraph present, the loop's implementers are
-> taught `codegraph query` / `callers` / `callees` / `node` / `impact` (plus `sync` to
-> refresh the index after their own edits) as the one owner of "what is this / who touches
-> it / what breaks if I change it"; with codegraph absent, serena's `get_symbols_overview` /
-> `find_symbol` / `find_referencing_symbols` cover the same ground as a fallback. Whether
-> either reduces the turns an agent spends orienting is **unmeasured**, and the one control
-> available points the other way. See [docs/decisions.md](docs/decisions.md) D2.
-
-**One owner per question.** A tool is dropped from the prompts for having no *exclusive*
-question — not for being bad:
-
-```mermaid
-flowchart LR
-    Q1["❓ what is this?<br/>who touches it?<br/>what breaks if I change it?"] --> CG["🔎 codegraph<br/><i>query · callers · callees</i><br/><i>node · impact</i>"]
-    Q2["❓ edit this symbol<br/>type errors, no build"] --> SE["✏️ serena<br/><i>replace_symbol_body</i><br/><i>get_diagnostics_for_file</i>"]
-    Q3["❓ docs · papers · images"] --> GR["📚 graphify<br/><i>/graphify skill</i><br/><i>outside the loop</i>"]
-
-    style CG fill:#1e4620,stroke:#4caf50,color:#fff
-    style SE fill:#1e3a5f,stroke:#4a90d9,color:#fff
-    style GR fill:#4a3a1e,stroke:#d9a94a,color:#fff
-```
-
-Measured on this repo, same question, same index cost (~1.5s, no LLM, no API key for either):
-asked *"where is it decided that a command is not invocable?"*, codegraph returns
-`NOT_INVOCABLE_EXIT_CODES = (126,127)` with its file and line in **258 tokens**; the graph
-tool it replaced returned **546 tokens of an unrelated example config**, because a JSON key
-happened to match. Confident noise is worse for an agent than no answer — it cannot tell the
-two apart, and it pays for the difference on every later turn.
 
 ## 📊 Measure
 
 ```bash
-rein token-report && rein dashboard
+rein token-report && rein ledger
 ```
 
 Reads Claude Code's own JSONL transcripts (including `cache_read`) and breaks a run down per
-agent and **per model**. Every run is summarized into `~/.claude/rein/runs.jsonl`, so history
-survives transcript rotation.
+agent and **per model**. Every run is summarized into `~/.claude/rein/runs.jsonl`; `rein ship`
+appends a row per repo it worked in and prints the usage delta per provider when it finishes.
 
 **On the word "savings":** this measures *consumption*. A saving needs a baseline. Mark one with
-`rein baseline mark` and every later run in that project gets a signed delta. Without one, the
-honest numbers are the three that predict cost — **turns/agent**, **ctx_max/turn**,
-**% of tokens on Opus**.
+`rein baseline mark` and every later run in that project gets a signed delta.
 
 ---
 
 ## 🙃 Honest limitations
 
-Things a README usually hides:
+- **v2 is unproven on real work.** The v2 success criteria (Claude tokens ≤ 30% of baseline, Opus
+  share ≤ 20%) are measured against a baseline recorded before the build; a pilot on a small
+  multi-repo change comes first.
+- **It needs Orca.** Rein v2 has no runtime of its own; without an Orca terminal it refuses to run.
+- **The reviewer is calibrated hard.** In the v1 loop, 8 of 9 runs used all 3 review rounds and the
+  last round still found a real blocking issue in 4 — which is why there is no `--fast` that
+  reviews less.
+- **Audience.** The owner and PROXIMA. No compatibility promises.
 
-- **The reviewer is calibrated hard.** Across 9 runs of this repo, 8 used all 3 rounds, and the
-  LAST round produced a real BLOCKING finding in 4 of them. Review is ~52% of a run's wall
-  clock and it earns it — which is why there is no `--fast` that reviews less.
-- **A stalled agent burns wall-clock.** One run spent 3.4 hours almost entirely in silent API
-  retries.
-- **Runs are serial.** Every run measured so far reports an overlap of `1.00x` — tasks that
-  declare no dependency *can* now run concurrently, but the plans written here have been
-  chains, so the parallel path has yet to fire on real work.
-- **`discover` was considered and rejected** — a per-run version of it was measured in the origin
-  project and did not move the needle. See [docs/decisions.md](docs/decisions.md).
-
-## 🗺️ Roadmap
-
-| Phase | Scope | |
-|---|---|---|
-| 0 | Plugin plumbing · `token-report` · ledger · stack detection | ✅ [findings](docs/phase-0-findings.md) |
-| 1 | Config-driven core loop · `tasks.md` adapter — **measured** | ✅ |
-| 2 | Stack-aware verification policy | ✅ |
-| 3 | Local dashboard · per-agent model config | ✅ |
-| 4 | Compose real browser verification | ✅ |
-| 5 | Docs · a second distribution channel (PyPI) · release automation | ✅ |
-| 6 | A second real-world project, and the parallel path on a plan that has one | ⏳ |
+See [docs/decisions.md](docs/decisions.md) for why, and the
+[v2 design](docs/superpowers/specs/2026-10-17-rein-v2-orca-design.md) for how.
 
 ## 📄 License
 

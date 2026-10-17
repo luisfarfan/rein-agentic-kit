@@ -54,7 +54,7 @@ import shutil
 import sys
 import time
 
-VERSION = "0.15.0"
+VERSION = "2.0.0"
 
 HERE = os.path.dirname(os.path.abspath(os.path.realpath(__file__)))
 PLUGIN_ROOT = os.path.dirname(HERE)
