@@ -165,6 +165,17 @@ class TickGates(unittest.TestCase):
         self.assertEqual(actions, [])
         self.assertEqual(new.phase, "running")
 
+    def test_no_brake_when_the_cap_leaves_nothing_to_dispatch(self):
+        limits = {"claude": {"session": 95.0, "weekly": 10.0}, "codex": {}}
+        state = ship(running("1", "a"), running("2", "b", dispatch_id="d2"),
+                     running("3", "c", dispatch_id="d3"), task("4", "d"))
+        new, actions = tick(state, limits)
+        self.assertEqual(actions, [])
+        self.assertEqual(new.phase, "running")
+        # and not when the only waiting task is blocked behind its repo
+        new, actions = tick(ship(running("1", "a"), task("2", "a")), limits)
+        self.assertEqual((actions, new.phase), ([], "running"))
+
     def test_brake_reads_the_forced_implementer(self):
         limits = {"claude": {"session": 99.0, "weekly": 99.0}, "codex": {"session": 5.0, "weekly": 5.0}}
         state = ship(task("1"), forced_implementer=["codex", "gpt-6.1-sol"])
@@ -231,7 +242,7 @@ class WorkerEvents(unittest.TestCase):
         # green
         new, actions = sd.decide(ship(gating(), other), sd.GateVerdict("1", 0, ""), CFG)
         self.assertEqual(actions, [sd.CloseTask("1"), sd.Release("d1")])
-        self.assertEqual(new.tasks["1"].status, "done")
+        self.assertEqual((new.tasks["1"].status, new.tasks["1"].dispatch_id), ("done", ""))
 
         # red with retries left
         state = ship(gating(attempts=1), worktrees={"a": "wt-a"})
@@ -266,14 +277,14 @@ class WorkerEvents(unittest.TestCase):
         state = ship(task("1", status="gating", dispatch_id="d1", agent="codex", model="gpt-6.1-sol"),
                      task("2", "b", status="done"), implementer_agents=["codex"])
         new, actions = sd.decide(state, sd.GateVerdict("1", 0, ""), CFG)
-        self.assertEqual(actions, [sd.CloseTask("1"), sd.Release("d1"), sd.StartAudit(*quota.SONNET)])
+        self.assertEqual(actions, [sd.CloseTask("1"), sd.Release("d1"), sd.ComputeChanges()])
         self.assertEqual(new.phase, "auditing")
 
     def test_green_fix_task_is_not_closed_in_the_plan(self):
         state = ship(task("AUDIT1-a", status="gating", dispatch_id="d1", agent="claude", model="sonnet"),
                      task("1", status="done"), phase="fixing", implementer_agents=["claude"])
         new, actions = sd.decide(state, sd.GateVerdict("AUDIT1-a", 0, ""), CFG)
-        self.assertEqual(actions, [sd.Release("d1"), sd.StartAudit(*quota.CODEX)])
+        self.assertEqual(actions, [sd.Release("d1"), sd.ComputeChanges()])
         self.assertEqual(new.phase, "auditing")
 
 
@@ -289,6 +300,32 @@ class QuestionsAndGates(unittest.TestCase):
         self.assertEqual(actions, [sd.Relay("m7", "postgres")])
         self.assertEqual(done.tasks["1"].status, "running")
         self.assertNotIn("g1", done.gates)
+
+    def test_question_resolution_restarts_the_task_clock(self):
+        state = ship(task("1", status="gated", dispatch_id="d1", started_at=5.0))
+        state.gates["g"] = {"task_id": "1", "kind": "question", "message_id": "m"}
+        new, _ = sd.decide(state, sd.GateResolved("g", "yes"), CFG)
+        self.assertEqual(new.tasks["1"].started_at, 0.0)
+        later, _ = tick(new, now=NOW * 10)
+        self.assertEqual(later.tasks["1"].status, "running")
+        self.assertEqual(later.tasks["1"].started_at, NOW * 10)
+
+    def test_question_while_not_running_is_ignored(self):
+        state = ship(task("1", status="gating", dispatch_id="d1"))
+        new, actions = sd.decide(state, sd.Question("d1", "m1", "hi?"), CFG)
+        self.assertEqual(actions, [])
+        self.assertEqual(new, state)
+
+    def test_duplicate_question_opens_one_gate(self):
+        state = ship(running("1"))
+        state, actions = sd.decide(state, sd.Question("d1", "m1", "hi?"), CFG)
+        self.assertEqual(len(actions), 1)
+        state.gates["g"] = {"task_id": "1", "kind": "question", "message_id": "m1"}
+        # the worker is reported running again (e.g. replayed event) with the gate still open
+        state.tasks["1"].status = "running"
+        again, actions = sd.decide(state, sd.Question("d1", "m1", "hi?"), CFG)
+        self.assertEqual(actions, [])
+        self.assertEqual(again, state)
 
     def test_unknown_gate_is_ignored(self):
         state = ship(running("1"))
@@ -311,7 +348,7 @@ class QuestionsAndGates(unittest.TestCase):
     def test_human_review_approve_of_the_last_task_starts_audit(self):
         state = ship(task("1", status="gated", human_review=True), implementer_agents=["claude"])
         new, actions = self.resolve(state, "human_review", "1", "approve")
-        self.assertEqual(actions, [sd.CloseTask("1"), sd.StartAudit(*quota.CODEX)])
+        self.assertEqual(actions, [sd.CloseTask("1"), sd.ComputeChanges()])
         self.assertEqual(new.phase, "auditing")
 
     def test_retry_resets_attempts_and_releases_the_held_worker(self):
@@ -383,7 +420,7 @@ class Audit(unittest.TestCase):
     def test_all_done_starts_the_audit_on_tick(self):
         state = ship(task("1", status="done"), task("2", "b", status="done"), implementer_agents=["codex", "claude"])
         new, actions = tick(state)
-        self.assertEqual(actions, [sd.StartAudit(*quota.SONNET)])
+        self.assertEqual(actions, [sd.ComputeChanges()])
         self.assertEqual(new.phase, "auditing")
         _, again = tick(new)
         self.assertEqual(again, [])
@@ -393,6 +430,39 @@ class Audit(unittest.TestCase):
         new, actions = tick(state)
         self.assertEqual(actions, [sd.Finish()])
         self.assertEqual(new.phase, "done")
+
+    def changes(self, files, agents, cfg=CFG, phase="auditing"):
+        state = ship(task("1", status="done"), phase=phase, implementer_agents=agents)
+        return sd.decide(state, sd.ChangesComputed(files), cfg)
+
+    def test_changes_computed_routes_risky_paths_to_opus(self):
+        new, actions = self.changes(["src/auth/login.py"], ["codex"])
+        self.assertEqual(actions, [sd.StartAudit(*quota.OPUS)])
+        self.assertEqual(new.changed_files, ["src/auth/login.py"])
+        self.assertEqual(new.phase, "auditing")
+
+    def test_changes_computed_routes_large_changes_to_opus(self):
+        _, actions = self.changes(["f%d.py" % i for i in range(26)], ["claude"])
+        self.assertEqual(actions, [sd.StartAudit(*quota.OPUS)])
+
+    def test_changes_computed_picks_the_other_provider(self):
+        _, actions = self.changes(["src/x.py"], ["codex"])
+        self.assertEqual(actions, [sd.StartAudit(*quota.SONNET)])
+        _, actions = self.changes(["src/x.py"], ["claude"])
+        self.assertEqual(actions, [sd.StartAudit(*quota.CODEX)])
+
+    def test_changes_computed_uses_the_callers_config(self):
+        cfg = sd.ShipConfig(risky_paths=["**/secrets/**"])
+        _, actions = self.changes(["src/auth/x.py"], ["codex"], cfg)
+        self.assertEqual(actions, [sd.StartAudit(*quota.SONNET)])
+        _, actions = self.changes(["a/secrets/k"], ["codex"], cfg)
+        self.assertEqual(actions, [sd.StartAudit(*quota.OPUS)])
+
+    def test_changes_computed_outside_auditing_is_ignored(self):
+        for phase in ("running", "fixing", "braked", "done"):
+            new, actions = self.changes(["src/auth/x.py"], ["codex"], phase=phase)
+            self.assertEqual(actions, [], phase)
+            self.assertEqual(new.changed_files, [], phase)
 
     def test_audit_model_selection(self):
         am = sd.audit_model
@@ -453,7 +523,7 @@ class Audit(unittest.TestCase):
             new.tasks[tid].status = "done"
         new.implementer_agents = ["codex"]
         new, actions = tick(new)
-        self.assertEqual(actions, [sd.StartAudit(*quota.SONNET)])
+        self.assertEqual(actions, [sd.ComputeChanges()])
         self.assertEqual(new.phase, "auditing")
 
         # round 2 is still allowed

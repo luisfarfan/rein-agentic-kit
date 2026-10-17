@@ -100,6 +100,11 @@ class GateResolved:
 
 
 @dataclass
+class ChangesComputed:
+    changed_files: list
+
+
+@dataclass
 class AuditVerdict:
     verdict: str
     blocking: int
@@ -147,6 +152,11 @@ class OpenGate:
 class Relay:
     message_id: str
     body: str
+
+
+@dataclass
+class ComputeChanges:
+    pass
 
 
 @dataclass
@@ -247,9 +257,10 @@ def _settle(state: ShipState, actions: list) -> None:
         return
     if _all_done(state):
         state.phase = "auditing"
-        # The changed files are only known once the auditor reports, so the first
-        # choice rests on who implemented; the verdict carries the real list.
-        actions.append(StartAudit(*audit_model([], state.implementer_agents, ShipConfig())))
+        state.changed_files = []
+        # The diff is I/O: the driver computes it and answers with ChangesComputed,
+        # which picks the auditor (risky or large changes go to Opus).
+        actions.append(ComputeChanges())
         return
     if not any(t.status == "failed" for t in state.tasks.values()):
         return
@@ -279,6 +290,8 @@ def decide(state: ShipState, event, cfg: ShipConfig) -> tuple:
         _on_question(state, event, actions)
     elif isinstance(event, GateResolved):
         _on_gate_resolved(state, event, cfg, actions)
+    elif isinstance(event, ChangesComputed):
+        _on_changes_computed(state, event, cfg, actions)
     elif isinstance(event, AuditVerdict):
         _on_audit_verdict(state, event, cfg, actions)
     return state, actions
@@ -318,8 +331,19 @@ def _on_tick(state: ShipState, event: Tick, cfg: ShipConfig, actions: list) -> N
     if len(actions) > settled or state.phase == "done":
         return
 
-    candidates = [t for t in state.tasks.values() if not t.human_review and _ready(state, t)]
-    if not candidates:
+    active = [t for t in state.tasks.values() if t.status in _BUSY and not t.human_review]
+    busy_repos = {t.repo for t in active}
+    slots = cfg.max_concurrent_workers - len(active)
+    batch = []
+    for task in state.tasks.values():
+        if slots <= 0:
+            break
+        if task.human_review or not _ready(state, task) or task.repo in busy_repos:
+            continue
+        batch.append(task)
+        busy_repos.add(task.repo)
+        slots -= 1
+    if not batch:
         return
 
     agent, model = _implementer(state, event.limits, cfg)
@@ -330,21 +354,12 @@ def _on_tick(state: ShipState, event: Tick, cfg: ShipConfig, actions: list) -> N
         actions.append(OpenGate(None, reason, ["switch-to-codex", "pause"], "brake"))
         return
 
-    active = [t for t in state.tasks.values() if t.status in _BUSY and not t.human_review]
-    busy_repos = {t.repo for t in active}
-    slots = cfg.max_concurrent_workers - len(active)
-    for task in candidates:
-        if slots <= 0:
-            break
-        if task.repo in busy_repos:
-            continue
+    for task in batch:
         actions.append(Dispatch(task.id, task.repo, _worktree(state, task.repo), agent, model))
         task.status = "running"
         task.agent, task.model = agent, model
         task.started_at = now
         _record_agent(state, agent)
-        busy_repos.add(task.repo)
-        slots -= 1
 
 
 def _red(state: ShipState, task: TaskState, reason: str, cfg: ShipConfig, actions: list) -> None:
@@ -382,8 +397,7 @@ def _on_gate_verdict(state: ShipState, event: GateVerdict, cfg: ShipConfig, acti
     if event.exit_code == 0:
         if not _is_fix(task):  # synthetic fix tasks have no checkbox in the plan
             actions.append(CloseTask(task.id))
-        if task.dispatch_id:
-            actions.append(Release(task.dispatch_id))
+        _release_held(task, actions)
         task.status = "done"
         _settle(state, actions)
     elif event.exit_code == 126:
@@ -399,7 +413,9 @@ def _on_gate_verdict(state: ShipState, event: GateVerdict, cfg: ShipConfig, acti
 
 def _on_question(state: ShipState, event: Question, actions: list) -> None:
     task = _holder(state, event.dispatch_id)
-    if task is None:
+    if task is None or task.status != "running":
+        return
+    if any(g.get("kind") == "question" and g.get("task_id") == task.id for g in state.gates.values()):
         return
     task.status = "gated"
     actions.append(OpenGate(task.id, event.text, [], "question", event.message_id))
@@ -432,6 +448,7 @@ def _on_gate_resolved(state: ShipState, event: GateResolved, cfg: ShipConfig, ac
         actions.append(Relay(gate.get("message_id", ""), resolution))
         if task is not None and task.status == "gated":
             task.status = "running"
+            task.started_at = 0.0  # time spent waiting on the human does not count
     elif kind == "human_review":
         if task is not None:
             if resolution == "approve":
@@ -474,6 +491,13 @@ def _fix_repos(state: ShipState, changed_files: list) -> list:
             repos.append(task.repo)
     touched = [r for r in repos if any(_in_repo(state, r, f) for f in changed_files)]
     return touched or repos
+
+
+def _on_changes_computed(state: ShipState, event: ChangesComputed, cfg: ShipConfig, actions: list) -> None:
+    if state.phase != "auditing":
+        return
+    state.changed_files = list(event.changed_files)
+    actions.append(StartAudit(*audit_model(state.changed_files, state.implementer_agents, cfg)))
 
 
 def _on_audit_verdict(state: ShipState, event: AuditVerdict, cfg: ShipConfig, actions: list) -> None:

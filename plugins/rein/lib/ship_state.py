@@ -54,6 +54,7 @@ class ShipState:
     audit_dispatch: str = ""
     implementer_agents: list = field(default_factory=list)
     forced_implementer: list = field(default_factory=list)
+    changed_files: list = field(default_factory=list)
 
 
 def state_path(repo_root: str) -> str:
