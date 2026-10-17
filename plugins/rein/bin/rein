@@ -12,7 +12,8 @@ Subcommands:
   rein gate           the other question: did they PASS. Runs the same commands and
                       exits 0 passed / 1 the code is wrong / 126 the environment
                       could not run the checks. --require-review also demands a
-                      current APPROVED review episode
+                      current APPROVED review episode. --unit-only forces unit mode
+                      (no browser-render demand) for per-task gates in frontend repos
   rein role <name>    one role's operating profile (planner|implementer|reviewer)
                       as plain markdown -- the same section Claude Code reads via
                       /rein:rein-role, for any agent that cannot invoke a skill
@@ -230,6 +231,10 @@ def cmd_gate(argv: list[str]) -> int:
 
     tools_raw = _opt(argv, "browser-tools")
     policy = dict(resolved.get("verifyPolicy") or {})
+    if "--unit-only" in argv:
+        # A per-task gate asks "do the commands pass", not "was the UI
+        # rendered": render evidence belongs to `Type: verification` tasks.
+        policy["mode"] = "unit"
     if tools_raw:
         policy["tools"] = [t.strip() for t in tools_raw.split(",") if t.strip()]
     serve = {"command": (resolved.get("commands") or {}).get("serve") or "",
