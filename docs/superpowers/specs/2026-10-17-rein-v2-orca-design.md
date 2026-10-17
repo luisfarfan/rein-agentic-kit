@@ -128,9 +128,14 @@ Skills removed: `rein-apply`, `rein-loop`, `rein-step`, `rein-steps`, `rein-line
 
 - One Run per change (`run-create --objective "<change>"`).
 - One Orca Task per plan task (`task-create --spec … --deps …`), with dependencies mapped.
-- Each spec contains the implementer profile, the task, its acceptance criteria, its
+- Each spec contains a short ship-specific worker preamble (the driver runs the gate and
+  closes the task; run your Verification; commit on this worktree's branch, never push;
+  one task only; ask through Orca when blocked), the task, its acceptance criteria, its
   verification command, and the boundary "edit only `<repo>`; never push, merge, open PRs,
-  or read or print `.env*` or credentials".
+  or read or print `.env*` or credentials". (Amended after the final review: the v1
+  implementer profile carried rein-step-era rules.)
+- Every re-dispatch creates a fresh Orca task whose deps point at the current Orca task ids
+  of its dependencies.
 
 ### 5.2 Placement and model
 
@@ -172,8 +177,10 @@ Skills removed: `rein-apply`, `rein-loop`, `rein-step`, `rein-steps`, `rein-line
 
 ### 5.5 Resume
 
-The Run is durable in Orca. `.rein/ship-state.json` maps plan tasks to Orca task and dispatch
-ids. Re-running `rein ship <change>` binds the same Run (`run-use`) and continues.
+The Run is durable in Orca. `<plan repo>/.rein/ship/<change>.json` maps plan tasks to Orca
+task and dispatch ids (one state file per change; a state whose change differs is refused).
+Re-running `rein ship <change>` binds the same Run (`run-use`) and continues. (Amended after
+the final review: a per-root state file mixed changes.)
 
 ## 6. Errors, limits, safety
 
