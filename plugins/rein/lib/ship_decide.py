@@ -311,6 +311,11 @@ def _task_gate_open(state: ShipState, task_id: str, kind: str) -> bool:
                for g in list(state.gates.values()) + state.pending_gates)
 
 
+def holds_question(state: ShipState, task: TaskState) -> bool:
+    """The task is gated on a question for its still-held worker (open in Orca or queued)."""
+    return bool(task.status == "gated" and task.dispatch_id and _task_gate_open(state, task.id, "question"))
+
+
 def _drop_task_gate(state: ShipState, task_id: str, kind: str) -> None:
     keep = lambda g: not (g.get("kind") == kind and g.get("task_id") == task_id)  # noqa: E731
     state.gates = {k: g for k, g in state.gates.items() if keep(g)}
@@ -495,10 +500,13 @@ def _on_worker_done(state: ShipState, event: WorkerDone, cfg: ShipConfig, action
     task = _holder(state, event.dispatch_id)
     if task is None:
         return
-    if task.status == "gated" and _task_gate_open(state, task.id, "timeout"):
-        # It finished after all: the timeout question is moot.
-        _drop_task_gate(state, task.id, "timeout")
-        task.status = "running"
+    if task.status == "gated":
+        # It finished after all (its ask expired and it went on): the timeout or
+        # question the owner was being asked is moot. Any other gate stays.
+        for kind in ("timeout", "question"):
+            if _task_gate_open(state, task.id, kind):
+                _drop_task_gate(state, task.id, kind)
+                task.status = "running"
     if task.status != "running":
         return
     if event.outcome == "succeeded":
@@ -575,8 +583,10 @@ def _on_gate_resolved(state: ShipState, event: GateResolved, cfg: ShipConfig, ac
     task = state.tasks.get(gate.get("task_id"))
 
     if kind == "question":
+        if gate.get("task_id") is not None and (task is None or task.status != "gated"):
+            return  # the worker already moved on (it finished, or was stopped): nobody is waiting for this answer
         actions.append(Relay(gate.get("message_id", ""), resolution))
-        if task is not None and task.status == "gated":
+        if task is not None:
             task.status = "running"
             task.started_at = 0.0  # time spent waiting on the human does not count
         if task is None and state.audit_dispatch:

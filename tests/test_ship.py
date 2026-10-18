@@ -96,6 +96,7 @@ class FakeOrca:
         self.auto_resolve = None   # resolve every pending gate with this answer when gate-list is asked
         self.fail_starts = 0
         self.start_error = None
+        self.reply_error = None
         self.n = 0
 
     # runner protocol
@@ -184,6 +185,8 @@ class FakeOrca:
             return {"gates": [dict(g) for g in self.gates]}
         if verb == "reply":
             self.replies.append((_flag(a, "--id"), _flag(a, "--body")))
+            if self.reply_error is not None:
+                raise self.reply_error
             return {}
         if verb == "check":
             return self._check(a)
@@ -589,6 +592,113 @@ class TestResume(ShipCase):
         self.assertEqual(code, 126)
         self.assertEqual([c for c in fake.calls if c[1:2] == ["run-create"]], [])
         self.assertIn("kept at", self.out)
+
+
+class TestLostDone(ShipCase):
+    """A worker_done that was dropped (it arrived while a question was open, or never arrived) is recovered from worker-list."""
+
+    def held_state(self, status, question=True):
+        self.write_plan(PLAN.split("- [ ] T002")[0])
+        plan = ship._plan.read_plan(self.root, source="tasks-md", change="demo")
+        state = ship_state.from_plan(plan, "plan-repo", "demo")
+        state.run_id = "run_1"
+        t1 = state.tasks["T001"]
+        t1.status, t1.dispatch_id, t1.orca_task_id, t1.agent, t1.model = status, "d1", "task_x", "codex", "m"
+        state.worktrees["proxima-api"] = self.wtid("proxima-api")
+        state.worktree_paths["proxima-api"] = self.wtpath("proxima-api")
+        if question:
+            state.gates = {"gate_q": {"task_id": "T001", "kind": "question", "message_id": "msg_q", "audit": ""}}
+        ship_state.save(state, self.state_file)
+
+    @staticmethod
+    def row(outcome=None, worker="working", dispatch="dispatched"):
+        projection = {"outcome": outcome} if outcome else {}
+        return [{"dispatchId": "d1", "taskId": "task_x", "agentTerminalHandle": "term_d1",
+                 "workerState": worker, "dispatchStatus": dispatch, "projection": projection}]
+
+    def fake(self, rows):
+        fake = FakeOrca(self.root, autocomplete=False)
+        fake.gates.append({"id": "gate_q", "task_id": "holder", "question": "?", "options": "[]",
+                           "status": "pending", "resolution": None})
+        fake.rows_override = rows
+        fake.on_audit = self.approve_audit()
+        return fake
+
+    def test_resume_recovers_a_done_lost_behind_an_open_question(self):
+        for status in ("gated", "running"):
+            self.held_state(status, question=status == "gated")
+            fake = self.fake(self.row("succeeded", "succeeded", "completed"))
+            fake.pending = [lambda f: []] * 5
+            gates = scripted_gate(0)
+            with self.assertRaises(Drained):
+                self.run_ship(fake, gates)
+            self.assertEqual(len(gates.calls), 1, "%s: one gate run across several loops" % status)
+            saved = ship_state.load(self.state_file)
+            self.assertEqual((saved.tasks["T001"].status, saved.gates), ("done", {}))
+
+    def test_resume_recovers_a_failed_worker_behind_an_open_question(self):
+        self.held_state("gated")
+        fake = self.fake(self.row("failed", "failed", "completed"))
+        fake.pending = [lambda f: []]
+        gates = scripted_gate()
+        with self.assertRaises(Drained):
+            self.run_ship(fake, gates)
+        self.assertEqual(gates.calls, [])
+        self.assertEqual(len(fake.starts()), 1, "the red path re-dispatches the task")
+        self.assertIn(["orchestration", "worker-release", "--dispatch", "d1"], fake.calls)
+
+    def test_a_live_worker_behind_a_question_is_left_alone(self):
+        self.held_state("gated")
+        fake = self.fake(self.row())
+        fake.pending = [lambda f: []] * 5
+        gates = scripted_gate(0)
+        with self.assertRaises(Drained):
+            self.run_ship(fake, gates)
+        self.assertEqual((gates.calls, fake.starts()), ([], []))
+        saved = ship_state.load(self.state_file)
+        self.assertEqual((saved.tasks["T001"].status, list(saved.gates)), ("gated", ["gate_q"]))
+
+    def test_a_missing_row_is_looked_up_and_only_a_settled_worker_counts(self):
+        for show, expected_gates in (("completed", 1), ("dispatched", 0)):
+            self.held_state("gated")
+            fake = self.fake([])
+            fake.show_status = show
+            fake.pending = [lambda f: []] * 3
+            gates = scripted_gate(0)
+            with self.assertRaises(Drained):
+                self.run_ship(fake, gates)
+            self.assertEqual(len(gates.calls), expected_gates, show)
+
+    def test_idle_poll_recovers_a_done_lost_while_running(self):
+        self.held_state("running", question=False)
+        settled = self.row("succeeded", "succeeded", "completed")
+        fake = self.fake(self.row())
+        fake.pending = [lambda f: [], lambda f: [], lambda f: setattr(f, "rows_override", settled) or [],
+                        lambda f: [], lambda f: [], lambda f: [], lambda f: []]
+        gates = scripted_gate(0)
+        with self.assertRaises(Drained):
+            self.run_ship(fake, gates)
+        self.assertEqual(len(gates.calls), 1)
+        self.assertEqual(ship_state.load(self.state_file).tasks["T001"].status, "done")
+
+    def test_a_relay_to_an_inactive_dispatch_is_logged_once_and_dropped(self):
+        self.write_plan(PLAN.split("- [ ] T002")[0])
+        fake = FakeOrca(self.root, autocomplete=False)
+        fake.reply_error = FailEnvelope({"ok": False, "error": {"code": "dispatch_inactive", "message": "settled"}})
+
+        def question(f):
+            did = next(iter(f.dispatches))
+            return [{"id": "msg_q", "type": "question", "from_handle": "term_" + did, "subject": "?",
+                     "body": "REST?", "payload": json.dumps({"dispatchId": did})}]
+
+        fake.pending = [question, lambda f: f.resolve_gate(0, "REST") or [], lambda f: [], lambda f: []]
+        with self.assertRaises(Drained):
+            self.run_ship(fake, scripted_gate())
+        self.assertEqual(fake.replies, [("msg_q", "REST")])
+        self.assertEqual(self.out.count("dispatch_inactive"), 1)
+        self.assertEqual(self.out.count("no longer active"), 1)
+        self.assertNotIn("could not relay", self.out)
+        self.assertEqual(ship_state.load(self.state_file).gates, {})
 
 
 class TestNextAction(ShipCase):

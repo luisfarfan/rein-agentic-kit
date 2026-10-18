@@ -328,7 +328,11 @@ class _Driver:
             try:
                 self.client.reply(a.message_id, a.body)
             except OrcaError as exc:
-                self.say("could not relay the answer: %s" % exc)
+                if exc.code == "dispatch_inactive":  # the asker is gone: nobody can read the answer
+                    self.say("dropped the answer to %s: its worker is no longer active (dispatch_inactive)"
+                             % a.message_id)
+                else:
+                    self.say("could not relay the answer: %s" % exc)
         elif isinstance(a, sd.ComputeChanges):
             return self.compute_changes()
         elif isinstance(a, sd.StartAudit):
@@ -569,10 +573,52 @@ class _Driver:
         if outcome is not None:
             self.worker_done(did, outcome)
 
+    def settled_row(self, row):
+        """`"succeeded"`/`"failed"` when a `worker-list` row proves its dispatch settled, else None."""
+        if row.get("dispatchStatus") in ("completed", "failed") or row.get("workerState") in ("succeeded", "failed"):
+            outcome = (row.get("projection") or {}).get("outcome") or row.get("workerState")
+            return "succeeded" if outcome == "succeeded" else "failed"
+        return None
+
+    def lost_completions(self, rows):
+        """`WorkerDone` events for tasks whose worker Orca reports settled but whose done we never folded in.
+
+        A task is waiting for its worker when it is running, or gated on a
+        question (a worker whose ask expired goes on and finishes). Positive
+        evidence only: a live row, or a worker Orca cannot be asked about, is
+        left alone. Feeding the event moves the task out of those states, so
+        the next poll finds nothing to recover.
+        """
+        events = []
+        for t in self.state.tasks.values():
+            if not t.dispatch_id or not (t.status == "running" or sd.holds_question(self.state, t)):
+                continue
+            row = rows.get(t.dispatch_id)
+            if row is not None:
+                outcome = self.settled_row(row)
+            else:
+                # Not listed is not the same as exited: only Orca's word that it settled counts.
+                try:
+                    outcome = settled_outcome(self.client.worker_show(t.dispatch_id))
+                except OrcaError as exc:
+                    outcome = None
+                    self.say("%s: cannot look up %s (%s)" % (t.id, t.dispatch_id, exc))
+                if outcome is None:
+                    self.say("%s: %s is not in worker-list and Orca does not confirm it exited; "
+                             "leaving it be (the task timeout covers it)" % (t.id, t.dispatch_id))
+            if outcome is not None:
+                events.append(sd.WorkerDone(t.dispatch_id, outcome))
+        return events
+
     def idle_poll(self):
+        rows = self.rows()
+        for event in self.lost_completions({str(r.get("dispatchId")): r for r in rows}):
+            self.say("recovered a lost worker_done for %s (%s)" % (event.dispatch_id, event.outcome))
+            self.feed(event)
+        # After the feed above: a recovered task's worker is held by `gating`, or already released.
         held = {t.dispatch_id for t in self.state.tasks.values()
-                if t.dispatch_id and t.status in ("running", "gating")}
-        for row in self.rows():
+                if t.dispatch_id and t.status in ("running", "gating", "gated")}
+        for row in rows:
             action = (row.get("projection") or {}).get("nextAction")
             kind = action.get("kind") if isinstance(action, dict) else ""
             did = str(row.get("dispatchId") or "")
@@ -637,27 +683,10 @@ class _Driver:
         self.requeue_orphans()
         self.open_pending()
         rows = {str(r.get("dispatchId")): r for r in self.rows()}
-        events = []
+        events = self.lost_completions(rows)
         for t in self.state.tasks.values():
             if t.status == "running" and not t.dispatch_id:
                 t.status = "pending"  # decided but never started
-            elif t.status == "running":
-                row = rows.get(t.dispatch_id)
-                if row is None:
-                    # Not listed is not the same as exited: only Orca's word that it settled retries the task.
-                    try:
-                        outcome = settled_outcome(self.client.worker_show(t.dispatch_id))
-                    except OrcaError as exc:
-                        outcome = None
-                        self.say("%s: cannot look up %s (%s)" % (t.id, t.dispatch_id, exc))
-                    if outcome is None:
-                        self.say("%s: %s is not in worker-list and Orca does not confirm it exited; "
-                                 "leaving it running (the task timeout covers it)" % (t.id, t.dispatch_id))
-                    else:
-                        events.append(sd.WorkerDone(t.dispatch_id, outcome))
-                elif row.get("dispatchStatus") == "completed" or row.get("workerState") in ("succeeded", "failed"):
-                    events.append(sd.WorkerDone(t.dispatch_id, str((row.get("projection") or {}).get("outcome")
-                                                                 or row.get("workerState") or "failed")))
             elif t.status == "gating":
                 events.append(sd.RunGate(t.id, t.type != "verification"))
         self.save()

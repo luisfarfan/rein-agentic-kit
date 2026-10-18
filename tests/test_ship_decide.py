@@ -474,10 +474,51 @@ class QuestionsAndGates(unittest.TestCase):
         self.assertEqual((new.pending_gates, new.tasks["1"].status), ([], "pending"))
 
     def test_a_worker_done_for_a_task_gated_on_something_else_is_still_ignored(self):
+        for kind in ("human_review", "retry_exhausted", "setup"):
+            state = ship(task("1", status="gated", dispatch_id="d1"))
+            state.gates["g"] = {"task_id": "1", "kind": kind, "message_id": ""}
+            new, actions = sd.decide(state, sd.WorkerDone("d1", "succeeded"), CFG)
+            self.assertEqual((actions, new), ([], state), kind)
+        # A question gate of ANOTHER task does not make this one's done count.
         state = ship(task("1", status="gated", dispatch_id="d1"))
-        state.gates["g"] = {"task_id": "1", "kind": "question", "message_id": "m"}
+        state.gates["g"] = {"task_id": "2", "kind": "question", "message_id": "m"}
         new, actions = sd.decide(state, sd.WorkerDone("d1", "succeeded"), CFG)
         self.assertEqual((actions, new), ([], state))
+
+    def test_a_worker_done_while_a_question_is_open_runs_the_gate_and_drops_the_question(self):
+        state = ship(task("1", status="gated", dispatch_id="d1", agent="claude", model="sonnet"))
+        state.gates["g"] = {"task_id": "1", "kind": "question", "message_id": "m"}
+        new, actions = sd.decide(state, sd.WorkerDone("d1", "succeeded"), CFG)
+        self.assertEqual(actions, [sd.RunGate("1", True)])
+        self.assertEqual((new.tasks["1"].status, new.gates, new.pending_gates), ("gating", {}, []))
+        # The same for a question the driver has not created in Orca yet.
+        queued = ship(task("1", status="gated", dispatch_id="d1", agent="claude", model="sonnet"),
+                      pending_gates=[{"task_id": "1", "kind": "question", "message_id": "m"}])
+        new, actions = sd.decide(queued, sd.WorkerDone("d1", "succeeded"), CFG)
+        self.assertEqual((actions, new.pending_gates, new.tasks["1"].status),
+                         ([sd.RunGate("1", True)], [], "gating"))
+
+    def test_a_failed_worker_done_while_a_question_is_open_takes_the_red_path(self):
+        state = ship(task("1", status="gated", dispatch_id="d1", agent="claude", model="sonnet", attempts=0))
+        state.gates["g"] = {"task_id": "1", "kind": "question", "message_id": "m"}
+        new, actions = sd.decide(state, sd.WorkerDone("d1", "failed"), CFG)
+        self.assertEqual(actions, [sd.Release("d1")])
+        t = new.tasks["1"]
+        self.assertEqual((t.status, t.attempts, t.dispatch_id), ("pending", 1, ""))
+        self.assertEqual(new.gates, {})
+        spent = ship(task("1", status="gated", dispatch_id="d1", attempts=CFG.max_retries))
+        spent.gates["g"] = {"task_id": "1", "kind": "question", "message_id": "m"}
+        new, _ = sd.decide(spent, sd.WorkerDone("d1", "failed"), CFG)
+        self.assertEqual(new.tasks["1"].status, "failed")
+        self.assertEqual([g["kind"] for g in new.pending_gates], ["retry_exhausted"])
+        self.assertEqual(new.gates, {})
+
+    def test_a_question_answered_after_its_task_moved_on_is_not_relayed(self):
+        state = ship(task("1", status="gating", dispatch_id="d1"))
+        state.gates["g"] = {"task_id": "1", "kind": "question", "message_id": "m"}
+        new, actions = sd.decide(state, sd.GateResolved("g", "REST"), CFG)
+        self.assertEqual(actions, [])
+        self.assertEqual((new.gates, new.tasks["1"].status), ({}, "gating"))
 
     def test_a_stop_report_for_a_task_that_moved_on_is_ignored(self):
         state = ship(task("1", status="pending"))
