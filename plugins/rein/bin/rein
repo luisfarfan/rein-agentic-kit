@@ -35,9 +35,14 @@ Subcommands:
                       --json returns {"runs": [...]}
   rein baseline       mark/show/clear the reference run compared against
   rein ship <change>  drive a plan through Orca workers: dispatch, gate, audit.
-                      [--root <plan repo>] [--agent <id> --model <m>] [--dry-run]
+                      [--root <plan repo>] [--agent <id> --model <m>] [--dry-run | --detach]
+                      --detach opens a new Orca tab that runs the loop, then returns
                       exit 0 shipped and approved / 1 failed tasks or rejected audit /
                       2 usage / 126 preflight or environment. Never pushes or merges
+  rein answer [<change>] ["<text>"] [--gate <id>] [--root <plan repo>]
+                      list (no text) or resolve the owner gates a running `rein ship`
+                      is waiting on; option gates take one of their options. Exit 0 /
+                      1 failure / 2 usage (ambiguous change or gate, invalid option)
   rein migrate-config [root] [--write]
                       v1 -> v2 flow.config.json: drop models/limits/worktree, add the
                       ship block. Prints a diff; writes only with --write
@@ -68,6 +73,7 @@ import plan_check as _plan_check  # noqa: E402
 import roles as _roles  # noqa: E402
 import serve as _serve  # noqa: E402
 import ship as _ship  # noqa: E402
+import ship_answer as _answer  # noqa: E402
 import token_report as _tr  # noqa: E402
 import verify as _verify  # noqa: E402
 
@@ -781,12 +787,16 @@ def cmd_ship(argv: list[str]) -> int:
     Put the change name first: `_positional` treats the word after a bare flag
     as that flag's value, so `--dry-run <change>` is filtered out below.
     """
-    change = _positional([a for a in argv if a != "--dry-run"])
+    change = _positional([a for a in argv if a not in ("--dry-run", "--detach")])
     agent, model = _opt(argv, "agent"), _opt(argv, "model")
-    if not change or bool(agent) != bool(model):
-        print("usage: rein ship <change> [--root <plan repo>] [--agent <id> --model <m>] [--dry-run]")
+    detach = "--detach" in argv
+    if not change or bool(agent) != bool(model) or (detach and "--dry-run" in argv):
+        print("usage: rein ship <change> [--root <plan repo>] [--agent <id> --model <m>] "
+              "[--dry-run | --detach]  (--detach and --dry-run cannot be combined)")
         return 2
     root = _opt(argv, "root", ".")
+    if detach:
+        return _ship.detach_ship(root, change, _ship.OrcaClient(), override=(agent, model) if agent else None)
     env = dict(os.environ)
     dry_run = "--dry-run" in argv
     if dry_run:
@@ -798,6 +808,38 @@ def cmd_ship(argv: list[str]) -> int:
         root, change, client, _ship.default_gate_runner, env=env, clock=time.time,
         dry_run=dry_run, override=(agent, model) if agent else None,
     )
+
+
+def cmd_answer(argv: list[str]) -> int:
+    """List or resolve the owner gates of a `rein ship` run, in plain language.
+
+    `rein answer [<change>]` lists; `rein answer <change> "<text>"` resolves. With the
+    change omitted, `--change` is the way to answer: `rein answer "<text>" --change <c>`.
+    """
+    usage = 'usage: rein answer [<change>] ["<text>"] [--gate <id>] [--root <plan repo>]'
+    known = ("--root", "--gate", "--change")
+    words, skip = [], False
+    for a in argv:
+        if skip:
+            skip = False
+        elif a in known:
+            skip = True
+        elif a.startswith("-") and a.split("=")[0] in known:
+            continue
+        elif a.startswith("-"):
+            print(usage)
+            return 2
+        else:
+            words.append(a)
+    flag_change = _opt(argv, "change")
+    if skip or len(words) > (1 if flag_change else 2):
+        print(usage)
+        return 2
+    if flag_change:
+        change, text = flag_change, (words[0] if words else "")
+    else:
+        change, text = (words[0] if words else ""), (words[1] if len(words) == 2 else "")
+    return _answer.run_answer(_opt(argv, "root", "."), change, text, _opt(argv, "gate"), _ship.OrcaClient())
 
 
 def cmd_migrate_config(argv: list[str]) -> int:
@@ -849,6 +891,7 @@ COMMANDS = {
     "baseline": cmd_baseline,
     "serve-probe": cmd_serve_probe,
     "ship": cmd_ship,
+    "answer": cmd_answer,
     "migrate-config": cmd_migrate_config,
 }
 

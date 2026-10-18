@@ -21,7 +21,7 @@ sys.path.insert(0, os.path.join(PLUGIN, "lib"))
 
 import roles  # noqa: E402
 
-BUDGETS = {"rein-plan": 700, "ship": 200}
+BUDGETS = {"rein-plan": 700, "ship": 200, "answer": 200}
 
 
 def _skill_files() -> list:
@@ -36,7 +36,7 @@ def _read(path: str) -> str:
 class TestSkillBudget(unittest.TestCase):
     def test_skill_set(self):
         names = {os.path.basename(os.path.dirname(p)) for p in _skill_files()}
-        self.assertEqual(names, {"rein-plan", "rein-discover", "rein-audit", "rein-role", "ship"})
+        self.assertEqual(names, {"rein-plan", "rein-discover", "rein-audit", "rein-role", "ship", "answer"})
 
     def test_word_budgets(self):
         for name, limit in BUDGETS.items():
@@ -45,7 +45,7 @@ class TestSkillBudget(unittest.TestCase):
 
     def test_no_event_or_path_boilerplate(self):
         files = _skill_files()
-        self.assertEqual(len(files), 5, "the sweep must cover every skill")
+        self.assertEqual(len(files), 6, "the sweep must cover every skill")
         for path in files:
             text = _read(path)
             for banned in ("rein event", "plugins/cache", '"$R"', "$R="):
@@ -81,7 +81,8 @@ class TestSkillBudget(unittest.TestCase):
     def test_ship_and_plan_pass_the_change_and_root(self):
         ship = _read(os.path.join(SKILLS, "ship", "SKILL.md"))
         self.assertIn("rein tasks <root> --change <change>", ship)
-        self.assertIn("background", ship)
+        self.assertIn("rein ship <change> --root <root> --detach", ship)
+        self.assertIn("background", ship)  # named only to forbid running the loop there
         self.assertIn("/rein:ship", ship)
         plan = _read(os.path.join(SKILLS, "rein-plan", "SKILL.md"))
         self.assertIn("rein tasks <root> --change <c>", plan)
@@ -92,6 +93,16 @@ class TestSkillBudget(unittest.TestCase):
         self.assertIn("rein ship", text)
         self.assertIn("decision gate", text)
         self.assertIn("Orca", text)
+        self.assertIn("close this session", text)
+        self.assertIn("never run the loop in the foreground or background", text)
+
+    def test_answer_runs_the_cli_and_never_invents(self):
+        text = _read(os.path.join(SKILLS, "answer", "SKILL.md"))
+        self.assertIn("rein answer", text)
+        self.assertIn("--gate", text)
+        self.assertIn("never invents an answer", text)
+        for trigger in ("qué me pregunta rein", "responde a rein", "answer the gate", "pending questions"):
+            self.assertIn(trigger, text)
 
 
 if __name__ == "__main__":

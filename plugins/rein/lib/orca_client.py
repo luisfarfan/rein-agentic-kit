@@ -173,8 +173,30 @@ class OrcaClient:
             args += ["--options", json.dumps(list(options))]
         return self._call(*args)
 
-    def gate_list(self) -> dict:
-        return self._call("orchestration", "gate-list")
+    def gate_list(self, run_id: str = "") -> dict:
+        args = ["orchestration", "gate-list"]
+        if run_id:  # a caller outside the run's terminal must name the run
+            args += ["--run", run_id]
+        return self._call(*args)
+
+    def gate_resolve(self, gate_id: str, resolution: str, from_handle: str = "") -> dict:
+        """`from_handle` must be the terminal the run is bound to when the caller is not that terminal."""
+        args = ["orchestration", "gate-resolve", "--id", gate_id, "--resolution", resolution]
+        if from_handle:
+            args += ["--from", from_handle]
+        return self._call(*args)
+
+    def run_show(self, run_id: str) -> dict:
+        return self._call("orchestration", "run-show", "--id", run_id)
+
+    # -- terminals --------------------------------------------------------
+    def terminal_create(self, worktree: str, title: str, command: str) -> dict:
+        """`worktree` is an Orca selector such as `path:/abs/dir`."""
+        return self._call("terminal", "create", "--worktree", worktree, "--title", title,
+                          "--command", command)
+
+    def terminal_list(self) -> dict:
+        return self._call("terminal", "list")
 
     # -- worktrees --------------------------------------------------------
     def worktree_set(
@@ -301,3 +323,17 @@ def gates_of(gate_list_result: dict) -> list:
         item["options"] = options if isinstance(options, list) else []
         out.append(item)
     return out
+
+
+def terminal_handle_of(terminal_create_result: dict) -> str:
+    return _str(_dict(_dict(terminal_create_result).get("terminal")).get("handle"))
+
+
+def terminals_of(terminal_list_result: dict) -> list:
+    items = _dict(terminal_list_result).get("terminals")
+    return [t for t in items if isinstance(t, dict)] if isinstance(items, list) else []
+
+
+def coordinator_of(run_show_result: dict) -> str:
+    """The terminal handle a run is bound to: `gate-resolve --from` must be this."""
+    return _str(_dict(_dict(run_show_result).get("run")).get("coordinator_handle"))

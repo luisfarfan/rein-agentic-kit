@@ -146,13 +146,18 @@ def _load_plan(root: str, change: str) -> dict:
                            configured=plan_cfg.get("path", ""))
 
 
-def preflight(root: str, change: str, client: OrcaClient, env: dict) -> tuple:
-    """`(context, errors)`; any error means nothing may be started."""
+def preflight(root: str, change: str, client: OrcaClient, env: dict,
+              terminal_required: bool = True) -> tuple:
+    """`(context, errors)`; any error means nothing may be started.
+
+    `terminal_required=False` skips the ORCA_TERMINAL_HANDLE check, for `--detach`,
+    which creates the Orca terminal the driver will run in.
+    """
     root = os.path.abspath(root)
     errors: list = []
     default_repo = os.path.basename(root)
     ctx = {"root": root, "default_repo": default_repo, "repos": {}}
-    if not env.get("ORCA_TERMINAL_HANDLE"):
+    if terminal_required and not env.get("ORCA_TERMINAL_HANDLE"):
         errors.append("ORCA_TERMINAL_HANDLE is not set: run `rein ship` from inside an Orca terminal")
     try:
         caps = (client.status().get("runtime") or {}).get("capabilities") or []
@@ -791,6 +796,44 @@ class _Driver:
                 print(_tr.render_text(summary, recorded), flush=True)
             except Exception as exc:
                 self.say("tokens: report for %s failed: %s" % (path, exc))
+
+
+def ship_tab_title(change: str) -> str:
+    return "rein ship %s" % change
+
+
+def detach_ship(root: str, change: str, client: OrcaClient, *, override: tuple | None = None) -> int:
+    """Open a new Orca terminal in the plan repo that runs `rein ship <change>`, then return.
+
+    Plan errors surface here (exit 126) before any terminal exists, and a live
+    tab for the same change in the same worktree refuses (exit 1) so a second
+    driver is never started. Starting nothing but the terminal: the loop runs there.
+    """
+    root = os.path.abspath(root)
+    _, errors = preflight(root, change, client, {}, terminal_required=False)
+    if errors:
+        for e in errors:
+            print("ship: preflight: %s" % e)
+        return 126
+    title = ship_tab_title(change)
+    try:
+        for t in oc.terminals_of(client.terminal_list()):
+            same_tree = os.path.realpath(str(t.get("worktreePath") or "")) == os.path.realpath(root)
+            if t.get("title") == title and same_tree and t.get("connected") is not False:
+                print("ship: the Orca tab '%s' (%s) is already running in %s; not starting a second driver"
+                      % (title, t.get("handle") or "?", root))
+                return 1
+        argv = ["rein", "ship", change, "--root", root]
+        if override:
+            argv += ["--agent", override[0], "--model", override[1]]
+        handle = oc.terminal_handle_of(client.terminal_create(
+            "path:%s" % root, title, " ".join(shlex.quote(a) for a in argv)))
+    except OrcaError as exc:
+        print("ship: could not open the Orca tab (%s)" % exc)
+        return 1
+    print("terminal: %s" % (handle or "(no handle reported)"))
+    print("rein ship is running in the Orca tab '%s'; you can close this session." % title)
+    return 0
 
 
 def run_ship(root: str, change: str, client: OrcaClient, gate_runner: Callable, *, env: dict,

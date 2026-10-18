@@ -89,7 +89,7 @@ claude plugin install rein@rein-agentic-kit --scope user
 ```
 
 > **`rein ship` must run inside an Orca terminal** (it refuses unless `ORCA_TERMINAL_HANDLE` is set,
-> and unless `orca status` reports the orchestration contract). It also needs Orca's `orca` CLI
+> and unless `orca status` reports the orchestration contract); `rein ship --detach`, which `/ship` uses, opens that terminal for you. It also needs Orca's `orca` CLI
 > (or `$ORCA_CLI_COMMAND`) and each task's repo registered in Orca.
 
 ### Want `rein` in your own terminal too?
@@ -121,19 +121,27 @@ Coming from v1? `rein migrate-config` rewrites `flow.config.json` (drops `models
 |---|---|
 | 🔭 **`/rein:rein-discover`** | Think a problem through before committing to a shape. **Writes no plan, implements nothing** |
 | 🧭 **`/rein:rein-plan`** | Plan into verifiable tasks — dry-run and **explicit confirmation** before writing |
-| 🚢 **`/ship`** (`/rein:ship`) | Run `rein ship <change>` for a planned change. Never edits code or opens a PR |
+| 🚢 **`/ship`** (`/rein:ship`) | Open a detached Orca tab running `rein ship <change>`; you can close the session. Never edits code or opens a PR |
+| 💬 **`/answer`** (`/rein:answer`) | "¿Qué me pregunta rein?" / "respóndele: …": show and answer the run's pending gates |
 | 🔍 **`/rein:rein-audit`** | The independent gate: mechanical checks first, then five-axis judgement |
 | 🎭 **`/rein:rein-role`** | Assign this session's role: planner · implementer · reviewer |
 
 ### CLI — the deterministic half
 
 ```bash
-rein ship <change> [--root <plan repo>] [--agent <id> --model <m>] [--dry-run]
+rein ship <change> [--root <plan repo>] [--agent <id> --model <m>] [--dry-run | --detach]
                  # drive a plan through Orca workers: dispatch, gate each task, audit.
                  # Resumes from .rein/ship/<change>.json. --dry-run prints every orca call and
                  # runs nothing. Never pushes, merges or deploys.
                  # Exit: 0 shipped and approved · 1 failed tasks or rejected audit
                  #       2 usage · 126 preflight or environment (e.g. not in an Orca terminal)
+                 # --detach opens a new Orca tab "rein ship <change>" that runs the loop and
+                 # returns; refuses if that tab is already live. Not combinable with --dry-run.
+rein answer [<change>] ["<text>"] [--gate <id>] [--root <plan repo>]
+                 # No text: list the owner gates a running ship is waiting on (question,
+                 # options). With text: resolve one (option gates take one of their options,
+                 # case-insensitive). Never touches the ship state; the driver picks it up.
+                 # Exit: 0 ok · 1 Orca error or nothing to answer · 2 usage (ambiguous or invalid)
 rein migrate-config # v1 -> v2 flow.config.json: drop models/limits/worktree, add `ship`.
                  # Prints a diff; writes only with --write
 rein doctor      # 🩺 start here: stack, resolved commands, and the source of each

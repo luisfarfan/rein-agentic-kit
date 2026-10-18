@@ -185,8 +185,9 @@ class TestTheSkillSweepIsProvenToo(unittest.TestCase):
 
 PREFIX = "rein-"
 # v2's one deliberate exception: the execution entry point is `/ship`, a short
-# verb the owner types constantly. No built-in or known plugin ships `ship`.
-UNPREFIXED_ALLOWED = {"ship"}
+# verb the owner types constantly; `answer` is its companion for replying to the
+# run's gates. No built-in or known plugin ships either.
+UNPREFIXED_ALLOWED = {"ship", "answer"}
 
 
 class TestEveryIdentifierIsNamespaced(unittest.TestCase):
