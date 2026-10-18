@@ -18,6 +18,7 @@ DEFAULT_SHIP = {
     "maxRetries": 2,
     "maxAuditRounds": 2,
     "taskTimeoutMinutes": 45,
+    "gateTimeoutSeconds": 900,
     "largeChangeFiles": 25,
     "riskyPaths": ["**/auth/**", "**/payments/**", "**/migrations/**"],
 }

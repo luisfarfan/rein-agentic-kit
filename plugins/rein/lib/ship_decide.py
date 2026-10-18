@@ -32,6 +32,11 @@ AUDIT_HOLDS = ("audit_failed", "audit_timeout", "audit_exhausted", "setup")
 
 # --- configuration ----------------------------------------------------------
 
+def _positive_number(value) -> bool:
+    return (isinstance(value, (int, float)) and not isinstance(value, bool)
+            and value == value and 0 < value < float("inf"))
+
+
 @dataclass
 class ShipConfig:
     claude_weekly_threshold: float = 60
@@ -39,6 +44,7 @@ class ShipConfig:
     max_retries: int = 2
     max_audit_rounds: int = 2
     task_timeout_minutes: float = 45
+    gate_timeout_seconds: float = 900.0
     large_change_files: int = 25
     risky_paths: list = field(default_factory=lambda: list(_DEFAULT_RISKY))
     override: tuple | None = None
@@ -55,6 +61,7 @@ class ShipConfig:
             "maxRetries": "max_retries",
             "maxAuditRounds": "max_audit_rounds",
             "taskTimeoutMinutes": "task_timeout_minutes",
+            "gateTimeoutSeconds": "gate_timeout_seconds",
             "largeChangeFiles": "large_change_files",
             "riskyPaths": "risky_paths",
         }
@@ -63,6 +70,8 @@ class ShipConfig:
             value = block.get(key)
             if value is None:
                 continue
+            if attr == "gate_timeout_seconds" and not _positive_number(value):
+                continue  # a bad value keeps the default rather than crashing a run
             kwargs[attr] = list(value) if attr == "risky_paths" else value
         return cls(**kwargs)
 

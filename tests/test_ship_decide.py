@@ -751,6 +751,17 @@ class Config(unittest.TestCase):
         self.assertEqual(c.risky_paths, ["**/auth/**", "**/payments/**", "**/migrations/**"])
         self.assertIsNot(c.risky_paths, sd.ShipConfig().risky_paths)
 
+    def test_gate_timeout_default_and_override(self):
+        self.assertEqual(sd.ShipConfig().gate_timeout_seconds, 900.0)
+        self.assertEqual(sd.ShipConfig.from_flow_config({}).gate_timeout_seconds, 900.0)
+        c = sd.ShipConfig.from_flow_config({"ship": {"gateTimeoutSeconds": 1200}})
+        self.assertEqual(c.gate_timeout_seconds, 1200)
+
+    def test_gate_timeout_invalid_falls_back_to_default(self):
+        for bad in (0, -5, "x", True, float("nan"), [1]):
+            c = sd.ShipConfig.from_flow_config({"ship": {"gateTimeoutSeconds": bad}})
+            self.assertEqual(c.gate_timeout_seconds, 900.0, bad)
+
     def test_from_flow_config_reads_ship_block_and_keeps_defaults(self):
         c = sd.ShipConfig.from_flow_config({"ship": {"maxRetries": 5, "riskyPaths": ["x/**"],
                                                       "taskTimeoutMinutes": 10}})

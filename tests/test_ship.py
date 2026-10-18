@@ -225,12 +225,14 @@ def scripted_gate(*codes):
     calls = []
     queue = list(codes)
 
-    def run(path, unit_only):
+    def run(path, unit_only, timeout=None):
         calls.append((path, unit_only))
+        run.timeouts.append(timeout)
         code = queue.pop(0) if queue else 0
         return code, "gate output: exit %d" % code
 
     run.calls = calls
+    run.timeouts = []
     return run
 
 
@@ -287,6 +289,54 @@ class ShipCase(unittest.TestCase):
                                      clock=self.clock, state_path=self.state_file, **kw)
         finally:
             self.out = buf.getvalue()
+
+
+class TestGateTimeout(ShipCase):
+    def test_driver_passes_the_default_gate_timeout(self):
+        gates = scripted_gate()
+        fake = FakeOrca(self.root)
+        fake.on_audit = self.approve_audit()
+        self.run_ship(fake, gates)
+        self.assertTrue(gates.timeouts)
+        self.assertEqual(set(gates.timeouts), {900.0})
+
+    def test_driver_passes_the_configured_gate_timeout(self):
+        with open(os.path.join(self.root, "flow.config.json"), "w", encoding="utf-8") as fh:
+            json.dump({"ship": {"gateTimeoutSeconds": 1200}}, fh)
+        gates = scripted_gate()
+        fake = FakeOrca(self.root)
+        fake.on_audit = self.approve_audit()
+        self.run_ship(fake, gates)
+        self.assertTrue(gates.timeouts)
+        self.assertEqual(set(gates.timeouts), {1200})
+
+    def _stub_run(self, result=None, exc=None):
+        seen = {}
+
+        def fake_run(argv, **kw):
+            seen["argv"], seen["kw"] = argv, kw
+            if exc:
+                raise exc
+            return result
+        saved = ship.subprocess.run
+        ship.subprocess.run = fake_run
+        self.addCleanup(setattr, ship.subprocess, "run", saved)
+        return seen
+
+    def test_default_gate_runner_passes_timeout_to_rein_gate(self):
+        seen = self._stub_run(subprocess.CompletedProcess([], 0, "ok", ""))
+        code, _out = ship.default_gate_runner("/wt", True, 1200)
+        self.assertEqual(code, 0)
+        argv = seen["argv"]
+        self.assertEqual(argv[argv.index("--timeout") + 1], "1200")
+        self.assertIn("--unit-only", argv)
+        self.assertGreater(seen["kw"]["timeout"], 1200)
+
+    def test_default_gate_runner_outer_timeout_is_126(self):
+        self._stub_run(exc=subprocess.TimeoutExpired(["rein"], 5))
+        code, out = ship.default_gate_runner("/wt", False, 900)
+        self.assertEqual(code, 126)
+        self.assertIn("timed out", out)
 
 
 class TestPreflight(ShipCase):

@@ -119,10 +119,22 @@ def changed_files(worktree_path: str, base_ref: str) -> list:
     return sorted(f for f in found if not f.startswith(".rein/"))
 
 
-def default_gate_runner(path: str, unit_only: bool) -> tuple:
-    """`rein gate <path> --json [--unit-only]`, with this process's Python and this checkout's bin."""
-    argv = [sys.executable, BIN, "gate", path, "--json"] + (["--unit-only"] if unit_only else [])
-    proc = subprocess.run(argv, capture_output=True, text=True)
+_GATE_COMMANDS_BOUND = 6  # generous bound on configured gate commands (test, lint, typecheck, ...)
+
+
+def default_gate_runner(path: str, unit_only: bool, timeout: float = 900.0) -> tuple:
+    """`rein gate <path> --json [--unit-only] --timeout <s>`, with this process's Python and this checkout's bin.
+
+    `timeout` is the per-command budget `rein gate` gives each configured command;
+    the subprocess itself gets an outer bound so a hung gate cannot hang the driver.
+    """
+    argv = ([sys.executable, BIN, "gate", path, "--json"] + (["--unit-only"] if unit_only else [])
+            + ["--timeout", "%g" % timeout])
+    outer = timeout * _GATE_COMMANDS_BOUND + 60
+    try:
+        proc = subprocess.run(argv, capture_output=True, text=True, timeout=outer)
+    except subprocess.TimeoutExpired:
+        return 126, "gate timed out: `rein gate` exceeded %gs overall" % outer
     return proc.returncode, ((proc.stdout or "") + (proc.stderr or ""))[-_TAIL:]
 
 
@@ -432,7 +444,7 @@ class _Driver:
         if not path:
             return sd.GateVerdict(a.task_id, 126, "no worktree is recorded for %s" % task.repo)
         try:
-            code, out = self.gate_runner(path, a.unit_only)
+            code, out = self.gate_runner(path, a.unit_only, self.cfg.gate_timeout_seconds)
         except OSError as exc:
             code, out = 126, "gate could not run: %s" % exc
         self.say("%s gate exit %s" % (task.id, code))

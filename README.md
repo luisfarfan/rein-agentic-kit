@@ -208,6 +208,7 @@ Everything is optional. Drop a `flow.config.json` at your project root to overri
     "maxRetries": 2,
     "maxAuditRounds": 2,
     "taskTimeoutMinutes": 45,
+    "gateTimeoutSeconds": 900,
     "largeChangeFiles": 25,
     "riskyPaths": ["**/auth/**", "**/payments/**", "**/migrations/**"]
   }
@@ -216,8 +217,9 @@ Everything is optional. Drop a `flow.config.json` at your project root to overri
 
 The `ship` block shows its defaults. `maxRetries` is how many times a red task is retried with a
 fresh worker, `maxAuditRounds` bounds audit and fix rounds, `taskTimeoutMinutes` opens a gate
-instead of waiting forever, and a change that touches `riskyPaths` or more than
-`largeChangeFiles` files gets an Opus audit.
+instead of waiting forever, `gateTimeoutSeconds` is the per-command timeout of each task's gate
+(raise it for a slow suite), and a change that touches `riskyPaths` or more than `largeChangeFiles`
+files gets an Opus audit.
 
 **Precedence:** `flow.config.json` › task runner (`justfile` / `Makefile` / `Taskfile` / `mise`) ›
 autodetection. A project that already declares how it is built is never second-guessed.
