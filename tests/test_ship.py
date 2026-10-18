@@ -97,6 +97,7 @@ class FakeOrca:
         self.fail_starts = 0
         self.start_error = None
         self.reply_error = None
+        self.fail_releases = False
         self.n = 0
 
     # runner protocol
@@ -165,6 +166,8 @@ class FakeOrca:
             return {"dispatch": {"status": self.show_status},
                     "worker": {"state": "succeeded" if self.show_status == "completed" else "working", "worktreeId": ""}}
         if verb in ("worker-release", "worker-retain"):
+            if self.fail_releases:
+                raise FailEnvelope({"ok": False, "error": {"code": "dispatch_gone", "message": "already released"}})
             return {"state": "released"}
         if verb == "worker-stop":
             self.stopped.append(_flag(a, "--dispatch"))
@@ -680,6 +683,49 @@ class TestLostDone(ShipCase):
             self.run_ship(fake, gates)
         self.assertEqual(len(gates.calls), 1)
         self.assertEqual(ship_state.load(self.state_file).tasks["T001"].status, "done")
+
+    def test_a_recovered_worker_is_released_once_not_again_by_its_stale_next_action(self):
+        self.held_state("running", question=False)
+        release = {"kind": "release", "argv": ["orchestration", "worker-release", "--dispatch", "d1"]}
+        settled = self.row("failed", "failed", "completed")
+        settled[0]["projection"]["nextAction"] = release
+        fake = self.fake(self.row())
+        fake.pending = [lambda f: [], lambda f: [], lambda f: setattr(f, "rows_override", settled) or []]
+        with self.assertRaises(Drained):
+            self.run_ship(fake, scripted_gate())
+        released = [c for c in fake.calls if c == ["orchestration", "worker-release", "--dispatch", "d1"]]
+        self.assertEqual(len(released), 1)
+
+    def test_a_failing_next_action_is_logged_and_does_not_crash_the_loop(self):
+        self.held_state("running", question=False)
+        old = self.row(); old[0]["dispatchId"] = "d_old"
+        old[0]["projection"] = {"nextAction": {"kind": "release",
+                                               "argv": ["orchestration", "worker-release", "--dispatch", "d_old"]}}
+        fake = self.fake(self.row() + old)
+        fake.fail_releases = True
+        fake.pending = [lambda f: []] * 4
+        with self.assertRaises(Drained):
+            self.run_ship(fake, scripted_gate())
+        self.assertIn("could not release d_old", self.out)
+
+    def test_a_terminal_dispatch_without_a_clear_outcome_is_not_settled(self):
+        self.held_state("gated")
+        fake = self.fake(self.row(None, "working", "completed"))
+        fake.pending = [lambda f: []] * 4
+        gates = scripted_gate(0)
+        with self.assertRaises(Drained):
+            self.run_ship(fake, gates)
+        self.assertEqual((gates.calls, fake.starts()), ([], []))
+        self.assertEqual(ship_state.load(self.state_file).tasks["T001"].status, "gated")
+
+    def test_the_unconfirmed_worker_line_is_logged_once_per_dispatch(self):
+        self.held_state("running", question=False)
+        fake = self.fake([])
+        fake.show_status = "dispatched"
+        fake.pending = [lambda f: []] * 7
+        with self.assertRaises(Drained):
+            self.run_ship(fake, scripted_gate())
+        self.assertEqual(self.out.count("does not confirm it exited"), 1)
 
     def test_a_relay_to_an_inactive_dispatch_is_logged_once_and_dropped(self):
         self.write_plan(PLAN.split("- [ ] T002")[0])

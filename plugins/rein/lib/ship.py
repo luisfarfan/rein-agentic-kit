@@ -574,11 +574,13 @@ class _Driver:
             self.worker_done(did, outcome)
 
     def settled_row(self, row):
-        """`"succeeded"`/`"failed"` when a `worker-list` row proves its dispatch settled, else None."""
-        if row.get("dispatchStatus") in ("completed", "failed") or row.get("workerState") in ("succeeded", "failed"):
-            outcome = (row.get("projection") or {}).get("outcome") or row.get("workerState")
-            return "succeeded" if outcome == "succeeded" else "failed"
-        return None
+        """`"succeeded"`/`"failed"` when a `worker-list` row clearly says how its worker ended, else None.
+
+        Like `settled_outcome`, positive proof only: a terminal dispatch status
+        without a clear outcome is not settled (the task timeout covers it).
+        """
+        outcome = (row.get("projection") or {}).get("outcome") or row.get("workerState")
+        return outcome if outcome in ("succeeded", "failed") else None
 
     def lost_completions(self, rows):
         """`WorkerDone` events for tasks whose worker Orca reports settled but whose done we never folded in.
@@ -603,7 +605,8 @@ class _Driver:
                 except OrcaError as exc:
                     outcome = None
                     self.say("%s: cannot look up %s (%s)" % (t.id, t.dispatch_id, exc))
-                if outcome is None:
+                if outcome is None and (t.dispatch_id, "unconfirmed") not in self.noted:
+                    self.noted.add((t.dispatch_id, "unconfirmed"))
                     self.say("%s: %s is not in worker-list and Orca does not confirm it exited; "
                              "leaving it be (the task timeout covers it)" % (t.id, t.dispatch_id))
             if outcome is not None:
@@ -612,7 +615,9 @@ class _Driver:
 
     def idle_poll(self):
         rows = self.rows()
+        recovered = set()
         for event in self.lost_completions({str(r.get("dispatchId")): r for r in rows}):
+            recovered.add(event.dispatch_id)
             self.say("recovered a lost worker_done for %s (%s)" % (event.dispatch_id, event.outcome))
             self.feed(event)
         # After the feed above: a recovered task's worker is held by `gating`, or already released.
@@ -622,14 +627,18 @@ class _Driver:
             action = (row.get("projection") or {}).get("nextAction")
             kind = action.get("kind") if isinstance(action, dict) else ""
             did = str(row.get("dispatchId") or "")
-            if not kind or did == self.state.audit_dispatch:
-                continue
+            if not kind or did == self.state.audit_dispatch or did in recovered:
+                continue  # a recovered worker was already released by decide; `rows` is a stale snapshot
             if kind not in SAFE_NEXT_ACTIONS:
                 if (did, kind) not in self.noted:  # never acted on: only release/retain run
                     self.noted.add((did, kind))
                     self.say("ignoring unknown nextAction %r for %s" % (kind, did))
             elif did not in held and action.get("argv") == ["orchestration", "worker-%s" % kind, "--dispatch", did]:
-                self.client.call(*action["argv"])
+                try:
+                    self.client.call(*action["argv"])
+                except OrcaError as exc:
+                    self.say("could not %s %s: %s" % (kind, did, exc))
+                    continue
                 self.say("%s %s" % (kind, did))
         self.probe_audit()
 
