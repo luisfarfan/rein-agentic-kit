@@ -417,26 +417,37 @@ class _Driver:
     def open_pending(self):
         """Create every owner gate decide asked for and Orca does not have yet.
 
-        A failed gate-create leaves the request in `state.pending_gates`; the
-        next call (every loop iteration, and on resume) tries again.
+        Orca refuses a gate on a task whose supervised dispatch is active, so
+        every gate lives on its own worker-less "holder" task. The holder is
+        recorded in the entry before gate-create runs, so a failed gate-create
+        (or a crash) retries on the same holder instead of creating another.
+        A failed call leaves the request in `state.pending_gates`; the next
+        call (every loop iteration, and on resume) tries again.
         """
         for entry in list(self.state.pending_gates):
             task_id = entry.get("task_id")
-            anchor = (self.state.tasks.get(task_id) if task_id else None) or next(
-                (t for t in self.state.tasks.values() if t.orca_task_id), None)
-            if anchor is None:
-                continue
+            kind = entry.get("kind")
             try:
+                if not entry.get("holder_task"):
+                    holder = oc.task_id_of(self.client.task_create(
+                        spec="Rein ship owner decision (%s) for %s. No worker is ever started for this task."
+                             % (kind, task_id or "run"),
+                        title="gate %s %s" % (kind, task_id or "run"), deps=[]))
+                    if not holder:
+                        raise OrcaError("task-create returned no task id")
+                    entry["holder_task"] = holder
+                    self.save()
                 gate_id = oc.gate_id_of(self.client.gate_create(
-                    anchor.orca_task_id, str(entry.get("question"))[:2000], entry.get("options") or []))
+                    entry["holder_task"], str(entry.get("question"))[:2000], entry.get("options") or []))
             except OrcaError as exc:
-                self.say("could not open the %s gate, will retry: %s" % (entry.get("kind"), exc))
+                self.say("could not open the %s gate, will retry: %s" % (kind, exc))
                 continue
-            self.state.gates[gate_id] = {"task_id": task_id, "kind": entry.get("kind"),
-                                         "message_id": entry.get("message_id", ""), "audit": entry.get("audit", "")}
+            self.state.gates[gate_id] = {"task_id": task_id, "kind": kind,
+                                         "message_id": entry.get("message_id", ""), "audit": entry.get("audit", ""),
+                                         "holder_task": entry["holder_task"]}
             self.state.pending_gates.remove(entry)
             self.save()
-            self.say("waiting for the owner (%s): %s" % (entry.get("kind"), str(entry.get("question"))[:200]))
+            self.say("waiting for the owner (%s): %s" % (kind, str(entry.get("question"))[:200]))
 
     def run_gate(self, a):
         task = self.state.tasks[a.task_id]

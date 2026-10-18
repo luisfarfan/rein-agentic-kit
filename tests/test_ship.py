@@ -739,6 +739,80 @@ class TestGateDurability(ShipCase):
         self.assertIn("could not start a worker for T001", _flag(creates[-1], "--question"))
 
 
+class TestGateHolder(ShipCase):
+    """Orca refuses a gate on a task whose supervised dispatch is active: every owner gate lives on a worker-less holder."""
+
+    @staticmethod
+    def question(f):
+        did = next(iter(f.dispatches))
+        return [{"id": "msg_q", "type": "question", "from_handle": "term_" + did, "subject": "?",
+                 "body": "REST?", "payload": json.dumps({"dispatchId": did})}]
+
+    @staticmethod
+    def holder_creates(fake):
+        return [c for c in fake.calls if c[1:2] == ["task-create"] and _flag(c, "--task-title").startswith("gate ")]
+
+    def test_a_question_gate_opens_on_a_holder_task_not_the_workers(self):
+        self.write_plan(PLAN.split("- [ ] T002")[0])
+        fake = FakeOrca(self.root, autocomplete=False)
+        fake.pending = [self.question, lambda f: f.resolve_gate(0, "yes") or []]
+        with self.assertRaises(Drained):
+            self.run_ship(fake, scripted_gate())
+        holders = self.holder_creates(fake)
+        self.assertEqual(len(holders), 1)
+        self.assertEqual(_flag(holders[0], "--task-title"), "gate question T001")
+        self.assertIn("No worker is ever started", _flag(holders[0], "--spec"))
+        holder_id = next(t for t, v in fake.tasks.items() if v["title"] == "gate question T001")
+        worker_ids = {d["task"] for d in fake.dispatches.values()}
+        self.assertTrue(worker_ids)
+        creates = [c for c in fake.calls if c[:2] == ["orchestration", "gate-create"]]
+        self.assertEqual([_flag(c, "--task") for c in creates], [holder_id])
+        self.assertNotIn(holder_id, worker_ids)
+        self.assertLess(fake.calls.index(holders[0]), fake.calls.index(creates[0]))
+        self.assertNotIn(_flag(creates[0], "--task"), worker_ids)
+
+    def test_a_failed_gate_create_reuses_the_same_holder(self):
+        self.write_plan(PLAN.split("- [ ] T002")[0])
+        fake = FakeOrca(self.root, autocomplete=False)
+        fake.fail_gate_creates = 1
+        fake.pending = [self.question, lambda f: [], lambda f: f.resolve_gate(0, "yes") or []]
+        with self.assertRaises(Drained):
+            self.run_ship(fake, scripted_gate())
+        creates = [c for c in fake.calls if c[:2] == ["orchestration", "gate-create"]]
+        self.assertEqual(len(creates), 2)
+        self.assertEqual(len(self.holder_creates(fake)), 1)
+        self.assertEqual(_flag(creates[0], "--task"), _flag(creates[1], "--task"))
+
+    def test_a_run_level_gate_uses_a_holder_too(self):
+        self.write_plan(PLAN.split("- [ ] T002")[0])
+        plan = ship._plan.read_plan(self.root, source="tasks-md", change="demo")
+        state = ship_state.from_plan(plan, "plan-repo")
+        state.run_id, state.phase = "run_1", "braked"
+        ship_state.save(state, self.state_file)
+        fake = FakeOrca(self.root, autocomplete=False)
+        with self.assertRaises(Drained):
+            self.run_ship(fake, scripted_gate())
+        holders = self.holder_creates(fake)
+        self.assertEqual([_flag(h, "--task-title") for h in holders], ["gate brake run"])
+        holder_id = next(t for t, v in fake.tasks.items() if v["title"] == "gate brake run")
+        creates = [c for c in fake.calls if c[:2] == ["orchestration", "gate-create"]]
+        self.assertEqual([_flag(c, "--task") for c in creates], [holder_id])
+
+    def test_the_gate_entry_records_its_holder_and_pending_entries_round_trip_it(self):
+        self.write_plan(PLAN.split("- [ ] T002")[0])
+        fake = FakeOrca(self.root, autocomplete=False)
+        fake.pending = [self.question, lambda f: []]
+        with self.assertRaises(Drained):
+            self.run_ship(fake, scripted_gate())
+        (gate,) = ship_state.load(self.state_file).gates.values()
+        holder_id = next(t for t, v in fake.tasks.items() if v["title"] == "gate question T001")
+        self.assertEqual(gate["holder_task"], holder_id)
+        state = ship_state.from_plan(ship._plan.read_plan(self.root, source="tasks-md", change="demo"), "plan-repo")
+        state.pending_gates = [{"task_id": None, "kind": "brake", "options": [], "question": "q", "holder_task": "task_h"}]
+        ship_state.save(state, self.state_file)
+        self.assertEqual(ship_state.load(self.state_file).pending_gates[0]["holder_task"], "task_h")
+
+
 class TestAuditSupervision(ShipCase):
     def audit_state(self, **kw):
         self.write_plan(PLAN.split("- [ ] T002")[0])
@@ -837,7 +911,7 @@ class TestAuditSupervision(ShipCase):
                 creates = self.gate_creates(fake)
                 self.assertEqual(len(creates), 1)
                 self.assertEqual(_flag(creates[0], "--options"), '["retry-audit", "accept", "reject"]')
-                self.assertEqual([t for t in fake.tasks.values()], [])  # no fix task, no new audit
+                self.assertEqual([t["title"] for t in fake.tasks.values()], ["gate audit_failed run"])  # only the gate holder: no fix task, no new audit
                 state = ship_state.load(self.state_file)
                 self.assertEqual(sorted(state.tasks), ["T001"])
                 self.assertEqual(state.audit_rounds, 0)
