@@ -195,8 +195,11 @@ class OrcaClient:
         return self._call("terminal", "create", "--worktree", worktree, "--title", title,
                           "--command", command)
 
-    def terminal_list(self) -> dict:
-        return self._call("terminal", "list")
+    def terminal_list(self, worktree: str = "") -> dict:
+        args = ["terminal", "list"]
+        if worktree:  # an Orca selector such as `path:/abs/dir`
+            args += ["--worktree", worktree]
+        return self._call(*args)
 
     # -- worktrees --------------------------------------------------------
     def worktree_set(

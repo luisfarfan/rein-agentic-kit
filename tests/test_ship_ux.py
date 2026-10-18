@@ -8,6 +8,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -113,6 +114,8 @@ class TestClientArgv(unittest.TestCase):
     def test_terminal_list(self):
         self.c.terminal_list()
         self.assertEqual(self.fake.calls[-1], ["ORCA", "terminal", "list", "--json"])
+        self.c.terminal_list("path:/w")
+        self.assertEqual(self.fake.calls[-1], ["ORCA", "terminal", "list", "--worktree", "path:/w", "--json"])
 
     def test_run_show(self):
         self.c.run_show("run_1")
@@ -152,8 +155,12 @@ class TestDetach(UxCase):
         argv = created[0]
         self.assertEqual(argv[argv.index("--worktree") + 1], "path:" + os.path.abspath(self.root))
         self.assertEqual(argv[argv.index("--title") + 1], "rein ship demo")
-        self.assertEqual(argv[argv.index("--command") + 1],
-                         "rein ship demo --root " + os.path.abspath(self.root))
+        command = argv[argv.index("--command") + 1]
+        self.assertEqual(command, shlex.join([sys.executable, ship.BIN, "ship", "demo",
+                                              "--root", os.path.abspath(self.root)]))
+        self.assertTrue(command.startswith(shlex.quote(sys.executable) + " " + shlex.quote(ship.BIN)))
+        listed = fake.commands("terminal", "list")
+        self.assertEqual(listed[0][3:5], ["--worktree", "path:" + os.path.abspath(self.root)])
         self.assertIn("term_new", out)
         self.assertIn("rein ship is running in the Orca tab 'rein ship demo'; you can close this session.", out)
         self.assertEqual(fake.commands("orchestration"), [], "detach must not run the loop")
@@ -168,7 +175,7 @@ class TestDetach(UxCase):
         self.assertEqual(code, 0, out)
         command = fake.commands("terminal", "create")[0]
         command = command[command.index("--command") + 1]
-        self.assertEqual(command, "rein ship demo --root '%s'" % os.path.abspath(spaced))
+        self.assertTrue(command.endswith("ship demo --root '%s'" % os.path.abspath(spaced)))
 
     def test_agent_override_is_forwarded(self):
         fake = FakeOrca()
@@ -183,7 +190,8 @@ class TestDetach(UxCase):
         fake = FakeOrca(terminals=[live])
         code, out = self.detach(fake)
         self.assertEqual(code, 1)
-        self.assertIn("term_old", out)
+        self.assertIn("a 'rein ship demo' tab already exists in %s; if its run finished, "
+                      "close that tab and try again" % os.path.abspath(self.root), out)
         self.assertEqual(fake.commands("terminal", "create"), [])
 
     def test_a_dead_or_foreign_tab_does_not_block(self):

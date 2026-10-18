@@ -817,17 +817,18 @@ def detach_ship(root: str, change: str, client: OrcaClient, *, override: tuple |
         return 126
     title = ship_tab_title(change)
     try:
-        for t in oc.terminals_of(client.terminal_list()):
+        for t in oc.terminals_of(client.terminal_list("path:%s" % root)):
             same_tree = os.path.realpath(str(t.get("worktreePath") or "")) == os.path.realpath(root)
             if t.get("title") == title and same_tree and t.get("connected") is not False:
-                print("ship: the Orca tab '%s' (%s) is already running in %s; not starting a second driver"
-                      % (title, t.get("handle") or "?", root))
+                print("ship: a '%s' tab already exists in %s; if its run finished, close that tab and try again"
+                      % (title, root))
                 return 1
-        argv = ["rein", "ship", change, "--root", root]
+        # Not a bare `rein`: it may not be on PATH in the new tab. This interpreter and checkout always work.
+        argv = [sys.executable, BIN, "ship", change, "--root", root]
         if override:
             argv += ["--agent", override[0], "--model", override[1]]
         handle = oc.terminal_handle_of(client.terminal_create(
-            "path:%s" % root, title, " ".join(shlex.quote(a) for a in argv)))
+            "path:%s" % root, title, shlex.join(argv)))
     except OrcaError as exc:
         print("ship: could not open the Orca tab (%s)" % exc)
         return 1
