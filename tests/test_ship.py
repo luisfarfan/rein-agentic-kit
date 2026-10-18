@@ -798,6 +798,29 @@ class TestGateHolder(ShipCase):
         creates = [c for c in fake.calls if c[:2] == ["orchestration", "gate-create"]]
         self.assertEqual([_flag(c, "--task") for c in creates], [holder_id])
 
+    def test_a_task_create_without_an_id_is_logged_and_retried_not_a_crash(self):
+        self.write_plan(PLAN.split("- [ ] T002")[0])
+        plan = ship._plan.read_plan(self.root, source="tasks-md", change="demo")
+        state = ship_state.from_plan(plan, "plan-repo")
+        state.run_id, state.phase = "run_1", "braked"
+        ship_state.save(state, self.state_file)
+        fake = FakeOrca(self.root, autocomplete=False)
+        real = fake._answer
+        skipped = []
+
+        def answer(a):
+            if a[1:2] == ["task-create"] and _flag(a, "--task-title").startswith("gate ") and not skipped:
+                skipped.append(a)
+                return {}
+            return real(a)
+
+        fake._answer = answer
+        with self.assertRaises(Drained):
+            self.run_ship(fake, scripted_gate())
+        self.assertIn("will retry", self.out)
+        self.assertEqual(len(self.holder_creates(fake)), 2)
+        self.assertEqual(len([c for c in fake.calls if c[:2] == ["orchestration", "gate-create"]]), 1)
+
     def test_the_gate_entry_records_its_holder_and_pending_entries_round_trip_it(self):
         self.write_plan(PLAN.split("- [ ] T002")[0])
         fake = FakeOrca(self.root, autocomplete=False)

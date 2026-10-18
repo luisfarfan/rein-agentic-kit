@@ -62,6 +62,9 @@ Every response is `{"id", "ok", "result", "_meta"}`. On failure: `{"ok": false, 
 - **Resolving a gate sends no inbox message.** After `gate-resolve`, `check --all` still shows
   only the `worker_done`. The driver must poll `gate-list` for `status == "resolved"`;
   `check --wait` will not wake for it, so waits must be bounded.
+- Orca 1.4.229 refuses `gate-create` on a task whose supervised dispatch is active
+  (`task_not_startable: ... cannot open a gate while supervised Dispatch ... is active`), which is
+  why `rein ship` opens every owner gate on a worker-less holder task.
 - `worker_done` settles the dispatch on its own (`dispatch.status == "completed"`), but the
   worker terminal stays `reclaimable` until `worker-release`.
 - `check` without `--ack` replays the same delivery; `--ack <deliveryId>` acknowledges it.

@@ -434,7 +434,7 @@ class _Driver:
                              % (kind, task_id or "run"),
                         title="gate %s %s" % (kind, task_id or "run"), deps=[]))
                     if not holder:
-                        raise OrcaError("task-create returned no task id")
+                        raise OrcaError("no_task_id", "task-create returned no task id")
                     entry["holder_task"] = holder
                     self.save()
                 gate_id = oc.gate_id_of(self.client.gate_create(
