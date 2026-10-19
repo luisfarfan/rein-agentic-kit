@@ -1,0 +1,29 @@
+{
+  "id": "43cecc3d-22e3-441c-b74a-206142eeae4d",
+  "ok": true,
+  "result": {
+    "messages": [
+      {
+        "id": "msg_82517158b558",
+        "run_id": "run_bc7b9b8da771",
+        "delivery_contract": "current_delivery",
+        "from_handle": "term_78b7f80f-dd98-47a5-b6a9-2fe077b861c0",
+        "to_handle": "run:run_bc7b9b8da771",
+        "subject": "Fixture capture complete",
+        "body": "Fixture capture was requested with no code or file changes, so I made none and ran no other commands. I sent this completion directly as instructed. Nothing remains outstanding for this task.",
+        "type": "worker_done",
+        "priority": "normal",
+        "thread_id": null,
+        "payload": "{\"taskId\":\"task_ffb73325fd13\",\"dispatchId\":\"ctx_200d25f84c8b\",\"outcome\":\"succeeded\"}",
+        "created_at": "2026-10-17T20:57:13Z",
+        "delivered_at": null
+      }
+    ],
+    "count": 1,
+    "acknowledged": null,
+    "runId": "run_bc7b9b8da771"
+  },
+  "_meta": {
+    "runtimeId": "e924d25f-fb5e-4a12-85ed-ca9f052bab29"
+  }
+}

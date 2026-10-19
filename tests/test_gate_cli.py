@@ -28,9 +28,11 @@ EXIT_GREEN, EXIT_RED, EXIT_SETUP = 0, 1, 126
 class _Project:
     """A throwaway project whose `test` slot does exactly what we say."""
 
-    def __init__(self, test_command: str, body: str = "self.assertEqual(1, 1)"):
+    def __init__(self, test_command: str, body: str = "self.assertEqual(1, 1)",
+                 verify: dict | None = None):
         self.test_command = test_command
         self.body = body
+        self.verify = verify
 
     def __enter__(self) -> str:
         self.tmp = tempfile.mkdtemp()
@@ -42,7 +44,10 @@ class _Project:
             fh.write("import unittest\n\n\nclass T(unittest.TestCase):\n"
                      f"    def test_it(self):\n        {self.body}\n")
         with open(os.path.join(root, "flow.config.json"), "w", encoding="utf-8") as fh:
-            json.dump({"stack": "python", "commands": {"test": self.test_command}}, fh)
+            cfg = {"stack": "python", "commands": {"test": self.test_command}}
+            if self.verify:
+                cfg["verify"] = self.verify
+            json.dump(cfg, fh)
         self.root = root
         return root
 
@@ -104,6 +109,21 @@ class GateCliTestCase(unittest.TestCase):
         self.assertEqual(human.returncode, as_json.returncode)
         payload = json.loads(as_json.stdout)
         self.assertEqual(payload["decision"]["exit"], as_json.returncode)
+
+    def test_unit_only_skips_the_render_demand_of_a_rendered_repo(self):
+        """Per-task gates must not demand a browser render; render evidence
+        belongs to `Type: verification` tasks. Without the flag the same repo
+        stays at 126 -- nobody has looked at the UI."""
+        with _Project(PASSING, verify={"mode": "rendered"}) as root:
+            rendered = _gate(root)
+            unit_only = _gate(root, "--unit-only")
+        self.assertEqual(rendered.returncode, EXIT_SETUP, rendered.stdout + rendered.stderr)
+        self.assertEqual(unit_only.returncode, EXIT_GREEN, unit_only.stdout + unit_only.stderr)
+
+    def test_unit_only_does_not_hide_a_red_suite(self):
+        with _Project(PASSING, body="self.assertEqual(1, 2)", verify={"mode": "rendered"}) as root:
+            res = _gate(root, "--unit-only")
+        self.assertEqual(res.returncode, EXIT_RED, res.stdout + res.stderr)
 
     def test_gate_appears_in_its_own_help(self):
         res = subprocess.run([sys.executable, REIN, "--help"], capture_output=True, text=True)

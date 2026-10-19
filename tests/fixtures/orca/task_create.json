@@ -1,0 +1,30 @@
+{
+  "id": "f0f9dafe-42d2-468e-b535-98961fbe8cc6",
+  "ok": true,
+  "result": {
+    "task": {
+      "id": "task_ffb73325fd13",
+      "run_id": "run_bc7b9b8da771",
+      "parent_id": null,
+      "created_by_terminal_handle": "term_8c1e93ae-53e8-47fe-abac-374ccb7a83fa",
+      "created_by_pane_key": "fc62dfdb-c0e3-4e3d-9a1c-2abbfc3adef4:eeb51f5e-bf83-4942-b943-52e17bcd3972",
+      "created_by_process_incarnation": "432cc57d-9c4d-407b-b540-8879211adc4e::/HOME/Developer/labs/agents/rein@@06871a40:173014bb-8d79-452d-bd82-0fffe0c4cd83",
+      "created_by_run_generation": 1,
+      "task_title": "fixture",
+      "display_name": "fixture",
+      "spec": "Fixture capture for Rein tests. Change nothing, run nothing else: immediately send worker_done with outcome succeeded and a one-sentence summary, then idle.",
+      "status": "ready",
+      "deps": "[]",
+      "result": null,
+      "created_at": "2026-10-17 20:57:00",
+      "completed_at": null
+    },
+    "mutation": {
+      "requestId": "4486c26b-8f5f-4e2c-8a2f-ed06f5b0c117",
+      "replayed": false
+    }
+  },
+  "_meta": {
+    "runtimeId": "e924d25f-fb5e-4a12-85ed-ca9f052bab29"
+  }
+}

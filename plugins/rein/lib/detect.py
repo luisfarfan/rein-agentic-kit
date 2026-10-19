@@ -1023,6 +1023,7 @@ def resolve(root: str = ".") -> dict:
         "models": models,
         "limits": limits,
         "worktree": worktree,
+        "ship": cfg.get("ship") if isinstance(cfg.get("ship"), dict) else {},
         "capabilities": _capabilities(root),
         "verifyPolicy": verify_policy,
     }

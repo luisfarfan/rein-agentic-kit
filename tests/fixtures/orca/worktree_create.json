@@ -1,0 +1,119 @@
+{
+  "id": "redacted-id",
+  "ok": true,
+  "result": {
+    "worktree": {
+      "id": "432cc57d-9c4d-407b-b540-8879211adc4e::/HOME/orca/workspaces/rein/rein-fixture-quick",
+      "identity": {
+        "key": "wt2:local:5f3ca4a9-45dd-41b7-b0e3-58e4b0ac0e84",
+        "executionHostId": "local",
+        "instanceId": "5f3ca4a9-45dd-41b7-b0e3-58e4b0ac0e84"
+      },
+      "instanceId": "5f3ca4a9-45dd-41b7-b0e3-58e4b0ac0e84",
+      "repoId": "432cc57d-9c4d-407b-b540-8879211adc4e",
+      "projectId": "github:luisfarfan/rein-agentic-kit",
+      "hostId": "local",
+      "projectHostSetupId": "432cc57d-9c4d-407b-b540-8879211adc4e",
+      "creatorProvenance": {
+        "kind": "host"
+      },
+      "path": "/HOME/orca/workspaces/rein/rein-fixture-quick",
+      "head": "ee51168a159f63b85bc0e7a6feb9bc26085b59bc",
+      "branch": "refs/heads/luisfarfan/rein-fixture-quick",
+      "isBare": false,
+      "isMainWorktree": false,
+      "displayName": "rein-fixture-quick",
+      "displayNameMode": "fixed",
+      "comment": "",
+      "linkedIssue": null,
+      "linkedPR": null,
+      "linkedLinearIssue": null,
+      "linkedLinearIssueWorkspaceId": null,
+      "linkedLinearIssueOrganizationUrlKey": null,
+      "linkedGitLabMR": null,
+      "linkedGitLabIssue": null,
+      "linkedBitbucketPR": null,
+      "linkedAzureDevOpsPR": null,
+      "linkedGiteaPR": null,
+      "linkedWorkItem": null,
+      "linkedTaskSourceContext": null,
+      "isArchived": false,
+      "isUnread": false,
+      "isPinned": false,
+      "sortOrder": 1792433005633,
+      "lastActivityAt": 1792433005633,
+      "createdAt": 1792433005633,
+      "cliProvenance": {
+        "kind": "created-by-cli",
+        "createdAt": 1792433004833
+      },
+      "baseRef": "main",
+      "workspaceStatus": "in-progress",
+      "parentWorktreeId": "432cc57d-9c4d-407b-b540-8879211adc4e::/HOME/Developer/labs/agents/rein",
+      "childWorktreeIds": [],
+      "lineage": {
+        "worktreeId": "432cc57d-9c4d-407b-b540-8879211adc4e::/HOME/orca/workspaces/rein/rein-fixture-quick",
+        "worktreeInstanceId": "5f3ca4a9-45dd-41b7-b0e3-58e4b0ac0e84",
+        "parentWorktreeId": "432cc57d-9c4d-407b-b540-8879211adc4e::/HOME/Developer/labs/agents/rein",
+        "parentWorktreeInstanceId": "91b4b81c-a082-4fff-9f3b-44752f5dd37a",
+        "origin": "cli",
+        "capture": {
+          "source": "cwd-context",
+          "confidence": "inferred"
+        },
+        "createdAt": 1792433005633
+      },
+      "workspaceLineage": {
+        "childWorkspaceKey": "worktree:432cc57d-9c4d-407b-b540-8879211adc4e::/HOME/orca/workspaces/rein/rein-fixture-quick",
+        "childInstanceId": "5f3ca4a9-45dd-41b7-b0e3-58e4b0ac0e84",
+        "parentWorkspaceKey": "worktree:432cc57d-9c4d-407b-b540-8879211adc4e::/HOME/Developer/labs/agents/rein",
+        "parentInstanceId": "91b4b81c-a082-4fff-9f3b-44752f5dd37a",
+        "origin": "cli",
+        "capture": {
+          "source": "cwd-context",
+          "confidence": "inferred"
+        },
+        "createdAt": 1792433005633
+      },
+      "git": {
+        "path": "/HOME/orca/workspaces/rein/rein-fixture-quick",
+        "head": "ee51168a159f63b85bc0e7a6feb9bc26085b59bc",
+        "branch": "refs/heads/luisfarfan/rein-fixture-quick",
+        "isBare": false,
+        "isMainWorktree": false
+      }
+    },
+    "lineage": {
+      "worktreeId": "432cc57d-9c4d-407b-b540-8879211adc4e::/HOME/orca/workspaces/rein/rein-fixture-quick",
+      "worktreeInstanceId": "5f3ca4a9-45dd-41b7-b0e3-58e4b0ac0e84",
+      "parentWorktreeId": "432cc57d-9c4d-407b-b540-8879211adc4e::/HOME/Developer/labs/agents/rein",
+      "parentWorktreeInstanceId": "91b4b81c-a082-4fff-9f3b-44752f5dd37a",
+      "origin": "cli",
+      "capture": {
+        "source": "cwd-context",
+        "confidence": "inferred"
+      },
+      "createdAt": 1792433005633
+    },
+    "workspaceLineage": {
+      "childWorkspaceKey": "worktree:432cc57d-9c4d-407b-b540-8879211adc4e::/HOME/orca/workspaces/rein/rein-fixture-quick",
+      "childInstanceId": "5f3ca4a9-45dd-41b7-b0e3-58e4b0ac0e84",
+      "parentWorkspaceKey": "worktree:432cc57d-9c4d-407b-b540-8879211adc4e::/HOME/Developer/labs/agents/rein",
+      "parentInstanceId": "91b4b81c-a082-4fff-9f3b-44752f5dd37a",
+      "origin": "cli",
+      "capture": {
+        "source": "cwd-context",
+        "confidence": "inferred"
+      },
+      "createdAt": 1792433005633
+    },
+    "warnings": [],
+    "catalogVersion": {
+      "epoch": "6dc96572-ed31-4a9e-91b6-20189d718fb6",
+      "sequence": 72
+    }
+  },
+  "_meta": {
+    "runtimeId": "redacted-id"
+  }
+}

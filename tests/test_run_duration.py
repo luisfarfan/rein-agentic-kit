@@ -8,7 +8,6 @@ unparseable, or out-of-order) records NO duration fields, never a fabricated
 zero or a negative span.
 D3: the 14 rows already written stay valid and readable -- new fields are
 added, never required.
-D4: anything the dashboard shows needs a GLOSSARY entry.
 """
 
 from __future__ import annotations
@@ -24,7 +23,6 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "plugins", "rein", "lib"))
 
-import dashboard as dash  # noqa: E402
 import token_report as tr  # noqa: E402
 
 
@@ -123,11 +121,9 @@ class TestLedgerRoundTripAndOldShapeRows(unittest.TestCase):
         row = rows[0]
         self.assertNotIn("wall_clock_min", row)
         self.assertIsNone(row.get("wall_clock_min"), "absent, never an invented 0")
-        # render_ledger and the dashboard view must also tolerate it (AC5/AC6).
+        # render_ledger must also tolerate it (AC5).
         rendered = tr.render_ledger(rows, path)
         self.assertIn("wf_old", rendered)
-        view = dash._run_view(row, "-proj", None)
-        self.assertIsNone(view["wall_clock_min"])
 
 
 class TestUnreadableTimestampsYieldNoDurationFields(unittest.TestCase):
@@ -327,42 +323,6 @@ class TestRenderLedgerShowsDurationAndOverlap(unittest.TestCase):
         self.assertNotIn("[", line)
         self.assertNotIn("wall=", line)
         self.assertNotIn("overlap=", line)
-
-
-class TestDashboardShowsDurationWithGlossaryEntry(unittest.TestCase):
-    """AC6: the dashboard shows run duration, with its GLOSSARY entry, and
-    the completeness ratchet (test_dashboard_glossary.py) passes."""
-
-    def test_duration_has_a_glossary_entry(self):
-        self.assertIn("duration", dash.GLOSSARY)
-        entry = dash.GLOSSARY["duration"]
-        self.assertTrue(entry["meaning"])
-        self.assertTrue(entry["why"])
-
-    def test_run_view_carries_wall_clock_min_without_defaulting_to_zero(self):
-        row_with = {"wf_id": "wf_1", "wall_clock_min": 12.5}
-        row_without = {"wf_id": "wf_2"}
-        self.assertEqual(dash._run_view(row_with, "p", None)["wall_clock_min"], 12.5)
-        self.assertIsNone(dash._run_view(row_without, "p", None)["wall_clock_min"])
-
-    def test_rendered_run_row_shows_the_duration_value(self):
-        run = {
-            "wf_id": "wf_1", "ts": "2026-01-01T00:00:00Z", "turns_per_agent": 5.0,
-            "ctx_max": 1000, "opus_share": 10.0, "is_baseline": False, "deltas": None,
-            "agents": [], "wall_clock_min": 42.3,
-        }
-        row_html = dash._run_row(run, show_deltas=False)
-        self.assertIn("42.3m", row_html)
-
-    def test_rendered_run_row_without_duration_does_not_fabricate_zero(self):
-        run = {
-            "wf_id": "wf_1", "ts": "2026-01-01T00:00:00Z", "turns_per_agent": 5.0,
-            "ctx_max": 1000, "opus_share": 10.0, "is_baseline": False, "deltas": None,
-            "agents": [],
-        }
-        row_html = dash._run_row(run, show_deltas=False)
-        self.assertNotIn("0.0m", row_html)
-        self.assertIn("not recorded", row_html)
 
 
 if __name__ == "__main__":

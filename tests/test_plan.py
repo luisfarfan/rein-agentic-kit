@@ -101,6 +101,14 @@ class TestParsing(unittest.TestCase):
         self.assertIn("four lenses: a, b, c and d", task["acceptance"][1])
         self.assertEqual(task["verification"], "make test", "a KNOWN field still ends collection")
 
+    def test_repo_field_is_parsed(self):
+        t = plan.parse_tasks_md("- [ ] T001 X\n  - Repo: proxima-api\n  - Verification: `x`\n")[0]
+        self.assertEqual(t["repo"], "proxima-api")
+
+    def test_repo_defaults_to_empty(self):
+        t = plan.parse_tasks_md("- [ ] T001 X\n  - Verification: `x`\n")[0]
+        self.assertEqual(t["repo"], "")
+
     def test_prose_between_tasks_is_ignored(self):
         tasks = plan.parse_tasks_md("Some intro.\n\n- [ ] T001 a\n\nA paragraph.\n\n- [ ] T002 b\n")
         self.assertEqual(len(tasks), 2)

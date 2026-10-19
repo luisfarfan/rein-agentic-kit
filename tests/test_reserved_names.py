@@ -7,7 +7,7 @@ name Claude Code already ships (the bug T001 fixed for `loop`/`run`/
 sweeps `plugins/rein/skills/*/` and `plugins/rein/commands/*.md` and fails,
 naming the offender, if any basename matches the reserved list.
 
-Mirrors tests/test_events.py's and tests/test_skill_names.py's discipline:
+Mirrors tests/test_skill_names.py's discipline:
 glob over what actually ships, not a restatement of it.
 """
 
@@ -94,11 +94,6 @@ class TestSweepActuallyReadsTheShippedDirectories(unittest.TestCase):
         names = _skill_dir_names(SKILLS_DIR)
         self.assertTrue(names, f"no SKILL.md found under {SKILLS_DIR}")
         self.assertIn("rein-plan", names)
-
-    def test_the_commands_sweep_is_non_empty(self):
-        names = _command_names(COMMANDS_DIR)
-        self.assertTrue(names, f"no command file found under {COMMANDS_DIR}")
-        self.assertIn("rein-ping", names)
 
 
 class TestNoShippedSkillOrCommandTakesAReservedName(unittest.TestCase):
@@ -189,6 +184,10 @@ class TestTheSkillSweepIsProvenToo(unittest.TestCase):
 
 
 PREFIX = "rein-"
+# v2's one deliberate exception: the execution entry point is `/ship`, a short
+# verb the owner types constantly; `answer` is its companion for replying to the
+# run's gates; `quick` starts a small change. No built-in or known plugin ships either.
+UNPREFIXED_ALLOWED = {"ship", "answer", "quick"}
 
 
 class TestEveryIdentifierIsNamespaced(unittest.TestCase):
@@ -213,7 +212,8 @@ class TestEveryIdentifierIsNamespaced(unittest.TestCase):
         return _skill_dir_names(SKILLS_DIR) + _command_names(COMMANDS_DIR)
 
     def test_every_shipped_identifier_carries_the_prefix(self):
-        offenders = [n for n in self._identifiers() if not n.startswith(PREFIX)]
+        offenders = [n for n in self._identifiers()
+                     if not n.startswith(PREFIX) and n not in UNPREFIXED_ALLOWED]
         self.assertEqual(
             offenders, [],
             f"unprefixed identifiers can be reinterpreted as another plugin's or a built-in's: "
@@ -222,7 +222,7 @@ class TestEveryIdentifierIsNamespaced(unittest.TestCase):
 
     def test_the_sweep_actually_found_the_identifiers(self):
         """Zero identifiers would pass the check above vacuously."""
-        self.assertGreaterEqual(len(self._identifiers()), 8)
+        self.assertGreaterEqual(len(self._identifiers()), 4)
 
     def test_a_prefixed_name_cannot_hit_the_reserved_list(self):
         """The property that makes the snapshot unnecessary: no reserved name
@@ -268,4 +268,5 @@ class TestDiscoverIsAStanceNotAWorkflow(unittest.TestCase):
         body = self._skill()
         self.assertIn("codegraph query", body)
         self.assertIn("offset/limit", body)
-        self.assertIn('"$R" context .', body)
+        self.assertIn("rein context .", body)
+        self.assertIn("read-only workers", body)

@@ -74,8 +74,7 @@ class TestTheWheelInstallsAndRuns(unittest.TestCase):
         """Defect 1: metadata only, no package."""
         import zipfile
         names = zipfile.ZipFile(self.wheel).namelist()
-        for needed in ("rein_kit/_entry.py", "rein_kit/bin/rein", "rein_kit/lib/detect.py",
-                       "rein_kit/workflows/loop.js",
+        for needed in ("rein_kit/__init__.py", "rein_kit/bin/rein", "rein_kit/lib/detect.py",
                        # `rein role` reads this file to hand an operating profile to an
                        # agent that cannot invoke a skill. A wheel without it installs
                        # cleanly and then has no roles at all -- the whole point of the
@@ -84,7 +83,7 @@ class TestTheWheelInstallsAndRuns(unittest.TestCase):
             self.assertIn(needed, names, f"the wheel is missing {needed}")
 
     def test_the_packaged_cli_is_the_same_code_as_the_plugins(self):
-        """The whole reason `_entry` loads bin/rein instead of reimplementing
+        """The whole reason the entry point loads bin/rein instead of reimplementing
         it: two channels that drift are worse than one channel."""
         args = ["detect", REPO, "--json"]
         packaged = subprocess.run([os.path.join(self.bin, "rein"), *args],

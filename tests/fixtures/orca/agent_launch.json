@@ -1,0 +1,29 @@
+{
+  "id": "redacted-id",
+  "ok": true,
+  "result": {
+    "outcome": {
+      "kind": "terminal",
+      "handle": "term_c3fe16fe-d15b-430c-a149-03732fd867cc",
+      "paneKey": "4ef60d82-d719-4f50-bae9-c376cbc6ccb9:25ad5857-e824-40bb-b5d1-e6634bceb9e2"
+    },
+    "worktreeId": "432cc57d-9c4d-407b-b540-8879211adc4e::/HOME/orca/workspaces/rein/rein-fixture-quick",
+    "receipt": {
+      "mode": "terminal",
+      "preferred": "terminal",
+      "reason": "user_default",
+      "detail": "Started a terminal agent, the default for new agent tabs in your settings."
+    },
+    "prompt": {
+      "delivery": "submit",
+      "outcome": "handed-to-terminal"
+    },
+    "placement": {
+      "groupId": "59e9d16f-5c8e-4f95-9d6c-2dd78628da8e"
+    },
+    "operationId": "1792433009121-4e6d3ed10fba4de890d81e7a61cd06d0"
+  },
+  "_meta": {
+    "runtimeId": "redacted-id"
+  }
+}

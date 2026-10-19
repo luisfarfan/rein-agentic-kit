@@ -1,0 +1,24 @@
+{
+  "id": "85df9e5f-3045-4967-b923-c7237dc23a13",
+  "ok": true,
+  "result": {
+    "gate": {
+      "id": "gate_655a4af5bd85",
+      "run_id": "run_bc7b9b8da771",
+      "task_id": "task_3b0049f8e017",
+      "question": "fixture gate?",
+      "options": "[\"yes\",\"no\"]",
+      "status": "resolved",
+      "resolution": "yes",
+      "created_at": "2026-10-17 20:57:30",
+      "resolved_at": "2026-10-17 20:57:37"
+    },
+    "mutation": {
+      "requestId": "66ec27ab-0365-4c76-87d2-624d78794e51",
+      "replayed": false
+    }
+  },
+  "_meta": {
+    "runtimeId": "e924d25f-fb5e-4a12-85ed-ca9f052bab29"
+  }
+}

@@ -155,6 +155,7 @@ class CommandResult:
         elapsed_ms: int,
         error: str = "",
         executed_command: str | None = None,
+        output: str = "",
     ):
         self.slot = slot
         self.command = command
@@ -165,6 +166,9 @@ class CommandResult:
         self.output_head = output_head
         self.elapsed_ms = elapsed_ms
         self.error = error
+        # The whole decoded capture; `output_head` is its first lines. Kept off
+        # `to_dict` so persisted reports do not grow. For callers that read errors.
+        self.output = output
 
     def to_dict(self) -> dict:
         return {
@@ -229,13 +233,14 @@ def run_one(
         raw_stdout, _ = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
         _kill_group(proc)
+        partial = b""
         with contextlib.suppress(Exception):
-            proc.communicate(timeout=5)
+            partial, _ = proc.communicate(timeout=5)
         elapsed_ms = int((time.monotonic() - started) * 1000)
         return CommandResult(
             slot, configured_cmd, True, OUTCOME_TIMEOUT, None, [], elapsed_ms,
             error=f"timed out after {timeout}s -- the whole process group was killed",
-            executed_command=command,
+            executed_command=command, output=(partial or b"").decode("utf-8", errors="replace"),
         )
 
     elapsed_ms = int((time.monotonic() - started) * 1000)
@@ -247,10 +252,12 @@ def run_one(
         return CommandResult(
             slot, configured_cmd, False, OUTCOME_NOT_INVOCABLE, code, lines, elapsed_ms,
             error=f"shell exit {code}: command not found or not executable",
-            executed_command=command,
+            executed_command=command, output=text,
         )
     if code == 0:
-        return CommandResult(slot, configured_cmd, True, OUTCOME_OK, code, lines, elapsed_ms, executed_command=command)
+        return CommandResult(
+            slot, configured_cmd, True, OUTCOME_OK, code, lines, elapsed_ms, executed_command=command, output=text
+        )
 
     # Matched against `lines`, NOT the whole capture: a wrapper runner that
     # cannot find its target says so and stops, on the first line. The same
@@ -267,10 +274,11 @@ def run_one(
         return CommandResult(
             slot, configured_cmd, False, OUTCOME_NOT_INVOCABLE, code, lines, elapsed_ms,
             error=f"exit {code}, output matched a known wrapper-runner {setup_signal!r} message",
-            executed_command=command,
+            executed_command=command, output=text,
         )
     return CommandResult(
-        slot, configured_cmd, True, OUTCOME_FAILED, code, lines, elapsed_ms, executed_command=command
+        slot, configured_cmd, True, OUTCOME_FAILED, code, lines, elapsed_ms, executed_command=command,
+        output=text,
     )
 
 
