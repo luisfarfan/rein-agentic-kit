@@ -703,6 +703,15 @@ class Audit(unittest.TestCase):
         self.assertEqual(am(["a/secrets/k"], ["codex"], custom), quota.OPUS)
         self.assertEqual(am(["a", "b"], ["codex"], custom), quota.OPUS)
 
+    def test_touches_risky(self):
+        patterns = ["**/auth/**", "*.sql"]
+        self.assertTrue(sd.touches_risky(["src/auth/login.py"], patterns))
+        self.assertTrue(sd.touches_risky(["auth/x.py"], patterns))
+        self.assertTrue(sd.touches_risky(["a.py", "db/m.sql"], patterns))
+        self.assertFalse(sd.touches_risky(["src/app.py"], patterns))
+        self.assertFalse(sd.touches_risky([], patterns))
+        self.assertFalse(sd.touches_risky(["src/auth/x.py"], []))
+
     def test_audit_model_skips_a_braked_reviewer(self):
         am = sd.audit_model
         hot, cool = {"session": 92.0, "weekly": 10.0}, {"session": 1.0, "weekly": 1.0}

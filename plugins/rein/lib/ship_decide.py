@@ -227,13 +227,18 @@ def _matches(path: str, pattern: str) -> bool:
     return fnmatch(path, pattern) or fnmatch("/" + path, pattern)
 
 
+def touches_risky(files: list, patterns: list) -> bool:
+    """True when any of `files` matches any of the risky `patterns`."""
+    return any(_matches(f, p) for f in files for p in patterns)
+
+
 def audit_model(changed_files: list, implementer_agents: list, cfg: ShipConfig,
                 limits: dict | None = None) -> tuple:
     """Opus for risky or large changes; otherwise a reviewer under the brake, preferring
     a provider that did not implement."""
     if len(changed_files) > cfg.large_change_files:
         return quota.OPUS
-    if any(_matches(f, p) for f in changed_files for p in cfg.risky_paths):
+    if touches_risky(changed_files, cfg.risky_paths):
         return quota.OPUS
     used = set(implementer_agents)
     fresh = [m for m in (quota.SONNET, quota.CODEX) if m[0] not in used]
