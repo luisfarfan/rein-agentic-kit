@@ -275,5 +275,52 @@ class AccessorTests(unittest.TestCase):
         self.assertEqual(orca_client.effective_launch_of({}), {})
 
 
+class QuickLaneTests(unittest.TestCase):
+    def test_worktree_create_argv(self):
+        fake = _Fake()
+        c = _client(fake)
+        c.worktree_create("path:/r", "q1", "main", "claude", "haiku", "do it")
+        self.assertEqual(fake.calls[-1], [
+            "ORCA", "worktree", "create", "--repo", "path:/r", "--name", "q1",
+            "--base-branch", "main", "--agent", "claude", "--model", "haiku",
+            "--prompt", "do it", "--setup", "run", "--activate", "--json",
+        ])
+        c.worktree_create("path:/r", "q1", "main", "claude", "haiku", "do it", linear="ENG-1")
+        self.assertEqual(fake.calls[-1], [
+            "ORCA", "worktree", "create", "--repo", "path:/r", "--name", "q1",
+            "--base-branch", "main", "--agent", "claude", "--model", "haiku",
+            "--prompt", "do it", "--setup", "run", "--activate",
+            "--linear-issue", "ENG-1", "--json",
+        ])
+
+    def test_agent_launch_argv(self):
+        fake = _Fake()
+        _client(fake).agent_launch("path:/w", "claude", "haiku", "go")
+        self.assertEqual(fake.calls[-1], [
+            "ORCA", "agent", "launch", "--worktree", "path:/w", "--agent", "claude",
+            "--model", "haiku", "--prompt", "go", "--focus", "--json",
+        ])
+
+    def test_created_worktree_path_of_reads_the_fixture(self):
+        self.assertEqual(
+            orca_client.created_worktree_path_of(_fixture("worktree_create")),
+            "/HOME/orca/workspaces/rein/rein-fixture-quick",
+        )
+
+    def test_launch_handle_of_reads_the_fixture(self):
+        self.assertEqual(
+            orca_client.launch_handle_of(_fixture("agent_launch")),
+            "term_c3fe16fe-d15b-430c-a149-03732fd867cc",
+        )
+
+    def test_launch_handle_of_is_empty_for_a_chat(self):
+        chat = {"outcome": {"kind": "chat", "chatId": "c1"}}
+        self.assertEqual(orca_client.launch_handle_of(chat), "")
+
+    def test_accessors_return_empty_on_empty_result(self):
+        self.assertEqual(orca_client.created_worktree_path_of({}), "")
+        self.assertEqual(orca_client.launch_handle_of({}), "")
+
+
 if __name__ == "__main__":
     unittest.main()

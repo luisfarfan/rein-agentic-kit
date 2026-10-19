@@ -28,6 +28,8 @@ set to `"redacted"`; `/Users/<owner>` became `/HOME`; email-shaped strings becam
 | `worker_release.json` | `orca orchestration worker-release --dispatch <dispatch>` |
 | `check_ack.json` | `orca orchestration check --ack <delivery>` |
 | `check_all.json` | `orca orchestration check --all` |
+| `worktree_create.json` | `orca worktree create --repo path:<repo> --name rein-fixture-quick --base-branch main --setup skip` (no `--agent`; see below) |
+| `agent_launch.json` | `orca agent launch --worktree path:<that path> --agent claude --model haiku --prompt "Reply OK and stop." --focus` |
 
 ## JSON paths (all under the top-level `result`)
 
@@ -56,6 +58,8 @@ Every response is `{"id", "ok", "result", "_meta"}`. On failure: `{"ok": false, 
 | gate state | `gate_list`: `gates[]` with `id`, `task_id`, `status` (`pending` / `resolved`), `resolution` |
 | release | `worker_release`: `state` (`released`), `processAction`, `archive.status` |
 | ack | `check --ack`: `acknowledged` |
+| created worktree path | `worktree_create`: `worktree.path` (id is `worktree.id`, `<repo-id>::<path>`) |
+| agent terminal handle | `agent_launch`: `outcome.handle` when `outcome.kind == "terminal"`; a chat launch has another `outcome.kind` and no terminal handle |
 
 ## Behaviour observed (load-bearing for `rein ship`)
 
@@ -70,3 +74,12 @@ Every response is `{"id", "ok", "result", "_meta"}`. On failure: `{"ok": false, 
 - `check` without `--ack` replays the same delivery; `--ack <deliveryId>` acknowledges it.
 - `worker-list` reports `liveness.verdict == "live"` for a settled worker whose terminal is
   still open. Liveness alone does not mean "still working"; read `stage.worker` / `outcome`.
+
+## Quick-lane capture (worktree create, agent launch)
+
+Captured 2026-10-19 from Orca 1.4.229, same redaction. The owner approved one throwaway worktree
+and one Haiku agent that only replies OK; the worktree was removed afterwards with
+`orca worktree rm --worktree path:<path>` (it also took the worktree's terminals with it).
+`worktree_create.json` was captured without `--agent` so that only one agent ran: with `--agent`,
+the launch outcome sits in `result.launch.outcome` per `orca worktree create --help`, but that
+shape was not recorded. The same `outcome.{kind,handle}` shape is recorded in `agent_launch.json`.

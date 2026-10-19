@@ -202,6 +202,25 @@ class OrcaClient:
         return self._call(*args)
 
     # -- worktrees --------------------------------------------------------
+    def worktree_create(
+        self, repo: str, name: str, base: str, agent: str, model: str, prompt: str,
+        linear: str = "",
+    ) -> dict:
+        """Create a worktree and start `agent` in it. `repo` is a selector such as `path:/abs/dir`."""
+        args = [
+            "worktree", "create", "--repo", repo, "--name", name, "--base-branch", base,
+            "--agent", agent, "--model", model, "--prompt", prompt,
+            "--setup", "run", "--activate",
+        ]
+        if linear:
+            args += ["--linear-issue", linear]
+        return self._call(*args)
+
+    def agent_launch(self, worktree: str, agent: str, model: str, prompt: str) -> dict:
+        """Start a fresh agent in an existing worktree (`worktree` is a selector)."""
+        return self._call("agent", "launch", "--worktree", worktree, "--agent", agent,
+                          "--model", model, "--prompt", prompt, "--focus")
+
     def worktree_set(
         self, selector: str, *, workspace_status: str = "", comment: str = ""
     ) -> dict:
@@ -340,3 +359,19 @@ def terminals_of(terminal_list_result: dict) -> list:
 def coordinator_of(run_show_result: dict) -> str:
     """The terminal handle a run is bound to: `gate-resolve --from` must be this."""
     return _str(_dict(_dict(run_show_result).get("run")).get("coordinator_handle"))
+
+
+def created_worktree_path_of(worktree_create_result: dict) -> str:
+    """The filesystem path of the worktree a `worktree create` made."""
+    return _str(_dict(_dict(worktree_create_result).get("worktree")).get("path"))
+
+
+def launch_handle_of(result: dict) -> str:
+    """The agent terminal handle from `agent launch` (or `worktree create --agent`).
+
+    `""` when the launch opened a chat rather than a terminal.
+    """
+    outcome = _dict(_dict(result).get("outcome"))
+    if outcome.get("kind") != "terminal":
+        return ""
+    return _str(outcome.get("handle"))
