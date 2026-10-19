@@ -285,6 +285,10 @@ class _Driver:
     def say(self, text):
         print("ship: %s" % text, flush=True)
 
+    def ring(self, text):
+        """`say` plus a terminal bell: Orca turns it into a notification for a background tab."""
+        print("ship: %s%s" % (text, "" if self.dry_run else "\a"), flush=True)
+
     def save(self):
         if not self.dry_run:
             ss.save(self.state, self.spath)
@@ -456,7 +460,7 @@ class _Driver:
                                          "holder_task": entry["holder_task"]}
             self.state.pending_gates.remove(entry)
             self.save()
-            self.say("waiting for the owner (%s): %s" % (kind, str(entry.get("question"))[:200]))
+            self.ring("waiting for the owner (%s): %s" % (kind, str(entry.get("question"))[:200]))
 
     def run_gate(self, a):
         task = self.state.tasks[a.task_id]
@@ -714,7 +718,7 @@ class _Driver:
                 self.probe_audit()
             elif any(g.get("kind") in sd.AUDIT_HOLDS and g.get("task_id") is None
                      for g in list(self.state.gates.values()) + self.state.pending_gates):
-                self.say("waiting for the owner about the audit; not restarting it")
+                self.ring("waiting for the owner about the audit; not restarting it")
             else:
                 self.feed_changes()
 
@@ -767,7 +771,7 @@ class _Driver:
                     self.say("could not mark %s in-review: %s" % (repo, exc))
         else:
             self.say("stopped before the audit; re-run `rein ship %s` to continue" % self.change)
-        self.say(summary)
+        self.ring(summary)
         delta = {}
         try:
             delta = quota.usage_delta(self.state.quota_before, self.limits())
@@ -837,9 +841,33 @@ def detach_ship(root: str, change: str, client: OrcaClient, *, override: tuple |
     return 0
 
 
+RESUME_POLL_SECONDS = 5
+RESUME_WAIT_SECONDS = 600
+RESUME_MAX = 3
+
+
+def is_transient(exc: OrcaError) -> bool:
+    """An Orca restart (auto-update, crash) looks like a closed connection or a missing runtime."""
+    return (exc.code in ("runtime_unavailable", "unavailable")
+            or (exc.code.startswith("exit_") and "connection" in exc.message.lower()))
+
+
+def _wait_for_orca(client: OrcaClient, clock: Callable[[], float], sleep: Callable[[float], None]) -> bool:
+    deadline = clock() + RESUME_WAIT_SECONDS
+    while True:
+        try:
+            client.status()
+            return True
+        except OrcaError:
+            pass
+        if clock() >= deadline:
+            return False
+        sleep(RESUME_POLL_SECONDS)
+
+
 def run_ship(root: str, change: str, client: OrcaClient, gate_runner: Callable, *, env: dict,
              clock: Callable[[], float], dry_run: bool = False, override: tuple | None = None,
-             state_path: str = "") -> int:
+             state_path: str = "", sleep: Callable[[float], None] = time.sleep) -> int:
     ctx, errors = preflight(root, change, client, env)
     if errors:
         for e in errors:
@@ -848,33 +876,41 @@ def run_ship(root: str, change: str, client: OrcaClient, gate_runner: Callable, 
     ctx["cfg"].override = override
     spath = state_path or ss.state_path(ctx["root"], change)
     plan = ctx["plan"]
-    try:
-        state = None if dry_run else ss.load(spath)
-    except ss.ShipStateCorrupt as exc:
-        print("ship: %s" % exc)
-        return 126
-    if state is not None and state.change != change:
-        print("ship: %s belongs to change %r, not %r; move it aside or ship that change"
-              % (spath, state.change, change))
-        return 126
-    if state is None:
-        state = ss.from_plan(plan, ctx["default_repo"], change)
-    else:
-        ss.reconcile(state, plan, ctx["default_repo"])
-    driver = _Driver(ctx, state, client, gate_runner, clock, spath, dry_run)
-    try:
-        driver.setup()
-        if dry_run:
-            driver.feed(sd.Tick(clock(), driver.limits()))
-            driver.say("dry run: stopped after the first dispatch round; nothing was saved or gated")
-            return 0
-        if state.phase == "done":
-            driver.finished = True
+    resumes = 0
+    while True:
+        try:
+            state = None if dry_run else ss.load(spath)
+        except ss.ShipStateCorrupt as exc:
+            print("ship: %s" % exc)
+            return 126
+        if state is not None and state.change != change:
+            print("ship: %s belongs to change %r, not %r; move it aside or ship that change"
+                  % (spath, state.change, change))
+            return 126
+        if state is None:
+            state = ss.from_plan(plan, ctx["default_repo"], change)
         else:
-            driver.resume()
-        driver.loop()
-        return driver.finish()
-    except OrcaError as exc:
-        driver.save()
-        print("ship: Orca failed (%s); state saved, re-run `rein ship %s` to resume" % (exc, change))
-        return 126
+            ss.reconcile(state, plan, ctx["default_repo"])
+        driver = _Driver(ctx, state, client, gate_runner, clock, spath, dry_run)
+        try:
+            driver.setup()
+            if dry_run:
+                driver.feed(sd.Tick(clock(), driver.limits()))
+                driver.say("dry run: stopped after the first dispatch round; nothing was saved or gated")
+                return 0
+            if state.phase == "done":
+                driver.finished = True
+            else:
+                driver.resume()
+            driver.loop()
+            return driver.finish()
+        except OrcaError as exc:
+            driver.save()
+            if not dry_run and is_transient(exc) and resumes < RESUME_MAX:
+                print("ship: Orca is restarting (%s); waiting to resume…" % exc.code, flush=True)
+                if _wait_for_orca(client, clock, sleep):
+                    resumes += 1
+                    print("ship: Orca is back; resuming", flush=True)
+                    continue
+            print("ship: Orca failed (%s); state saved, re-run `rein ship %s` to resume" % (exc, change))
+            return 126

@@ -139,6 +139,9 @@ rein ship <change> [--root <plan repo>] [--agent <id> [--model <m>]] [--dry-run 
                  #       2 usage · 126 preflight or environment (e.g. not in an Orca terminal)
                  # --detach opens a new Orca tab "rein ship <change>" that runs the loop and
                  # returns; refuses if that tab is already live. Not combinable with --dry-run.
+                 # Rings the terminal bell when a gate opens and when the run ends, so Orca
+                 # notifies you from a background tab. If Orca restarts mid-run (an update),
+                 # it waits up to 10 minutes for Orca and resumes by itself, up to 3 times.
 rein answer [<change>] ["<text>"] [--gate <id>] [--root <plan repo>]
                  # No text: list the owner gates a running ship is waiting on (question,
                  # options). With text: resolve one (option gates take one of their options,
