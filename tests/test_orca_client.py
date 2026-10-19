@@ -283,13 +283,13 @@ class QuickLaneTests(unittest.TestCase):
         self.assertEqual(fake.calls[-1], [
             "ORCA", "worktree", "create", "--repo", "path:/r", "--name", "q1",
             "--base-branch", "main", "--agent", "claude", "--model", "haiku",
-            "--prompt", "do it", "--setup", "run", "--activate", "--json",
+            "--prompt", "do it", "--setup", "run", "--activate", "--no-parent", "--json",
         ])
         c.worktree_create("path:/r", "q1", "main", "claude", "haiku", "do it", linear="ENG-1")
         self.assertEqual(fake.calls[-1], [
             "ORCA", "worktree", "create", "--repo", "path:/r", "--name", "q1",
             "--base-branch", "main", "--agent", "claude", "--model", "haiku",
-            "--prompt", "do it", "--setup", "run", "--activate",
+            "--prompt", "do it", "--setup", "run", "--activate", "--no-parent",
             "--linear-issue", "ENG-1", "--json",
         ])
 

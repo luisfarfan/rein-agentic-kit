@@ -210,7 +210,7 @@ class OrcaClient:
         args = [
             "worktree", "create", "--repo", repo, "--name", name, "--base-branch", base,
             "--agent", agent, "--model", model, "--prompt", prompt,
-            "--setup", "run", "--activate",
+            "--setup", "run", "--activate", "--no-parent",  # a quick task is not the caller's child
         ]
         if linear:
             args += ["--linear-issue", linear]

@@ -269,14 +269,16 @@ def _load_record(workspace: str):
     return record, ""
 
 
-def _gate_notes(steps: list, related: list, changed: list, cfg) -> list:
+def _gate_notes(steps: list, related: list, changed: list, cfg, commands: dict) -> list:
     notes = []
     ran_tests = any(slot == "test" or slot.startswith("testOne:") for slot, _c, _k in steps)
     if not related:
         notes.append("sin tests relacionados")
     elif not ran_tests:
-        notes.append("%d tests relacionados sin ejecutar: el repo no define `test` ni `testOne`"
-                     % len(related))
+        # Without `test` the suite cannot stand in; `testOne` is missing only when it is not defined.
+        missing = "`test`" if commands.get("testOne") else "`test` ni `testOne`"
+        notes.append("%d tests relacionados sin ejecutar: el repo no define %s"
+                     % (len(related), missing))
     elif any(slot == "test" for slot, _c, _k in steps):
         notes.append("%d tests relacionados: se ejecutó `test` (la suite completa, más lenta) "
                      "en lugar de `testOne` por archivo" % len(related))
@@ -500,8 +502,8 @@ def done_quick(*, cwd: str = ".", client: OrcaClient, run=verify.run_one,
     risky = quick.needs_audit(changed, cfg)
     approved = risky and bool(_gate.check_review(workspace, change).get("ok"))
     pending = risky and not approved and rounds < AUDIT_MAX_ROUNDS
-    say(quick.summary(results, outputs, _gate_notes(steps, related, changed, cfg),
-                      audit_pending=pending))
+    notes = _gate_notes(steps, related, changed, cfg, resolved.get("commands") or {})
+    say(quick.summary(results, outputs, notes, audit_pending=pending))
     if outcome == "red":
         return 1
     if outcome == "setup":

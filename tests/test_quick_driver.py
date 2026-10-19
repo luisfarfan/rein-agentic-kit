@@ -146,7 +146,8 @@ class StartTests(DriverCase):
         self.assertEqual(argv, [
             "ORCA", "worktree", "create", "--repo", "id:r1", "--name", "quick-arregla-el-boton",
             "--base-branch", "develop", "--agent", "claude", "--model", "sonnet",
-            "--prompt", brief, "--setup", "run", "--activate", "--linear-issue", "PPR-9",
+            "--prompt", brief, "--setup", "run", "--activate", "--no-parent",
+            "--linear-issue", "PPR-9",
             "--json"])
         rec = self.record(self.worktree)
         self.assertEqual(rec, quick.new_record(
@@ -651,7 +652,19 @@ class DoneGateTests(DoneCase):
         self.assertEqual(code, 0)
         self.assertEqual(run.slots(), ["lint"])
         self.assertIn("1 tests relacionados sin ejecutar", self.text())
-        self.assertIn("`test` ni `testOne`", self.text())
+        self.assertIn("el repo no define `test` ni `testOne`", self.text())
+
+    def test_too_many_related_tests_without_a_suite_names_only_test(self):
+        cfg = {"commands": {"lint": LINT, "testOne": ONE}, "ship": CONFIG["ship"]}
+        self.make_repo(config=cfg)
+        for n in range(quick.MAX_RELATED_TESTS + 1):
+            self.write("src/extra%d.test.ts" % n, "v2\n")
+        code, run, _ = self.done()
+        self.assertEqual(code, 0)
+        self.assertEqual(run.slots(), ["lint"])
+        text = self.text()
+        self.assertIn("11 tests relacionados sin ejecutar: el repo no define `test`", text)
+        self.assertNotIn("`testOne`", text)
 
 
 class DoneAuditTests(DoneCase):

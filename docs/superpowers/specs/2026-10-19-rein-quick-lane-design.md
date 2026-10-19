@@ -49,7 +49,10 @@ Two commands and one skill. No coordinator, no state machine, no Orca Run.
 
 Reused unchanged: `quota.parse_rate_limits`, `quota.choose_implementer`, `ship.changed_files`,
 `verify.run_one`, `quota.first_unbraked`, the `OrcaClient` and the `rein-audit` reviewer
-profile. `/ship` is not modified.
+profile. `/ship` is not modified. Two behaviour-preserving additions serve the lane:
+`verify.CommandResult.output` (the whole decoded capture, off `to_dict`, so `done` can show the
+error lines of a red slot) and `ship_decide.touches_risky` (the risky-path test `audit_model`
+already applied, extracted so `done` can ask it too).
 
 ## 4. Start: `rein quick`
 
