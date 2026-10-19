@@ -854,8 +854,10 @@ def cmd_answer(argv: list[str]) -> int:
 def cmd_quick(argv: list[str]) -> int:
     """Start a quick task (`rein quick "<sentence>"`) or close it (`rein quick done`).
 
-    `--here` and `--dirty-ok` are booleans, so they are filtered out before
-    `_positional` -- otherwise the sentence after them would read as their value.
+    `--here` and `--dirty-ok` are booleans, so they are filtered out before the bare words
+    are counted -- otherwise the sentence after them would read as their value. A value flag
+    that is present but empty (`--model` last, `--agent=`) is a usage error, judged by the
+    flag's presence, not by `_opt`'s value (which is "" for a dangling flag too).
     """
     usage = ('usage: rein quick "<sentence>" [--repo <name>] [--base <branch>] [--here [--dirty-ok]] '
              "[--agent <id> [--model <m>]] [--linear <id>]  |  rein quick done")
@@ -866,8 +868,15 @@ def cmd_quick(argv: list[str]) -> int:
     sentence = words[0] if words else ""
     agent, model = _opt(argv, "agent"), _opt(argv, "model")
     here, dirty_ok = "--here" in argv, "--dirty-ok" in argv
-    # A lone --agent is fine (the driver supplies its default model); a lone --model is not.
-    if len(words) != 1 or (model and not agent) or (dirty_ok and not here):
+
+    def present(name: str) -> bool:
+        return any(a == f"--{name}" or a.startswith(f"--{name}=") for a in argv)
+
+    values = {n: _opt(argv, n) for n in ("repo", "base", "agent", "model", "linear")}
+    # A present value flag must carry a value. A lone --agent is fine (the driver supplies its
+    # default model); a lone --model is not.
+    if (len(words) != 1 or any(present(n) and not v for n, v in values.items())
+            or (present("model") and not present("agent")) or (dirty_ok and not here)):
         print(usage)
         return 2
     if sentence == "done":

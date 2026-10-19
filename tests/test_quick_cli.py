@@ -41,6 +41,9 @@ class TestQuickCli(unittest.TestCase):
             ["arregla", "el", "botón"],                      # unquoted sentence: extra words
             ["done", "now"],                                 # extra word after done
             ["fix it", "--model", "gpt-5"],                  # --model without --agent
+            ["fix it", "--agent", "codex", "--model"],       # dangling --model
+            ["fix it", "--agent"],                           # dangling --agent
+            ["fix it", "--agent=", "--model=x"],             # empty --agent=
             ["fix it", "--dirty-ok"],                        # --dirty-ok without --here
         ):
             with self.subTest(argv=argv), mock.patch.object(rein_cli._quick, "start_quick") as start, \
