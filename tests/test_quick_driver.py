@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -393,8 +394,10 @@ class _AuditOrca:
     """Fake orca for the audit: `on_start` plays the reviewer when the worker starts."""
 
     def __init__(self, on_start=None, limits=None, done=True, show_state="running",
-                 question=None, stops=True):
+                 question=None, stops=True, on_check=None, fail_check=False):
         self.calls = []
+        self.on_check = on_check  # called on every wait-for-messages check
+        self.fail_check = fail_check  # orca itself fails while the owner waits
         self.on_start = on_start
         self.limits = limits or _limits(10, 10)
         self.done = done
@@ -422,6 +425,11 @@ class _AuditOrca:
             return ok({"dispatchId": DISPATCH, "state": "ready"})
         if head == ["orchestration", "check"]:
             self.checks += 1
+            if self.on_check:
+                self.on_check()
+            if self.fail_check and self.started:
+                return 1, json.dumps({"ok": False,
+                                      "error": {"code": "runtime", "message": "orca went away"}})
             if "--ack" in argv or not self.started:
                 return ok({"messages": [], "deliveryId": None})
             if self.question is not None:
@@ -704,7 +712,7 @@ class DoneAuditTests(DoneCase):
         self.assertEqual(len(orca.called("orchestration", "worker-release")), 1)
         acks = [c for c in orca.called("orchestration", "check") if "--ack" in c]
         self.assertEqual([c[c.index("--ack") + 1] for c in acks], ["d1"])
-        self.assertEqual(self.audit_rounds(), 1)
+        self.assertEqual(self.audit_rounds(), 0)  # an approval spends no round
         self.assertIn("APPROVED", self.text())
         self.assertTrue(os.path.exists(os.path.join(self.ws, quick.RECORD)))  # never deleted
 
@@ -718,18 +726,19 @@ class DoneAuditTests(DoneCase):
         self.assertNotIn("rename x", self.text())
         self.assertEqual(self.audit_rounds(), 1)
 
-    def test_round_is_saved_before_waiting(self):
+    def test_a_round_is_only_spent_by_a_verdict_of_changes(self):
         self.risky()
         seen = []
 
         def play():
-            seen.append(self.audit_rounds())  # the worker is running; nothing was waited on yet
+            seen.append(self.audit_rounds())
             self.reviewer("APPROVED")()
         orca = _AuditOrca(on_start=play)
         self.done(orca=orca, env=TERMINAL)
-        self.assertEqual(seen, [0])  # incremented after worker-start, before the first check
+        self.assertEqual(seen, [0])
         order = [c[2] for c in orca.calls if c[1] == "orchestration"]
         self.assertLess(order.index("worker-start"), order.index("check"))
+        self.assertEqual(self.audit_rounds(), 0)
 
     def test_second_round_title_counts_up(self):
         self.risky(audit_rounds=1)
@@ -738,7 +747,7 @@ class DoneAuditTests(DoneCase):
         self.assertEqual(code, 0)
         [task] = orca.called("orchestration", "task-create")
         self.assertTrue(task[task.index("--task-title") + 1].endswith("round 2"))
-        self.assertEqual(self.audit_rounds(), 2)
+        self.assertEqual(self.audit_rounds(), 1)  # round 2 was approved: nothing was spent
 
     def test_third_round_leaves_it_to_the_owner(self):
         self.risky(audit_rounds=2)
@@ -757,10 +766,12 @@ class DoneAuditTests(DoneCase):
         self.assertEqual(code, 126)
         self.assertIn("without recording a review episode", self.text())
         self.assertEqual(len(orca.called("orchestration", "worker-release")), 1)
+        self.assertEqual(self.audit_rounds(), 0)
 
     def test_an_old_episode_is_not_a_new_verdict(self):
         self.risky()
-        self.reviewer("APPROVED")()  # left over from an earlier round
+        self.reviewer("APPROVED")()  # left over from an earlier round...
+        self.write("src/auth/login.ts", "v3\n")  # ...and no longer matching the files
         code, _, _ = self.done(orca=_AuditOrca(), env=TERMINAL)
         self.assertEqual(code, 126)
 
@@ -775,6 +786,7 @@ class DoneAuditTests(DoneCase):
         self.assertEqual(len(orca.called("orchestration", "worker-stop")), 1)
         self.assertEqual(len(orca.called("orchestration", "worker-show")), 2)  # before and after the stop
         self.assertEqual(len(orca.called("orchestration", "worker-release")), 1)
+        self.assertEqual(self.audit_rounds(), 0)
 
     def test_a_worker_that_will_not_stop_is_reported_and_kept(self):
         self.risky()
@@ -797,6 +809,7 @@ class DoneAuditTests(DoneCase):
         self.assertEqual(len(orca.called("orchestration", "worker-release")), 1)
         acks = [c for c in orca.called("orchestration", "check") if "--ack" in c]
         self.assertEqual([c[c.index("--ack") + 1] for c in acks], ["d2"])
+        self.assertEqual(self.audit_rounds(), 0)
 
     def test_a_finished_worker_whose_message_was_missed_is_read(self):
         self.risky()
@@ -804,6 +817,154 @@ class DoneAuditTests(DoneCase):
         code, _, _ = self.done(orca=orca, env=TERMINAL, clock=_Clock(step=700))
         self.assertEqual(code, 0)
         self.assertEqual(len(orca.called("orchestration", "worker-release")), 1)
+
+
+    # --- F2: which rounds count, and when an approval still stands ------------
+
+    def test_a_still_valid_approval_launches_nothing(self):
+        self.risky()
+        self.reviewer("APPROVED")()
+        code, run, orca = self.done()  # no Orca terminal needed either
+        self.assertEqual(code, 0)
+        self.assertIn("auditoría vigente: aprobada", self.text())
+        self.assertEqual(orca.calls, [])
+        self.assertEqual(self.audit_rounds(), 0)
+
+    def test_approved_then_a_tweak_outside_the_reviewed_files_stays_approved(self):
+        self.risky()
+        self.reviewer("APPROVED")()
+        self.write("src/bar.ts", "v2\n")  # not risky, not reviewed
+        code, _, orca = self.done(env=TERMINAL)
+        self.assertEqual(code, 0)
+        self.assertIn("auditoría vigente: aprobada", self.text())
+        self.assertEqual(orca.called("orchestration", "worker-start"), [])
+
+    def test_approved_then_a_tweak_to_a_reviewed_file_is_audited_again(self):
+        self.risky()
+        self.reviewer("APPROVED")()
+        self.write("src/auth/login.ts", "v3\n")
+        orca = _AuditOrca(on_start=self.reviewer("APPROVED"))
+        code, _, _ = self.done(orca=orca, env=TERMINAL)
+        self.assertEqual(code, 0)
+        self.assertEqual(len(orca.called("orchestration", "worker-start")), 1)
+        self.assertNotIn("auditoría vigente", self.text())
+
+    def test_an_approval_stands_even_after_the_cap(self):
+        self.risky(audit_rounds=2)
+        self.reviewer("APPROVED")()
+        code, _, _ = self.done()
+        self.assertEqual(code, 0)
+        self.assertIn("auditoría vigente: aprobada", self.text())
+        self.assertNotIn("dos rondas", self.text())
+
+    def test_two_timeouts_do_not_reach_the_cap(self):
+        self.risky()
+        for _ in range(2):
+            orca = _AuditOrca(done=False)
+            code, _, _ = self.done(orca=orca, env=TERMINAL, clock=_Clock(step=700))
+            self.assertEqual(code, 126)
+            self.assertEqual(self.audit_rounds(), 0)
+        orca = _AuditOrca(on_start=self.reviewer("APPROVED"))
+        code, _, _ = self.done(orca=orca, env=TERMINAL)
+        self.assertEqual(code, 0)
+        self.assertEqual(len(orca.called("orchestration", "worker-start")), 1)
+        self.assertNotIn("dos rondas", self.text())
+
+    def test_the_cap_is_reached_after_two_changes_requested(self):
+        self.risky()
+        for n, finding in enumerate(("BLOCKING: first problem", "BLOCKING: second problem"), 1):
+            orca = _AuditOrca(on_start=self.reviewer("CHANGES_REQUESTED", [finding]))
+            code, _, _ = self.done(orca=orca, env=TERMINAL)
+            self.assertEqual(code, 1)
+            self.assertEqual(self.audit_rounds(), n)
+        orca = _AuditOrca()
+        code, _, _ = self.done(orca=orca, env=TERMINAL)
+        self.assertEqual(code, 1)
+        self.assertIn("dos rondas de auditoría: decide tú", self.text())
+        self.assertEqual(orca.called("orchestration", "worker-start"), [])
+        self.assertEqual(self.audit_rounds(), 2)
+
+    def test_the_cap_message_shows_the_last_changes_requested_not_a_later_episode(self):
+        self.risky(audit_rounds=1)
+        orca = _AuditOrca(on_start=self.reviewer("CHANGES_REQUESTED", ["BLOCKING: the real problem"]))
+        self.done(orca=orca, env=TERMINAL)  # round 2 of 2: CHANGES_REQUESTED
+        self.reviewer("APPROVED")()  # a later episode of another verdict, now stale
+        self.write("src/auth/login.ts", "v9\n")
+        self.out.clear()
+        code, _, orca = self.done(env=TERMINAL)
+        self.assertEqual(code, 1)
+        self.assertIn("BLOCKING: the real problem", self.text())
+        self.assertEqual(orca.called("orchestration", "worker-start"), [])
+
+    # --- F3: a long done ------------------------------------------------------
+
+    def test_the_summary_says_the_audit_is_still_to_come(self):
+        self.risky()
+        orca = _AuditOrca(on_start=self.reviewer("APPROVED"))
+        self.done(orca=orca, env=TERMINAL)
+        self.assertIn("gate: green \u2014 auditoría pendiente", self.text())
+        self.assertNotIn("verdict: green", self.text())
+
+    def test_no_pending_audit_when_nothing_risky_changed(self):
+        self.make_repo()
+        self.write("src/bar.ts", "v2\n")
+        self.done(env=TERMINAL)
+        self.assertIn("verdict: green", self.text())
+        self.assertNotIn("pendiente", self.text())
+
+    def test_no_pending_audit_when_an_approval_stands(self):
+        self.risky()
+        self.reviewer("APPROVED")()
+        self.done()
+        self.assertIn("verdict: green", self.text())
+
+    def test_sigterm_during_the_wait_stops_the_worker_and_exits_126(self):
+        self.risky()
+        installed = {}
+
+        def peek():
+            installed["term"] = signal.getsignal(signal.SIGTERM)
+            installed["int"] = signal.getsignal(signal.SIGINT)
+        before = (signal.getsignal(signal.SIGTERM), signal.getsignal(signal.SIGINT))
+        orca = _AuditOrca(done=False, on_check=peek)
+        self.done(orca=orca, env=TERMINAL, clock=_Clock(step=700))
+        self.assertTrue(callable(installed["term"]))
+        self.assertNotEqual(installed["term"], before[0])  # ours, during the wait
+        self.assertNotEqual(installed["int"], before[1])
+        self.assertEqual((signal.getsignal(signal.SIGTERM), signal.getsignal(signal.SIGINT)), before)
+
+        # the handler itself: stop-and-confirm, then exit 126 -- called directly, no real signal
+        fake = _AuditOrca(done=False)
+        client = OrcaClient(executable="ORCA", runner=fake)
+        out = []
+        handler = quick_driver._stop_on_signal(client, DISPATCH, out.append)
+        with self.assertRaises(SystemExit) as caught:
+            handler(signal.SIGTERM, None)
+        self.assertEqual(caught.exception.code, 126)
+        self.assertEqual(len(fake.called("orchestration", "worker-stop")), 1)
+        self.assertEqual(len(fake.called("orchestration", "worker-release")), 1)
+        self.assertIn("audit worker %s stopped" % DISPATCH, "\n".join(out))
+
+    def test_a_signal_that_arrives_twice_stops_the_worker_once(self):
+        fake = _AuditOrca(done=False)
+        client = OrcaClient(executable="ORCA", runner=fake)
+        handler = quick_driver._stop_on_signal(client, DISPATCH, lambda _line: None)
+        for _ in range(2):
+            with self.assertRaises(SystemExit):
+                handler(signal.SIGINT, None)
+        self.assertEqual(len(fake.called("orchestration", "worker-stop")), 1)
+
+    # --- F8: orca failing while waiting -----------------------------------------
+
+    def test_an_orca_failure_while_waiting_stops_the_auditor(self):
+        self.risky()
+        orca = _AuditOrca(done=False, fail_check=True)
+        code, _, _ = self.done(orca=orca, env=TERMINAL)
+        self.assertEqual(code, 126)
+        self.assertIn("orca failed", self.text())
+        self.assertEqual(len(orca.called("orchestration", "worker-stop")), 1)
+        self.assertIn("audit worker %s stopped" % DISPATCH, self.text())
+        self.assertEqual(self.audit_rounds(), 0)
 
 
 if __name__ == "__main__":

@@ -203,12 +203,21 @@ def error_lines(text: str, cap: int = ERROR_LINES_CAP) -> list:
     return [lines[i][:_LINE_MAX] for i in sorted(chosen)[:cap]]
 
 
-def summary(results: list, outputs: dict, notes: list) -> str:
-    """Verdict, one line per slot, error lines for the red slots only, then the notes."""
-    out = ["verdict: " + verdict(results)]
+def summary(results: list, outputs: dict, notes: list, audit_pending: bool = False) -> str:
+    """Verdict, one line per slot, error lines for the red slots only, then the notes.
+
+    A green gate that an audit still has to confirm is not a verdict yet, so the first
+    line says so (`audit_pending`)."""
+    found = verdict(results)
+    if audit_pending and found == "green":
+        out = ["gate: green \u2014 auditoría pendiente"]
+    else:
+        out = ["verdict: " + found]
     for r in results:
         code = "-" if r.exit_code is None else r.exit_code
         out.append("%s exit=%s %dms" % (r.slot, code, r.elapsed_ms))
+        if r.outcome not in ("ok", "failed") and getattr(r, "error", ""):
+            out.append("  %s: %s" % (r.outcome, r.error))  # a setup slot: say why
         if r.outcome == "failed":
             out.extend("  " + line for line in error_lines(outputs.get(r.slot, "")))
     out.extend(notes)

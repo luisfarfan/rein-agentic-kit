@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import subprocess
 import time
 from typing import Callable
@@ -293,6 +294,17 @@ def _blocking(findings: list) -> list:
     return ["%s: %s" % (f["severity"], f["text"]) for f in findings if f["severity"] == "BLOCKING"]
 
 
+def _last_blocking(workspace: str, record: dict, change: str) -> list:
+    """The BLOCKING findings of the last CHANGES_REQUESTED review.
+
+    Kept in the record when the verdict arrives (a later episode must not hide them); a
+    record without them falls back to the latest episode."""
+    kept = record.get("last_blocking")
+    if isinstance(kept, list) and all(isinstance(line, str) for line in kept):
+        return kept
+    return _blocking(_findings(workspace, change))
+
+
 def _wait_for_worker(client: OrcaClient, dispatch_id: str, clock: Callable[[], float]):
     """`(kind, value)`: `("done", outcome)`, `("question", body)` or `("timeout", outcome-or-None)`.
 
@@ -342,6 +354,37 @@ def _stop_worker(client: OrcaClient, dispatch_id: str, say: Callable[[str], None
     say("audit worker %s stopped" % dispatch_id)
 
 
+def _stop_on_signal(client: OrcaClient, dispatch_id: str, say: Callable[[str], None]):
+    """Handler for SIGTERM/SIGINT while the audit runs: stop the worker like a timeout, exit 126.
+
+    A second signal while the first is still stopping the worker only exits."""
+    state = {"stopping": False}
+
+    def handler(signum, _frame):
+        if not state["stopping"]:
+            state["stopping"] = True
+            say("interrupted (signal %d): stopping the audit worker" % signum)
+            _stop_worker(client, dispatch_id, say)
+        raise SystemExit(126)
+    return handler
+
+
+def _install_handler(handler) -> dict:
+    """Install `handler` for SIGTERM and SIGINT; the previous handlers, to give back."""
+    previous = {}
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            previous[sig] = signal.signal(sig, handler)
+        except (ValueError, OSError):
+            pass  # not the main thread: there is nothing to hook
+    return previous
+
+
+def _restore_handlers(previous: dict) -> None:
+    for sig, old in previous.items():
+        signal.signal(sig, signal.SIG_DFL if old is None else old)
+
+
 def _audit(workspace: str, record: dict, changed: list, limits: dict, client: OrcaClient,
            clock: Callable[[], float], say: Callable[[str], None]) -> int:
     """One audit round over `changed`; the exit code of `done` (0 approved)."""
@@ -365,12 +408,17 @@ def _audit(workspace: str, record: dict, changed: list, limits: dict, client: Or
         spec, "rein quick audit %s round %d" % (name, rounds + 1), []))
     dispatch_id = oc.dispatch_id_of(client.worker_start(
         task_id, worktree="path:" + workspace, agent=pick[0], model=pick[1]))
-    record["audit_rounds"] = rounds + 1
-    _write_record(workspace, record)  # before waiting: a crash must not hide a spent round
     say("audit round %d started on %s/%s (%s); waiting up to %d minutes"
         % (rounds + 1, pick[0], pick[1], dispatch_id, AUDIT_WAIT_SECONDS // 60))
 
-    kind, value = _wait_for_worker(client, dispatch_id, clock)
+    previous = _install_handler(_stop_on_signal(client, dispatch_id, say))
+    try:
+        kind, value = _wait_for_worker(client, dispatch_id, clock)
+    except OrcaError:
+        _stop_worker(client, dispatch_id, say)  # never leave the auditor running unattended
+        raise
+    finally:
+        _restore_handlers(previous)
     if kind == "question":
         say("el auditor preguntó: %s" % value)
         _stop_worker(client, dispatch_id, say)
@@ -397,8 +445,16 @@ def _audit(workspace: str, record: dict, changed: list, limits: dict, client: Or
         return 0
     if found == "CHANGES_REQUESTED":
         say("audit: CHANGES_REQUESTED")
-        for line in _blocking(_findings(workspace, change)):
+        blocking = _blocking(_findings(workspace, change))
+        for line in blocking:
             say(line)
+        # Only a verdict of changes spends a round; the findings stay for the cap message.
+        record["audit_rounds"] = rounds + 1
+        record["last_blocking"] = blocking
+        try:
+            _write_record(workspace, record)
+        except OSError as error:
+            say("cannot update %s in %s: %s" % (quick.RECORD, workspace, error))
         return 1
     say("the audit recorded an unknown verdict %r" % found)
     return 126
@@ -439,19 +495,27 @@ def done_quick(*, cwd: str = ".", client: OrcaClient, run=verify.run_one,
         results.append(result)
         outputs[slot] = getattr(result, "output", "")
     outcome = quick.verdict(results)
-    say(quick.summary(results, outputs, _gate_notes(steps, related, changed, cfg)))
+    change = "quick-" + os.path.basename(workspace)
+    rounds = int(record.get("audit_rounds") or 0)
+    risky = quick.needs_audit(changed, cfg)
+    approved = risky and bool(_gate.check_review(workspace, change).get("ok"))
+    pending = risky and not approved and rounds < AUDIT_MAX_ROUNDS
+    say(quick.summary(results, outputs, _gate_notes(steps, related, changed, cfg),
+                      audit_pending=pending))
     if outcome == "red":
         return 1
     if outcome == "setup":
         return 126
 
     # 4. Audit, only for risky changes
-    if not quick.needs_audit(changed, cfg):
+    if not risky:
         return 0
-    rounds = int(record.get("audit_rounds") or 0)
+    if approved:  # an APPROVED review that still matches the files: nothing to launch
+        say("auditoría vigente: aprobada")
+        return 0
     if rounds >= AUDIT_MAX_ROUNDS:
         say("dos rondas de auditoría: decide tú. Último resultado:")
-        for line in _blocking(_findings(workspace, "quick-" + os.path.basename(workspace))):
+        for line in _last_blocking(workspace, record, change):
             say(line)
         return 1
     if not env.get("ORCA_TERMINAL_HANDLE"):

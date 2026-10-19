@@ -150,9 +150,10 @@ class RecordTests(unittest.TestCase):
 
 
 class FakeResult:
-    def __init__(self, slot, outcome="ok", exit_code=0, elapsed_ms=10):
+    def __init__(self, slot, outcome="ok", exit_code=0, elapsed_ms=10, error=""):
         self.slot, self.outcome = slot, outcome
         self.exit_code, self.elapsed_ms = exit_code, elapsed_ms
+        self.error = error
 
 
 def exists_in(*paths):
@@ -303,6 +304,38 @@ class SummaryTests(unittest.TestCase):
         none_exit = quick.summary([FakeResult("lint", "timeout", None, 900000)], {}, [])
         self.assertIn("verdict: setup", none_exit)
         self.assertIn("lint exit=- 900000ms", none_exit)
+
+
+class SetupReasonTests(unittest.TestCase):
+    def test_a_setup_slot_says_why(self):
+        for outcome, why in (("timeout", "timed out after 900s -- the whole process group was killed"),
+                             ("not_invocable", "shell exit 127: command not found or not executable"),
+                             ("inconclusive", "exit 2, output matched a known wrapper-runner message")):
+            text = quick.summary([FakeResult("lint", outcome, None, 5, error=why)], {}, [])
+            self.assertIn("verdict: setup", text)
+            self.assertIn("%s: %s" % (outcome, why), text)
+
+    def test_ok_and_failed_slots_print_no_reason(self):
+        text = quick.summary([FakeResult("lint", "ok", 0, 5, error="stale"),
+                              FakeResult("test", "failed", 1, 5, error="exit 1")], {}, [])
+        self.assertNotIn("stale", text)
+        self.assertNotIn("exit 1\n", text + "\n")
+
+
+class PendingAuditSummaryTests(unittest.TestCase):
+    def test_a_green_gate_with_an_audit_to_come_is_not_a_verdict_yet(self):
+        text = quick.summary([FakeResult("lint", "ok", 0, 5)], {}, [], audit_pending=True)
+        self.assertEqual(text.splitlines()[0], "gate: green \u2014 auditoría pendiente")
+        self.assertNotIn("verdict:", text)
+
+    def test_a_red_or_setup_gate_keeps_its_verdict(self):
+        red = quick.summary([FakeResult("lint", "failed", 1, 5)], {}, [], audit_pending=True)
+        self.assertEqual(red.splitlines()[0], "verdict: red")
+        setup = quick.summary([FakeResult("lint", "timeout", None, 5)], {}, [], audit_pending=True)
+        self.assertEqual(setup.splitlines()[0], "verdict: setup")
+
+    def test_default_is_the_plain_verdict(self):
+        self.assertEqual(quick.summary([], {}, []), "verdict: green")
 
 
 class AuditDecisionTests(unittest.TestCase):
