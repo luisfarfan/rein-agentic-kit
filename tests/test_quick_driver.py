@@ -105,13 +105,57 @@ class _Git:
             return (1, "") if self.exclude is None else (0, self.exclude + "\n")
         if args[:2] == ("rev-parse", "--abbrev-ref"):
             return 0, self.branch + "\n"
-        if args[:1] == ("fetch",):
-            return self.fetch_code, ""
         if args[:3] == ("rev-parse", "--verify", "--quiet"):
             ref = args[3]
-            known = ref.startswith("origin/") and ref[len("origin/"):] in self.remote_refs
+            prefix = "refs/remotes/origin/"
+            known = ref.startswith(prefix) and ref[len(prefix):] in self.remote_refs
             return (0, SHA + "\n") if known else (1, "")
         return 1, ""
+
+    def fetch(self, path, base):
+        self.calls.append((path, "fetch", "origin", "--", base))
+        return self.fetch_code, ("fatal: no remote" if self.fetch_code else "")
+
+
+class RunFetchTests(unittest.TestCase):
+    def fake_run(self, outcome):
+        calls = []
+
+        def run(argv, **kw):
+            calls.append((argv, kw))
+            if isinstance(outcome, BaseException):
+                raise outcome
+            return subprocess.CompletedProcess(argv, *outcome)
+
+        return calls, run
+
+    def run_fetch(self, outcome):
+        calls, run = self.fake_run(outcome)
+        original = quick_driver.subprocess.run
+        quick_driver.subprocess.run = run
+        self.addCleanup(setattr, quick_driver.subprocess, "run", original)
+        return quick_driver.run_fetch("/repo", "develop"), calls
+
+    def test_never_prompts_and_is_bounded(self):
+        (code, _), [(argv, kw)] = self.run_fetch((0, "", ""))
+        self.assertEqual(code, 0)
+        self.assertEqual(argv, ["git", "-C", "/repo", "fetch", "--quiet", "origin", "--", "develop"])
+        self.assertEqual(kw["env"]["GIT_TERMINAL_PROMPT"], "0")
+        self.assertEqual(kw["timeout"], 60)
+
+    def test_timeout_is_a_failed_fetch(self):
+        (code, reason), _ = self.run_fetch(subprocess.TimeoutExpired("git", 60))
+        self.assertNotEqual(code, 0)
+        self.assertIn("60", reason)
+
+    def test_failure_carries_gits_stderr(self):
+        (code, reason), _ = self.run_fetch((128, "", "fatal: could not read Username\n"))
+        self.assertEqual(code, 128)
+        self.assertIn("could not read Username", reason)
+
+    def test_missing_git_is_a_failed_fetch(self):
+        (code, _), _ = self.run_fetch(OSError("no git"))
+        self.assertNotEqual(code, 0)
 
 
 class DriverCase(unittest.TestCase):
@@ -134,7 +178,8 @@ class DriverCase(unittest.TestCase):
         kw.setdefault("repo", "proxima-api")
         code = quick_driver.start_quick(
             sentence, client=OrcaClient(executable="ORCA", runner=orca),
-            git=git, now=lambda: 1234.5, say=self.out.append, **kw)
+            git=git, fetch=kw.pop("fetch", None) or git.fetch, now=lambda: 1234.5,
+            say=self.out.append, **kw)
         return code, orca, git
 
     def record(self, workspace):
@@ -194,10 +239,15 @@ class StartTests(DriverCase):
                     order.append(("create",))
                 return super().__call__(argv)
 
+        def spy_fetch(path, base):
+            order.append(("git", path, "fetch", "origin", "--", base))
+            return 0, ""
+
         orca = Spy(self.repos, _limits(10, 10), self.worktree)
+        spy.fetch = spy_fetch
         code, _, _ = self.run_quick(orca=orca, git=spy)
         self.assertEqual(code, 0)
-        fetch = ("git", self.repo_path, "fetch", "--quiet", "origin", "develop")
+        fetch = ("git", self.repo_path, "fetch", "origin", "--", "develop")
         self.assertIn(fetch, order)
         self.assertLess(order.index(fetch), order.index(("create",)))
 
@@ -207,8 +257,8 @@ class StartTests(DriverCase):
         code, orca, _ = self.run_quick(git=git)
         self.assertEqual(code, 0)
         self.assertEqual(self.base_branch_of(orca), "origin/develop")
-        self.assertIn((self.repo_path, "rev-parse", "--verify", "--quiet", "origin/develop"),
-                      git.calls)
+        self.assertIn((self.repo_path, "rev-parse", "--verify", "--quiet",
+                       "refs/remotes/origin/develop"), git.calls)
         # the record keeps the branch name the owner asked for
         self.assertEqual(self.record(self.worktree)["base"], "develop")
         self.assertEqual(self.record(self.worktree)["base_sha"], SHA)
@@ -224,7 +274,7 @@ class StartTests(DriverCase):
         code, orca, git = self.run_quick(base="main", git=git)
         self.assertEqual(code, 0)
         self.assertEqual(self.base_branch_of(orca), "origin/main")
-        self.assertIn((self.repo_path, "fetch", "--quiet", "origin", "main"), git.calls)
+        self.assertIn((self.repo_path, "fetch", "origin", "--", "main"), git.calls)
         self.assertEqual(self.record(self.worktree)["base"], "main")
 
     def test_failed_fetch_says_so_and_still_launches_with_the_local_base(self):
@@ -234,9 +284,18 @@ class StartTests(DriverCase):
         self.assertEqual(code, 0)
         text = self.text()
         self.assertIn("no pude actualizar origin/develop", text)
+        self.assertIn("fatal: no remote", text)  # git's own reason is surfaced
         self.assertIn("uso develop local", text)
         self.assertEqual(self.base_branch_of(orca), "develop")
         self.assertEqual(len(orca.launches()), 1)
+
+    def test_a_timed_out_fetch_is_a_failed_fetch(self):
+        def timed_out(path, base):
+            return 124, "tiempo agotado tras 60s"
+        code, orca, _ = self.run_quick(fetch=timed_out)
+        self.assertEqual(code, 0)
+        self.assertIn("tiempo agotado", self.text())
+        self.assertEqual(self.base_branch_of(orca), "develop")
 
     def test_here_performs_no_fetch(self):
         code, _, git = self.run_quick(here=True, git=_Git(branch="feature/x"))

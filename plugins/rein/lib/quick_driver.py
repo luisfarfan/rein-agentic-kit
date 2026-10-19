@@ -50,6 +50,26 @@ def run_git(path: str, *args: str) -> tuple:
     return proc.returncode, proc.stdout
 
 
+FETCH_TIMEOUT = 60
+
+
+def run_fetch(path: str, base: str) -> tuple:
+    """`(returncode, reason)` of `git fetch origin -- base`; never prompts, never hangs.
+
+    A timeout or an unrunnable git comes back as a non-zero code with a reason.
+    """
+    env = dict(os.environ, GIT_TERMINAL_PROMPT="0")
+    try:
+        proc = subprocess.run(["git", "-C", path, "fetch", "--quiet", "origin", "--", base],
+                              capture_output=True, text=True, env=env, timeout=FETCH_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        return 124, "tiempo agotado tras %ds" % FETCH_TIMEOUT
+    except OSError as error:
+        return 127, "git no se pudo ejecutar: %s" % error
+    reason = (proc.stderr or "").strip().splitlines()
+    return proc.returncode, (reason[-1] if reason else "git fetch terminó con código %d" % proc.returncode)
+
+
 def _failed(say, error: OrcaError) -> int:
     say("orca failed: %s" % error.message)
     residual = oc.residual_resources_of(error)
@@ -124,6 +144,7 @@ def start_quick(
     sentence: str, *, repo: str, base: str = "", here: bool = False,
     dirty_ok: bool = False, agent: str = "", model: str = "", linear: str = "",
     cwd: str = ".", client: OrcaClient, git: Callable[..., tuple] = run_git,
+    fetch: Callable[[str, str], tuple] = run_fetch,
     now: Callable[[], float] = time.time, say: Callable[[str], None] = print,
 ) -> int:
     if not sentence.strip():
@@ -209,11 +230,11 @@ def start_quick(
         _code, branches = git(repo_path, "branch", "--list", "quick-*", "*/quick-*")
         name = "quick-" + quick.slugify(sentence, _taken_names(branches))
         # Branch from the remote tip: the local base may be behind origin.
-        fetch_code, _ = git(repo_path, "fetch", "--quiet", "origin", base)
+        fetch_code, reason = fetch(repo_path, base)
         if fetch_code != 0:
-            say("no pude actualizar origin/%s: git fetch terminó con código %d; uso %s local"
-                % (base, fetch_code, base))
-        remote_code, _ = git(repo_path, "rev-parse", "--verify", "--quiet", "origin/" + base)
+            say("no pude actualizar origin/%s: %s; uso %s local" % (base, reason, base))
+        remote_code, _ = git(repo_path, "rev-parse", "--verify", "--quiet",
+                             "refs/remotes/origin/" + base)
         start_point = "origin/" + base if remote_code == 0 else base
         try:
             created = client.worktree_create("id:" + repo_id, name, start_point, agent, model,
