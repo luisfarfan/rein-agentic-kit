@@ -296,6 +296,19 @@ def _blocking(findings: list) -> list:
     return ["%s: %s" % (f["severity"], f["text"]) for f in findings if f["severity"] == "BLOCKING"]
 
 
+def _approval_stands(workspace: str, change: str, changed: list, cfg) -> bool:
+    """An APPROVED review that still matches its files AND covered every risky changed file.
+
+    `check_review` only re-hashes the files the review listed, so a risky file added after
+    the approval would pass it unseen."""
+    if not _gate.check_review(workspace, change).get("ok"):
+        return False
+    episode = _gate.latest_episode(workspace, change) or {}
+    reviewed = {os.path.normpath(rel) for rel in (episode.get("reviewed_files") or {})}
+    return all(os.path.normpath(path) in reviewed
+               for path in changed if ship_decide.touches_risky([path], cfg.risky_paths))
+
+
 def _last_blocking(workspace: str, record: dict, change: str) -> list:
     """The BLOCKING findings of the last CHANGES_REQUESTED review.
 
@@ -500,7 +513,7 @@ def done_quick(*, cwd: str = ".", client: OrcaClient, run=verify.run_one,
     change = "quick-" + os.path.basename(workspace)
     rounds = int(record.get("audit_rounds") or 0)
     risky = quick.needs_audit(changed, cfg)
-    approved = risky and bool(_gate.check_review(workspace, change).get("ok"))
+    approved = risky and _approval_stands(workspace, change, changed, cfg)
     pending = risky and not approved and rounds < AUDIT_MAX_ROUNDS
     notes = _gate_notes(steps, related, changed, cfg, resolved.get("commands") or {})
     say(quick.summary(results, outputs, notes, audit_pending=pending))

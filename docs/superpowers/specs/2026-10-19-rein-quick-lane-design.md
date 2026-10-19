@@ -140,14 +140,24 @@ Run by the agent, in its own workspace, when the owner says "listo".
      agent's Orca terminal is the coordinator (`ORCA_TERMINAL_HANDLE`); without one (for example
      an agent opened as an Orca chat), `done` exits 126 explaining that the audit needs a
      terminal.
+   - **A standing approval is not audited again.** Before launching anything, `done` checks the
+     workspace's latest `quick-<workspace>` review (`gate.check_review`): when it is APPROVED, every
+     file it reviewed still hashes the same, and every risky changed file (`touches_risky` on that
+     single file) is one of the files it reviewed, `done` prints "auditoría vigente: aprobada" and
+     exits 0 without launching a worker. A risky file added after the approval is not covered, so
+     it is audited; a tweak to a non-risky file leaves the approval standing.
    - `done` waits up to 20 minutes. Approved → green. Changes requested → red with the BLOCKING
-     findings; `audit_rounds` increments. After 2 rounds, `done` reports the findings and leaves
-     the decision to the owner (exit 1 with that sentence).
+     findings; `audit_rounds` increments and the BLOCKING lines are kept in the record as
+     `last_blocking`. Only CHANGES_REQUESTED spends a round: a timeout, a failed worker, a
+     question or an approval does not. After 2 rounds, `done` reports the findings of the last
+     CHANGES_REQUESTED review (`last_blocking`) and leaves the decision to the owner (exit 1 with
+     that sentence).
    - Timeout or a failed audit worker → setup, with the reason.
 5. **Summary.** A few lines: verdict, each slot with its exit code, and for red slots only the
    error lines (lines matching error/FAIL/✗/×/AssertionError, with two lines of context, capped
    at 40 lines). The raw tail of the whole run is not shown: that buried the real error in the
-   pilot.
+   pilot. A green gate that an audit still has to confirm prints "gate: green — auditoría
+   pendiente" in place of "verdict: green", so it is not read as the final word.
 6. **Exit codes**: 0 green (the agent commits), 1 red (fix with the owner), 126 setup (tell the
    owner; not a verdict on the code), 2 usage. `done` never commits, pushes or deletes the
    record. The record stays so a second `done` can run after fixes.

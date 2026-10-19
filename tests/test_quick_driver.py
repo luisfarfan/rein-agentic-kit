@@ -862,6 +862,27 @@ class DoneAuditTests(DoneCase):
         self.assertEqual(len(orca.called("orchestration", "worker-start")), 1)
         self.assertNotIn("auditoría vigente", self.text())
 
+    def test_a_new_risky_file_after_an_approval_is_audited(self):
+        self.risky()
+        self.reviewer("APPROVED")()  # reviewed src/auth/login.ts only
+        self.write("src/auth/session.ts", "v1\n")  # a second risky file, never reviewed
+        orca = _AuditOrca(on_start=self.reviewer(
+            "APPROVED", files=("src/auth/login.ts", "src/auth/session.ts")))
+        code, _, _ = self.done(orca=orca, env=TERMINAL)
+        self.assertEqual(code, 0)
+        self.assertEqual(len(orca.called("orchestration", "worker-start")), 1)
+        self.assertNotIn("auditoría vigente", self.text())
+        self.assertIn("gate: green \u2014 auditoría pendiente", self.text())
+
+    def test_an_approval_covering_every_risky_file_stands(self):
+        self.risky()
+        self.write("src/auth/session.ts", "v1\n")
+        self.reviewer("APPROVED", files=("src/auth/login.ts", "src/auth/session.ts"))()
+        code, _, orca = self.done()
+        self.assertEqual(code, 0)
+        self.assertIn("auditoría vigente: aprobada", self.text())
+        self.assertEqual(orca.calls, [])
+
     def test_an_approval_stands_even_after_the_cap(self):
         self.risky(audit_rounds=2)
         self.reviewer("APPROVED")()
