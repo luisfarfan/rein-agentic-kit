@@ -12,6 +12,15 @@ SONNET = ("claude", "sonnet")
 OPUS = ("claude", "opus")
 ANTIGRAVITY = ("antigravity", "gemini-4-argon-medium")
 
+# The model used when the owner names an agent but no model (rein quick, rein ship).
+DEFAULT_MODELS = {SONNET[0]: SONNET[1], CODEX[0]: CODEX[1], ANTIGRAVITY[0]: ANTIGRAVITY[1]}
+
+
+def default_model(agent: str) -> str:
+    """The default model of a known agent, "" when the agent is unknown."""
+    return DEFAULT_MODELS.get(agent, "")
+
+
 WINDOWS = ("session", "weekly")
 _ALWAYS = ("claude", "codex")
 

@@ -33,12 +33,7 @@ import verify
 from orca_client import OrcaClient, OrcaError
 
 DEFAULT_BASE = "develop"
-# The model used when the owner names an agent but no model.
-DEFAULT_MODELS = {
-    quota.SONNET[0]: quota.SONNET[1],
-    quota.CODEX[0]: quota.CODEX[1],
-    quota.ANTIGRAVITY[0]: quota.ANTIGRAVITY[1],
-}
+DEFAULT_MODELS = quota.DEFAULT_MODELS
 
 
 def run_git(path: str, *args: str) -> tuple:

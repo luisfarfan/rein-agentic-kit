@@ -35,7 +35,8 @@ Subcommands:
                       --json returns {"runs": [...]}
   rein baseline       mark/show/clear the reference run compared against
   rein ship <change>  drive a plan through Orca workers: dispatch, gate, audit.
-                      [--root <plan repo>] [--agent <id> --model <m>] [--dry-run | --detach]
+                      [--root <plan repo>] [--agent <id> [--model <m>]] [--dry-run | --detach]
+                      --agent alone uses that agent's default model.
                       --detach opens a new Orca tab that runs the loop, then returns
                       exit 0 shipped and approved / 1 failed tasks or rejected audit /
                       2 usage / 126 preflight or environment. Never pushes or merges
@@ -79,6 +80,7 @@ import migrate_config as _migrate_config  # noqa: E402
 import plan as _plan  # noqa: E402
 import plan_check as _plan_check  # noqa: E402
 import quick_driver as _quick  # noqa: E402
+import quota as _quota  # noqa: E402
 import roles as _roles  # noqa: E402
 import serve as _serve  # noqa: E402
 import ship as _ship  # noqa: E402
@@ -799,9 +801,16 @@ def cmd_ship(argv: list[str]) -> int:
     change = _positional([a for a in argv if a not in ("--dry-run", "--detach")])
     agent, model = _opt(argv, "agent"), _opt(argv, "model")
     detach = "--detach" in argv
+    usage = ("usage: rein ship <change> [--root <plan repo>] [--agent <id> [--model <m>]] "
+             "[--dry-run | --detach]  (--detach and --dry-run cannot be combined)")
+    if agent and not model:
+        model = _quota.default_model(agent)
+        if not model:
+            print("%s\nunknown agent %r without --model; known agents: %s"
+                  % (usage, agent, ", ".join(_quota.DEFAULT_MODELS)))
+            return 2
     if not change or bool(agent) != bool(model) or (detach and "--dry-run" in argv):
-        print("usage: rein ship <change> [--root <plan repo>] [--agent <id> --model <m>] "
-              "[--dry-run | --detach]  (--detach and --dry-run cannot be combined)")
+        print(usage)
         return 2
     root = _opt(argv, "root", ".")
     if detach:

@@ -131,7 +131,7 @@ Coming from v1? `rein migrate-config` rewrites `flow.config.json` (drops `models
 ### CLI — the deterministic half
 
 ```bash
-rein ship <change> [--root <plan repo>] [--agent <id> --model <m>] [--dry-run | --detach]
+rein ship <change> [--root <plan repo>] [--agent <id> [--model <m>]] [--dry-run | --detach]
                  # drive a plan through Orca workers: dispatch, gate each task, audit.
                  # Resumes from .rein/ship/<change>.json. --dry-run prints every orca call and
                  # runs nothing. Never pushes, merges or deploys.

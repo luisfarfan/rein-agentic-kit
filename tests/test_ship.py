@@ -1693,7 +1693,7 @@ class TestCli(unittest.TestCase):
     BIN = os.path.join(os.path.dirname(HERE), "plugins", "rein", "bin", "rein")
 
     def test_usage_error_exits_two(self):
-        for argv in ([], ["demo", "--agent", "codex"]):
+        for argv in ([], ["demo", "--model", "x"], ["demo", "--agent", "nope"]):
             proc = subprocess.run([sys.executable, self.BIN, "ship", *argv], capture_output=True, text=True)
             self.assertEqual(proc.returncode, 2, argv)
             self.assertIn("usage: rein ship", proc.stdout)

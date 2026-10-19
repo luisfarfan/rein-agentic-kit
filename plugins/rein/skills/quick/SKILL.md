@@ -12,7 +12,7 @@ Never edits code itself.
 ## Steps
 
 1. Map the owner's words to flags: a repo name → `--repo <name>`; "en main" → `--base main`;
-   "aquí mismo" / "en el checkout" → `--here`; "con codex" → `--agent codex` (`--model` only if they name one); a
+   "aquí mismo" / "en el checkout" → `--here`; "con codex" → `--agent codex`, "con antigravity" → `--agent antigravity`, "con sonnet" / "con claude" → `--agent claude` (`--model` only if they name one); a
    `PPR-…` id → `--linear <id>`.
 2. A sentence naming two repos: stop. Suggest `/rein:rein-plan`, then `/ship`.
 3. Run once: `rein quick "<sentence>" [flags]`.
