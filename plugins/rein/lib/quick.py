@@ -46,8 +46,10 @@ def looks_like_bug(sentence: str) -> bool:
     return any(word in low for word in _BUG_WORDS)
 
 
-def build_brief(sentence: str, linear: str = "", bug: bool = False) -> str:
-    """The agent's first message, in Spanish (spec section 4)."""
+def build_brief(sentence: str, linear: str = "", bug: bool = False, bin_path: str = "") -> str:
+    """The agent's first message, in Spanish (spec section 4).
+
+    `bin_path` is this checkout's `bin/rein`, named as the fallback when `rein` is not on PATH."""
     lines = [
         sentence,
         "Iteramos juntos: propón, aplica, y espera mi visto bueno antes de seguir.",
@@ -55,6 +57,13 @@ def build_brief(sentence: str, linear: str = "", bug: bool = False) -> str:
     if bug:
         lines.append("Primero escribe un test que lo reproduzca.")
     lines.append("Cuando diga *listo*, ejecuta `rein quick done` y muéstrame el resultado.")
+    if bin_path:
+        lines.append("Si `rein` no está en el PATH, usa `python3 %s quick done`." % bin_path)
+    lines.append(
+        "`rein quick done` puede tardar hasta 30 minutos si hay auditoría: ejecútalo con un "
+        "timeout de 35 minutos o en segundo plano y espera su resultado; no hagas commit "
+        "hasta que termine en verde."
+    )
     lines.append(
         "No hagas push, merge ni PR salvo que yo lo pida; "
         "si la rama destino es main, pide confirmación antes."
@@ -63,6 +72,7 @@ def build_brief(sentence: str, linear: str = "", bug: bool = False) -> str:
         lines.append("Incluye %s en el mensaje de commit." % linear)
     else:
         lines.append("Commit convencional sin ID de issue: no inventes uno ni lo preguntes.")
+    lines.append("No incluyas `.rein/` en ningún commit.")
     lines.append("No leas `.env*` ni credenciales.")
     return "\n".join(lines)
 

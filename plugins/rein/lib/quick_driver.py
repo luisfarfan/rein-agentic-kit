@@ -160,7 +160,10 @@ def start_quick(
         say(refusal)
         return 2
     if here and os.path.exists(os.path.join(repo_path, quick.RECORD)):
-        say("%s already has %s: one quick task per workspace" % (repo_path, quick.RECORD))
+        record_path = os.path.join(repo_path, quick.RECORD)
+        say("%s already has %s: one quick task per workspace; "
+            "borra %s cuando la tarea anterior esté commiteada"
+            % (repo_path, quick.RECORD, record_path))
         return 2
 
     # 3. Implementer
@@ -183,7 +186,7 @@ def start_quick(
             say("every provider is braked: nothing was launched")
             return 1
 
-    brief = quick.build_brief(sentence, linear, quick.looks_like_bug(sentence))
+    brief = quick.build_brief(sentence, linear, quick.looks_like_bug(sentence), ship.BIN)
 
     # 4. Placement
     handle = ""

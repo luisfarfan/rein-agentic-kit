@@ -21,6 +21,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(HERE), "plugins", "rein", "lib")
 import gate  # noqa: E402
 import quick  # noqa: E402
 import quick_driver  # noqa: E402
+import ship  # noqa: E402
 import verify  # noqa: E402
 from orca_client import OrcaClient  # noqa: E402
 
@@ -140,7 +141,7 @@ class StartTests(DriverCase):
         code, orca, git = self.run_quick("arregla el boton", linear="PPR-9")
         self.assertEqual(code, 0)
         [argv] = orca.launches()
-        brief = quick.build_brief("arregla el boton", "PPR-9", False)
+        brief = quick.build_brief("arregla el boton", "PPR-9", False, ship.BIN)
         self.assertEqual(argv, [
             "ORCA", "worktree", "create", "--repo", "id:r1", "--name", "quick-arregla-el-boton",
             "--base-branch", "develop", "--agent", "claude", "--model", "sonnet",
@@ -280,7 +281,16 @@ class PlacementTests(DriverCase):
         code, orca, _ = self.run_quick(here=True)
         self.assertEqual(code, 2)
         self.assertIn("quick.json", self.text())
+        self.assertIn("borra %s cuando la tarea anterior esté commiteada"
+                      % os.path.join(self.repo_path, ".rein", "quick.json"), self.text())
         self.assertEqual(orca.launches(), [])
+        self.assertTrue(os.path.exists(os.path.join(self.repo_path, ".rein", "quick.json")))
+
+    def test_the_brief_names_this_checkouts_rein_as_the_fallback(self):
+        _, orca, _ = self.run_quick()
+        brief = orca.launches()[0][orca.launches()[0].index("--prompt") + 1]
+        self.assertIn("python3 %s quick done" % ship.BIN, brief)
+        self.assertTrue(os.path.isabs(ship.BIN))
 
     def test_orca_failure_is_126_and_writes_no_record(self):
         failure = {"ok": False,
@@ -332,7 +342,7 @@ class PlacementTests(DriverCase):
         code, orca, _ = self.run_quick(sentence)
         self.assertEqual(code, 0)
         [argv] = orca.launches()
-        brief = quick.build_brief(sentence, "", quick.looks_like_bug(sentence))
+        brief = quick.build_brief(sentence, "", quick.looks_like_bug(sentence), ship.BIN)
         self.assertEqual(argv[argv.index("--prompt") + 1], brief)
         self.assertEqual(argv.count(brief), 1)
 

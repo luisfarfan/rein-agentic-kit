@@ -19,6 +19,14 @@ REPRODUCE = "Primero escribe un test que lo reproduzca."
 DONE = "Cuando diga *listo*, ejecuta `rein quick done` y muéstrame el resultado."
 LINEAR = "Incluye PPR-123 en el mensaje de commit."
 NO_ID = "Commit convencional sin ID de issue: no inventes uno ni lo preguntes."
+BIN = "/opt/rein/plugins/rein/bin/rein"
+FALLBACK = "Si `rein` no está en el PATH, usa `python3 %s quick done`." % BIN
+LONG_DONE = (
+    "`rein quick done` puede tardar hasta 30 minutos si hay auditoría: ejecútalo con un "
+    "timeout de 35 minutos o en segundo plano y espera su resultado; no hagas commit hasta "
+    "que termine en verde."
+)
+NO_REIN_COMMIT = "No incluyas `.rein/` en ningún commit."
 
 
 class SlugTests(unittest.TestCase):
@@ -71,15 +79,18 @@ class BriefTests(unittest.TestCase):
 
     def test_brief_lines_in_spec_order(self):
         sentence = "El botón no funciona"
-        brief = quick.build_brief(sentence, linear="PPR-123", bug=True)
+        brief = quick.build_brief(sentence, linear="PPR-123", bug=True, bin_path=BIN)
         marks = [
             sentence,
             "Iteramos juntos: propón, aplica, y espera mi visto bueno antes de seguir.",
             REPRODUCE,
             DONE,
+            FALLBACK,
+            LONG_DONE,
             "No hagas push, merge ni PR salvo que yo lo pida; "
             "si la rama destino es main, pide confirmación antes.",
             LINEAR,
+            NO_REIN_COMMIT,
             "No leas `.env*` ni credenciales.",
         ]
         positions = [brief.index(m) for m in marks]
@@ -90,9 +101,19 @@ class BriefTests(unittest.TestCase):
         sentence = " ".join(["palabra"] * 40)
         for bug in (False, True):
             for linear in ("", "PPR-123"):
-                brief = quick.build_brief(sentence, linear=linear, bug=bug)
-                self.assertLessEqual(len(brief.split()), 150)
+                brief = quick.build_brief(sentence, linear=linear, bug=bug, bin_path=BIN)
+                self.assertLessEqual(len(brief.split()), 170)
                 self.assertIn(sentence, brief)
+
+
+    def test_brief_names_the_fallback_only_when_given_a_path(self):
+        self.assertNotIn("python3", quick.build_brief("x"))
+        self.assertIn(FALLBACK, quick.build_brief("x", bin_path=BIN))
+
+    def test_brief_warns_that_done_is_slow_and_keeps_rein_out_of_commits(self):
+        brief = quick.build_brief("x")
+        self.assertIn(LONG_DONE, brief)
+        self.assertIn(NO_REIN_COMMIT, brief)
 
 
 class RefusalTests(unittest.TestCase):
