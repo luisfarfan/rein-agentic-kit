@@ -89,6 +89,8 @@ class _Git:
         self.branch = branch
         self.exclude = None  # what `rev-parse --git-path info/exclude` prints; None = fails
         self.remote_refs = set()  # branches whose `origin/<b>` ref exists
+        self.local_refs = {"develop"}  # branches whose `refs/heads/<b>` ref exists
+        self.origin_head = None  # what `symbolic-ref origin/HEAD` prints; None = unset
         self.fetch_code = 0
 
     def __call__(self, path, *args):
@@ -105,10 +107,13 @@ class _Git:
             return (1, "") if self.exclude is None else (0, self.exclude + "\n")
         if args[:2] == ("rev-parse", "--abbrev-ref"):
             return 0, self.branch + "\n"
+        if args == ("symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"):
+            return (1, "") if self.origin_head is None else (0, self.origin_head + "\n")
         if args[:3] == ("rev-parse", "--verify", "--quiet"):
             ref = args[3]
-            prefix = "refs/remotes/origin/"
-            known = ref.startswith(prefix) and ref[len(prefix):] in self.remote_refs
+            remote, local = "refs/remotes/origin/", "refs/heads/"
+            known = ((ref.startswith(remote) and ref[len(remote):] in self.remote_refs)
+                     or (ref.startswith(local) and ref[len(local):] in self.local_refs))
             return (0, SHA + "\n") if known else (1, "")
         return 1, ""
 
@@ -276,6 +281,100 @@ class StartTests(DriverCase):
         self.assertEqual(self.base_branch_of(orca), "origin/main")
         self.assertIn((self.repo_path, "fetch", "origin", "--", "main"), git.calls)
         self.assertEqual(self.record(self.worktree)["base"], "main")
+
+    def test_without_develop_it_branches_from_the_remote_default(self):
+        git = _Git()
+        git.local_refs = set()
+        git.remote_refs = {"main"}
+        git.origin_head = "origin/main"
+        code, orca, _ = self.run_quick(git=git)
+        self.assertEqual(code, 0)
+        self.assertEqual(self.base_branch_of(orca), "origin/main")
+        self.assertEqual(self.record(self.worktree)["base"], "main")
+        self.assertIn("este repo no tiene develop; parto de main", self.out)
+        self.assertIn((self.repo_path, "fetch", "origin", "--", "main"), git.calls)
+
+    def test_without_develop_or_origin_head_it_uses_origin_main(self):
+        git = _Git()
+        git.local_refs = set()
+        git.remote_refs = {"main"}
+        code, orca, _ = self.run_quick(git=git)
+        self.assertEqual(code, 0)
+        self.assertEqual(self.base_branch_of(orca), "origin/main")
+        self.assertEqual(self.record(self.worktree)["base"], "main")
+        self.assertIn("este repo no tiene develop; parto de main", self.out)
+
+    def test_without_develop_or_origin_head_it_uses_a_local_main(self):
+        git = _Git()
+        git.local_refs = {"main"}
+        code, orca, _ = self.run_quick(git=git)
+        self.assertEqual(code, 0)
+        self.assertEqual(self.base_branch_of(orca), "main")
+        self.assertEqual(self.record(self.worktree)["base"], "main")
+
+    def test_a_remote_default_other_than_main_is_used(self):
+        git = _Git()
+        git.local_refs = set()
+        git.remote_refs = {"trunk"}
+        git.origin_head = "origin/trunk"
+        code, orca, _ = self.run_quick(git=git)
+        self.assertEqual(code, 0)
+        self.assertEqual(self.base_branch_of(orca), "origin/trunk")
+        self.assertEqual(self.record(self.worktree)["base"], "trunk")
+        self.assertIn("este repo no tiene develop; parto de trunk", self.out)
+
+    def test_a_missing_develop_fetch_failure_is_not_reported_when_falling_back(self):
+        git = _Git()
+        git.local_refs = set()
+        git.remote_refs = {"main"}
+        git.origin_head = "origin/main"
+
+        def fetch(path, base):
+            return (128, "fatal: couldn't find remote ref develop") if base == "develop" else (0, "")
+        code, _, _ = self.run_quick(git=git, fetch=fetch)
+        self.assertEqual(code, 0)
+        self.assertNotIn("no pude actualizar", self.text())
+
+    def test_only_a_local_develop_is_still_develop(self):
+        git = _Git()
+        git.local_refs = {"develop"}
+        git.origin_head = "origin/main"
+        git.remote_refs = {"main"}
+        code, orca, _ = self.run_quick(git=git)
+        self.assertEqual(code, 0)
+        self.assertEqual(self.base_branch_of(orca), "develop")
+        self.assertEqual(self.record(self.worktree)["base"], "develop")
+        self.assertNotIn("este repo no tiene develop", self.text())
+
+    def test_develop_on_origin_wins_over_the_remote_default(self):
+        git = _Git()
+        git.local_refs = set()
+        git.remote_refs = {"develop", "main"}
+        git.origin_head = "origin/main"
+        code, orca, _ = self.run_quick(git=git)
+        self.assertEqual(code, 0)
+        self.assertEqual(self.base_branch_of(orca), "origin/develop")
+        self.assertNotIn("este repo no tiene develop", self.text())
+
+    def test_no_develop_and_no_default_asks_for_base_and_calls_orca_not_at_all(self):
+        git = _Git()
+        git.local_refs = set()
+        code, orca, _ = self.run_quick(git=git)
+        self.assertEqual(code, 2)
+        self.assertIn("--base", self.text())
+        self.assertEqual(orca.launches(), [])
+
+    def test_an_explicit_base_never_falls_back(self):
+        git = _Git()
+        git.local_refs = set()
+        git.remote_refs = {"main"}
+        git.origin_head = "origin/main"
+        code, orca, _ = self.run_quick(git=git, base="develop")
+        self.assertEqual(code, 0)
+        self.assertEqual(self.base_branch_of(orca), "develop")
+        self.assertEqual(self.record(self.worktree)["base"], "develop")
+        self.assertNotIn("este repo no tiene develop", self.text())
+        self.assertFalse([c for c in git.calls if c[1:2] == ("symbolic-ref",)])
 
     def test_failed_fetch_says_so_and_still_launches_with_the_local_base(self):
         git = _Git()

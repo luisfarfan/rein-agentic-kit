@@ -75,11 +75,16 @@ Steps, all deterministic:
 3. **Placement.**
    - Default: `orca worktree create --repo id:<repo> --name quick-<slug> --base-branch <base>
      --agent <a> --model <m> --prompt <brief> --setup run --activate --json` (plus
-     `--linear-issue <id>` when given). `<base>` defaults to `develop`. Before creating, it runs
+     `--linear-issue <id>` when given). `<base>` defaults to `develop`, or the remote's default branch when
+     there is none (see below). Before creating, it runs
      `git fetch --quiet origin <base>` in the repo's main checkout and passes `origin/<base>` as
      `--base-branch` when that remote ref exists (else `<base>`), so the worktree never starts
      from a stale local branch; a failed fetch (offline, no `origin`) prints one line and falls
-     back to the local `<base>`. `<slug>` is the sentence
+     back to the local `<base>`. Without `--base`, `develop` is used when `origin/develop` or a
+     local `develop` exists; otherwise the base is `git symbolic-ref origin/HEAD` (e.g. `main`),
+     else `main` when `origin/main` or a local `main` exists, and it says "este repo no tiene
+     develop; parto de <base>". If none is found it exits 2 asking for `--base`. An explicit
+     `--base` never falls back. `<slug>` is the sentence
      lowercased, ASCII-folded, non-alphanumerics to `-`, cut to 30 characters; on a name clash,
      append `-2`, `-3`, ….
    - `--here`: `orca agent launch --worktree path:<repo path> --agent <a> --model <m>
@@ -201,7 +206,7 @@ Run by the agent, in its own workspace, when the owner says "listo".
 
 - **D1** Interactive agent, not a supervised worker: the owner iterates by talking. This is why
   the lane does not reuse `/ship`'s state machine.
-- **D2** Default placement is a new worktree from `develop`; `--here` and `--base` are explicit
+- **D2** Default placement is a new worktree from `develop`, or the remote's default branch when there is none; `--here` and `--base` are explicit
   choices made in words.
 - **D3** The implementer is chosen in code (`choose_implementer`) and is never Opus unless the
   owner names it.

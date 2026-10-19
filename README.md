@@ -146,7 +146,7 @@ rein answer [<change>] ["<text>"] [--gate <id>] [--root <plan repo>]
                  # Exit: 0 ok · 1 Orca error or nothing to answer · 2 usage (ambiguous or invalid)
 rein quick "<sentence>" [--repo <name>] [--base <branch>] [--here [--dirty-ok]] [--agent <id> [--model <m>]] [--linear <id>]
                  # hand a small change to a cheap agent chosen by quota, in a tab you talk to.
-                 # Default: its own worktree off develop; --here uses the main checkout
+                 # Default: its own worktree off develop, or the remote's default branch when there is none; --here uses the main checkout
                  # (--dirty-ok if it has uncommitted work). Never pushes or merges.
                  # Exit: 0 started · 1 failed · 2 usage · 126 environment
 rein quick done  # run by that agent on "listo": lint/typecheck plus the tests related to the

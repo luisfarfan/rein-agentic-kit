@@ -140,6 +140,22 @@ def _write_record(workspace: str, record: dict) -> None:
         fh.write("\n")
 
 
+def _ref_exists(git: Callable[..., tuple], repo_path: str, ref: str) -> bool:
+    return git(repo_path, "rev-parse", "--verify", "--quiet", ref)[0] == 0
+
+
+def _fallback_base(git: Callable[..., tuple], repo_path: str) -> str:
+    """The remote's default branch, else `main`; "" when neither can be found."""
+    code, out = git(repo_path, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD")
+    head = out.strip()
+    if code == 0 and head:
+        return head[len("origin/"):] if head.startswith("origin/") else head
+    for ref in ("refs/remotes/origin/main", "refs/heads/main"):
+        if _ref_exists(git, repo_path, ref):
+            return "main"
+    return ""
+
+
 def start_quick(
     sentence: str, *, repo: str, base: str = "", here: bool = False,
     dirty_ok: bool = False, agent: str = "", model: str = "", linear: str = "",
@@ -226,11 +242,22 @@ def start_quick(
             return _failed(say, error)
         handle = oc.launch_handle_of(launched)
     else:
+        explicit = bool(base)
         base = base or DEFAULT_BASE
         _code, branches = git(repo_path, "branch", "--list", "quick-*", "*/quick-*")
         name = "quick-" + quick.slugify(sentence, _taken_names(branches))
         # Branch from the remote tip: the local base may be behind origin.
         fetch_code, reason = fetch(repo_path, base)
+        if not explicit and not (
+                _ref_exists(git, repo_path, "refs/remotes/origin/" + base)
+                or _ref_exists(git, repo_path, "refs/heads/" + base)):
+            base = _fallback_base(git, repo_path)
+            if not base:
+                say("este repo no tiene develop ni una rama por defecto que reconozca; "
+                    "dime la base con --base <rama>")
+                return 2
+            say("este repo no tiene develop; parto de %s" % base)
+            fetch_code, reason = fetch(repo_path, base)
         if fetch_code != 0:
             say("no pude actualizar origin/%s: %s; uso %s local" % (base, reason, base))
         remote_code, _ = git(repo_path, "rev-parse", "--verify", "--quiet",
