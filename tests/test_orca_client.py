@@ -314,7 +314,16 @@ class QuickLaneTests(unittest.TestCase):
         )
 
     def test_launch_handle_of_is_empty_for_a_chat(self):
+        # Synthetic (hand-built, not recorded): a chat launch has no terminal handle.
         chat = {"outcome": {"kind": "chat", "chatId": "c1"}}
+        self.assertEqual(orca_client.launch_handle_of(chat), "")
+
+    def test_launch_handle_of_reads_the_nested_launch_block(self):
+        # Synthetic (hand-built, not recorded): the shape `orca worktree create --help`
+        # documents for `--agent`, nested under `launch`.
+        nested = {"launch": {"outcome": {"kind": "terminal", "handle": "term_x"}}}
+        self.assertEqual(orca_client.launch_handle_of(nested), "term_x")
+        chat = {"launch": {"outcome": {"kind": "chat", "chatId": "c1"}}}
         self.assertEqual(orca_client.launch_handle_of(chat), "")
 
     def test_accessors_return_empty_on_empty_result(self):

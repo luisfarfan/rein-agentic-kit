@@ -367,11 +367,17 @@ def created_worktree_path_of(worktree_create_result: dict) -> str:
 
 
 def launch_handle_of(result: dict) -> str:
-    """The agent terminal handle from `agent launch` (or `worktree create --agent`).
+    """The agent terminal handle of a launch; `""` when it opened a chat or nothing.
 
-    `""` when the launch opened a chat rather than a terminal.
+    Recorded shape (`agent launch`, tests/fixtures/orca/agent_launch.json):
+    top-level `outcome.{kind,handle}`. Documented but NOT recorded (per
+    `orca worktree create --help`): `worktree create --agent` nests the same
+    block under `launch.outcome`, which is read as a fallback.
     """
-    outcome = _dict(_dict(result).get("outcome"))
+    result = _dict(result)
+    outcome = _dict(result.get("outcome"))
+    if not outcome:
+        outcome = _dict(_dict(result.get("launch")).get("outcome"))
     if outcome.get("kind") != "terminal":
         return ""
     return _str(outcome.get("handle"))
