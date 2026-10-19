@@ -208,8 +208,15 @@ def start_quick(
         base = base or DEFAULT_BASE
         _code, branches = git(repo_path, "branch", "--list", "quick-*", "*/quick-*")
         name = "quick-" + quick.slugify(sentence, _taken_names(branches))
+        # Branch from the remote tip: the local base may be behind origin.
+        fetch_code, _ = git(repo_path, "fetch", "--quiet", "origin", base)
+        if fetch_code != 0:
+            say("no pude actualizar origin/%s: git fetch terminó con código %d; uso %s local"
+                % (base, fetch_code, base))
+        remote_code, _ = git(repo_path, "rev-parse", "--verify", "--quiet", "origin/" + base)
+        start_point = "origin/" + base if remote_code == 0 else base
         try:
-            created = client.worktree_create("id:" + repo_id, name, base, agent, model,
+            created = client.worktree_create("id:" + repo_id, name, start_point, agent, model,
                                              brief, linear)
         except OrcaError as error:
             return _failed(say, error)

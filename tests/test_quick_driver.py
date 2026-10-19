@@ -88,6 +88,8 @@ class _Git:
         self.sha = sha
         self.branch = branch
         self.exclude = None  # what `rev-parse --git-path info/exclude` prints; None = fails
+        self.remote_refs = set()  # branches whose `origin/<b>` ref exists
+        self.fetch_code = 0
 
     def __call__(self, path, *args):
         self.calls.append((path,) + args)
@@ -103,6 +105,12 @@ class _Git:
             return (1, "") if self.exclude is None else (0, self.exclude + "\n")
         if args[:2] == ("rev-parse", "--abbrev-ref"):
             return 0, self.branch + "\n"
+        if args[:1] == ("fetch",):
+            return self.fetch_code, ""
+        if args[:3] == ("rev-parse", "--verify", "--quiet"):
+            ref = args[3]
+            known = ref.startswith("origin/") and ref[len("origin/"):] in self.remote_refs
+            return (0, SHA + "\n") if known else (1, "")
         return 1, ""
 
 
@@ -165,6 +173,75 @@ class StartTests(DriverCase):
         argv = orca.launches()[0]
         self.assertEqual(argv[argv.index("--base-branch") + 1], "main")
         self.assertEqual(self.record(self.worktree)["base"], "main")
+
+    def base_branch_of(self, orca):
+        argv = orca.launches()[0]
+        return argv[argv.index("--base-branch") + 1]
+
+    def test_fetch_runs_in_the_repo_before_the_worktree_is_created(self):
+        order = []
+        git = _Git()
+        git.remote_refs = {"develop"}
+        inner = git.__call__
+
+        def spy(path, *args):
+            order.append(("git",) + (path,) + args)
+            return inner(path, *args)
+
+        class Spy(_Orca):
+            def __call__(self, argv):
+                if argv[1:3] == ["worktree", "create"]:
+                    order.append(("create",))
+                return super().__call__(argv)
+
+        orca = Spy(self.repos, _limits(10, 10), self.worktree)
+        code, _, _ = self.run_quick(orca=orca, git=spy)
+        self.assertEqual(code, 0)
+        fetch = ("git", self.repo_path, "fetch", "--quiet", "origin", "develop")
+        self.assertIn(fetch, order)
+        self.assertLess(order.index(fetch), order.index(("create",)))
+
+    def test_branches_from_origin_when_the_remote_ref_exists(self):
+        git = _Git()
+        git.remote_refs = {"develop"}
+        code, orca, _ = self.run_quick(git=git)
+        self.assertEqual(code, 0)
+        self.assertEqual(self.base_branch_of(orca), "origin/develop")
+        self.assertIn((self.repo_path, "rev-parse", "--verify", "--quiet", "origin/develop"),
+                      git.calls)
+        # the record keeps the branch name the owner asked for
+        self.assertEqual(self.record(self.worktree)["base"], "develop")
+        self.assertEqual(self.record(self.worktree)["base_sha"], SHA)
+
+    def test_branches_from_the_local_base_without_a_remote_ref(self):
+        code, orca, _ = self.run_quick()
+        self.assertEqual(code, 0)
+        self.assertEqual(self.base_branch_of(orca), "develop")
+
+    def test_base_main_branches_from_origin_main(self):
+        git = _Git()
+        git.remote_refs = {"main"}
+        code, orca, git = self.run_quick(base="main", git=git)
+        self.assertEqual(code, 0)
+        self.assertEqual(self.base_branch_of(orca), "origin/main")
+        self.assertIn((self.repo_path, "fetch", "--quiet", "origin", "main"), git.calls)
+        self.assertEqual(self.record(self.worktree)["base"], "main")
+
+    def test_failed_fetch_says_so_and_still_launches_with_the_local_base(self):
+        git = _Git()
+        git.fetch_code = 128
+        code, orca, _ = self.run_quick(git=git)
+        self.assertEqual(code, 0)
+        text = self.text()
+        self.assertIn("no pude actualizar origin/develop", text)
+        self.assertIn("uso develop local", text)
+        self.assertEqual(self.base_branch_of(orca), "develop")
+        self.assertEqual(len(orca.launches()), 1)
+
+    def test_here_performs_no_fetch(self):
+        code, _, git = self.run_quick(here=True, git=_Git(branch="feature/x"))
+        self.assertEqual(code, 0)
+        self.assertFalse([c for c in git.calls if c[1:2] == ("fetch",)])
 
     def test_here_launches_in_the_main_checkout(self):
         code, orca, git = self.run_quick(here=True, git=_Git(branch="feature/x"))

@@ -75,7 +75,11 @@ Steps, all deterministic:
 3. **Placement.**
    - Default: `orca worktree create --repo id:<repo> --name quick-<slug> --base-branch <base>
      --agent <a> --model <m> --prompt <brief> --setup run --activate --json` (plus
-     `--linear-issue <id>` when given). `<base>` defaults to `develop`. `<slug>` is the sentence
+     `--linear-issue <id>` when given). `<base>` defaults to `develop`. Before creating, it runs
+     `git fetch --quiet origin <base>` in the repo's main checkout and passes `origin/<base>` as
+     `--base-branch` when that remote ref exists (else `<base>`), so the worktree never starts
+     from a stale local branch; a failed fetch (offline, no `origin`) prints one line and falls
+     back to the local `<base>`. `<slug>` is the sentence
      lowercased, ASCII-folded, non-alphanumerics to `-`, cut to 30 characters; on a name clash,
      append `-2`, `-3`, ….
    - `--here`: `orca agent launch --worktree path:<repo path> --agent <a> --model <m>
@@ -84,7 +88,7 @@ Steps, all deterministic:
      `--here` with `--base` refuses: the main checkout stays on its branch.
 4. **Record.** Write `<workspace>/.rein/quick.json`:
    `{"version": 1, "repo", "workspace", "base", "base_sha", "agent", "model", "sentence",
-   "linear", "started_at", "audit_rounds": 0}`. `base` is the branch name; `base_sha` is the
+   "linear", "started_at", "audit_rounds": 0}`. `base` is the branch name asked for (not `origin/<base>`); `base_sha` is the
    merge base at start (for `--here`, `HEAD` at start), so `done` diffs against a fixed point.
    An existing `quick.json` in that workspace refuses (exit 2): one quick task per workspace.
    For a new worktree, the record is written once `orca worktree create` returns its path, before
