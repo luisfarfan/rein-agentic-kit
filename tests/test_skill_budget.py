@@ -21,7 +21,7 @@ sys.path.insert(0, os.path.join(PLUGIN, "lib"))
 
 import roles  # noqa: E402
 
-BUDGETS = {"rein-plan": 700, "ship": 200, "answer": 200}
+BUDGETS = {"rein-plan": 700, "ship": 200, "answer": 200, "quick": 200}
 
 
 def _skill_files() -> list:
@@ -36,7 +36,7 @@ def _read(path: str) -> str:
 class TestSkillBudget(unittest.TestCase):
     def test_skill_set(self):
         names = {os.path.basename(os.path.dirname(p)) for p in _skill_files()}
-        self.assertEqual(names, {"rein-plan", "rein-discover", "rein-audit", "rein-role", "ship", "answer"})
+        self.assertEqual(names, {"rein-plan", "rein-discover", "rein-audit", "rein-role", "ship", "answer", "quick"})
 
     def test_word_budgets(self):
         for name, limit in BUDGETS.items():
@@ -45,7 +45,7 @@ class TestSkillBudget(unittest.TestCase):
 
     def test_no_event_or_path_boilerplate(self):
         files = _skill_files()
-        self.assertEqual(len(files), 6, "the sweep must cover every skill")
+        self.assertEqual(len(files), 7, "the sweep must cover every skill")
         for path in files:
             text = _read(path)
             for banned in ("rein event", "plugins/cache", '"$R"', "$R="):
@@ -102,6 +102,14 @@ class TestSkillBudget(unittest.TestCase):
         self.assertIn("--gate", text)
         self.assertIn("never invents an answer", text)
         for trigger in ("qué me pregunta rein", "responde a rein", "answer the gate", "pending questions"):
+            self.assertIn(trigger, text)
+
+    def test_quick_runs_the_cli_and_never_edits(self):
+        text = _read(os.path.join(SKILLS, "quick", "SKILL.md"))
+        self.assertIn("rein quick", text)
+        self.assertIn("/rein:rein-plan", text)
+        self.assertIn("never retry", text)
+        for trigger in ("tarea rápida", "arréglalo rápido", "cambio rápido", "quick task", "/quick"):
             self.assertIn(trigger, text)
 
 

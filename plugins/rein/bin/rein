@@ -43,6 +43,14 @@ Subcommands:
                       list (no text) or resolve the owner gates a running `rein ship`
                       is waiting on; option gates take one of their options. Exit 0 /
                       1 failure / 2 usage (ambiguous change or gate, invalid option)
+  rein quick "<sentence>" [--repo <name>] [--base <branch>] [--here [--dirty-ok]]
+                      [--agent <id> --model <m>] [--linear <id>]
+                      hand a small change to a cheap agent chosen by quota, in a tab
+                      you talk to. Default: its own worktree; --here uses the main
+                      checkout. Exit 0 started / 1 failed / 2 usage / 126 environment
+  rein quick done     run by that agent when you say "listo": light gate on the
+                      changed files, plus an audit only for risky paths. Never commits
+                      or pushes. Exit 0 green / 1 red / 2 no quick task / 126 setup
   rein migrate-config [root] [--write]
                       v1 -> v2 flow.config.json: drop models/limits/worktree, add the
                       ship block. Prints a diff; writes only with --write
@@ -70,6 +78,7 @@ import gate as _gate  # noqa: E402
 import migrate_config as _migrate_config  # noqa: E402
 import plan as _plan  # noqa: E402
 import plan_check as _plan_check  # noqa: E402
+import quick_driver as _quick  # noqa: E402
 import roles as _roles  # noqa: E402
 import serve as _serve  # noqa: E402
 import ship as _ship  # noqa: E402
@@ -842,6 +851,28 @@ def cmd_answer(argv: list[str]) -> int:
     return _answer.run_answer(_opt(argv, "root", "."), change, text, _opt(argv, "gate"), _ship.OrcaClient())
 
 
+def cmd_quick(argv: list[str]) -> int:
+    """Start a quick task (`rein quick "<sentence>"`) or close it (`rein quick done`).
+
+    `--here` and `--dirty-ok` are booleans, so they are filtered out before
+    `_positional` -- otherwise the sentence after them would read as their value.
+    """
+    usage = ('usage: rein quick "<sentence>" [--repo <name>] [--base <branch>] [--here [--dirty-ok]] '
+             "[--agent <id> --model <m>] [--linear <id>]  |  rein quick done")
+    sentence = _positional([a for a in argv if a not in ("--here", "--dirty-ok")])
+    agent, model = _opt(argv, "agent"), _opt(argv, "model")
+    here, dirty_ok = "--here" in argv, "--dirty-ok" in argv
+    if not sentence or bool(agent) != bool(model) or (dirty_ok and not here):
+        print(usage)
+        return 2
+    if sentence == "done":
+        return _quick.done_quick(cwd=".", client=_quick.OrcaClient())
+    return _quick.start_quick(
+        sentence, repo=_opt(argv, "repo"), base=_opt(argv, "base"), here=here, dirty_ok=dirty_ok,
+        agent=agent, model=model, linear=_opt(argv, "linear"), cwd=".", client=_quick.OrcaClient(),
+    )
+
+
 def cmd_migrate_config(argv: list[str]) -> int:
     """Show (and with --write, apply) the v1 -> v2 rewrite of flow.config.json."""
     usage = "usage: rein migrate-config [root] [--write]"
@@ -892,6 +923,7 @@ COMMANDS = {
     "serve-probe": cmd_serve_probe,
     "ship": cmd_ship,
     "answer": cmd_answer,
+    "quick": cmd_quick,
     "migrate-config": cmd_migrate_config,
 }
 

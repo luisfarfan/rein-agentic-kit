@@ -1,6 +1,6 @@
 # Rein quick lane — design
 
-Date: 2026-10-19. Status: approved in conversation, awaiting written-spec review.
+Date: 2026-10-19. Status: implemented.
 
 ## 1. Why
 

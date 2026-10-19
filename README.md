@@ -124,6 +124,7 @@ Coming from v1? `rein migrate-config` rewrites `flow.config.json` (drops `models
 | 🧭 **`/rein:rein-plan`** | Plan into verifiable tasks — dry-run and **explicit confirmation** before writing |
 | 🚢 **`/ship`** (`/rein:ship`) | Open a detached Orca tab running `rein ship <change>`; you can close the session. Never edits code or opens a PR |
 | 💬 **`/answer`** (`/rein:answer`) | "¿Qué me pregunta rein?" / "respóndele: …": show and answer the run's pending gates |
+| ⚡ **`/quick`** (`/rein:quick`) | "Tarea rápida: …": hand a small change to a cheap agent in its own tab, no plan. You talk to it; "listo" runs the light gate. Never edits code itself |
 | 🔍 **`/rein:rein-audit`** | The independent gate: mechanical checks first, then five-axis judgement |
 | 🎭 **`/rein:rein-role`** | Assign this session's role: planner · implementer · reviewer |
 
@@ -143,6 +144,14 @@ rein answer [<change>] ["<text>"] [--gate <id>] [--root <plan repo>]
                  # options). With text: resolve one (option gates take one of their options,
                  # case-insensitive). Never touches the ship state; the driver picks it up.
                  # Exit: 0 ok · 1 Orca error or nothing to answer · 2 usage (ambiguous or invalid)
+rein quick "<sentence>" [--repo <name>] [--base <branch>] [--here [--dirty-ok]] [--agent <id> --model <m>] [--linear <id>]
+                 # hand a small change to a cheap agent chosen by quota, in a tab you talk to.
+                 # Default: its own worktree off develop; --here uses the main checkout
+                 # (--dirty-ok if it has uncommitted work). Never pushes or merges.
+                 # Exit: 0 started · 1 failed · 2 usage · 126 environment
+rein quick done  # run by that agent on "listo": lint/typecheck plus the tests related to the
+                 # changed files; an audit only if a risky path changed. Never commits.
+                 # Exit: 0 green · 1 red · 2 no quick task here · 126 setup (not a verdict)
 rein migrate-config # v1 -> v2 flow.config.json: drop models/limits/worktree, add `ship`.
                  # Prints a diff; writes only with --write
 rein doctor      # 🩺 start here: stack, resolved commands, and the source of each

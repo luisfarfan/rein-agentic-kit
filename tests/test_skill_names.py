@@ -27,7 +27,7 @@ RENAMED = {
     "review": "rein-audit",
     "audit": "rein-audit",
 }
-UNTOUCHED_SKILLS = {"rein-plan", "rein-role", "rein-discover", "ship", "answer"}
+UNTOUCHED_SKILLS = {"rein-plan", "rein-role", "rein-discover", "ship", "answer", "quick"}
 RETIRED = set(RENAMED) | {
     "loop", "run", "run-auto", "apply", "step", "steps",
     "rein-apply", "rein-step", "rein-steps", "rein-linear",
