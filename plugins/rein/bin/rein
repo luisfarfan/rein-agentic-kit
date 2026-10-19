@@ -792,6 +792,19 @@ def cmd_doctor(argv: list[str]) -> int:
     return 0
 
 
+def _flag_missing_value(argv: list[str], names: tuple) -> bool:
+    """True when a value flag in `names` has no usable value: last, followed by a
+    `-`-led token (`--agent --model x`), or empty (`--agent=`)."""
+    for i, a in enumerate(argv):
+        name, eq, inline = a.partition("=")
+        if name in names:
+            if eq and not inline:
+                return True
+            if not eq and (i + 1 >= len(argv) or argv[i + 1].startswith("-")):
+                return True
+    return False
+
+
 def cmd_ship(argv: list[str]) -> int:
     """Run a planned change through Orca workers, resuming from .rein/ship/<change>.json.
 
@@ -803,6 +816,9 @@ def cmd_ship(argv: list[str]) -> int:
     detach = "--detach" in argv
     usage = ("usage: rein ship <change> [--root <plan repo>] [--agent <id> [--model <m>]] "
              "[--dry-run | --detach]  (--detach and --dry-run cannot be combined)")
+    if _flag_missing_value(argv, ("--agent", "--model")):
+        print(usage)
+        return 2
     if agent and not model:
         model = _quota.default_model(agent)
         if not model:

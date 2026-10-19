@@ -146,6 +146,14 @@ class TestDetach(UxCase):
     def detach(self, fake, **kw):
         return self.capture(ship.detach_ship, self.root, "demo", self.client(fake), **kw)
 
+    def test_override_puts_agent_and_model_in_the_command(self):
+        fake = FakeOrca()
+        code, out = self.detach(fake, override=("codex", "gpt-6.1-sol"))
+        self.assertEqual(code, 0, out)
+        argv = fake.commands("terminal", "create")[0]
+        command = shlex.split(argv[argv.index("--command") + 1])
+        self.assertEqual(command[-4:], ["--agent", "codex", "--model", "gpt-6.1-sol"])
+
     def test_opens_exactly_one_terminal_with_the_quoted_command(self):
         fake = FakeOrca()
         code, out = self.detach(fake)

@@ -101,10 +101,21 @@ class TestShipAgentFlag(unittest.TestCase):
         run.assert_not_called()
 
 
-class TestDetachArgv(unittest.TestCase):
-    def test_help_and_usage_show_optional_model(self):
-        with mock.patch.object(rein_cli._ship, "run_ship") as run:
-            _, out = _run([])
+class TestShipFlagValues(unittest.TestCase):
+    def test_flag_without_its_value_is_usage(self):
+        for argv in (["c1", "--agent"], ["c1", "--agent", "--model", "x"], ["c1", "--agent="],
+                     ["c1", "--agent", "codex", "--model"], ["c1", "--agent", "codex", "--model="]):
+            with self.subTest(argv=argv), mock.patch.object(rein_cli._ship, "run_ship") as run, \
+                    mock.patch.object(rein_cli._ship, "OrcaClient"):
+                code, out = _run(argv)
+                self.assertEqual(code, 2)
+                self.assertIn("usage: rein ship", out)
+                run.assert_not_called()
+
+
+class TestUsageText(unittest.TestCase):
+    def test_usage_shows_optional_model(self):
+        _, out = _run([])
         self.assertIn("[--agent <id> [--model <m>]]", out)
 
 
