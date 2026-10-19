@@ -97,6 +97,7 @@ class FakeOrca:
         self.fail_starts = 0
         self.start_error = None
         self.reply_error = None
+        self.resolve_error = None
         self.fail_releases = False
         self.n = 0
 
@@ -180,6 +181,14 @@ class FakeOrca:
             self.gates.append({"id": gid, "task_id": _flag(a, "--task"), "question": _flag(a, "--question"),
                                "options": _flag(a, "--options"), "status": "pending", "resolution": None})
             return {"gate": {"id": gid}}
+        if verb == "gate-resolve":
+            if self.resolve_error is not None:
+                raise self.resolve_error
+            gid = _flag(a, "--id")
+            for g in self.gates:
+                if g["id"] == gid:
+                    g.update(status="resolved", resolution=_flag(a, "--resolution"))
+            return {"gate": {"id": gid, "status": "resolved"}}
         if verb == "gate-list":
             if self.auto_resolve:
                 for g in self.gates:
@@ -435,7 +444,7 @@ class TestEndToEnd(ShipCase):
         self.assertTrue(fake.acked)
         # The check never waits unbounded.
         checks = [c for c in calls if c[:2] == ["orchestration", "check"] and "--wait" in c]
-        self.assertTrue(all(_flag(c, "--timeout-ms") == "60000" for c in checks))
+        self.assertTrue(all(_flag(c, "--timeout-ms") == str(ship.WAIT_MS) for c in checks))
 
     def _orca_ids_for(self, fake, *plan_ids):
         return {t for t, v in fake.tasks.items() if v["title"].split(" ")[0] in plan_ids}

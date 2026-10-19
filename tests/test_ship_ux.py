@@ -352,9 +352,73 @@ class TestAnswerList(UxCase):
         self.assertTrue(os.path.exists(bad), "a read-only command must not quarantine files")
 
 
+class TestAnswerMailbox(UxCase):
+    def answer(self, fake, env, text="REST"):
+        return self.capture(ship_answer.run_answer, self.root, "demo", text, "", self.client(fake), env=env)
+
+    def test_a_foreign_orca_terminal_queues_the_answer(self):
+        self.write_state("demo", {"g1": "question"})
+        fake = FakeOrca(gates=[_gate("g1")], coordinator="term_coord")
+        code, out = self.answer(fake, {"ORCA_TERMINAL_HANDLE": "term_other"})
+        self.assertEqual(code, 0, out)
+        self.assertIn("answered g1 (question): Rein will apply it within a few seconds", out)
+        self.assertEqual(fake.commands("orchestration", "gate-resolve"), [])
+        answers = ship_state.read_answers(self.root, "demo")
+        self.assertEqual([(a["gate"], a["resolution"]) for a in answers], [("g1", "REST")])
+
+    def test_outside_orca_resolves_directly(self):
+        self.write_state("demo", {"g1": "question"})
+        fake = FakeOrca(gates=[_gate("g1")], coordinator="term_coord")
+        code, out = self.answer(fake, {})
+        self.assertEqual(code, 0, out)
+        self.assertEqual(len(fake.commands("orchestration", "gate-resolve")), 1)
+        self.assertEqual(ship_state.read_answers(self.root, "demo"), [])
+        self.assertIn("answered g1 (question)", out)
+        self.assertNotIn("Rein will apply", out)
+
+    def test_the_coordinator_terminal_resolves_directly(self):
+        self.write_state("demo", {"g1": "question"})
+        fake = FakeOrca(gates=[_gate("g1")], coordinator="term_coord")
+        code, out = self.answer(fake, {"ORCA_TERMINAL_HANDLE": "term_coord"})
+        self.assertEqual(code, 0, out)
+        self.assertEqual(len(fake.commands("orchestration", "gate-resolve")), 1)
+
+    def test_a_fenced_resolve_falls_back_to_the_mailbox(self):
+        class Fenced(FakeOrca):
+            def __call__(self, argv):
+                if argv[1:3] == ["orchestration", "gate-resolve"]:
+                    self.calls.append(list(argv))
+                    return 1, json.dumps({"ok": False, "error": {
+                        "code": "consumer_fenced", "message": "This terminal is attested as term_A"}})
+                return super().__call__(argv)
+        self.write_state("demo", {"g1": "question"})
+        fake = Fenced(gates=[_gate("g1")], coordinator="term_coord")
+        code, out = self.answer(fake, {})
+        self.assertEqual(code, 0, out)
+        self.assertIn("Rein will apply it within a few seconds", out)
+        self.assertEqual([a["gate"] for a in ship_state.read_answers(self.root, "demo")], ["g1"])
+
+
+class TestMailboxFiles(UxCase):
+    def test_roundtrip_drop_and_malformed(self):
+        ship_state.write_answer(self.root, "demo", "g1", "yes", 5)
+        d = ship_state.answers_dir(self.root, "demo")
+        with open(os.path.join(d, "bad.json"), "w") as fh:
+            fh.write("{nope")
+        with open(os.path.join(d, "worse.json"), "w") as fh:
+            fh.write("[1]")
+        self.assertEqual(ship_state.read_answers(self.root, "demo"),
+                         [{"gate": "g1", "resolution": "yes", "at": 5}])
+        ship_state.drop_answer(self.root, "demo", "g1")
+        self.assertEqual(ship_state.read_answers(self.root, "demo"), [])
+        self.assertTrue(os.path.exists(os.path.join(d, "bad.json")))
+        ship_state.drop_answer(self.root, "demo", "missing")  # never raises
+        self.assertEqual(ship_state.read_answers(self.root, "nothing-here"), [])
+
+
 class TestAnswerResolve(UxCase):
     def resolve(self, fake, text, gate="", change="demo"):
-        return self.capture(ship_answer.run_answer, self.root, change, text, gate, self.client(fake))
+        return self.capture(ship_answer.run_answer, self.root, change, text, gate, self.client(fake), env={})
 
     def test_free_text_on_a_question_gate_uses_the_coordinator(self):
         self.write_state("demo", {"g1": "question"})

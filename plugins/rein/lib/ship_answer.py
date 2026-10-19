@@ -5,6 +5,9 @@ Read-only on the ship state: the running driver notices a resolution by polling
 as plain JSON (never through `ship_state.load`, which quarantines files it
 cannot parse) and resolves a gate as the run's coordinator terminal, which is
 what `gate-resolve --from` requires when the caller is another terminal.
+Orca fences a caller that is itself another attested terminal (`consumer_fenced`);
+then the answer is queued in `<change>.answers/` and the driver, which is the
+coordinator, resolves the gate.
 """
 
 from __future__ import annotations
@@ -12,7 +15,8 @@ from __future__ import annotations
 import glob
 import json
 import os
-from typing import Optional
+import time
+from typing import Mapping, Optional
 
 import orca_client as oc
 import ship_state as ss
@@ -88,9 +92,11 @@ def _pick_change(root: str, change: str, client: OrcaClient):
     return chosen[0], chosen[1], chosen[2], None
 
 
-def run_answer(root: str, change: str, text: Optional[str], gate_id: str, client: OrcaClient) -> int:
+def run_answer(root: str, change: str, text: Optional[str], gate_id: str, client: OrcaClient,
+               env: Optional[Mapping] = None) -> int:
     """List the open gates (`text` empty) or resolve one with `text`. Exit 0 / 1 failure / 2 usage."""
     root = os.path.abspath(root)
+    env = os.environ if env is None else env
     try:
         change, state, gates, code = _pick_change(root, change, client)
         if code is not None:
@@ -131,7 +137,19 @@ def run_answer(root: str, change: str, text: Optional[str], gate_id: str, client
         if not coordinator:
             print("Orca reports no coordinator terminal for run %s; cannot resolve as it" % run_id)
             return 1
-        client.gate_resolve(chosen["id"], resolution, coordinator)
+        mine = env.get("ORCA_TERMINAL_HANDLE") or ""
+        queued = bool(mine) and mine != coordinator
+        if not queued:
+            try:
+                client.gate_resolve(chosen["id"], resolution, coordinator)
+            except OrcaError as exc:
+                if exc.code != "consumer_fenced":
+                    raise
+                queued = True
+        if queued:
+            ss.write_answer(root, change, chosen["id"], resolution, time.time())
+            print("answered %s (%s): Rein will apply it within a few seconds" % (chosen["id"], chosen["kind"]))
+            return 0
         print("answered %s (%s)" % (chosen["id"], chosen["kind"]))
         return 0
     except OrcaError as exc:

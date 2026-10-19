@@ -145,7 +145,9 @@ rein ship <change> [--root <plan repo>] [--agent <id> [--model <m>]] [--dry-run 
 rein answer [<change>] ["<text>"] [--gate <id>] [--root <plan repo>]
                  # No text: list the owner gates a running ship is waiting on (question,
                  # options). With text: resolve one (option gates take one of their options,
-                 # case-insensitive). Never touches the ship state; the driver picks it up.
+                 # case-insensitive). Never touches the ship state; the driver picks it up. From inside
+                 # another Orca terminal (which Orca fences) the answer is queued under
+                 # .rein/ship/<change>.answers/ and the driver applies it within ~15 s.
                  # Exit: 0 ok · 1 Orca error or nothing to answer · 2 usage (ambiguous or invalid)
 rein quick "<sentence>" [--repo <name>] [--base <branch>] [--here [--dirty-ok]] [--agent <id> [--model <m>]] [--linear <id>]
                  # hand a small change to a cheap agent chosen by quota, in a tab you talk to.

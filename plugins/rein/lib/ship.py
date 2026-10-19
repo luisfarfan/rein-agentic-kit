@@ -37,7 +37,7 @@ PLUGIN = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BIN = os.path.join(PLUGIN, "bin", "rein")
 CONTRACT = "orchestration.contract.v1"
 DEFAULT_BASE_REF = "origin/develop"
-WAIT_MS = 60000      # bounded: gate-resolve sends no inbox message, so a wait must wake to poll
+WAIT_MS = 15000      # bounded: gate-resolve sends no inbox message, so a wait must wake to poll (and to apply queued answers)
 IDLE_POLLS = 3       # empty waits in a row before asking worker-list what needs doing
 SAFE_NEXT_ACTIONS = ("release", "retain")
 _TAIL = 2000
@@ -517,6 +517,34 @@ class _Driver:
         self.say("audit started on %s/%s in %s (%s)" % (a.agent, a.model, audit_root, self.state.audit_dispatch))
 
     # -- events from Orca
+    def apply_answers(self):
+        """Resolve, as the coordinator, the gates the owner answered through `rein answer` (the mailbox)."""
+        answers = ss.read_answers(self.root, self.change)
+        if not answers:
+            return
+        try:
+            pending = {g.get("id") for g in oc.gates_of(self.client.gate_list()) if g.get("status") == "pending"}
+        except OrcaError as exc:
+            if ("answers", "list") not in self.noted:
+                self.noted.add(("answers", "list"))
+                self.say("could not read the gates to apply queued answers, will retry: %s" % exc)
+            return
+        for a in answers:
+            gid = a["gate"]
+            if gid not in self.state.gates or gid not in pending:
+                ss.drop_answer(self.root, self.change, gid)  # already resolved or not this run's
+                if gid not in self.state.gates:
+                    self.say("dropped a queued answer for %s: it is not an open gate of this run" % gid)
+                continue
+            try:
+                self.client.gate_resolve(gid, a["resolution"])  # no --from: this terminal is the coordinator
+            except OrcaError as exc:
+                if (gid, "answer") not in self.noted:
+                    self.noted.add((gid, "answer"))
+                    self.say("could not apply the queued answer for %s, will retry: %s" % (gid, exc))
+                continue
+            ss.drop_answer(self.root, self.change, gid)
+
     def poll_gates(self):
         """Feed every newly resolved gate; True when one was, so the loop acts on it before it waits."""
         fed = False
@@ -701,6 +729,7 @@ class _Driver:
             self.state.paused = False
         self.requeue_orphans()
         self.open_pending()
+        self.apply_answers()
         rows = {str(r.get("dispatchId")): r for r in self.rows()}
         events = self.lost_completions(rows)
         for t in self.state.tasks.values():
@@ -741,6 +770,7 @@ class _Driver:
             self.feed(sd.Tick(self.clock(), limits))
             if self.finished:
                 break
+            self.apply_answers()
             if self.poll_gates() and not self.finished:
                 continue  # the owner's answer may free work: Tick before waiting for the next message
             if self.finished:

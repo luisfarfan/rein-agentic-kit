@@ -88,6 +88,63 @@ def state_path(repo_root: str, change: str) -> str:
     return os.path.join(repo_root, ".rein", "ship", name + ".json")
 
 
+# -- the owner's answers: `rein answer` from a terminal Orca fences queues them here ------------
+
+def answers_dir(repo_root: str, change: str) -> str:
+    """`<root>/.rein/ship/<change>.answers/`, next to the state file."""
+    return state_path(repo_root, change)[: -len(".json")] + ".answers"
+
+
+def _answer_file(repo_root: str, change: str, gate_id: str) -> str:
+    return os.path.join(answers_dir(repo_root, change), re.sub(r"[^A-Za-z0-9._-]", "_", gate_id) + ".json")
+
+
+def write_answer(repo_root: str, change: str, gate_id: str, resolution: str, now: float) -> str:
+    path = _answer_file(repo_root, change, gate_id)
+    directory = os.path.dirname(path)
+    os.makedirs(directory, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=directory, prefix=".answer.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump({"gate": gate_id, "resolution": resolution, "at": now}, fh)
+            fh.write("\n")
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    return path
+
+
+def read_answers(repo_root: str, change: str) -> list:
+    """Every well-formed queued answer; anything else is left alone for the owner."""
+    directory = answers_dir(repo_root, change)
+    try:
+        names = sorted(n for n in os.listdir(directory) if n.endswith(".json"))
+    except OSError:
+        return []
+    found = []
+    for name in names:
+        try:
+            with open(os.path.join(directory, name), encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        if isinstance(data, dict) and isinstance(data.get("gate"), str) and data["gate"] \
+                and isinstance(data.get("resolution"), str):
+            found.append(data)
+    return found
+
+
+def drop_answer(repo_root: str, change: str, gate_id: str) -> None:
+    try:
+        os.unlink(_answer_file(repo_root, change, gate_id))
+    except OSError:
+        pass
+
+
 def _task_state(task: dict, default_repo: str) -> TaskState:
     return TaskState(
         id=task["id"],
