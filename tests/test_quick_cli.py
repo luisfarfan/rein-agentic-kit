@@ -42,6 +42,7 @@ class TestQuickCli(unittest.TestCase):
             ["done", "now"],                                 # extra word after done
             ["fix it", "--model", "gpt-5"],                  # --model without --agent
             ["fix it", "--agent", "codex", "--model"],       # dangling --model
+            ["fix it", "--agent", "--model", "x"],           # flag taken as a value
             ["fix it", "--agent"],                           # dangling --agent
             ["fix it", "--agent=", "--model=x"],             # empty --agent=
             ["fix it", "--dirty-ok"],                        # --dirty-ok without --here

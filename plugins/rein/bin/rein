@@ -856,34 +856,50 @@ def cmd_quick(argv: list[str]) -> int:
 
     `--here` and `--dirty-ok` are booleans, so they are filtered out before the bare words
     are counted -- otherwise the sentence after them would read as their value. A value flag
-    that is present but empty (`--model` last, `--agent=`) is a usage error, judged by the
-    flag's presence, not by `_opt`'s value (which is "" for a dangling flag too).
+    with no value (`--model` last, `--agent=`) or whose next token is another flag
+    (`--agent --model x`) is a usage error, judged here rather than by `_opt`.
     """
     usage = ('usage: rein quick "<sentence>" [--repo <name>] [--base <branch>] [--here [--dirty-ok]] '
              "[--agent <id> [--model <m>]] [--linear <id>]  |  rein quick done")
-    rest = [a for a in argv if a not in ("--here", "--dirty-ok")]
-    # Bare words: those that are not a flag and not the value of a preceding `--flag value`.
-    words = [a for i, a in enumerate(rest) if not a.startswith("-")
-             and not (i > 0 and rest[i - 1].startswith("--") and "=" not in rest[i - 1])]
+    # One pass over argv. A value flag takes the next token as its value (or `--flag=value`);
+    # a missing, empty or `-`-led value is a usage error, and the token that was not consumed
+    # stays visible as its own flag. Everything else that is not a flag is a bare word.
+    value_flags = ("repo", "base", "agent", "model", "linear")
+    values: dict = {}
+    words: list = []
+    here = dirty_ok = bad = False
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        i += 1
+        name, eq, inline = a.partition("=")
+        if a == "--here":
+            here = True
+        elif a == "--dirty-ok":
+            dirty_ok = True
+        elif name.startswith("--") and name[2:] in value_flags:
+            if eq:
+                value = inline
+            elif i < len(argv) and not argv[i].startswith("-"):
+                value, i = argv[i], i + 1
+            else:
+                value = ""
+            if not value or name[2:] in values:
+                bad = True
+            values[name[2:]] = value
+        elif not a.startswith("-"):
+            words.append(a)
     sentence = words[0] if words else ""
-    agent, model = _opt(argv, "agent"), _opt(argv, "model")
-    here, dirty_ok = "--here" in argv, "--dirty-ok" in argv
-
-    def present(name: str) -> bool:
-        return any(a == f"--{name}" or a.startswith(f"--{name}=") for a in argv)
-
-    values = {n: _opt(argv, n) for n in ("repo", "base", "agent", "model", "linear")}
-    # A present value flag must carry a value. A lone --agent is fine (the driver supplies its
-    # default model); a lone --model is not.
-    if (len(words) != 1 or any(present(n) and not v for n, v in values.items())
-            or (present("model") and not present("agent")) or (dirty_ok and not here)):
+    agent, model = values.get("agent", ""), values.get("model", "")
+    # A lone --agent is fine (the driver supplies its default model); a lone --model is not.
+    if bad or len(words) != 1 or ("model" in values and "agent" not in values) or (dirty_ok and not here):
         print(usage)
         return 2
     if sentence == "done":
         return _quick.done_quick(cwd=".", client=_quick.OrcaClient())
     return _quick.start_quick(
-        sentence, repo=_opt(argv, "repo"), base=_opt(argv, "base"), here=here, dirty_ok=dirty_ok,
-        agent=agent, model=model, linear=_opt(argv, "linear"), cwd=".", client=_quick.OrcaClient(),
+        sentence, repo=values.get("repo", ""), base=values.get("base", ""), here=here, dirty_ok=dirty_ok,
+        agent=agent, model=model, linear=values.get("linear", ""), cwd=".", client=_quick.OrcaClient(),
     )
 
 
