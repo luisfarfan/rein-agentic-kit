@@ -75,6 +75,21 @@ class TestInvocable(unittest.TestCase):
         self.assertTrue(report["allInvocable"])
 
 
+class TestFullOutput(unittest.TestCase):
+    def test_run_one_keeps_the_full_output(self):
+        body = "#!/bin/sh\nfor i in $(seq 1 60); do echo line$i; done\necho boom >&2\nexit 3\n"
+        with Project({"noisy.sh": body}) as root:
+            res = verify.run_one("test", "./noisy.sh", root, timeout=30)
+        self.assertEqual(res.outcome, verify.OUTCOME_FAILED)
+        self.assertEqual(len(res.output_head), verify.OUTPUT_HEAD_LINES)  # the report keeps its head
+        self.assertIn("line60", res.output)  # the full capture is past the head
+        self.assertIn("boom", res.output)  # stderr is merged in
+        self.assertNotIn("output", res.to_dict())  # reports are unchanged
+
+    def test_output_defaults_to_empty(self):
+        self.assertEqual(verify.CommandResult("lint", "x", True, "ok", 0, [], 1).output, "")
+
+
 class TestMissingBinary(unittest.TestCase):
     def test_missing_binary_is_not_invocable_not_failed(self):
         with Project({}) as root:

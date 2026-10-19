@@ -3,10 +3,13 @@
 Resolves the repo, picks the implementer by quota, checks the workspace,
 launches the agent through Orca and writes `.rein/quick.json`. Every
 decision comes from `quick.py` and `quota.py`; this module owns the side
-effects: Orca calls, git and the record. `done_quick` joins it later.
+effects: Orca calls, git and the record. `done_quick` closes the task: the
+light gate, the audit of risky changes and the summary.
 
-Exit codes: 0 started, 1 every provider braked, 2 usage or refusal,
-126 Orca or git could not do it.
+Exit codes of `start_quick`: 0 started, 1 every provider braked, 2 usage or
+refusal, 126 Orca or git could not do it. Of `done_quick`: 0 green, 1 red (or
+the owner must decide), 2 no quick task here, 126 not a verdict on the code
+(setup, Orca, git, an audit that could not run).
 """
 
 from __future__ import annotations
@@ -18,10 +21,14 @@ import time
 from typing import Callable
 
 import detect as _detect
+import gate as _gate
 import orca_client as oc
 import quick
 import quota
+import roles as _roles
+import ship
 import ship_decide
+import verify
 from orca_client import OrcaClient, OrcaError
 
 DEFAULT_BASE = "develop"
@@ -233,3 +240,194 @@ def start_quick(
     if handle:
         say("tab: %s" % handle)
     return 0
+
+
+# --- close: `rein quick done` ------------------------------------------------
+
+AUDIT_MAX_ROUNDS = 2
+AUDIT_WAIT_SECONDS = 20 * 60
+_CHECK_MS = 60000
+
+
+def _load_record(workspace: str):
+    """`(record, "")`, or `(None, why)` when it is missing or unusable."""
+    path = os.path.join(workspace, quick.RECORD)
+    if not os.path.isfile(path):
+        return None, ("no quick task here (%s not found); start one with `rein quick`"
+                      % quick.RECORD)
+    try:
+        with open(path, encoding="utf-8") as fh:
+            record = json.load(fh)
+    except (OSError, ValueError) as error:
+        return None, "cannot read %s: %s" % (quick.RECORD, error)
+    if not isinstance(record, dict) or not isinstance(record.get("base_sha"), str):
+        return None, "%s has no base_sha: start the task again with `rein quick`" % quick.RECORD
+    return record, ""
+
+
+def _gate_notes(steps: list, related: list, changed: list, cfg) -> list:
+    notes = []
+    ran_tests = any(slot == "test" or slot.startswith("testOne:") for slot, _c, _k in steps)
+    if not related:
+        notes.append("sin tests relacionados")
+    elif not ran_tests:
+        notes.append("%d tests relacionados sin ejecutar: el repo no define `test` ni `testOne`"
+                     % len(related))
+    elif any(slot == "test" for slot, _c, _k in steps):
+        notes.append("%d tests relacionados: se ejecutó `test` (la suite completa, más lenta) "
+                     "en lugar de `testOne` por archivo" % len(related))
+    if len(changed) > cfg.large_change_files:
+        notes.append("cambio grande (%d archivos, el aviso salta por encima de %d): "
+                     "considera hacer un plan la próxima vez" % (len(changed), cfg.large_change_files))
+    return notes
+
+
+def _findings(workspace: str, change: str) -> list:
+    return _gate.check_review(workspace, change).get("findings") or []
+
+
+def _blocking(findings: list) -> list:
+    return ["%s: %s" % (f["severity"], f["text"]) for f in findings if f["severity"] == "BLOCKING"]
+
+
+def _wait_for_worker(client: OrcaClient, dispatch_id: str, clock: Callable[[], float]):
+    """`"succeeded"`/`"failed"` once the audit worker is done, or None after the wait runs out."""
+    deadline = clock() + AUDIT_WAIT_SECONDS
+    while True:
+        res = client.check(wait=True, timeout_ms=_CHECK_MS)
+        outcome = None
+        for message in oc.messages_of(res):
+            payload = oc.payload_of(message)
+            if (message.get("type") == "worker_done"
+                    and str(payload.get("dispatchId") or "") == dispatch_id):
+                outcome = str(payload.get("outcome") or "failed")
+        delivery = oc.delivery_id_of(res)
+        if delivery:
+            client.check(wait=False, ack=delivery)
+        if outcome is not None:
+            return outcome
+        if clock() >= deadline:
+            return ship.settled_outcome(client.worker_show(dispatch_id))
+
+
+def _audit(workspace: str, record: dict, changed: list, limits: dict, client: OrcaClient,
+           clock: Callable[[], float], say: Callable[[str], None]) -> int:
+    """One audit round over `changed`; the exit code of `done` (0 approved)."""
+    name = os.path.basename(workspace)
+    change = "quick-" + name
+    rounds = int(record.get("audit_rounds") or 0)
+    pick = quick.reviewer(limits)
+    if pick is None:
+        say("every provider is braked: the audit cannot run; try again later "
+            "or ask the owner to review the diff")
+        return 126
+    profile = _roles.profile("reviewer", ship.PLUGIN)
+    if not profile["ok"]:
+        say(profile["error"])
+        return 126
+    spec = ship.build_audit_spec({"why": record.get("sentence") or ""}, {workspace: changed},
+                                 profile["text"], workspace, change)
+    baseline = ship._episode_stamp(_gate.latest_episode(workspace, change))
+    client.run_create("rein quick %s" % name)
+    task_id = oc.task_id_of(client.task_create(
+        spec, "rein quick audit %s round %d" % (name, rounds + 1), []))
+    dispatch_id = oc.dispatch_id_of(client.worker_start(
+        task_id, worktree="path:" + workspace, agent=pick[0], model=pick[1]))
+    record["audit_rounds"] = rounds + 1
+    _write_record(workspace, record)  # before waiting: a crash must not hide a spent round
+    say("audit round %d started on %s/%s (%s); waiting up to %d minutes"
+        % (rounds + 1, pick[0], pick[1], dispatch_id, AUDIT_WAIT_SECONDS // 60))
+
+    outcome = _wait_for_worker(client, dispatch_id, clock)
+    if outcome is None:
+        say("the audit did not finish within %d minutes; the worker %s is still running "
+            "(not a verdict on the code)" % (AUDIT_WAIT_SECONDS // 60, dispatch_id))
+        return 126
+    try:
+        client.worker_release(dispatch_id)
+    except OrcaError as error:
+        say("could not release %s: %s" % (dispatch_id, error.message))
+
+    episode = _gate.latest_episode(workspace, change)
+    if outcome != "succeeded" or episode is None or ship._episode_stamp(episode) == baseline:
+        say("the audit worker ended (%s) without recording a review episode in %s"
+            % (outcome or "?", workspace))
+        return 126
+    found = str(episode.get("verdict"))
+    if found == "APPROVED":
+        say("audit: APPROVED")
+        return 0
+    if found == "CHANGES_REQUESTED":
+        say("audit: CHANGES_REQUESTED")
+        for line in _blocking(_findings(workspace, change)):
+            say(line)
+        return 1
+    say("the audit recorded an unknown verdict %r" % found)
+    return 126
+
+
+def done_quick(*, cwd: str = ".", client: OrcaClient, run=verify.run_one,
+               clock: Callable[[], float] = time.time, env: dict = os.environ,
+               say: Callable[[str], None] = print) -> int:
+    # 1. The workspace and its record
+    code, top = run_git(cwd, "rev-parse", "--show-toplevel")
+    workspace = top.strip()
+    if code != 0 or not workspace:
+        say("%s is not inside a git checkout" % os.path.abspath(cwd))
+        return 126
+    record, problem = _load_record(workspace)
+    if record is None:
+        say(problem)
+        return 2
+
+    # 2. What changed
+    try:
+        changed = ship.changed_files(workspace, record["base_sha"])
+    except RuntimeError as error:
+        say("cannot list the changes in %s since %s: %s" % (workspace, record["base_sha"], error))
+        return 126
+    if not changed:
+        say("nothing changed since the task started")
+        return 0
+
+    # 3. Light gate
+    resolved = _detect.resolve(workspace)
+    cfg = ship_decide.ShipConfig.from_flow_config(resolved)
+    related = quick.related_tests(changed, lambda rel: os.path.isfile(os.path.join(workspace, rel)))
+    steps = quick.gate_steps(resolved.get("commands") or {}, related)
+    results, outputs = [], {}
+    for slot, command, configured in steps:
+        result = run(slot, command, workspace, cfg.gate_timeout_seconds, configured=configured)
+        results.append(result)
+        outputs[slot] = getattr(result, "output", "")
+    outcome = quick.verdict(results)
+    say(quick.summary(results, outputs, _gate_notes(steps, related, changed, cfg)))
+    if outcome == "red":
+        return 1
+    if outcome == "setup":
+        return 126
+
+    # 4. Audit, only for risky changes
+    if not quick.needs_audit(changed, cfg):
+        return 0
+    rounds = int(record.get("audit_rounds") or 0)
+    if rounds >= AUDIT_MAX_ROUNDS:
+        say("dos rondas de auditoría: decide tú. Último resultado:")
+        for line in _blocking(_findings(workspace, "quick-" + os.path.basename(workspace))):
+            say(line)
+        return 1
+    if not env.get("ORCA_TERMINAL_HANDLE"):
+        say("the audit needs an Orca terminal (ORCA_TERMINAL_HANDLE is not set): "
+            "run `rein quick done` from the agent's terminal, not an Orca chat")
+        return 126
+    try:
+        limits = quota.parse_rate_limits({"result": client.account_list()})
+    except OrcaError:
+        limits = quota.parse_rate_limits({})  # unknown usage never brakes
+    try:
+        return _audit(workspace, record, changed, limits, client, clock, say)
+    except OrcaError as error:
+        return _failed(say, error)
+    except OSError as error:
+        say("cannot update %s in %s: %s" % (quick.RECORD, workspace, error))
+        return 126

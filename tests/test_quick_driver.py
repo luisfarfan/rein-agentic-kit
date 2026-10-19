@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -17,8 +18,10 @@ import unittest
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "plugins", "rein", "lib"))
 
+import gate  # noqa: E402
 import quick  # noqa: E402
 import quick_driver  # noqa: E402
+import verify  # noqa: E402
 from orca_client import OrcaClient  # noqa: E402
 
 FIXTURES = os.path.join(HERE, "fixtures", "orca")
@@ -346,6 +349,412 @@ class RunGitTests(unittest.TestCase):
         code, out = quick_driver.run_git(root, "rev-parse", "--is-inside-work-tree")
         self.assertNotEqual(code, 0)
         self.assertIsInstance(out, str)
+
+
+# --- rein quick done ---------------------------------------------------------
+
+DISPATCH = "ctx_audit"
+LINT, TYPES, SUITE, ONE = "make lint", "make types", "make test", "make one {target}"
+CONFIG = {"commands": {"lint": LINT, "typecheck": TYPES, "test": SUITE, "testOne": ONE},
+          "ship": {"riskyPaths": ["**/auth/**"], "largeChangeFiles": 3}}
+
+
+def _result(slot, outcome="ok", code=0, output=""):
+    return verify.CommandResult(slot, "cmd", outcome != "not_invocable", outcome, code, [], 7,
+                                output=output)
+
+
+class _Gate:
+    """Fake `run`: every slot is green unless `results` says otherwise."""
+
+    def __init__(self, results=None):
+        self.results = results or {}
+        self.calls = []
+
+    def __call__(self, slot, command, cwd, timeout, configured=None):
+        self.calls.append((slot, command, cwd, timeout, configured))
+        return self.results.get(slot) or _result(slot)
+
+    def slots(self):
+        return [c[0] for c in self.calls]
+
+
+class _AuditOrca:
+    """Fake orca for the audit: `on_start` plays the reviewer when the worker starts."""
+
+    def __init__(self, on_start=None, limits=None, done=True, show_state="running"):
+        self.calls = []
+        self.on_start = on_start
+        self.limits = limits or _limits(10, 10)
+        self.done = done
+        self.show_state = show_state
+        self.started = False
+        self.checks = 0
+
+    def __call__(self, argv):
+        self.calls.append(list(argv))
+        head = argv[1:3]
+        ok = lambda result: (0, json.dumps({"ok": True, "result": result}))  # noqa: E731
+        if head == ["account", "list"]:
+            return ok(self.limits)
+        if head == ["orchestration", "run-create"]:
+            return ok({"run": {"id": "run_1"}})
+        if head == ["orchestration", "task-create"]:
+            return ok({"task": {"id": "task_1"}})
+        if head == ["orchestration", "worker-start"]:
+            self.started = True
+            if self.on_start:
+                self.on_start()
+            return ok({"dispatchId": DISPATCH, "state": "ready"})
+        if head == ["orchestration", "check"]:
+            self.checks += 1
+            if "--ack" in argv or not (self.started and self.done):
+                return ok({"messages": [], "deliveryId": None})
+            payload = json.dumps({"dispatchId": DISPATCH, "outcome": "succeeded"})
+            other = {"id": "m0", "type": "worker_done",
+                     "payload": json.dumps({"dispatchId": "someone_else", "outcome": "failed"})}
+            mine = {"id": "m1", "type": "worker_done", "payload": payload}
+            return ok({"messages": [other, mine], "deliveryId": "d1"})
+        if head == ["orchestration", "worker-show"]:
+            state = self.show_state
+            return ok({"dispatch": {"status": "completed" if state == "succeeded" else "running"},
+                       "worker": {"state": state}})
+        if head == ["orchestration", "worker-release"]:
+            return ok({"dispatchId": DISPATCH, "state": "released"})
+        return 1, json.dumps({"ok": False, "error": {"code": "unknown", "message": "no"}})
+
+    def called(self, *sub):
+        return [c for c in self.calls if c[1:1 + len(sub)] == list(sub)]
+
+
+class _Clock:
+    def __init__(self, step=0.0):
+        self.now, self.step = 1000.0, step
+
+    def __call__(self):
+        self.now += self.step
+        return self.now
+
+
+class DoneCase(unittest.TestCase):
+    def setUp(self):
+        self.root = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.root, True)
+        self.ws = os.path.join(self.root, "quick-fix")
+        self.out = []
+
+    def git(self, *args):
+        subprocess.run(["git", "-C", self.ws, "-c", "user.name=t", "-c", "user.email=t@t",
+                        "-c", "commit.gpgsign=false", *args],
+                       check=True, capture_output=True, text=True)
+
+    def write(self, rel, body="x\n"):
+        path = os.path.join(self.ws, rel)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(body)
+
+    def make_repo(self, config=None, record=True, **record_fields):
+        os.makedirs(self.ws)
+        subprocess.run(["git", "init", "-q", "-b", "develop", self.ws], check=True)
+        self.write("flow.config.json", json.dumps(CONFIG if config is None else config))
+        for rel in ("src/foo.ts", "src/foo.test.ts", "src/bar.ts", "src/baz.ts",
+                    "src/auth/login.ts"):
+            self.write(rel, "v1\n")
+        self.write(".gitignore", ".rein/\n")
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "base")
+        code = subprocess.run(["git", "-C", self.ws, "rev-parse", "HEAD"],
+                              capture_output=True, text=True).stdout.strip()
+        if record:
+            rec = quick.new_record("proxima-api", self.ws, "develop", code, "claude", "sonnet",
+                                   "arregla el login", "", 1.0)
+            rec.update(record_fields)
+            self.write(".rein/quick.json", json.dumps(rec))
+
+    def audit_rounds(self):
+        with open(os.path.join(self.ws, ".rein", "quick.json"), encoding="utf-8") as fh:
+            return json.load(fh)["audit_rounds"]
+
+    def reviewer(self, verdict, findings=(), files=("src/auth/login.ts",)):
+        def play():
+            gate.record_review(self.ws, "quick-quick-fix", verdict, list(files), list(findings),
+                               "opus-reviewer")
+        return play
+
+    def done(self, *, run=None, orca=None, cwd=None, env=None, clock=None):
+        run = run or _Gate()
+        orca = orca or _AuditOrca()
+        code = quick_driver.done_quick(
+            cwd=cwd or self.ws, client=OrcaClient(executable="ORCA", runner=orca), run=run,
+            clock=clock or _Clock(), env={} if env is None else env, say=self.out.append)
+        return code, run, orca
+
+    def text(self):
+        return "\n".join(self.out)
+
+
+TERMINAL = {"ORCA_TERMINAL_HANDLE": "term_1"}
+
+
+class DoneGateTests(DoneCase):
+    def test_no_record_is_usage(self):
+        self.make_repo(record=False)
+        code, run, _ = self.done()
+        self.assertEqual(code, 2)
+        self.assertIn("start one with `rein quick`", self.text())
+        self.assertEqual(run.calls, [])
+
+    def test_outside_a_git_repo_is_126(self):
+        code, run, _ = self.done(cwd=self.root)
+        self.assertEqual(code, 126)
+        self.assertEqual(run.calls, [])
+
+    def test_unreadable_record_is_usage(self):
+        self.make_repo()
+        self.write(".rein/quick.json", "{not json")
+        code, _, _ = self.done()
+        self.assertEqual(code, 2)
+        self.assertIn(quick.RECORD, self.text())
+
+    def test_finds_the_record_from_a_subdirectory(self):
+        self.make_repo()
+        self.write("src/foo.ts", "v2\n")
+        code, run, _ = self.done(cwd=os.path.join(self.ws, "src"))
+        self.assertEqual(code, 0)
+        self.assertEqual({c[2] for c in run.calls}, {self.ws})
+
+    def test_nothing_changed_is_green(self):
+        self.make_repo()
+        code, run, _ = self.done()
+        self.assertEqual(code, 0)
+        self.assertIn("nothing changed", self.text())
+        self.assertEqual(run.calls, [])
+
+    def test_unreachable_base_is_126(self):
+        self.make_repo(base_sha="f" * 40)
+        self.write("src/foo.ts", "v2\n")
+        code, run, _ = self.done()
+        self.assertEqual(code, 126)
+        self.assertEqual(run.calls, [])
+
+    def test_green_light_gate(self):
+        self.make_repo()
+        self.write("src/foo.ts", "v2\n")
+        code, run, orca = self.done()
+        self.assertEqual(code, 0)
+        self.assertEqual(run.slots(), ["lint", "typecheck", "testOne:src/foo.test.ts"])
+        slot, command, cwd, timeout, configured = run.calls[2]
+        self.assertEqual((command, configured), ("make one src/foo.test.ts", ONE))
+        self.assertEqual((cwd, timeout), (self.ws, 900.0))
+        self.assertIn("verdict: green", self.text())
+        self.assertEqual(orca.calls, [])  # no audit, no Orca
+        self.assertEqual(self.audit_rounds(), 0)
+
+    def test_gate_timeout_comes_from_the_config(self):
+        cfg = dict(CONFIG, ship=dict(CONFIG["ship"], gateTimeoutSeconds=42))
+        self.make_repo(config=cfg)
+        self.write("src/foo.ts", "v2\n")
+        _, run, _ = self.done()
+        self.assertEqual({c[3] for c in run.calls}, {42})
+
+    def test_red_shows_error_lines_only(self):
+        self.make_repo()
+        self.write("src/foo.ts", "v2\n")
+        before = "\n".join("early noise %d" % i for i in range(30))
+        after = "\n".join("late noise %d" % i for i in range(30))
+        out = before + "\nAssertionError: expected 1 got 2\n" + after
+        run = _Gate({"testOne:src/foo.test.ts": _result("testOne:src/foo.test.ts", "failed", 1, out)})
+        code, _, _ = self.done(run=run)
+        self.assertEqual(code, 1)
+        text = self.text()
+        self.assertIn("verdict: red", text)
+        self.assertIn("AssertionError: expected 1 got 2", text)
+        self.assertNotIn("early noise 0", text)
+        self.assertNotIn("late noise 15", text)
+        self.assertIn("early noise 29", text)  # two lines of context around the error
+
+    def test_setup_is_126(self):
+        self.make_repo()
+        self.write("src/foo.ts", "v2\n")
+        run = _Gate({"lint": _result("lint", "not_invocable", 127)})
+        code, _, orca = self.done(run=run, env=TERMINAL)
+        self.assertEqual(code, 126)
+        self.assertIn("verdict: setup", self.text())
+        self.assertEqual(orca.calls, [])
+
+    def test_large_change_warns_without_audit(self):
+        self.make_repo()
+        for rel in ("src/foo.ts", "src/bar.ts", "src/baz.ts", "src/new.ts"):
+            self.write(rel, "v2\n")
+        code, run, orca = self.done(env=TERMINAL)
+        self.assertEqual(code, 0)
+        self.assertIn("4 archivos", self.text())
+        self.assertIn("plan", self.text())
+        self.assertEqual(orca.calls, [])
+
+    def test_no_related_tests_is_said(self):
+        self.make_repo()
+        self.write("src/bar.ts", "v2\n")
+        code, run, _ = self.done()
+        self.assertEqual(code, 0)
+        self.assertEqual(run.slots(), ["lint", "typecheck"])
+        self.assertIn("sin tests relacionados", self.text())
+
+    def test_without_testone_the_suite_runs_once_and_says_so(self):
+        cfg = {"commands": {"test": SUITE}, "ship": CONFIG["ship"]}
+        self.make_repo(config=cfg)
+        self.write("src/foo.ts", "v2\n")
+        code, run, _ = self.done()
+        self.assertEqual(code, 0)
+        self.assertEqual(run.slots(), ["test"])
+        self.assertIn("suite", self.text())
+
+    def test_related_tests_that_cannot_run_are_counted(self):
+        cfg = {"commands": {"lint": LINT}, "ship": CONFIG["ship"]}
+        self.make_repo(config=cfg)
+        self.write("src/foo.ts", "v2\n")
+        code, run, _ = self.done()
+        self.assertEqual(code, 0)
+        self.assertEqual(run.slots(), ["lint"])
+        self.assertIn("1 tests relacionados sin ejecutar", self.text())
+        self.assertIn("`test` ni `testOne`", self.text())
+
+
+class DoneAuditTests(DoneCase):
+    def risky(self, **kw):
+        self.make_repo(**kw)
+        self.write("src/auth/login.ts", "v2\n")
+
+    def test_risky_without_terminal_is_126(self):
+        self.risky()
+        code, _, orca = self.done()
+        self.assertEqual(code, 126)
+        self.assertIn("needs an Orca terminal", self.text())
+        self.assertEqual(orca.called("orchestration", "worker-start"), [])
+
+    def test_a_red_gate_skips_the_audit(self):
+        self.risky()
+        run = _Gate({"lint": _result("lint", "failed", 1, "error: x")})
+        code, _, orca = self.done(run=run, env=TERMINAL)
+        self.assertEqual(code, 1)
+        self.assertEqual(orca.calls, [])
+
+    def test_every_reviewer_braked_is_126(self):
+        self.risky()
+        orca = _AuditOrca(limits=_limits(10, 95, claude_session=95))
+        code, _, _ = self.done(orca=orca, env=TERMINAL)
+        self.assertEqual(code, 126)
+        self.assertIn("audit cannot run", self.text())
+        self.assertEqual(orca.called("orchestration", "worker-start"), [])
+
+    def test_braked_claude_audits_with_codex(self):
+        self.risky()
+        orca = _AuditOrca(on_start=self.reviewer("APPROVED"),
+                          limits=_limits(10, 10, claude_session=95))
+        code, _, _ = self.done(orca=orca, env=TERMINAL)
+        self.assertEqual(code, 0)
+        [start] = orca.called("orchestration", "worker-start")
+        self.assertEqual(start[start.index("--agent") + 1], "codex")
+
+    def test_risky_runs_an_audit_and_approves(self):
+        self.risky()
+        orca = _AuditOrca(on_start=self.reviewer("APPROVED"))
+        code, run, _ = self.done(orca=orca, env=TERMINAL)
+        self.assertEqual(code, 0)
+        self.assertEqual(run.slots(), ["lint", "typecheck"])  # src/auth/login.ts has no tests
+        [create] = orca.called("orchestration", "run-create")
+        self.assertEqual(create[create.index("--objective") + 1], "rein quick quick-fix")
+        [task] = orca.called("orchestration", "task-create")
+        self.assertEqual(task[task.index("--task-title") + 1], "rein quick audit quick-fix round 1")
+        spec = task[task.index("--spec") + 1]
+        self.assertIn("arregla el login", spec)
+        self.assertIn("Run the rein-audit skill on " + self.ws, spec)
+        self.assertIn("--change quick-quick-fix", spec)
+        self.assertIn("src/auth/login.ts", spec)
+        [start] = orca.called("orchestration", "worker-start")
+        for flag, value in (("--worktree", "path:" + self.ws), ("--agent", "claude"),
+                            ("--model", "opus"), ("--task", "task_1")):
+            self.assertEqual(start[start.index(flag) + 1], value)
+        self.assertEqual(len(orca.called("orchestration", "worker-release")), 1)
+        acks = [c for c in orca.called("orchestration", "check") if "--ack" in c]
+        self.assertEqual([c[c.index("--ack") + 1] for c in acks], ["d1"])
+        self.assertEqual(self.audit_rounds(), 1)
+        self.assertIn("APPROVED", self.text())
+        self.assertTrue(os.path.exists(os.path.join(self.ws, quick.RECORD)))  # never deleted
+
+    def test_changes_requested_is_red_and_counts_a_round(self):
+        self.risky()
+        orca = _AuditOrca(on_start=self.reviewer(
+            "CHANGES_REQUESTED", ["BLOCKING: sql built by string concat", "IMPORTANT: rename x"]))
+        code, _, _ = self.done(orca=orca, env=TERMINAL)
+        self.assertEqual(code, 1)
+        self.assertIn("BLOCKING: sql built by string concat", self.text())
+        self.assertNotIn("rename x", self.text())
+        self.assertEqual(self.audit_rounds(), 1)
+
+    def test_round_is_saved_before_waiting(self):
+        self.risky()
+        seen = []
+
+        def play():
+            seen.append(self.audit_rounds())  # the worker is running; nothing was waited on yet
+            self.reviewer("APPROVED")()
+        orca = _AuditOrca(on_start=play)
+        self.done(orca=orca, env=TERMINAL)
+        self.assertEqual(seen, [0])  # incremented after worker-start, before the first check
+        order = [c[2] for c in orca.calls if c[1] == "orchestration"]
+        self.assertLess(order.index("worker-start"), order.index("check"))
+
+    def test_second_round_title_counts_up(self):
+        self.risky(audit_rounds=1)
+        orca = _AuditOrca(on_start=self.reviewer("APPROVED"))
+        code, _, _ = self.done(orca=orca, env=TERMINAL)
+        self.assertEqual(code, 0)
+        [task] = orca.called("orchestration", "task-create")
+        self.assertTrue(task[task.index("--task-title") + 1].endswith("round 2"))
+        self.assertEqual(self.audit_rounds(), 2)
+
+    def test_third_round_leaves_it_to_the_owner(self):
+        self.risky(audit_rounds=2)
+        self.reviewer("CHANGES_REQUESTED", ["BLOCKING: still unsafe"])()
+        code, _, orca = self.done(env=TERMINAL)
+        self.assertEqual(code, 1)
+        self.assertIn("dos rondas de auditoría: decide tú", self.text())
+        self.assertIn("BLOCKING: still unsafe", self.text())
+        self.assertEqual(orca.called("orchestration", "worker-start"), [])
+        self.assertEqual(self.audit_rounds(), 2)
+
+    def test_audit_without_a_new_episode_is_126(self):
+        self.risky()
+        orca = _AuditOrca()  # the worker ends but records nothing
+        code, _, _ = self.done(orca=orca, env=TERMINAL)
+        self.assertEqual(code, 126)
+        self.assertIn("without recording a review episode", self.text())
+        self.assertEqual(len(orca.called("orchestration", "worker-release")), 1)
+
+    def test_an_old_episode_is_not_a_new_verdict(self):
+        self.risky()
+        self.reviewer("APPROVED")()  # left over from an earlier round
+        code, _, _ = self.done(orca=_AuditOrca(), env=TERMINAL)
+        self.assertEqual(code, 126)
+
+    def test_a_silent_worker_times_out_as_setup(self):
+        self.risky()
+        orca = _AuditOrca(done=False)
+        code, _, _ = self.done(orca=orca, env=TERMINAL, clock=_Clock(step=700))
+        self.assertEqual(code, 126)
+        self.assertIn("20 minutes", self.text())
+        self.assertGreaterEqual(orca.checks, 2)
+        self.assertEqual(len(orca.called("orchestration", "worker-show")), 1)
+        self.assertEqual(orca.called("orchestration", "worker-release"), [])
+
+    def test_a_finished_worker_whose_message_was_missed_is_read(self):
+        self.risky()
+        orca = _AuditOrca(on_start=self.reviewer("APPROVED"), done=False, show_state="succeeded")
+        code, _, _ = self.done(orca=orca, env=TERMINAL, clock=_Clock(step=700))
+        self.assertEqual(code, 0)
+        self.assertEqual(len(orca.called("orchestration", "worker-release")), 1)
 
 
 if __name__ == "__main__":
