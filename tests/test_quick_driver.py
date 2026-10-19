@@ -382,12 +382,16 @@ class _Gate:
 class _AuditOrca:
     """Fake orca for the audit: `on_start` plays the reviewer when the worker starts."""
 
-    def __init__(self, on_start=None, limits=None, done=True, show_state="running"):
+    def __init__(self, on_start=None, limits=None, done=True, show_state="running",
+                 question=None, stops=True):
         self.calls = []
         self.on_start = on_start
         self.limits = limits or _limits(10, 10)
         self.done = done
         self.show_state = show_state
+        self.question = question  # body of a question the audit worker asks instead of finishing
+        self.stops = stops  # does worker-stop really end the worker?
+        self.stopped = False
         self.started = False
         self.checks = 0
 
@@ -408,15 +412,26 @@ class _AuditOrca:
             return ok({"dispatchId": DISPATCH, "state": "ready"})
         if head == ["orchestration", "check"]:
             self.checks += 1
-            if "--ack" in argv or not (self.started and self.done):
+            if "--ack" in argv or not self.started:
+                return ok({"messages": [], "deliveryId": None})
+            if self.question is not None:
+                theirs = {"id": "q0", "type": "question", "body": "not ours",
+                          "payload": json.dumps({"dispatchId": "someone_else"})}
+                ours = {"id": "q1", "type": "question", "body": self.question,
+                        "payload": json.dumps({"dispatchId": DISPATCH})}
+                return ok({"messages": [theirs, ours], "deliveryId": "d2"})
+            if not self.done:
                 return ok({"messages": [], "deliveryId": None})
             payload = json.dumps({"dispatchId": DISPATCH, "outcome": "succeeded"})
             other = {"id": "m0", "type": "worker_done",
                      "payload": json.dumps({"dispatchId": "someone_else", "outcome": "failed"})}
             mine = {"id": "m1", "type": "worker_done", "payload": payload}
             return ok({"messages": [other, mine], "deliveryId": "d1"})
+        if head == ["orchestration", "worker-stop"]:
+            self.stopped = self.stops
+            return ok({"dispatchId": DISPATCH, "state": "stopping"})
         if head == ["orchestration", "worker-show"]:
-            state = self.show_state
+            state = "stopped" if self.stopped else self.show_state
             return ok({"dispatch": {"status": "completed" if state == "succeeded" else "running"},
                        "worker": {"state": state}})
         if head == ["orchestration", "worker-release"]:
@@ -739,15 +754,39 @@ class DoneAuditTests(DoneCase):
         code, _, _ = self.done(orca=_AuditOrca(), env=TERMINAL)
         self.assertEqual(code, 126)
 
-    def test_a_silent_worker_times_out_as_setup(self):
+    def test_a_silent_worker_times_out_and_is_stopped(self):
         self.risky()
         orca = _AuditOrca(done=False)
         code, _, _ = self.done(orca=orca, env=TERMINAL, clock=_Clock(step=700))
         self.assertEqual(code, 126)
         self.assertIn("20 minutes", self.text())
+        self.assertIn("audit worker %s stopped" % DISPATCH, self.text())
         self.assertGreaterEqual(orca.checks, 2)
-        self.assertEqual(len(orca.called("orchestration", "worker-show")), 1)
+        self.assertEqual(len(orca.called("orchestration", "worker-stop")), 1)
+        self.assertEqual(len(orca.called("orchestration", "worker-show")), 2)  # before and after the stop
+        self.assertEqual(len(orca.called("orchestration", "worker-release")), 1)
+
+    def test_a_worker_that_will_not_stop_is_reported_and_kept(self):
+        self.risky()
+        orca = _AuditOrca(done=False, stops=False)
+        code, _, _ = self.done(orca=orca, env=TERMINAL, clock=_Clock(step=700))
+        self.assertEqual(code, 126)
+        self.assertIn("20 minutes", self.text())
+        self.assertIn("audit worker %s not confirmed stopped" % DISPATCH, self.text())
+        self.assertEqual(len(orca.called("orchestration", "worker-stop")), 1)
         self.assertEqual(orca.called("orchestration", "worker-release"), [])
+
+    def test_a_question_from_the_auditor_stops_it_and_goes_to_the_owner(self):
+        self.risky()
+        orca = _AuditOrca(question="¿puedo tocar el middleware?")
+        code, _, _ = self.done(orca=orca, env=TERMINAL)
+        self.assertEqual(code, 126)
+        self.assertIn("el auditor preguntó: ¿puedo tocar el middleware?", self.text())
+        self.assertNotIn("not ours", self.text())  # another dispatch's message is ignored
+        self.assertEqual(len(orca.called("orchestration", "worker-stop")), 1)
+        self.assertEqual(len(orca.called("orchestration", "worker-release")), 1)
+        acks = [c for c in orca.called("orchestration", "check") if "--ack" in c]
+        self.assertEqual([c[c.index("--ack") + 1] for c in acks], ["d2"])
 
     def test_a_finished_worker_whose_message_was_missed_is_read(self):
         self.risky()

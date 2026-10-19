@@ -291,23 +291,52 @@ def _blocking(findings: list) -> list:
 
 
 def _wait_for_worker(client: OrcaClient, dispatch_id: str, clock: Callable[[], float]):
-    """`"succeeded"`/`"failed"` once the audit worker is done, or None after the wait runs out."""
+    """`(kind, value)`: `("done", outcome)`, `("question", body)` or `("timeout", outcome-or-None)`.
+
+    Messages from other dispatches are acked and ignored. `timeout` carries what
+    `worker-show` proves after the 20 minutes (a finished worker whose message
+    was missed), or None while it still runs."""
     deadline = clock() + AUDIT_WAIT_SECONDS
     while True:
         res = client.check(wait=True, timeout_ms=_CHECK_MS)
-        outcome = None
+        outcome, question = None, None
         for message in oc.messages_of(res):
             payload = oc.payload_of(message)
-            if (message.get("type") == "worker_done"
-                    and str(payload.get("dispatchId") or "") == dispatch_id):
+            if str(payload.get("dispatchId") or "") != dispatch_id:
+                continue
+            if message.get("type") == "worker_done":
                 outcome = str(payload.get("outcome") or "failed")
+            elif message.get("type") in ("question", "escalation") and question is None:
+                question = str(message.get("body") or "").strip() or "(sin texto)"
         delivery = oc.delivery_id_of(res)
         if delivery:
             client.check(wait=False, ack=delivery)
+        if question is not None and outcome is None:
+            return "question", question
         if outcome is not None:
-            return outcome
+            return "done", outcome
         if clock() >= deadline:
-            return ship.settled_outcome(client.worker_show(dispatch_id))
+            return "timeout", ship.settled_outcome(client.worker_show(dispatch_id))
+
+
+def _stop_worker(client: OrcaClient, dispatch_id: str, say: Callable[[str], None]) -> None:
+    """Stop the audit worker like `ShipDriver.stop_worker`; release it only once Orca proves it ended."""
+    try:
+        client.worker_stop(dispatch_id)
+    except OrcaError:
+        pass  # it may already have exited; the look below decides
+    try:
+        confirmed = ship.settled_outcome(client.worker_show(dispatch_id)) is not None
+    except OrcaError:
+        confirmed = False
+    if not confirmed:
+        say("audit worker %s not confirmed stopped: check it in Orca" % dispatch_id)
+        return
+    try:
+        client.worker_release(dispatch_id)
+    except OrcaError as error:
+        say("could not release %s: %s" % (dispatch_id, error.message))
+    say("audit worker %s stopped" % dispatch_id)
 
 
 def _audit(workspace: str, record: dict, changed: list, limits: dict, client: OrcaClient,
@@ -338,10 +367,16 @@ def _audit(workspace: str, record: dict, changed: list, limits: dict, client: Or
     say("audit round %d started on %s/%s (%s); waiting up to %d minutes"
         % (rounds + 1, pick[0], pick[1], dispatch_id, AUDIT_WAIT_SECONDS // 60))
 
-    outcome = _wait_for_worker(client, dispatch_id, clock)
-    if outcome is None:
-        say("the audit did not finish within %d minutes; the worker %s is still running "
-            "(not a verdict on the code)" % (AUDIT_WAIT_SECONDS // 60, dispatch_id))
+    kind, value = _wait_for_worker(client, dispatch_id, clock)
+    if kind == "question":
+        say("el auditor preguntó: %s" % value)
+        _stop_worker(client, dispatch_id, say)
+        return 126
+    outcome = value
+    if outcome is None:  # kind == "timeout" and the worker still runs
+        say("the audit did not finish within %d minutes (not a verdict on the code)"
+            % (AUDIT_WAIT_SECONDS // 60))
+        _stop_worker(client, dispatch_id, say)
         return 126
     try:
         client.worker_release(dispatch_id)
