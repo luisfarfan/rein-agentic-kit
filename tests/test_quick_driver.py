@@ -82,6 +82,7 @@ class _Git:
         self.ignored = ignored
         self.sha = sha
         self.branch = branch
+        self.exclude = None  # what `rev-parse --git-path info/exclude` prints; None = fails
 
     def __call__(self, path, *args):
         self.calls.append((path,) + args)
@@ -93,6 +94,8 @@ class _Git:
             return (0 if self.ignored else 1), ""
         if args == ("rev-parse", "HEAD"):
             return 0, self.sha + "\n"
+        if args == ("rev-parse", "--git-path", "info/exclude"):
+            return (1, "") if self.exclude is None else (0, self.exclude + "\n")
         if args[:2] == ("rev-parse", "--abbrev-ref"):
             return 0, self.branch + "\n"
         return 1, ""
@@ -301,6 +304,21 @@ class PlacementTests(DriverCase):
         self.assertEqual(code, 0)
         self.assertIn('add ".rein/" to %s/.git/info/exclude' % self.worktree, self.text())
         self.assertFalse(os.path.exists(os.path.join(self.worktree, ".git")))
+
+    def test_linked_worktree_hint_names_the_common_dirs_exclude(self):
+        git = _Git(ignored=False)
+        git.exclude = "/repos/proxima-api/.git/info/exclude"
+        code, _, _ = self.run_quick(git=git)
+        self.assertEqual(code, 0)
+        self.assertIn('add ".rein/" to /repos/proxima-api/.git/info/exclude', self.text())
+        self.assertNotIn(self.worktree + "/.git/info/exclude", self.text())
+
+    def test_relative_exclude_path_is_made_absolute(self):
+        git = _Git(ignored=False)
+        git.exclude = ".git/info/exclude"
+        self.run_quick(git=git)
+        self.assertIn('add ".rein/" to %s' % os.path.join(self.worktree, ".git/info/exclude"),
+                      self.text())
 
     def test_ignored_rein_prints_no_exclude_line(self):
         self.run_quick(git=_Git(ignored=True))

@@ -94,6 +94,16 @@ def _braked_lines(limits: dict, threshold: float) -> list:
     return lines
 
 
+def _exclude_file(git: Callable[..., tuple], workspace: str) -> str:
+    """The exclude file git reads for `workspace`; in a linked worktree that is the
+    common dir's, not `<workspace>/.git/info/exclude` (there `.git` is a file)."""
+    code, out = git(workspace, "rev-parse", "--git-path", "info/exclude")
+    found = out.strip() if code == 0 else ""
+    if not found:
+        return "%s/.git/info/exclude" % workspace
+    return os.path.join(workspace, found)  # a relative answer is relative to the workspace
+
+
 def _write_record(workspace: str, record: dict) -> None:
     folder = os.path.join(workspace, ".rein")
     os.makedirs(folder, exist_ok=True)
@@ -214,7 +224,7 @@ def start_quick(
         return 126
     code, _ = git(workspace, "check-ignore", "-q", quick.RECORD)
     if code != 0:
-        say('add ".rein/" to %s/.git/info/exclude' % workspace)
+        say('add ".rein/" to %s' % _exclude_file(git, workspace))
 
     # 6. Report
     say("agent: %s" % agent)
