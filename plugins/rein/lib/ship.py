@@ -696,8 +696,9 @@ class _Driver:
                 "question": "The run was braked on quota. Retry once quota frees up, or pause?"})
         self.save()
 
-    def resume(self):
-        self.state.paused = False  # running `rein ship` again is the owner asking to continue
+    def resume(self, owner_restart: bool = True):
+        if owner_restart:  # running `rein ship` again is the owner asking to continue; an automatic resume keeps a pause
+            self.state.paused = False
         self.requeue_orphans()
         self.open_pending()
         rows = {str(r.get("dispatchId")): r for r in self.rows()}
@@ -844,6 +845,7 @@ def detach_ship(root: str, change: str, client: OrcaClient, *, override: tuple |
 RESUME_POLL_SECONDS = 5
 RESUME_WAIT_SECONDS = 600
 RESUME_MAX = 3
+STATUS_TIMEOUT_SECONDS = 15  # one `orca status` during the wait; a hung CLI counts as not back yet
 
 
 def is_transient(exc: OrcaError) -> bool:
@@ -856,7 +858,7 @@ def _wait_for_orca(client: OrcaClient, clock: Callable[[], float], sleep: Callab
     deadline = clock() + RESUME_WAIT_SECONDS
     while True:
         try:
-            client.status()
+            client.status(timeout=STATUS_TIMEOUT_SECONDS)
             return True
         except OrcaError:
             pass
@@ -901,7 +903,7 @@ def run_ship(root: str, change: str, client: OrcaClient, gate_runner: Callable, 
             if state.phase == "done":
                 driver.finished = True
             else:
-                driver.resume()
+                driver.resume(owner_restart=resumes == 0)
             driver.loop()
             return driver.finish()
         except OrcaError as exc:

@@ -31,9 +31,9 @@ class OrcaError(Exception):
         self.envelope = envelope if isinstance(envelope, dict) else {}
 
 
-def _default_runner(argv: list) -> tuple:
+def _default_runner(argv: list, timeout: Optional[float] = None) -> tuple:
     """`(exit code, stdout, stderr)`. A custom runner may return just `(code, stdout)`."""
-    proc = subprocess.run(argv, capture_output=True, text=True)
+    proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
     return proc.returncode, proc.stdout, proc.stderr
 
 
@@ -46,10 +46,14 @@ class OrcaClient:
         self.executable = executable or os.environ.get("ORCA_CLI_COMMAND") or "orca"
         self._runner = runner or _default_runner
 
-    def _call(self, *args: str) -> dict:
+    def _call(self, *args: str, timeout: Optional[float] = None) -> dict:
         argv = [self.executable, *args, "--json"]
         try:
-            ran = self._runner(argv)
+            # Only the built-in runner can be bounded; a custom runner owns its own limits.
+            ran = self._runner(argv, timeout=timeout) if timeout and self._runner is _default_runner \
+                else self._runner(argv)
+        except subprocess.TimeoutExpired:
+            raise OrcaError("unavailable", f"{self.executable} did not answer within {timeout}s", argv)
         except OSError as exc:
             raise OrcaError("unavailable", f"cannot run {self.executable}: {exc}", argv)
         code, out = ran[0], ran[1]
@@ -84,8 +88,8 @@ class OrcaClient:
         return self._call(*args)
 
     # -- environment ------------------------------------------------------
-    def status(self) -> dict:
-        return self._call("status")
+    def status(self, timeout: Optional[float] = None) -> dict:
+        return self._call("status", timeout=timeout)
 
     def account_list(self) -> dict:
         return self._call("account", "list")

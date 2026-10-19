@@ -5,14 +5,17 @@ from __future__ import annotations
 import io
 import json
 import os
+import stat
 import sys
+import time
 import unittest
 from contextlib import redirect_stdout
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from test_ship import ENV, PLAN, FakeOrca, FailEnvelope, ShipCase, scripted_gate  # noqa: E402  (sets sys.path)
+from test_ship import ENV, PLAN, Drained, FakeOrca, FailEnvelope, ShipCase, scripted_gate  # noqa: E402  (sets sys.path)
 import ship  # noqa: E402
+import ship_state  # noqa: E402
 from orca_client import OrcaClient, OrcaError  # noqa: E402
 
 RESTART = {"ok": False, "error": {"code": "runtime_unavailable", "message": "Orca runtime closed the connection"}}
@@ -117,6 +120,97 @@ class TestAutoResume(Resilient):
         self.assertTrue(ship.is_transient(OrcaError("unavailable", "cannot run orca")))
         self.assertFalse(ship.is_transient(OrcaError("exit_1", "boom")))
         self.assertTrue(ship.is_transient(OrcaError("exit_1", "Connection reset")))
+
+
+class DownOnce(FakeOrca):
+    """Fails the first call of `verb` with a restart error; status then answers at once."""
+
+    def __init__(self, *a, verb, **kw):
+        super().__init__(*a, **kw)
+        self.verb, self.armed = verb, True
+
+    def _answer(self, a):
+        if self.armed and (a[1:2] == [self.verb] or a[0] == self.verb):
+            self.armed = False
+            raise FailEnvelope(RESTART)
+        return super()._answer(a)
+
+
+class TestWhereItFails(Resilient):
+    def test_restart_during_setup_resumes(self):
+        fake = DownOnce(self.root, verb="run-create")
+        fake.on_audit = self.approve_audit()
+        code = self.ship(fake)
+        self.assertEqual(code, 0, self.out)
+        self.assertIn("Orca is back; resuming", self.out)
+
+    def test_restart_during_resume_resumes(self):
+        first = FakeOrca(self.root, autocomplete=False)
+        with self.assertRaises(Drained):
+            self.run_ship(first, scripted_gate())
+        self.assertTrue(os.path.exists(self.state_file))
+        fake = DownOnce(self.root, verb="worker-list")
+        fake.on_audit = self.approve_audit()
+        fake.dispatches = first.dispatches
+        fake.tasks = first.tasks
+        fake.n = first.n
+        code = self.ship(fake)
+        self.assertIn("Orca is back; resuming", self.out)
+        self.assertNotEqual(code, 126, self.out)
+
+
+class TestPauseSurvivesAutoResume(Resilient):
+    def test_paused_run_stays_paused(self):
+        plan = ship._plan.read_plan(self.root, source="tasks-md", change="demo")
+        state = ship_state.from_plan(plan, "plan-repo", "demo")
+        state.run_id, state.phase = "run_1", "braked"
+        t1 = state.tasks["T001"]
+        t1.status, t1.dispatch_id, t1.orca_task_id, t1.agent, t1.model = "running", "d1", "task_x", "codex", "m"
+        t1.started_at = 10 ** 9
+        state.worktrees["proxima-api"] = self.wtid("proxima-api")
+        state.worktree_paths["proxima-api"] = self.wtpath("proxima-api")
+        state.gates = {"gate_b": {"task_id": None, "kind": "brake", "message_id": "", "audit": ""}}
+        ship_state.save(state, self.state_file)
+        fake = FlakyOrca(self.root, autocomplete=False, status_down=2)
+        fake.gates.append({"id": "gate_b", "task_id": "task_x", "question": "?", "options": "[]",
+                           "status": "resolved", "resolution": "pause"})
+        fake.rows_override = [{"dispatchId": "d1", "taskId": "task_x", "agentTerminalHandle": "term_d1",
+                               "workerState": "working", "dispatchStatus": "dispatched", "projection": {}}]
+        fake.pending = [lambda f: [{"id": "m", "type": "worker_done", "from_handle": "term_d1", "subject": "d",
+                                    "body": "", "payload": json.dumps({"dispatchId": "d1", "outcome": "succeeded"})}]]
+        seen = []
+        orig = self.sleep
+
+        def sleep(seconds):
+            seen.append(ship_state.load(self.state_file).paused)
+            orig(seconds)
+        self.sleep = sleep
+        code = self.ship(fake)
+        self.assertIn("Orca is back; resuming", self.out)
+        self.assertEqual(seen, [True], "the pause is saved when Orca drops")
+        self.assertEqual(fake.starts(), [])
+        self.assertEqual([c for c in fake.calls if c[1:2] == ["task-create"]], [])
+        self.assertEqual(code, 1, self.out)
+        self.assertEqual(ship_state.load(self.state_file).tasks["T001"].status, "done")
+
+
+class TestBoundedStatus(unittest.TestCase):
+    def test_a_hung_cli_counts_as_not_back_yet(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            exe = os.path.join(tmp, "orca")
+            with open(exe, "w") as fh:
+                fh.write("#!/bin/sh\nexec sleep 20\n")
+            os.chmod(exe, os.stat(exe).st_mode | stat.S_IXUSR)
+            client = OrcaClient(executable=exe)
+            saved = ship.STATUS_TIMEOUT_SECONDS
+            ship.STATUS_TIMEOUT_SECONDS = 0.3
+            self.addCleanup(setattr, ship, "STATUS_TIMEOUT_SECONDS", saved)
+            ticks = iter(range(0, 10 ** 6, 400))
+            started = time.time()
+            ok = ship._wait_for_orca(client, lambda: next(ticks), lambda s: None)
+            self.assertFalse(ok)
+            self.assertLess(time.time() - started, 5)
 
 
 class TestBell(Resilient):
