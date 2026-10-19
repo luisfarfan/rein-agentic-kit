@@ -113,6 +113,7 @@ class GateResolved:
 @dataclass
 class ChangesComputed:
     changed_files: list
+    limits: dict = field(default_factory=dict)  # live quota, so the audit avoids a braked reviewer
 
 
 @dataclass
@@ -226,18 +227,18 @@ def _matches(path: str, pattern: str) -> bool:
     return fnmatch(path, pattern) or fnmatch("/" + path, pattern)
 
 
-def audit_model(changed_files: list, implementer_agents: list, cfg: ShipConfig) -> tuple:
-    """Opus for risky or large changes; otherwise a provider that did not implement."""
+def audit_model(changed_files: list, implementer_agents: list, cfg: ShipConfig,
+                limits: dict | None = None) -> tuple:
+    """Opus for risky or large changes; otherwise a reviewer under the brake, preferring
+    a provider that did not implement."""
     if len(changed_files) > cfg.large_change_files:
         return quota.OPUS
     if any(_matches(f, p) for f in changed_files for p in cfg.risky_paths):
         return quota.OPUS
     used = set(implementer_agents)
-    if used == {"codex"}:
-        return quota.SONNET
-    if used == {"claude"}:
-        return quota.CODEX
-    return quota.SONNET
+    fresh = [m for m in (quota.SONNET, quota.CODEX) if m[0] not in used]
+    choices = fresh + [m for m in (quota.SONNET, quota.CODEX) if m not in fresh]
+    return quota.first_unbraked(choices, limits or {})
 
 
 # --- helpers ----------------------------------------------------------------
@@ -466,9 +467,13 @@ def _on_tick(state: ShipState, event: Tick, cfg: ShipConfig, actions: list) -> N
     agent, model = _implementer(state, event.limits, cfg)
     reason = quota.brake_reason(event.limits, agent)
     if reason:
+        if not state.forced_implementer and cfg.override is None:
+            # every candidate is braked: say so, or the owner would chase a provider that is also full
+            reason = "; ".join(quota.brake_reason(event.limits, c[0]) for c in
+                               quota.candidates(event.limits, cfg.claude_weekly_threshold))
         state.phase = "braked"
         actions.append(Brake(reason))
-        _open(state, actions, None, reason, ["switch-to-codex", "pause"], "brake")
+        _open(state, actions, None, reason, ["retry", "pause"], "brake")
         return
 
     for task in batch:
@@ -562,7 +567,7 @@ _RESOLUTIONS = {
     "retry_exhausted": ("retry", "skip"),
     "setup": ("retry", "skip"),
     "timeout": ("retry", "skip"),
-    "brake": ("switch-to-codex", "pause"),
+    "brake": ("retry", "pause", "switch-to-codex"),  # switch-to-codex: gates opened by an older Rein
     "audit_exhausted": ("accept", "reject"),
     "audit_timeout": ("retry", "skip"),
     "audit_failed": ("retry-audit", "accept", "reject"),
@@ -621,8 +626,7 @@ def _on_gate_resolved(state: ShipState, event: GateResolved, cfg: ShipConfig, ac
                 task.status = "failed"
         _settle(state, actions)
     elif kind == "brake":
-        if resolution == "switch-to-codex":
-            state.forced_implementer = list(quota.CODEX)
+        state.forced_implementer = []  # route by quota again; a legacy forced Codex could loop on the brake
         state.phase = "running"
         if resolution == "pause":
             # Nothing new starts, but running workers stay supervised until they settle.
@@ -714,7 +718,7 @@ def _on_changes_computed(state: ShipState, event: ChangesComputed, cfg: ShipConf
     if state.audit_dispatch or _owner_gate_open(state, *AUDIT_HOLDS):
         return  # an audit is running, or the owner has not yet decided about the last one
     state.changed_files = list(event.changed_files)
-    actions.append(StartAudit(*audit_model(state.changed_files, state.implementer_agents, cfg)))
+    actions.append(StartAudit(*audit_model(state.changed_files, state.implementer_agents, cfg, event.limits)))
 
 
 def _on_changes_failed(state: ShipState, event: ChangesFailed, actions: list) -> None:

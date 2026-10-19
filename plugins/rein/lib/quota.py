@@ -10,6 +10,7 @@ from __future__ import annotations
 CODEX = ("codex", "gpt-6.1-sol")
 SONNET = ("claude", "sonnet")
 OPUS = ("claude", "opus")
+ANTIGRAVITY = ("antigravity", "gemini-4-argon-medium")
 
 WINDOWS = ("session", "weekly")
 _ALWAYS = ("claude", "codex")
@@ -47,15 +48,34 @@ def parse_rate_limits(account_list: dict) -> dict:
     return out
 
 
-def choose_implementer(limits: dict, threshold: float, override=None) -> tuple:
-    """The explicit override, else Sonnet while Claude's weekly usage is
-    known and below `threshold`, else Codex."""
+def choose_implementer(limits: dict, threshold: float, override=None, max_pct: float = 90.0) -> tuple:
+    """The explicit override, else the first candidate the brake would not
+    stop: Sonnet (only while Claude's weekly usage is known and below
+    `threshold`), then Codex, then Antigravity (only when its usage is
+    known). When every candidate is braked, the first one, so the brake opens."""
     if override is not None:
         return override
+    return first_unbraked(candidates(limits, threshold), limits, max_pct)
+
+
+def candidates(limits: dict, threshold: float) -> list:
+    """The implementers worth trying, in order of preference."""
+    out = []
     weekly = (limits.get("claude") or {}).get("weekly")
-    if weekly is None or weekly >= threshold:
-        return CODEX
-    return SONNET
+    if weekly is not None and weekly < threshold:
+        out.append(SONNET)
+    out.append(CODEX)
+    if (limits.get("antigravity") or {}).get("weekly") is not None:
+        out.append(ANTIGRAVITY)
+    return out
+
+
+def first_unbraked(choices: list, limits: dict, max_pct: float = 90.0) -> tuple:
+    """The first choice whose provider is under the brake; the first choice when none is."""
+    for choice in choices:
+        if not brake_reason(limits, choice[0], max_pct):
+            return choice
+    return choices[0]
 
 
 def brake_reason(limits: dict, agent: str, max_pct: float = 90.0) -> str:

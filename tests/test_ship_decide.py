@@ -163,15 +163,31 @@ class TickGates(unittest.TestCase):
         _, actions = tick(state)
         self.assertEqual([a.task_id for a in actions], ["2", "3", "4"])
 
-    def test_quota_brake(self):
+    def test_a_braked_claude_session_falls_to_codex_without_a_gate(self):
         limits = {"claude": {"session": 95.0, "weekly": 10.0}, "codex": {"session": 5.0, "weekly": 5.0}}
+        _, actions = tick(ship(task("1")), limits)
+        self.assertEqual(actions, [sd.Dispatch("1", "a", "new-top-level", "codex", "gpt-6.1-sol")])
+
+    def test_a_braked_codex_falls_to_antigravity(self):
+        limits = {"claude": {"session": 1.0, "weekly": 97.0}, "codex": {"session": 92.0, "weekly": 5.0},
+                  "antigravity": {"session": 0.0, "weekly": 2.0}}
+        new, actions = tick(ship(task("1")), limits)
+        self.assertEqual(actions, [sd.Dispatch("1", "a", "new-top-level",
+                                               "antigravity", "gemini-4-argon-medium")])
+        self.assertEqual(new.implementer_agents, ["antigravity"])
+
+    def test_quota_brake(self):
+        hot = {"session": 95.0, "weekly": 10.0}
+        limits = {"claude": hot, "codex": hot, "antigravity": hot}
         state = ship(task("1"))
         new, actions = tick(state, limits)
         self.assertEqual(len(actions), 2)
         brake, gate = actions
         self.assertIsInstance(brake, sd.Brake)
         self.assertIn("claude", brake.reason)
-        self.assertEqual(gate, sd.OpenGate(None, brake.reason, ["switch-to-codex", "pause"], "brake"))
+        self.assertEqual(gate, sd.OpenGate(None, brake.reason, ["retry", "pause"], "brake"))
+        for provider in ("claude", "codex", "antigravity"):
+            self.assertIn(provider, brake.reason, "the owner sees every braked provider")
         self.assertEqual(new.phase, "braked")
         self.assertEqual(new.tasks["1"].status, "pending")
         _, again = tick(new, limits)
@@ -246,7 +262,8 @@ class WorkerEvents(unittest.TestCase):
         self.assertEqual((again.tasks["1"].status, again.tasks["1"].attempts), ("running", 1))
 
     def test_a_retry_meets_the_brake(self):
-        limits = {"claude": {"session": 95.0, "weekly": 10.0}, "codex": {"session": 5.0, "weekly": 5.0}}
+        hot = {"session": 95.0, "weekly": 10.0}
+        limits = {"claude": hot, "codex": hot}
         state = ship(running("1", attempts=0), worktrees={"a": "wt-a"})
         red, _ = sd.decide(state, sd.WorkerDone("d1", "failed"), CFG)
         new, actions = tick(red, limits)
@@ -553,17 +570,28 @@ class QuestionsAndGates(unittest.TestCase):
         self.assertEqual(actions, [])
         self.assertEqual(new.phase, "running")
 
-    def test_brake_switch_to_codex_and_pause(self):
+    def test_brake_retry_and_pause(self):
         state = ship(task("1"), phase="braked")
-        new, actions = self.resolve(state, "brake", None, "switch-to-codex")
+        new, actions = self.resolve(state, "brake", None, "retry")
         self.assertEqual(actions, [])
-        self.assertEqual((new.phase, new.forced_implementer), ("running", ["codex", "gpt-6.1-sol"]))
+        self.assertEqual((new.phase, new.forced_implementer), ("running", []))
         _, actions = tick(new)
-        self.assertEqual(actions[0].agent, "codex")
+        self.assertEqual(actions[0].agent, "claude", "retry routes by quota again")
 
         new, actions = self.resolve(ship(task("1"), phase="braked"), "brake", None, "pause")
         self.assertEqual(actions, [sd.Finish()], "nothing is running: leave now")
         self.assertEqual((new.phase, new.paused), ("running", False), "paused work resumes on the next run")
+
+    def test_a_legacy_switch_to_codex_answer_clears_a_forced_implementer(self):
+        # A run braked before this change has a "switch-to-codex" gate, and maybe a forced Codex
+        # that would keep re-braking after Codex fills up while the other providers recover.
+        state = ship(task("1"), phase="braked", forced_implementer=["codex", "gpt-6.1-sol"])
+        new, _ = self.resolve(state, "brake", None, "switch-to-codex")
+        self.assertEqual((new.phase, new.forced_implementer), ("running", []))
+        limits = {"claude": {"session": 1.0, "weekly": 97.0}, "codex": {"session": 95.0, "weekly": 5.0},
+                  "antigravity": {"session": 0.0, "weekly": 1.0}}
+        _, actions = tick(new, limits)
+        self.assertEqual(actions[0].agent, "antigravity")
 
     def test_pause_keeps_supervising_running_workers_until_they_settle(self):
         state = ship(running("1"), task("2", "b"), phase="braked")
@@ -667,10 +695,31 @@ class Audit(unittest.TestCase):
         self.assertEqual(am(["src/x.py"], ["codex"], CFG), quota.SONNET)
         self.assertEqual(am(["src/x.py"], ["claude"], CFG), quota.CODEX)
         self.assertEqual(am(["src/x.py"], ["codex", "claude"], CFG), quota.SONNET)
+        self.assertEqual(am(["src/x.py"], ["antigravity"], CFG), quota.SONNET)
+        self.assertEqual(am(["src/x.py"], ["codex", "antigravity"], CFG), quota.SONNET)
+        self.assertEqual(am(["src/x.py"], ["claude", "antigravity"], CFG), quota.CODEX)
         self.assertEqual(am([], [], CFG), quota.SONNET)
         custom = sd.ShipConfig(risky_paths=["**/secrets/**"], large_change_files=1)
         self.assertEqual(am(["a/secrets/k"], ["codex"], custom), quota.OPUS)
         self.assertEqual(am(["a", "b"], ["codex"], custom), quota.OPUS)
+
+    def test_audit_model_skips_a_braked_reviewer(self):
+        am = sd.audit_model
+        hot, cool = {"session": 92.0, "weekly": 10.0}, {"session": 1.0, "weekly": 1.0}
+        self.assertEqual(am(["src/x.py"], ["claude", "antigravity"], CFG,
+                            {"claude": cool, "codex": hot}), quota.SONNET)
+        self.assertEqual(am(["src/x.py"], ["antigravity"], CFG,
+                            {"claude": {"session": 1.0, "weekly": 97.0}, "codex": cool}), quota.CODEX)
+        self.assertEqual(am(["src/x.py"], ["codex"], CFG, {"claude": hot, "codex": hot}), quota.SONNET,
+                         "all braked: the usual reviewer, so the audit gates handle it")
+        self.assertEqual(am(["src/auth/x.py"], ["codex"], CFG, {"claude": hot}), quota.OPUS,
+                         "risky changes still go to Opus")
+
+    def test_the_audit_reads_the_limits_carried_by_changes_computed(self):
+        state = ship(task("1", "a", status="done"), phase="auditing", implementer_agents=["claude"])
+        limits = {"claude": {"session": 1.0, "weekly": 1.0}, "codex": {"session": 95.0, "weekly": 1.0}}
+        _, actions = sd.decide(state, sd.ChangesComputed(["a/x.py"], limits), CFG)
+        self.assertEqual(actions, [sd.StartAudit(*quota.SONNET)])
 
     def audited(self, **kw):
         return ship(task("1", "a", status="done"), task("2", "b", status="done"),

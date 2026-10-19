@@ -72,6 +72,40 @@ class ChooseImplementerTest(unittest.TestCase):
         self.assertEqual(quota.CODEX, ("codex", "gpt-6.1-sol"))
         self.assertEqual(quota.SONNET, ("claude", "sonnet"))
         self.assertEqual(quota.OPUS, ("claude", "opus"))
+        self.assertEqual(quota.ANTIGRAVITY, ("antigravity", "gemini-4-argon-medium"))
+
+    def test_braked_codex_falls_to_antigravity(self):
+        lim = {"claude": {"session": 1, "weekly": 97}, "codex": {"session": 92, "weekly": 18},
+               "antigravity": {"session": 0, "weekly": 2}}
+        self.assertEqual(quota.choose_implementer(lim, 60), quota.ANTIGRAVITY)
+
+    def test_braked_sonnet_falls_to_codex(self):
+        lim = {"claude": {"session": 95, "weekly": 10}, "codex": {"session": 5, "weekly": 5}}
+        self.assertEqual(quota.choose_implementer(lim, 60), quota.CODEX)
+
+    def test_antigravity_needs_known_usage(self):
+        braked_codex = {"claude": {"weekly": 97}, "codex": {"session": 95, "weekly": 1}}
+        for ag in (None, {"session": None, "weekly": None}, {"session": 0, "weekly": None}):
+            lim = dict(braked_codex)
+            if ag is not None:
+                lim["antigravity"] = ag
+            self.assertEqual(quota.choose_implementer(lim, 60), quota.CODEX, ag)
+
+    def test_everything_braked_returns_the_first_choice(self):
+        hot = {"session": 95, "weekly": 95}
+        lim = {"claude": {"session": 95, "weekly": 10}, "codex": hot, "antigravity": hot}
+        self.assertEqual(quota.choose_implementer(lim, 60), quota.SONNET)
+        lim["claude"] = {"session": 1, "weekly": 97}
+        self.assertEqual(quota.choose_implementer(lim, 60), quota.CODEX)
+
+    def test_codex_stays_first_when_both_fallbacks_are_fine(self):
+        lim = {"claude": {"weekly": 97}, "codex": {"session": 68, "weekly": 18},
+               "antigravity": {"session": 0, "weekly": 2}}
+        self.assertEqual(quota.choose_implementer(lim, 60), quota.CODEX)
+
+    def test_override_skips_the_brake_check(self):
+        hot = {"session": 99, "weekly": 99}
+        self.assertEqual(quota.choose_implementer({"codex": hot}, 60, quota.CODEX), quota.CODEX)
 
 
 class BrakeReasonTest(unittest.TestCase):

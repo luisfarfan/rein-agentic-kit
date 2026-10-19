@@ -145,9 +145,16 @@ Skills removed: `rein-apply`, `rein-loop`, `rein-step`, `rein-steps`, `rein-line
   so every task starts with an empty context.
 - Tasks within one repo run serially; tasks in different repos run in parallel, subject to
   dependencies.
-- Model choice: if Claude's weekly usage is ≥ `ship.claudeWeeklyThreshold` (default 60%),
-  use `--agent codex --model gpt-6.1-sol`; otherwise use `--agent claude --model sonnet`.
-  `rein ship --agent <id> [--model <m>]` overrides.
+- Model choice: the candidates, in order, are `--agent claude --model sonnet` (only while
+  Claude's weekly usage is known and below `ship.claudeWeeklyThreshold`, default 60%),
+  `--agent codex --model gpt-6.1-sol`, and `--agent antigravity --model gemini-4-argon-medium`
+  (only when Orca reports Antigravity's weekly usage). The first one the budget brake would not stop
+  is used; when all are braked, the first one is chosen so the brake opens.
+  `rein ship --agent <id> [--model <m>]` overrides, without the fallback. Antigravity was
+  probed as a read-only worker on 2026-10-19: it loads `AGENTS.md` at startup and reports
+  `worker_done`; asking the owner a question (`orchestration ask`) is not yet proven.
+  `token_report` reads Claude transcripts only, so Antigravity, like Codex, is measured
+  through quota deltas.
 - At most `ship.maxConcurrentWorkers` (default 3) live at once.
 
 ### 5.3 Supervision loop
@@ -163,8 +170,9 @@ Skills removed: `rein-apply`, `rein-loop`, `rein-step`, `rein-steps`, `rein-line
 
 ### 5.4 Close
 
-- Decide the audit by risk. The default reviewer is the model that did *not* implement.
-  Use Opus when the change touches auth, payments, or data migrations, or exceeds
+- Decide the audit by risk. The default reviewer is Sonnet or Codex, preferring one whose
+  provider did not implement and skipping one at the 90% brake (when both are braked, the
+  preferred one runs and the audit gates handle a failure). Antigravity never audits. Use Opus when the change touches auth, payments, or data migrations, or exceeds
   `ship.largeChangeFiles` (default 25 files). The reviewer runs `rein-audit` and records with
   `rein review record`.
 - With CHANGES_REQUESTED and at least one BLOCKING finding: one fix round, then a second and
@@ -184,9 +192,11 @@ the final review: a per-root state file mixed changes.)
 
 ## 6. Errors, limits, safety
 
-- **Budget brakes.** Stop launching workers and open a gate ("switch to Codex or pause?")
-  when Claude's session usage passes 90% or the chosen provider's weekly usage passes its
-  threshold.
+- **Budget brakes.** A provider at 90% session or weekly usage is skipped in favour of the next
+  candidate (§5.2). Only when every candidate is braked, or the `--agent` override is, stop
+  launching workers and open a gate naming every braked provider ("retry or pause?"). Retry
+  routes by quota again on the next tick; a `switch-to-codex` answer to a gate opened by an
+  older Rein is read as retry.
 - **Task wall time.** `ship.taskTimeoutMinutes` (default 45); on expiry, open a gate instead
   of waiting forever.
 - **Orca safety floor, followed literally:**

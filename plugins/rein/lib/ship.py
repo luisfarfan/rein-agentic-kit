@@ -490,7 +490,7 @@ class _Driver:
         if errors:  # auditing nothing would pass an unreviewed change
             return sd.ChangesFailed("; ".join(errors))
         self.changed_by_wt = by_wt
-        return sd.ChangesComputed(sorted(flat))
+        return sd.ChangesComputed(sorted(flat), self.limits())
 
     def start_audit(self, a):
         if not self.state.worktrees or self.state.audit_dispatch:
@@ -688,8 +688,8 @@ class _Driver:
                 g.get("kind") == "brake" for g in list(self.state.gates.values()) + self.state.pending_gates):
             self.state.pending_gates.append({
                 "task_id": None, "kind": "brake", "message_id": "",
-                "options": ["switch-to-codex", "pause"],
-                "question": "The run was braked on quota. Switch to Codex, or pause?"})
+                "options": ["retry", "pause"],
+                "question": "The run was braked on quota. Retry once quota frees up, or pause?"})
         self.save()
 
     def resume(self):

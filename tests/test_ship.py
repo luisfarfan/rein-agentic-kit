@@ -874,7 +874,7 @@ class TestGateDurability(ShipCase):
         with self.assertRaises(Drained):
             self.run_ship(fake, scripted_gate())
         creates = [c for c in fake.calls if c[:2] == ["orchestration", "gate-create"]]
-        self.assertEqual(_flag(creates[0], "--options"), '["switch-to-codex", "pause"]')
+        self.assertEqual(_flag(creates[0], "--options"), '["retry", "pause"]')
 
     def test_a_failed_worker_start_and_a_failed_gate_create_do_not_crash_the_run(self):
         self.write_plan(PLAN.split("- [ ] T002")[0])
@@ -1495,6 +1495,28 @@ class TestQuotaMeasurement(ShipCase):
         self.assertGreater(row["quota"]["claude"]["weekly"], 0)
         self.assertEqual(row["quota"]["claude"]["session"], 0.0)
         self.assertIn("usage claude:", self.out)
+
+    def test_a_braked_codex_dispatches_to_antigravity(self):
+        fake = FakeOrca(self.root)
+        fake.on_audit = self.approve_audit()
+        real = fake._answer
+
+        def answer(a):
+            result = real(a)
+            if a[0] == "account":
+                limits = result["rateLimits"]
+                limits["claude"] = {"status": "ok", "session": {"usedPercent": 1.0}, "weekly": {"usedPercent": 97.0}}
+                limits["codex"] = {"status": "ok", "session": {"usedPercent": 92.0}, "weekly": {"usedPercent": 18.0}}
+                limits["antigravity"] = {"status": "ok", "session": {"usedPercent": 0.0}, "weekly": {"usedPercent": 2.0}}
+            return result
+        fake._answer = answer
+        self.assertEqual(self.run_ship(fake, scripted_gate()), 0, self.out)
+        launched = [(_flag(c, "--agent"), _flag(c, "--model")) for c in fake.starts()]
+        *workers, audit = launched
+        self.assertTrue(workers)
+        self.assertEqual(set(workers), {("antigravity", "gemini-4-argon-medium")})
+        self.assertEqual(audit, ("claude", "sonnet"), "every reviewer is braked: the usual one")
+        self.assertIn("antigravity", ship_state.load(self.state_file).implementer_agents)
 
     def test_the_snapshot_survives_a_resume(self):
         self.write_plan(PLAN.split("- [ ] T002")[0])

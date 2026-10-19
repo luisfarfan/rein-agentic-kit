@@ -27,7 +27,7 @@
   },
 
   "ship": {
-    "$comment": "rein ship tuning (all optional; these are the defaults). claudeWeeklyThreshold: Claude weekly usage % above which workers go to Codex. maxConcurrentWorkers: live workers at once. maxRetries: fresh retries of a red task. maxAuditRounds: fix-and-reaudit rounds before escalating. taskTimeoutMinutes: wall time per task before a gate opens. gateTimeoutSeconds: per-command timeout for the gate run on each task (raise it for a slow test suite). largeChangeFiles: changed-file count that routes the audit to Opus. riskyPaths: globs that also route the audit to Opus.",
+    "$comment": "rein ship tuning (all optional; these are the defaults). claudeWeeklyThreshold: Claude weekly usage % above which workers go to Codex (or to Antigravity when Codex is at 90%). maxConcurrentWorkers: live workers at once. maxRetries: fresh retries of a red task. maxAuditRounds: fix-and-reaudit rounds before escalating. taskTimeoutMinutes: wall time per task before a gate opens. gateTimeoutSeconds: per-command timeout for the gate run on each task (raise it for a slow test suite). largeChangeFiles: changed-file count that routes the audit to Opus. riskyPaths: globs that also route the audit to Opus.",
     "claudeWeeklyThreshold": 60,
     "maxConcurrentWorkers": 3,
     "maxRetries": 2,

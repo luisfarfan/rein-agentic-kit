@@ -59,12 +59,13 @@ Rein and executed without it. v2 fixes that by making execution one command.
 2. **Plan** (`/rein:rein-plan`) turns it into tasks, each with acceptance criteria, a bounded
    verification command and a `Repo:`. Nothing is written without your confirmation.
 3. **Ship** (`/ship <change>`, or `/rein:ship`) runs `rein ship <change>`. Python dispatches one
-   fresh Orca worker per task (Codex when Claude's weekly quota is high, Sonnet otherwise), runs
-   `rein gate` on each result, retries a red task with a fresh worker, and opens an **Orca
-   decision gate** whenever a worker has a question or something needs your judgement.
-4. **Audit** (`rein-audit`) is run by the model that did *not* implement (Opus for risky paths or
-   large changes). The final state is `in-review`: **Rein never pushes, merges, opens a PR or
-   deploys.** You open the PR.
+   fresh Orca worker per task (Sonnet while Claude's weekly quota is low, else Codex, else
+   Antigravity), runs `rein gate` on each result, retries a red task with a fresh worker, and
+   opens an **Orca decision gate** whenever a worker has a question or something needs your
+   judgement.
+4. **Audit** (`rein-audit`) is run by Sonnet or Codex, preferring the one that did *not* implement
+   and is under its quota brake (Opus for risky paths or large changes). The final state is
+   `in-review`: **Rein never pushes, merges, opens a PR or deploys.** You open the PR.
 
 No agent approves its own work, and every worker starts with an empty context.
 
@@ -179,8 +180,10 @@ rein baseline    # mark the run everything is compared against
 context, so spend stops growing without a ceiling.
 
 **2️⃣ Route by quota, not habit.** Claude's weekly usage ≥ `ship.claudeWeeklyThreshold` (60%) sends
-implementation to Codex; otherwise Sonnet. Opus is reserved for the audit of risky or large changes.
-A brake opens a gate when Claude's session usage or the chosen provider's weekly usage passes 90%.
+implementation to Codex; otherwise Sonnet. A provider at 90% of its session or weekly quota is
+skipped for the next one, Antigravity (Gemini) last. Opus is reserved for the audit of risky or large
+changes. A brake opens a gate ("retry or pause?") only when every candidate is at 90%, or when an
+`--agent` override is.
 
 **3️⃣ Verifiable signals, not model judgement.** `rein gate` answers "did it pass" from exit codes;
 `rein review check` answers "does this approval still apply" from content hashes. Neither asks a
