@@ -6,14 +6,14 @@
   },
   "metadata": {
     "description": "Rein \u2014 keep your Claude Code agents lean and in control.",
-    "version": "2.0.0"
+    "version": "2.1.0"
   },
   "plugins": [
     {
       "name": "rein",
       "source": "./plugins/rein",
       "description": "Token-lean agentic dev flow on Orca: fresh workers, gated tasks, independent audit, and per-model token measurement.",
-      "version": "2.0.0",
+      "version": "2.1.0",
       "category": "workflow",
       "keywords": [
         "workflow",

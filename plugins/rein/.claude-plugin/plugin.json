@@ -1,7 +1,7 @@
 {
   "name": "rein",
   "description": "Rein \u2014 keep your Claude Code agents lean and in control. A deterministic plan / ship / audit method on top of Orca: fresh workers, gated tasks, independent review, and real per-model token measurement.",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "author": {
     "name": "Luis Farfan"
   },
