@@ -144,7 +144,7 @@ rein answer [<change>] ["<text>"] [--gate <id>] [--root <plan repo>]
                  # options). With text: resolve one (option gates take one of their options,
                  # case-insensitive). Never touches the ship state; the driver picks it up.
                  # Exit: 0 ok · 1 Orca error or nothing to answer · 2 usage (ambiguous or invalid)
-rein quick "<sentence>" [--repo <name>] [--base <branch>] [--here [--dirty-ok]] [--agent <id> --model <m>] [--linear <id>]
+rein quick "<sentence>" [--repo <name>] [--base <branch>] [--here [--dirty-ok]] [--agent <id> [--model <m>]] [--linear <id>]
                  # hand a small change to a cheap agent chosen by quota, in a tab you talk to.
                  # Default: its own worktree off develop; --here uses the main checkout
                  # (--dirty-ok if it has uncommitted work). Never pushes or merges.

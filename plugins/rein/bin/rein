@@ -44,7 +44,7 @@ Subcommands:
                       is waiting on; option gates take one of their options. Exit 0 /
                       1 failure / 2 usage (ambiguous change or gate, invalid option)
   rein quick "<sentence>" [--repo <name>] [--base <branch>] [--here [--dirty-ok]]
-                      [--agent <id> --model <m>] [--linear <id>]
+                      [--agent <id> [--model <m>]] [--linear <id>]
                       hand a small change to a cheap agent chosen by quota, in a tab
                       you talk to. Default: its own worktree; --here uses the main
                       checkout. Exit 0 started / 1 failed / 2 usage / 126 environment
@@ -858,11 +858,16 @@ def cmd_quick(argv: list[str]) -> int:
     `_positional` -- otherwise the sentence after them would read as their value.
     """
     usage = ('usage: rein quick "<sentence>" [--repo <name>] [--base <branch>] [--here [--dirty-ok]] '
-             "[--agent <id> --model <m>] [--linear <id>]  |  rein quick done")
-    sentence = _positional([a for a in argv if a not in ("--here", "--dirty-ok")])
+             "[--agent <id> [--model <m>]] [--linear <id>]  |  rein quick done")
+    rest = [a for a in argv if a not in ("--here", "--dirty-ok")]
+    # Bare words: those that are not a flag and not the value of a preceding `--flag value`.
+    words = [a for i, a in enumerate(rest) if not a.startswith("-")
+             and not (i > 0 and rest[i - 1].startswith("--") and "=" not in rest[i - 1])]
+    sentence = words[0] if words else ""
     agent, model = _opt(argv, "agent"), _opt(argv, "model")
     here, dirty_ok = "--here" in argv, "--dirty-ok" in argv
-    if not sentence or bool(agent) != bool(model) or (dirty_ok and not here):
+    # A lone --agent is fine (the driver supplies its default model); a lone --model is not.
+    if len(words) != 1 or (model and not agent) or (dirty_ok and not here):
         print(usage)
         return 2
     if sentence == "done":

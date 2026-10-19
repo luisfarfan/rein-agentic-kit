@@ -38,7 +38,8 @@ class TestQuickCli(unittest.TestCase):
         for argv in (
             [],                                              # no sentence
             ["--repo", "api"],                               # flags but no sentence
-            ["fix it", "--agent", "codex"],                  # --agent without --model
+            ["arregla", "el", "botón"],                      # unquoted sentence: extra words
+            ["done", "now"],                                 # extra word after done
             ["fix it", "--model", "gpt-5"],                  # --model without --agent
             ["fix it", "--dirty-ok"],                        # --dirty-ok without --here
         ):
@@ -77,6 +78,16 @@ class TestQuickCli(unittest.TestCase):
             self.assertEqual(code, 126)
             done.assert_called_once_with(cwd=".", client=client)
             start.assert_not_called()
+
+    def test_quick_lone_agent_routes_with_empty_model(self):
+        client = object()
+        with mock.patch.object(rein_cli._quick, "OrcaClient", return_value=client), \
+                mock.patch.object(rein_cli._quick, "start_quick", return_value=0) as start:
+            code, _ = _run(["fix it", "--agent", "codex"])
+            self.assertEqual(code, 0)
+            start.assert_called_once_with(
+                "fix it", repo="", base="", here=False, dirty_ok=False,
+                agent="codex", model="", linear="", cwd=".", client=client)
 
     def test_quick_is_registered(self):
         self.assertIs(rein_cli.COMMANDS["quick"], rein_cli.cmd_quick)
