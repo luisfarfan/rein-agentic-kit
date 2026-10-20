@@ -79,10 +79,22 @@ def build_task_spec(task: ss.TaskState, plan: dict) -> str:
     return "\n".join(lines)
 
 
+REAUDIT_SCOPE = (
+    "This is a re-audit after a fix round. Verify ONLY that each finding below is fixed. "
+    "Report as BLOCKING only (a) a finding below that is not fixed, or (b) a defect the fix "
+    "commits introduced that breaks the change. Everything else is IMPORTANT or SUGGESTION "
+    "\u2014 do not re-audit the whole change."
+)
+
+
 def build_audit_spec(plan: dict, changed: dict, reviewer_profile: str,
-                     audit_root: str = "", change: str = "") -> str:
-    """The auditor's brief. The verdict is recorded in the audit worktree, never the plan repo."""
+                     audit_root: str = "", change: str = "", previous_blocking: list = ()) -> str:
+    """The auditor's brief. The verdict is recorded in the audit worktree, never the plan repo.
+
+    With `previous_blocking` it is a re-audit: only those findings are verified."""
     lines = [reviewer_profile.strip(), "", "Audit the change as a whole; you wrote none of it."]
+    if previous_blocking:
+        lines += [REAUDIT_SCOPE] + ["- %s" % f for f in previous_blocking]
     if plan.get("why"):
         lines.append("Why: %s" % plan["why"])
     lines.append("Audit worktree (your working directory): %s" % audit_root)
@@ -568,7 +580,7 @@ class _Driver:
         repo, first = next(iter(self.state.worktrees.items()))
         audit_root = self.state.worktree_paths.get(repo) or oc.worktree_path_of(first)
         spec = build_audit_spec(self.plan, self.changed_by_wt, self.ctx["reviewer_profile"],
-                                audit_root, self.change)
+                                audit_root, self.change, self.state.previous_blocking)
         task_id = oc.task_id_of(self.client.task_create(
             spec, "%s audit round %d" % (self.change, self.state.audit_rounds + 1), []))
         res = self.client.worker_start(task_id, worktree="id:%s" % first, agent=a.agent, model=a.model)

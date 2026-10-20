@@ -769,6 +769,37 @@ class Audit(unittest.TestCase):
         return ship(task("1", "a", status="done"), task("2", "b", status="done"),
                     phase="auditing", **kw)
 
+    def test_a_fix_round_persists_only_the_blocking_findings(self):
+        verdict = sd.AuditVerdict("CHANGES_REQUESTED", 2, ["a/x.py"],
+                                  ["IMPORTANT: naming", "BLOCKING: a/x.py leaks", "SUGGESTION: nit",
+                                   "BLOCKING: a/x.py crashes"])
+        new, _ = sd.decide(self.audited(), verdict, CFG)
+        self.assertEqual(new.previous_blocking, ["BLOCKING: a/x.py leaks", "BLOCKING: a/x.py crashes"])
+        again = copy_state(new)
+        again.phase = "auditing"
+        verdict = sd.AuditVerdict("CHANGES_REQUESTED", 1, ["a/x.py"], ["BLOCKING: still broken"])
+        newer, _ = sd.decide(again, verdict, sd.ShipConfig(max_audit_rounds=3))
+        self.assertEqual(newer.previous_blocking, ["BLOCKING: still broken"], "replaced, not appended")
+
+    def test_old_state_files_load_with_no_previous_blocking(self):
+        self.assertEqual(ShipState(change="c", plan_path="").previous_blocking, [])
+
+    def test_the_first_audit_still_goes_to_opus_for_risky_changes(self):
+        self.assertEqual(sd.audit_model(["src/auth/x.py"], ["codex"], CFG), quota.OPUS)
+
+    def test_a_re_audit_is_never_opus(self):
+        am = sd.audit_model
+        self.assertEqual(am(["src/auth/x.py"], ["codex"], CFG, reaudit=True), quota.SONNET)
+        self.assertEqual(am(["f%d.py" % i for i in range(40)], ["claude"], CFG, reaudit=True), quota.CODEX)
+        hot = {"session": 95.0, "weekly": 1.0}
+        self.assertEqual(am(["src/auth/x.py"], ["codex"], CFG, {"claude": hot}, reaudit=True), quota.CODEX)
+
+    def test_changes_computed_after_a_fix_round_re_audits_without_opus(self):
+        state = ship(task("1", status="done"), phase="auditing", implementer_agents=["codex"],
+                     audit_rounds=1, previous_blocking=["BLOCKING: x"])
+        _, actions = sd.decide(state, sd.ChangesComputed(["src/auth/login.py"]), CFG)
+        self.assertEqual(actions, [sd.StartAudit(*quota.SONNET)])
+
     def test_audit_approved_finishes(self):
         new, actions = sd.decide(self.audited(), sd.AuditVerdict("APPROVED", 0, ["x.py"]), CFG)
         self.assertEqual(actions, [sd.Finish()])

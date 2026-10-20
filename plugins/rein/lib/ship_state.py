@@ -81,6 +81,8 @@ class ShipState:
     # The verdict that opened an audit_exhausted gate: what a "fix" answer turns into fix tasks.
     pending_findings: list = field(default_factory=list)
     pending_changed_files: list = field(default_factory=list)
+    # The BLOCKING findings the latest fix round was started for; the re-audit verifies only these.
+    previous_blocking: list = field(default_factory=list)
 
 
 def state_path(repo_root: str, change: str) -> str:

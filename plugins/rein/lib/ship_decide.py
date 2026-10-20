@@ -241,13 +241,15 @@ def touches_risky(files: list, patterns: list) -> bool:
 
 
 def audit_model(changed_files: list, implementer_agents: list, cfg: ShipConfig,
-                limits: dict | None = None) -> tuple:
+                limits: dict | None = None, reaudit: bool = False) -> tuple:
     """Opus for risky or large changes; otherwise a reviewer under the brake, preferring
-    a provider that did not implement."""
-    if len(changed_files) > cfg.large_change_files:
-        return quota.OPUS
-    if touches_risky(changed_files, cfg.risky_paths):
-        return quota.OPUS
+    a provider that did not implement. A re-audit (after a fix round) is never Opus: it
+    only verifies the earlier findings."""
+    if not reaudit:
+        if len(changed_files) > cfg.large_change_files:
+            return quota.OPUS
+        if touches_risky(changed_files, cfg.risky_paths):
+            return quota.OPUS
     used = set(implementer_agents)
     fresh = [m for m in (quota.SONNET, quota.CODEX) if m[0] not in used]
     choices = fresh + [m for m in (quota.SONNET, quota.CODEX) if m not in fresh]
@@ -788,7 +790,8 @@ def _on_changes_computed(state: ShipState, event: ChangesComputed, cfg: ShipConf
     if state.audit_dispatch or _owner_gate_open(state, *AUDIT_HOLDS):
         return  # an audit is running, or the owner has not yet decided about the last one
     state.changed_files = list(event.changed_files)
-    actions.append(StartAudit(*audit_model(state.changed_files, state.implementer_agents, cfg, event.limits)))
+    actions.append(StartAudit(*audit_model(state.changed_files, state.implementer_agents, cfg, event.limits,
+                                           reaudit=state.audit_rounds > 0)))
 
 
 def _on_changes_failed(state: ShipState, event: ChangesFailed, actions: list) -> None:
@@ -852,6 +855,8 @@ def _by_severity(findings: list) -> list:
 def _start_fix_round(state: ShipState, changed_files: list, findings: list) -> None:
     state.audit_rounds += 1
     findings = _by_severity(findings)
+    blocking = [f for f in findings if f.split(":", 1)[0].strip().upper() == "BLOCKING"]
+    state.previous_blocking = blocking or list(findings)  # unlabelled findings: verify them all
     for repo, repo_findings in _fix_assignments(state, list(changed_files), list(findings)):
         fix_id = "%s%d-%s" % (_FIX_PREFIX, state.audit_rounds, repo)
         state.tasks[fix_id] = TaskState(

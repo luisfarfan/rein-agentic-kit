@@ -1781,6 +1781,20 @@ class TestSpecs(unittest.TestCase):
         self.assertIn("  changed: /wt/b/y.py", spec)
         self.assertIn("absolute paths for files outside /wt/a", spec)
 
+    def test_audit_spec_is_scoped_only_for_a_re_audit(self):
+        first = ship.build_audit_spec(self.PLAN, {"/wt/a": ["x.py"]}, "R", "/wt/a", "demo")
+        self.assertNotIn("re-audit", first)
+        empty = ship.build_audit_spec(self.PLAN, {"/wt/a": ["x.py"]}, "R", "/wt/a", "demo", previous_blocking=[])
+        self.assertEqual(first, empty)
+        spec = ship.build_audit_spec(self.PLAN, {"/wt/a": ["x.py"]}, "R", "/wt/a", "demo",
+                                     previous_blocking=["BLOCKING: x.py leaks", "BLOCKING: y.py crashes"])
+        self.assertIn("This is a re-audit after a fix round. Verify ONLY that each finding below is fixed. "
+                      "Report as BLOCKING only (a) a finding below that is not fixed, or (b) a defect the fix "
+                      "commits introduced that breaks the change. Everything else is IMPORTANT or SUGGESTION "
+                      "\u2014 do not re-audit the whole change.", spec)
+        self.assertIn("BLOCKING: x.py leaks", spec)
+        self.assertIn("BLOCKING: y.py crashes", spec)
+
     def test_audit_spec_quotes_paths_with_spaces(self):
         spec = ship.build_audit_spec(self.PLAN, {"/w t/a": ["x.py"]}, "R", "/w t/a", "demo")
         self.assertIn("--root '/w t/a' --change demo", spec)
