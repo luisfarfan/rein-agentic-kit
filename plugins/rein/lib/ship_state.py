@@ -83,6 +83,8 @@ class ShipState:
     pending_changed_files: list = field(default_factory=list)
     # The BLOCKING findings the latest fix round was started for; the re-audit verifies only these.
     previous_blocking: list = field(default_factory=list)
+    # `{repo: HEAD sha}` of each worktree when the latest fix round started; the re-audit lists the commits since.
+    fix_round_base: dict = field(default_factory=dict)
 
 
 def state_path(repo_root: str, change: str) -> str:

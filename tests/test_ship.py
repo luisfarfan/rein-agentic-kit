@@ -478,6 +478,23 @@ class TestEndToEnd(ShipCase):
                          ["AUDIT1-proxima-admin", "AUDIT1-proxima-api"])
         self.assertEqual((state.phase, state.audit_result), ("done", "rejected"))
 
+    def test_the_re_audit_brief_lists_the_commits_of_the_fix_round(self):
+        saved = ship.head_sha, ship.fix_log
+        self.addCleanup(lambda: (setattr(ship, "head_sha", saved[0]), setattr(ship, "fix_log", saved[1])))
+        ship.head_sha = lambda path: "sha-" + os.path.basename(path)
+        ship.fix_log = lambda path, base: ["c0ffee fix in %s since %s" % (os.path.basename(path), base)]
+        fake, code = self.exhausted_run("reject")
+        state = ship_state.load(self.state_file)
+        self.assertEqual(sorted(state.fix_round_base), ["proxima-admin", "proxima-api"])
+        self.assertTrue(state.fix_round_base["proxima-api"].startswith("sha-"))
+        audits = [t["spec"] for t in fake.tasks.values() if "rein-audit" in t["spec"]]
+        self.assertEqual(len(audits), 2)
+        self.assertNotIn("re-audit", audits[0])
+        self.assertIn("Audit the change as a whole", audits[0])
+        self.assertIn("re-audit", audits[1])
+        self.assertNotIn("Audit the change as a whole", audits[1])
+        self.assertIn("c0ffee fix in", audits[1])
+
     def test_exhausted_audit_does_not_finish_before_the_owner_answers(self):
         fake = FakeOrca(self.root, autocomplete=True)
         fake.on_audit = self.approve_audit("CHANGES_REQUESTED", ["BLOCKING: broken"])
@@ -1810,6 +1827,16 @@ class TestSpecs(unittest.TestCase):
         block = ship.build_task_spec(self.task(), big).split("Decisions (binding):\n", 1)[1]
         block = block.split("\n\n", 1)[0].split("\nOut of scope:", 1)[0]
         self.assertLessEqual(len(block), 1500)
+
+    def test_re_audit_brief_is_not_a_whole_change_audit_and_names_the_fix_commits(self):
+        spec = ship.build_audit_spec(
+            self.PLAN, {"/wt/a": ["x.py"]}, "R", "/wt/a", "demo", previous_blocking=["BLOCKING: x"],
+            fix_commits={"/wt/a": {"base": "abc1234def", "log": ["f00d111 fix the leak"]}})
+        self.assertNotIn("Audit the change as a whole", spec)
+        self.assertIn("abc1234def", spec)
+        self.assertIn("f00d111 fix the leak", spec)
+        first = ship.build_audit_spec(self.PLAN, {"/wt/a": ["x.py"]}, "R", "/wt/a", "demo")
+        self.assertIn("Audit the change as a whole", first)
 
     def test_audit_spec_quotes_paths_with_spaces(self):
         spec = ship.build_audit_spec(self.PLAN, {"/w t/a": ["x.py"]}, "R", "/w t/a", "demo")

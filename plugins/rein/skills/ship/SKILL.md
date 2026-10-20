@@ -25,11 +25,12 @@ It applies to every task.
 3. Immediately run `rein watch <change> --root <root>` as a BACKGROUND command. Tell the owner
    to stay in this session: Rein's decision gate questions will appear here.
 4. When the watcher wakes, act on its first word:
-   - **QUESTION**: read the question in full; look briefly (read-only) at the relevant files,
-     diff or logs. Tell the owner in plain language what is asked, the options, and your
-     recommendation with one-line reasons. Wait for the owner, then run
-     `rein answer <change> "<text>" --gate <id> --root <root>` (option gates: exactly one listed
-     option; never invent an answer) and start the watcher again.
+   - **QUESTION** / **PENDING** (handle ALL listed gates, one by one): read each question in
+     full; look briefly (read-only) at the relevant files, diff or logs. Tell the owner in plain
+     language what is asked, the options, and your recommendation with one-line reasons. Wait for
+     the owner, then run `rein answer <change> "<text>" --gate <id> --root <root>` (option gates:
+     exactly one listed option; never invent an answer). On exit 2, re-show the options and ask
+     again. Start the watcher again only once every gate is answered or the owner defers.
    - **FINISHED**: summarise the tasks, the audit result and where the work is; suggest
      reviewing the diff and pushing to develop themselves. Do not restart the watcher.
    - **STOPPED**: tell the owner and offer to resume it in the Orca tab "rein ship <change>";

@@ -111,13 +111,19 @@ REAUDIT_SCOPE = (
 
 
 def build_audit_spec(plan: dict, changed: dict, reviewer_profile: str,
-                     audit_root: str = "", change: str = "", previous_blocking: list = ()) -> str:
+                     audit_root: str = "", change: str = "", previous_blocking: list = (),
+                     fix_commits: dict = None) -> str:
     """The auditor's brief. The verdict is recorded in the audit worktree, never the plan repo.
 
     With `previous_blocking` it is a re-audit: only those findings are verified."""
-    lines = [reviewer_profile.strip(), "", "Audit the change as a whole; you wrote none of it."]
+    lines = [reviewer_profile.strip(), ""]
     if previous_blocking:
-        lines += [REAUDIT_SCOPE] + ["- %s" % f for f in previous_blocking]
+        lines += ["You wrote none of the change.", REAUDIT_SCOPE] + ["- %s" % f for f in previous_blocking]
+        for path, info in (fix_commits or {}).items():
+            lines.append("Fix-round commits in %s (since %s):" % (path, info.get("base") or "?"))
+            lines += ["  %s" % c for c in (info.get("log") or [])[:30]] or ["  (none)"]
+    else:
+        lines.append("Audit the change as a whole; you wrote none of it.")
     if plan.get("why"):
         lines.append("Why: %s" % plan["why"])
     lines.append("Audit worktree (your working directory): %s" % audit_root)
@@ -134,6 +140,22 @@ def build_audit_spec(plan: dict, changed: dict, reviewer_profile: str,
               "Never push, merge, open a pull request or deploy.",
               "Never read or print .env* files or credentials."]
     return "\n".join(lines)
+
+
+def head_sha(path: str) -> str:
+    """HEAD of a worktree, or "" when git cannot say."""
+    try:
+        return _git_lines(path, "rev-parse", "HEAD")[0]
+    except (RuntimeError, IndexError, OSError):
+        return ""
+
+
+def fix_log(path: str, base: str) -> list:
+    """`git log --oneline <base>..HEAD` of a worktree; [] when git cannot say."""
+    try:
+        return _git_lines(path, "log", "--oneline", "%s..HEAD" % base)
+    except (RuntimeError, OSError):
+        return []
 
 
 def _git_lines(path: str, *args: str) -> list:
@@ -401,7 +423,10 @@ class _Driver:
             self.recover_exhausted_findings(event)
         queue = [event]
         while queue:
+            rounds = self.state.audit_rounds
             self.state, actions = sd.decide(self.state, queue.pop(0), self.cfg)
+            if self.state.audit_rounds > rounds and self.state.phase == "fixing":
+                self.state.fix_round_base = {r: head_sha(p) for r, p in self.state.worktree_paths.items()}
             self.save()
             for action in actions:
                 follow = self.execute(action)
@@ -602,8 +627,14 @@ class _Driver:
             return
         repo, first = next(iter(self.state.worktrees.items()))
         audit_root = self.state.worktree_paths.get(repo) or oc.worktree_path_of(first)
+        fix_commits = {}
+        if self.state.previous_blocking:
+            for r, p in self.state.worktree_paths.items():
+                base = self.state.fix_round_base.get(r)
+                if base:
+                    fix_commits[p] = {"base": base, "log": fix_log(p, base)}
         spec = build_audit_spec(self.plan, self.changed_by_wt, self.ctx["reviewer_profile"],
-                                audit_root, self.change, self.state.previous_blocking)
+                                audit_root, self.change, self.state.previous_blocking, fix_commits)
         task_id = oc.task_id_of(self.client.task_create(
             spec, "%s audit round %d" % (self.change, self.state.audit_rounds + 1), []))
         res = self.client.worker_start(task_id, worktree="id:%s" % first, agent=a.agent, model=a.model)
@@ -989,7 +1020,7 @@ def detach_ship(root: str, change: str, client: OrcaClient, *, override: tuple |
         print("ship: could not open the Orca tab (%s)" % exc)
         return 1
     print("terminal: %s" % (handle or "(no handle reported)"))
-    print("rein ship is running in the Orca tab '%s'; you can close this session." % title)
+    print("rein ship is running in the Orca tab '%s'; its questions come back to the session that runs `rein watch`." % title)
     return 0
 
 

@@ -103,6 +103,9 @@ class TestSkillBudget(unittest.TestCase):
         for marker in ("QUESTION", "FINISHED", "STOPPED"):
             self.assertIn(marker, text)
         self.assertIn('rein answer <change> "<text>" --gate <id> --root <root>', text)
+        self.assertIn("PENDING", text)
+        self.assertIn("ALL", text)
+        self.assertIn("exit 2", text)
         self.assertIn("--agent codex", text)  # the agent-flag mapping stays
         self.assertIn("rein ship <change>", text)
         for forbidden in ("pushes", "merges"):

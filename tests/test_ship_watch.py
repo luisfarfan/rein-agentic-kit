@@ -47,20 +47,44 @@ class WatchCase(UxCase):
 
 
 class TestWatchGates(WatchCase):
-    def test_a_new_gate_is_printed_once_and_remembered(self):
+    def test_a_new_gate_is_printed_with_its_full_question(self):
         self.write_state("demo", {"g1": "question"})
         fake = FakeOrca(gates=[_gate("g1", question="Which db? " + "z" * 3000, options=["a", "b"])])
         code, out = self.watch(fake)
         self.assertEqual(code, 0, out)
-        self.assertIn("QUESTION g1 (question) task T001", out)
+        self.assertIn("PENDING g1 (question) task T001", out)
         self.assertIn("question: Which db? " + "z" * 3000, out)
         self.assertIn("options: a, b", out)
-        self.assertEqual(self.seen(), ["g1"])
+
+    def test_two_gates_in_one_wake_are_both_printed(self):
+        self.write_state("demo", {"g1": "question", "g2": "timeout"})
+        fake = FakeOrca(gates=[_gate("g1"), _gate("g2", options=["retry", "skip"])])
+        code, out = self.watch(fake)
+        self.assertEqual(code, 0, out)
+        self.assertIn("g1 (question)", out)
+        self.assertIn("g2 (timeout)", out)
+
+    def test_a_restarted_watcher_reprints_an_unanswered_gate_as_pending(self):
+        self.write_state("demo", {"g1": "question"})
+        fake = FakeOrca(gates=[_gate("g1")])
+        for _ in range(2):
+            code, out = self.watch(fake)
+            self.assertEqual(code, 0, out)
+            self.assertIn("PENDING g1 (question)", out)
+        self.assertFalse(os.path.exists(os.path.join(self.root, ".rein", "ship", "demo.seen")))
+
+    def test_an_ignored_queued_answer_reappears_once_its_file_is_gone(self):
+        self.write_state("demo", {"g1": "question"})
+        ship_state.write_answer(self.root, "demo", "g1", "REST", 1.0)
+        fake = FakeOrca(gates=[_gate("g1")])
         code, out = self.watch(fake, once=True)
         self.assertEqual(code, 1, out)
-        self.assertNotIn("QUESTION", out)
+        ship_state.drop_answer(self.root, "demo", "g1")  # the driver dropped it without resolving
+        code, out = self.watch(fake, once=True)
+        self.assertEqual(code, 0, out)
+        self.assertIn("PENDING g1", out)
 
-    def test_waits_until_a_gate_appears(self):
+    def test_waits_for_a_gate_that_opens_later_and_prints_it_as_question(self):
         self.write_state("demo", {"g1": "question"})
         fake = FakeOrca(gates=[])
         polls = []
@@ -75,6 +99,7 @@ class TestWatchGates(WatchCase):
         self.assertEqual(code, 0, out)
         self.assertEqual(polls, [ship_watch.WATCH_POLL_SECONDS] * 2)
         self.assertIn("QUESTION g1", out)
+        self.assertNotIn("PENDING", out)
 
     def test_a_gate_with_a_queued_answer_is_ignored(self):
         self.write_state("demo", {"g1": "question"})
@@ -82,6 +107,7 @@ class TestWatchGates(WatchCase):
         code, out = self.watch(FakeOrca(gates=[_gate("g1")]), once=True)
         self.assertEqual(code, 1, out)
         self.assertNotIn("QUESTION", out)
+        self.assertNotIn("PENDING", out)
 
     def test_once_with_nothing_pending_exits_one(self):
         self.write_state("demo", {"g1": "question"})
@@ -132,6 +158,10 @@ class TestDriverDetection(unittest.TestCase):
     def test_other_change_does_not_match(self):
         ps = lambda: ["100 python3 /x/bin/rein ship other --root /w"]
         self.assertFalse(ship_watch.driver_alive("demo", ps=ps, own_pid=999))
+
+    def test_a_change_or_path_containing_watch_is_not_the_watcher(self):
+        ps = lambda: ["100 python3 /x/bin/rein ship watch-tower --root /w/watch"]
+        self.assertTrue(ship_watch.driver_alive("watch-tower", ps=ps, own_pid=999))
 
     def test_never_matches_the_watcher_itself(self):
         ps = lambda: ["200 python3 /x/bin/rein watch demo --root /w",
