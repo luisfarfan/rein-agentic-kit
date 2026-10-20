@@ -194,6 +194,13 @@ class StopWorker:
 
 
 @dataclass
+class AbandonWorker:
+    """Fence a worker whose exit Rein could not confirm, after the owner said they checked."""
+    task_id: str
+    dispatch_id: str
+
+
+@dataclass
 class Relay:
     message_id: str
     body: str
@@ -618,7 +625,11 @@ def _on_gate_resolved(state: ShipState, event: GateResolved, cfg: ShipConfig, ac
                 _end_audit(state, actions, "skipped")
     elif kind == "timeout":
         if task is not None:
-            if task.dispatch_id:  # the worker may still be running: stop it, and wait for proof
+            if task.dispatch_id and task.stop_unconfirmed == task.dispatch_id:
+                # The owner already checked this worker after an unconfirmed stop: fence it, never stop it again.
+                actions.append(AbandonWorker(task.id, task.dispatch_id))
+                _after_stop(state, task, resolution, actions)
+            elif task.dispatch_id:  # the worker may still be running: stop it, and wait for proof
                 actions.append(StopWorker(task.id, task.dispatch_id, resolution))
             else:
                 _after_stop(state, task, resolution, actions)
@@ -661,6 +672,7 @@ def _on_gate_resolved(state: ShipState, event: GateResolved, cfg: ShipConfig, ac
 
 
 def _after_stop(state: ShipState, task: TaskState, resolution: str, actions: list) -> None:
+    task.stop_unconfirmed = ""
     _release_held(task, actions)
     if resolution == "retry":
         task.status, task.attempts = "pending", 0
@@ -676,8 +688,14 @@ def _on_worker_stopped(state: ShipState, event: WorkerStopped, actions: list) ->
     if event.confirmed:
         _after_stop(state, task, event.resolution, actions)
         return
+    if task.dispatch_id and task.stop_unconfirmed == task.dispatch_id:
+        # The owner already answered the unconfirmed-stop gate: that answer is their confirmation.
+        actions.append(AbandonWorker(task.id, task.dispatch_id))
+        _after_stop(state, task, event.resolution, actions)
+        return
     # No proof the worker is gone: re-running or abandoning the task could leave
-    # two workers on one worktree. Keep the task and ask again.
+    # two workers on one worktree. Ask the owner once; their answer fences the worker.
+    task.stop_unconfirmed = task.dispatch_id
     _open(state, actions, task.id,
           "Rein could not confirm that the worker of %s has stopped (%s). Check Orca, then retry it or skip it."
           % (task.id, event.detail[:300] or "no detail"), ["retry", "skip"], "timeout")

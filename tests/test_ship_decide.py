@@ -472,6 +472,40 @@ class QuestionsAndGates(unittest.TestCase):
             self.assertEqual((t.status, t.dispatch_id), ("gated", "d1"))
             self.assertEqual(len(new.pending_gates), 1)
 
+    def test_the_first_unconfirmed_stop_flags_the_dispatch(self):
+        gated, _ = self.timed_out("retry")
+        new, _ = sd.decide(gated, sd.WorkerStopped("1", "retry", False, "x"), CFG)
+        self.assertEqual(new.tasks["1"].stop_unconfirmed, "d1")
+
+    def test_an_owner_answer_after_an_unconfirmed_stop_abandons_instead_of_stopping_again(self):
+        for resolution in ("retry", "skip"):
+            gated, _ = self.timed_out(resolution)
+            flagged, _ = sd.decide(gated, sd.WorkerStopped("1", resolution, False, "x"), CFG)
+            self.assertEqual(flagged.tasks["1"].stop_unconfirmed, "d1")
+            flagged.gates["g"] = {"task_id": "1", "kind": "timeout", "message_id": ""}
+            flagged.pending_gates = []
+            new, actions = sd.decide(flagged, sd.GateResolved("g", resolution), CFG)
+            self.assertEqual(actions[0], sd.AbandonWorker("1", "d1"), resolution)
+            self.assertNotIn(sd.StopWorker("1", "d1", resolution), actions)
+            t = new.tasks["1"]
+            self.assertEqual(t.stop_unconfirmed, "", "cleared for the next attempt")
+            if resolution == "retry":
+                self.assertEqual((t.status, t.attempts, t.dispatch_id), ("pending", 0, ""))
+            else:
+                self.assertEqual(t.status, "failed")
+
+    def test_a_second_unconfirmed_stop_of_the_same_dispatch_abandons(self):
+        gated, _ = self.timed_out("retry")
+        gated.tasks["1"].stop_unconfirmed = "d1"
+        new, actions = sd.decide(gated, sd.WorkerStopped("1", "retry", False, "x"), CFG)
+        self.assertEqual(actions, [sd.AbandonWorker("1", "d1"), sd.Release("d1")])
+        self.assertEqual((new.tasks["1"].status, new.tasks["1"].stop_unconfirmed), ("pending", ""))
+
+    def test_a_flag_for_an_older_dispatch_does_not_skip_the_stop(self):
+        state = ship(task("1", status="gated", dispatch_id="d2", attempts=1, stop_unconfirmed="d1"))
+        _, actions = self.resolve(state, "timeout", "1", "retry")
+        self.assertEqual(actions, [sd.StopWorker("1", "d2", "retry")])
+
     def test_a_timeout_gate_without_a_worker_needs_no_stop(self):
         state = ship(task("1", status="gated", dispatch_id=""))
         new, actions = self.resolve(state, "timeout", "1", "retry")

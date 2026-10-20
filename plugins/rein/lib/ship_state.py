@@ -41,6 +41,8 @@ class TaskState:
     dispatches: int = 0
     # The Orca task ids this task's Orca task was created depending on.
     orca_deps: list = field(default_factory=list)
+    # The dispatch id whose stop Orca could not confirm; the owner's answer to that gate fences it.
+    stop_unconfirmed: str = ""
 
 
 @dataclass

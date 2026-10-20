@@ -150,6 +150,10 @@ class OrcaClient:
         """Ask Orca to stop the worker. Not proof that it exited: confirm with `worker_show`."""
         return self._call("orchestration", "worker-stop", "--dispatch", dispatch_id)
 
+    def worker_abandon(self, dispatch_id: str) -> dict:
+        """Fence a worker whose exit cannot be confirmed (the owner checked it is gone)."""
+        return self._call("orchestration", "worker-abandon", "--dispatch", dispatch_id)
+
     # -- inbox ------------------------------------------------------------
     def check(
         self,

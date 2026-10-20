@@ -331,6 +331,13 @@ class _Driver:
             self.release(a.dispatch_id)
         elif isinstance(a, sd.StopWorker):
             return self.stop_worker(a)
+        elif isinstance(a, sd.AbandonWorker):
+            try:
+                self.client.worker_abandon(a.dispatch_id)
+            except OrcaError as exc:  # the owner already confirmed it is gone
+                self.say("%s: could not abandon worker %s: %s" % (a.task_id, a.dispatch_id, exc))
+            else:
+                self.say("%s: worker %s abandoned (owner confirmed it is gone)" % (a.task_id, a.dispatch_id))
         elif isinstance(a, sd.OpenGate):
             pass  # decide queued it in state.pending_gates; open_pending() creates it in Orca
         elif isinstance(a, sd.Relay):

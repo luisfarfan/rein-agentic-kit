@@ -75,6 +75,7 @@ class ArgvTests(unittest.TestCase):
         c.worker_list("run_1")
         c.worker_release("d1")
         c.worker_stop("d1")
+        c.worker_abandon("d1")
         c.gate_list()
         self.assertEqual(fake.calls, [
             ["ORCA", "status", "--json"],
@@ -87,6 +88,7 @@ class ArgvTests(unittest.TestCase):
             ["ORCA", "orchestration", "worker-list", "--run", "run_1", "--json"],
             ["ORCA", "orchestration", "worker-release", "--dispatch", "d1", "--json"],
             ["ORCA", "orchestration", "worker-stop", "--dispatch", "d1", "--json"],
+            ["ORCA", "orchestration", "worker-abandon", "--dispatch", "d1", "--json"],
             ["ORCA", "orchestration", "gate-list", "--json"],
         ])
 

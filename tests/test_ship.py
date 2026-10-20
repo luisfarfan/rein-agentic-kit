@@ -99,6 +99,8 @@ class FakeOrca:
         self.reply_error = None
         self.resolve_error = None
         self.fail_releases = False
+        self.abandoned = []
+        self.abandon_error = None
         self.n = 0
 
     # runner protocol
@@ -170,6 +172,11 @@ class FakeOrca:
             if self.fail_releases:
                 raise FailEnvelope({"ok": False, "error": {"code": "dispatch_gone", "message": "already released"}})
             return {"state": "released"}
+        if verb == "worker-abandon":
+            self.abandoned.append(_flag(a, "--dispatch"))
+            if self.abandon_error is not None:
+                raise self.abandon_error
+            return {"state": "abandoned"}
         if verb == "worker-stop":
             self.stopped.append(_flag(a, "--dispatch"))
             return {"state": "stopping"}
@@ -1333,6 +1340,50 @@ class TestTimeouts(ShipCase):
         state = ship_state.load(self.state_file)
         self.assertEqual((state.tasks["T001"].status, state.tasks["T001"].dispatch_id), ("gated", "d1"))
         self.assertEqual([g["kind"] for g in state.gates.values()], ["timeout"])
+
+    def test_an_owner_retry_after_an_unconfirmed_stop_abandons_and_redispatches(self):
+        self.timed_out_state()
+        fake = self.fake("retry", "dispatched")
+        gates = scripted_gate()
+        with self.assertRaises(Drained):
+            self.run_ship(fake, gates)
+        self.assertEqual(fake.stopped, ["d1"])
+        state = ship_state.load(self.state_file)
+        self.assertEqual(state.tasks["T001"].stop_unconfirmed, "d1")
+        # The owner answers the second gate: no second worker-stop, an abandon, then a new dispatch.
+        state.gates = {"gate_t": {"task_id": "T001", "kind": "timeout", "message_id": "", "audit": ""}}
+        state.pending_gates = []
+        ship_state.save(state, self.state_file)
+        fake2 = self.fake("retry", "dispatched")
+        with self.assertRaises(Drained):
+            self.run_ship(fake2, scripted_gate())
+        self.assertEqual(fake2.stopped, [], "no second worker-stop for the same dispatch")
+        self.assertEqual(fake2.abandoned, ["d1"])
+        self.assertIn("T001: worker d1 abandoned (owner confirmed it is gone)", self.out)
+        self.assertTrue(fake2.starts())
+
+    def test_a_failing_abandon_is_logged_and_the_run_goes_on(self):
+        self.timed_out_state()
+        state = ship_state.load(self.state_file)
+        state.tasks["T001"].stop_unconfirmed = "d1"
+        ship_state.save(state, self.state_file)
+        fake = self.fake("retry", "dispatched")
+        fake.abandon_error = FailEnvelope({"ok": False, "error": {"code": "dispatch_inactive", "message": "gone"}})
+        with self.assertRaises(Drained):
+            self.run_ship(fake, scripted_gate())
+        self.assertEqual((fake.abandoned, fake.stopped), (["d1"], []))
+        self.assertIn("gone", self.out)
+        self.assertTrue(fake.starts())
+
+    def test_a_state_saved_before_the_field_existed_still_loads(self):
+        self.timed_out_state()
+        with open(self.state_file, encoding="utf-8") as fh:
+            data = json.load(fh)
+        for t in data["tasks"].values():
+            t.pop("stop_unconfirmed", None)
+        with open(self.state_file, "w", encoding="utf-8") as fh:
+            json.dump(data, fh)
+        self.assertEqual(ship_state.load(self.state_file).tasks["T001"].stop_unconfirmed, "")
 
     def test_skip_releases_only_after_confirmed_exit(self):
         self.timed_out_state()
