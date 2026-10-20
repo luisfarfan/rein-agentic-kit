@@ -16,6 +16,7 @@ the next event.
 from __future__ import annotations
 
 import copy
+import re
 from dataclasses import dataclass, field
 from fnmatch import fnmatch
 
@@ -736,6 +737,42 @@ def _fix_repos(state: ShipState, changed_files: list) -> list:
     return touched or repos
 
 
+def _repo_relative(state: ShipState, repo: str, path: str) -> str:
+    root = state.worktree_paths.get(repo)
+    prefixes = [repo.rstrip("/") + "/"]
+    if root:
+        prefixes.append(root.rstrip("/") + "/")
+    for p in prefixes:
+        if path.startswith(p):
+            return path[len(p):]
+    return ""
+
+
+def _names_file(finding: str, rel: str) -> bool:
+    """True when the finding mentions the repo-relative path or a delimited basename."""
+    if not rel:
+        return False
+    if rel in finding:
+        return True
+    base = rel.rsplit("/", 1)[-1]
+    return bool(base) and re.search(r"(?:^|[\s\"'`(),:])%s(?:$|[\s\"'`(),:])" % re.escape(base), finding) is not None
+
+
+def _fix_assignments(state: ShipState, changed_files: list, findings: list) -> list:
+    """[(repo, findings)] for the fix tasks: each repo gets the findings naming its files
+    plus the unassigned ones, and only repos with an assigned finding get a task. When no
+    finding names any file, every touched repo gets every finding."""
+    repos = _fix_repos(state, changed_files)
+    rels = {r: [x for x in (_repo_relative(state, r, f) for f in changed_files) if x] for r in repos}
+    assigned = {r: [f for f in findings if any(_names_file(f, x) for x in rels[r])] for r in repos}
+    named = {f for fs in assigned.values() for f in fs}
+    if not named:
+        return [(r, list(findings)) for r in repos]
+    unassigned = [f for f in findings if f not in named]
+    return [(r, [f for f in findings if f in assigned[r] or f in unassigned])
+            for r in repos if assigned[r]]
+
+
 def _on_changes_computed(state: ShipState, event: ChangesComputed, cfg: ShipConfig, actions: list) -> None:
     if state.phase != "auditing":
         return
@@ -791,11 +828,10 @@ def _on_audit_verdict(state: ShipState, event: AuditVerdict, cfg: ShipConfig, ac
               ["accept", "reject"], "audit_exhausted")
         return
     state.audit_rounds += 1
-    findings = "\n".join(event.findings)[:_FAILURE_CAP]
-    for repo in _fix_repos(state, event.changed_files):
+    for repo, repo_findings in _fix_assignments(state, event.changed_files, list(event.findings)):
         fix_id = "%s%d-%s" % (_FIX_PREFIX, state.audit_rounds, repo)
         state.tasks[fix_id] = TaskState(
             id=fix_id, repo=repo, deps=[], human_review=False, verification="",
-            type="implementation", last_failure=findings,
+            type="implementation", last_failure="\n".join(repo_findings)[:_FAILURE_CAP],
         )
     state.phase = "fixing"

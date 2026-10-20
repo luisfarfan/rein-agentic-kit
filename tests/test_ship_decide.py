@@ -865,6 +865,39 @@ class Audit(unittest.TestCase):
         new, _ = sd.decide(self.audited(), verdict, CFG)
         self.assertEqual(set(new.tasks) - {"1", "2"}, {"AUDIT1-a", "AUDIT1-b"})
 
+    def _per_repo(self, files, findings):
+        verdict = sd.AuditVerdict("CHANGES_REQUESTED", len(findings), files, findings)
+        new, _ = sd.decide(self.audited(), verdict, CFG)
+        return {t: new.tasks[t].last_failure for t in new.tasks if t.startswith("AUDIT")}
+
+    def test_findings_naming_only_one_repo_make_only_that_fix_task(self):
+        out = self._per_repo(["a/src/x.py", "b/src/y.py"],
+                             ["b/src/y.py:3 bug", "y.py missing guard"])
+        self.assertEqual(out, {"AUDIT1-b": "b/src/y.py:3 bug\ny.py missing guard"})
+
+    def test_mixed_findings_each_repo_gets_its_own_plus_unassigned(self):
+        out = self._per_repo(["a/src/x.py", "b/src/y.py"],
+                             ["x.py: one", "y.py: two", "general note"])
+        self.assertEqual(out, {"AUDIT1-a": "x.py: one\ngeneral note",
+                               "AUDIT1-b": "y.py: two\ngeneral note"})
+
+    def test_findings_naming_no_file_keep_the_old_behaviour(self):
+        out = self._per_repo(["a/src/x.py", "b/src/y.py"], ["one", "two"])
+        self.assertEqual(out, {"AUDIT1-a": "one\ntwo", "AUDIT1-b": "one\ntwo"})
+
+    def test_basename_must_be_delimited(self):
+        files = ["a/src/utils.ts", "b/src/command-search.utils.ts"]
+        # `utils.ts` alone names a's file, not b's longer filename that merely contains it
+        self.assertEqual(set(self._per_repo(files, ["utils.ts is wrong"])), {"AUDIT1-a"})
+        # and the other direction: b's full name matches b; a's `utils.ts` is inside it but undelimited
+        self.assertEqual(set(self._per_repo(files, ["see (command-search.utils.ts)"])), {"AUDIT1-b"})
+        for text in ("`utils.ts`", '"utils.ts"', "utils.ts, x", "in utils.ts:12"):
+            self.assertEqual(set(self._per_repo(files, [text])), {"AUDIT1-a"}, text)
+
+    def test_repo_relative_path_match(self):
+        out = self._per_repo(["a/src/x.py", "b/src/y.py"], ["problem in src/y.py"])
+        self.assertEqual(set(out), {"AUDIT1-b"})
+
     def test_last_failure_is_capped(self):
         verdict = sd.AuditVerdict("CHANGES_REQUESTED", 1, ["a/x"], ["y" * 5000])
         new, _ = sd.decide(self.audited(), verdict, CFG)
