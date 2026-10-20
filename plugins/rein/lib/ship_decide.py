@@ -755,7 +755,7 @@ def _names_file(finding: str, rel: str) -> bool:
     if rel in finding:
         return True
     base = rel.rsplit("/", 1)[-1]
-    return bool(base) and re.search(r"(?:^|[\s\"'`(),:])%s(?:$|[\s\"'`(),:])" % re.escape(base), finding) is not None
+    return bool(base) and re.search(r"(?<![\w.\-])%s(?![\w\-])(?!\.\w)" % re.escape(base), finding) is not None
 
 
 def _fix_assignments(state: ShipState, changed_files: list, findings: list) -> list:

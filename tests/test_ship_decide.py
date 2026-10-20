@@ -894,6 +894,14 @@ class Audit(unittest.TestCase):
         for text in ("`utils.ts`", '"utils.ts"', "utils.ts, x", "in utils.ts:12"):
             self.assertEqual(set(self._per_repo(files, [text])), {"AUDIT1-a"}, text)
 
+    def test_basename_matches_through_punctuation(self):
+        files = ["a/src/search.service.ts", "b/src/y.py"]
+        for text in ("fix in search.service.ts.", "**search.service.ts**",
+                     "[search.service.ts](x)", "search.service.ts; also"):
+            self.assertEqual(set(self._per_repo(files, [text])), {"AUDIT1-a"}, text)
+        for text in ("search.service.ts.bak", "my-search.service.ts", "xsearch.service.ts"):
+            self.assertEqual(set(self._per_repo(files, [text, "y.py"])), {"AUDIT1-b"}, text)
+
     def test_repo_relative_path_match(self):
         out = self._per_repo(["a/src/x.py", "b/src/y.py"], ["problem in src/y.py"])
         self.assertEqual(set(out), {"AUDIT1-b"})
