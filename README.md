@@ -157,10 +157,11 @@ rein watch <change> [--root <plan repo>] [--once] [--skip <id,id>]
                  # session. Nothing is hidden across restarts.
                  # --skip hides deferred gate ids (FINISHED/STOPPED/new gates still wake it).
                  # --once polls once, exit 1 if nothing pending · 2 usage
-rein done <change> [--root <plan repo>] [--dry-run]
+rein done <change> [--root <plan repo>] [--dry-run] [--yes]
                  # close a finished change: remove its Orca worktrees, close the "rein ship" tab,
                  # archive the openspec plan (local commit, no push), archive the ship state.
-                 # Removes NOTHING if any worktree is dirty or has commits not in origin/<base>.
+                 # Removes NOTHING if any worktree is dirty, a main checkout, or has commits (HEAD or its
+                 # branch) not in origin/<base>. Gitignored files that would be lost need --yes.
                  # Exit: 0 closed · 1 blockers · 2 usage · 126 Orca error
 rein quick "<sentence>" [--repo <name>] [--base <branch>] [--here [--dirty-ok]] [--agent <id> [--model <m>]] [--linear <id>]
                  # hand a small change to a cheap agent chosen by quota, in a tab you talk to.
@@ -170,7 +171,7 @@ rein quick "<sentence>" [--repo <name>] [--base <branch>] [--here [--dirty-ok]] 
 rein quick done  # run by that agent on "listo": lint/typecheck plus the tests related to the
                  # changed files; an audit only if a risky path changed. Never commits.
                  # Exit: 0 green · 1 red · 2 no quick task here · 126 setup (not a verdict)
-rein quick close [<workspace path or quick-<slug> name>] [--dry-run]
+rein quick close [<workspace path or quick-<slug> name>] [--dry-run] [--yes]
                  # remove the worktrees of finished quick tasks (all when no argument) and their
                  # records, only if clean and integrated into origin/<base>; blocked ones are kept
                  # and listed. A --here task only loses its record. Exit: 0 · 1 blockers · 126 Orca

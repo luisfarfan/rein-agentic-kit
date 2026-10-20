@@ -33,8 +33,8 @@ It applies to every task.
      `--skip <ids>` and say they can answer later with "¿qué me pregunta rein?".
    - **FINISHED**: summarise tasks, audit result and where the work is. Then offer: push to
      develop (only with the owner's yes: api first, then admin, respecting the hooks), and after
-     that close it with `rein done <change> --root <root>` (add `--dry-run` to preview). On
-     blockers (dirty or unintegrated worktrees) show them and stop; it removes nothing then.
+     that close it with `rein done <change> --root <root>` (`--dry-run` previews). On blockers
+     show them and stop. If it WARNs about gitignored files (.env ...), show the list and add `--yes` only after an explicit yes.
      Do not restart the watcher.
    - **STOPPED**: tell the owner and offer to resume it in the Orca tab "rein ship <change>";
      restart the watcher after.

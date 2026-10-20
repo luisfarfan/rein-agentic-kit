@@ -94,9 +94,11 @@ class Env(unittest.TestCase):
         return "\n".join(self.out)
 
     def worktree(self, name="wt"):
+        """A LINKED worktree on branch `feature`, like Orca makes."""
+        main = os.path.join(self.tmp, name + "-main")
+        self.clone(self.origin, main)
         path = os.path.join(self.tmp, name)
-        self.clone(self.origin, path)
-        git(path, "checkout", "-q", "-b", "feature", "origin/develop")
+        git(main, "worktree", "add", "-q", "-b", "feature", path, "origin/develop")
         return path
 
     def plan_repo(self, openspec=True):
@@ -123,10 +125,10 @@ class Env(unittest.TestCase):
         os.makedirs(ship_state.answers_dir(root, CHANGE), exist_ok=True)
         return sp
 
-    def run_done(self, root, orca=None, dry=False, alive=False):
+    def run_done(self, root, orca=None, dry=False, alive=False, yes=False):
         orca = orca or FakeOrca(repos=[{"displayName": "api", "worktreeBaseRef": "origin/develop"}])
         client = OrcaClient(executable="ORCA", runner=orca)
-        code = ship_done.run_done(root, CHANGE, client, dry_run=dry, driver_alive=lambda c: alive,
+        code = ship_done.run_done(root, CHANGE, client, dry_run=dry, yes=yes, driver_alive=lambda c: alive,
                                   today="2026-10-20", say=self.say)
         return code, orca
 
@@ -292,7 +294,9 @@ class DoneTests(Env):
         root = self.plan_repo(openspec=False)
         subprocess.run(["git", "-C", self.origin, "branch", "-m", "develop", "main"], check=True)
         path = os.path.join(self.tmp, "wtm")
-        self.clone(self.origin, path)
+        main = os.path.join(self.tmp, "wtm-main")
+        self.clone(self.origin, main)
+        git(main, "worktree", "add", "-q", "-b", "feature", path, "origin/main")
         self.state(root, {"api": path})
         orca = FakeOrca(repos=[])  # no worktreeBaseRef known
         code, _ = self.run_done(root, orca)
@@ -311,10 +315,10 @@ class QuickCloseTests(Env):
         # a linked worktree has a `.git` FILE; emulate that so "not --here" is recognised
         return path
 
-    def close(self, arg="", cwd=None, orca=None, dry=False):
+    def close(self, arg="", cwd=None, orca=None, dry=False, yes=False):
         orca = orca or FakeOrca()
         client = OrcaClient(executable="ORCA", runner=orca)
-        code = ship_done.run_quick_close(arg, client, cwd=cwd or self.tmp, dry_run=dry, say=self.say)
+        code = ship_done.run_quick_close(arg, client, cwd=cwd or self.tmp, dry_run=dry, yes=yes, say=self.say)
         return code, orca
 
     def linked(self, name):
@@ -428,6 +432,236 @@ class QuickCloseTests(Env):
     def test_unknown_argument(self):
         code, _ = self.close(arg="nope")
         self.assertEqual(code, 1)
+
+
+class DoneSafetyTests(Env):
+    def rows(self, **by_path):
+        return [dict(path=p, **extra) for p, extra in by_path.items()]
+
+    def orca_for(self, *rows):
+        return FakeOrca(repos=[{"displayName": "api", "worktreeBaseRef": "origin/develop"}],
+                        worktrees=list(rows))
+
+    def test_detached_head_without_known_branch_blocks(self):
+        root = self.plan_repo()
+        wt = self.worktree()
+        git(wt, "checkout", "-q", "--detach")
+        self.state(root, {"api": wt})
+        code, orca = self.run_done(root)
+        self.assertEqual(code, 1)
+        self.assertEqual(orca.rm_paths(), [])
+        self.assertIn("branch", self.text())
+
+    def test_branch_orca_will_delete_is_checked_too(self):
+        root = self.plan_repo()
+        wt = self.worktree()
+        commit_file(wt, "new.txt")
+        git(wt, "checkout", "-q", "--detach", "origin/develop")  # HEAD looks integrated
+        self.state(root, {"api": wt})
+        code, orca = self.run_done(root, self.orca_for({"path": wt, "branch": "refs/heads/feature"}))
+        self.assertEqual(code, 1)
+        self.assertEqual(orca.rm_paths(), [])
+        self.assertIn("not integrated", self.text())
+
+    def test_main_worktree_flag_blocks(self):
+        root = self.plan_repo()
+        wt = self.worktree()
+        self.state(root, {"api": wt})
+        code, orca = self.run_done(root, self.orca_for({"path": wt, "branch": "feature", "isMainWorktree": True}))
+        self.assertEqual(code, 1)
+        self.assertEqual(orca.rm_paths(), [])
+        self.assertIn("main", self.text())
+
+    def test_main_checkout_detected_by_git_when_orca_is_silent(self):
+        root = self.plan_repo()
+        main = os.path.join(self.tmp, "plainclone")
+        self.clone(self.origin, main)
+        self.state(root, {"api": main})
+        code, orca = self.run_done(root)
+        self.assertEqual(code, 1)
+        self.assertEqual(orca.rm_paths(), [])
+
+    def test_untracked_files_block_even_if_status_hides_them(self):
+        root = self.plan_repo()
+        wt = self.worktree()
+        git(wt, "config", "status.showUntrackedFiles", "no")
+        os.makedirs(os.path.join(wt, "sub"))
+        with open(os.path.join(wt, "sub", "mine.txt"), "w") as fh:
+            fh.write("x")
+        self.state(root, {"api": wt})
+        code, orca = self.run_done(root)
+        self.assertEqual(code, 1)
+        self.assertEqual(orca.rm_paths(), [])
+        self.assertIn("uncommitted", self.text())
+
+    def ignored(self, wt, name=".env"):
+        excl = git(wt, "rev-parse", "--git-path", "info/exclude").strip()
+        excl = excl if os.path.isabs(excl) else os.path.join(wt, excl)
+        os.makedirs(os.path.dirname(excl), exist_ok=True)
+        with open(excl, "a") as fh:
+            fh.write(".env\nnode_modules/\n")
+        with open(os.path.join(wt, name), "w") as fh:
+            fh.write("SECRET=1")
+
+    def test_ignored_file_needs_yes(self):
+        root = self.plan_repo()
+        wt = self.worktree()
+        self.ignored(wt)
+        os.makedirs(os.path.join(wt, "node_modules"))
+        with open(os.path.join(wt, "node_modules", "x.js"), "w") as fh:
+            fh.write("1")
+        self.state(root, {"api": wt})
+        code, orca = self.run_done(root)
+        self.assertEqual(code, 1)
+        self.assertEqual(orca.rm_paths(), [])
+        self.assertIn("WARNING", self.text())
+        self.assertIn(".env", self.text())
+        self.assertNotIn("node_modules", self.text())
+        self.assertIn("--yes", self.text())
+        self.out.clear()
+        code, orca = self.run_done(root, yes=True)
+        self.assertEqual(code, 0, self.text())
+        self.assertEqual(orca.rm_paths(), [wt])
+
+    def test_node_modules_alone_needs_no_yes(self):
+        root = self.plan_repo()
+        wt = self.worktree()
+        self.ignored(wt, name="keep.txt")  # also ignores .env, which does not exist here
+        os.makedirs(os.path.join(wt, "node_modules"))
+        with open(os.path.join(wt, "node_modules", "x.js"), "w") as fh:
+            fh.write("1")
+        os.unlink(os.path.join(wt, "keep.txt"))
+        self.state(root, {"api": wt})
+        code, _ = self.run_done(root)
+        self.assertEqual(code, 0, self.text())
+
+    def test_failed_rm_keeps_state_and_mailbox(self):
+        root = self.plan_repo()
+        a = self.worktree("a")
+        sp = self.state(root, {"api": a})
+        orca = FakeOrca(repos=[{"displayName": "api", "worktreeBaseRef": "origin/develop"}], fail_rm=(a,))
+        code, orca = self.run_done(root, orca)
+        self.assertEqual(code, 126)
+        self.assertTrue(os.path.isfile(sp))
+        self.assertTrue(os.path.isdir(ship_state.answers_dir(root, CHANGE)))
+        self.assertTrue(os.path.isdir(os.path.join(root, "openspec", "changes", CHANGE)))
+        self.assertEqual(orca.closed(), [])
+
+    def test_retry_after_everything_is_gone_is_idempotent(self):
+        root = self.plan_repo()
+        a = self.worktree("a")
+        self.state(root, {"api": a})
+        code, _ = self.run_done(root)
+        self.assertEqual(code, 0, self.text())
+        # a second run: worktree gone, plan already archived, state restored by a retry
+        shutil.rmtree(a)
+        self.state(root, {"api": a})
+        self.out.clear()
+        code, orca = self.run_done(root)
+        self.assertEqual(code, 0, self.text())
+        self.assertEqual(orca.rm_paths(), [])
+        self.assertIn("already", self.text())
+
+    def test_plan_repo_detached_blocks_before_removing(self):
+        root = self.plan_repo()
+        wt = self.worktree()
+        git(root, "checkout", "-q", "--detach")
+        self.state(root, {"api": wt})
+        code, orca = self.run_done(root)
+        self.assertEqual(code, 1)
+        self.assertEqual(orca.rm_paths(), [])
+        self.assertIn("branch", self.text())
+
+    def test_untracked_plan_blocks_before_removing(self):
+        root = self.plan_repo(openspec=False)
+        os.makedirs(os.path.join(root, "openspec", "changes", CHANGE))
+        with open(os.path.join(root, "openspec", "changes", CHANGE, "proposal.md"), "w") as fh:
+            fh.write("p")
+        wt = self.worktree()
+        self.state(root, {"api": wt})
+        code, orca = self.run_done(root)
+        self.assertEqual(code, 1)
+        self.assertEqual(orca.rm_paths(), [])
+        self.assertIn("tracked", self.text())
+
+    def test_rejected_commit_restores_the_move(self):
+        root = self.plan_repo()
+        wt = self.worktree()
+        hook = os.path.join(root, ".git", "hooks", "pre-commit")
+        with open(hook, "w") as fh:
+            fh.write("#!/bin/sh\necho rejected >&2\nexit 1\n")
+        os.chmod(hook, 0o755)
+        sp = self.state(root, {"api": wt})
+        code, _ = self.run_done(root)
+        self.assertEqual(code, 126)
+        self.assertTrue(os.path.isfile(os.path.join(root, "openspec", "changes", CHANGE, "proposal.md")))
+        self.assertFalse(os.path.exists(os.path.join(root, "openspec", "changes", "archive")))
+        self.assertEqual(git(root, "status", "--porcelain").strip(), "")
+        self.assertTrue(os.path.isfile(sp))
+
+
+class QuickCloseSafetyTests(QuickCloseTests):
+    def test_non_quick_linked_worktree_only_loses_its_record(self):
+        main = os.path.join(self.tmp, "m")
+        self.clone(self.origin, main)
+        path = os.path.join(self.tmp, "other")
+        git(main, "worktree", "add", "-q", "-b", "feature-x", path, "origin/develop")
+        self.record(path)
+        code, orca = self.close(arg=path)
+        self.assertEqual(code, 0, self.text())
+        self.assertEqual(orca.rm_paths(), [])
+        self.assertFalse(os.path.exists(os.path.join(path, ".rein", "quick.json")))
+        self.assertTrue(os.path.isdir(path))
+
+    def test_orca_main_flag_never_removed(self):
+        path, _ = self.linked("fix")
+        self.record(path)
+        orca = FakeOrca(worktrees=[{"path": path, "branch": "quick-fix", "isMainWorktree": True}])
+        code, orca = self.close(arg=path, orca=orca)
+        self.assertEqual(code, 0, self.text())
+        self.assertEqual(orca.rm_paths(), [])
+
+    def test_branch_orca_deletes_is_checked(self):
+        path, _ = self.linked("fix")
+        self.record(path)
+        commit_file(path, "new.txt")
+        git(path, "checkout", "-q", "--detach", "origin/develop")
+        orca = FakeOrca(worktrees=[{"path": path, "branch": "quick-fix"}])
+        code, orca = self.close(arg=path, orca=orca)
+        self.assertEqual(code, 1)
+        self.assertEqual(orca.rm_paths(), [])
+
+    def test_detached_without_branch_blocks(self):
+        path, _ = self.linked("fix")
+        self.record(path)
+        git(path, "checkout", "-q", "--detach")
+        code, orca = self.close(arg=path)
+        self.assertEqual(code, 1)
+        self.assertEqual(orca.rm_paths(), [])
+
+    def test_ignored_env_needs_yes(self):
+        path, _ = self.linked("fix")
+        self.record(path)
+        excl = git(path, "rev-parse", "--git-path", "info/exclude").strip()
+        excl = excl if os.path.isabs(excl) else os.path.join(path, excl)
+        os.makedirs(os.path.dirname(excl), exist_ok=True)
+        with open(excl, "a") as fh:
+            fh.write(".env\n")
+        with open(os.path.join(path, ".env"), "w") as fh:
+            fh.write("S=1")
+        code, orca = self.close(arg=path)
+        self.assertEqual(code, 1)
+        self.assertEqual(orca.rm_paths(), [])
+        self.assertIn("--yes", self.text())
+        code, orca = self.close(arg=path, yes=True)
+        self.assertEqual(code, 0, self.text())
+
+    def test_close_word_in_a_sentence_is_not_the_subcommand(self):
+        rein = os.path.join(os.path.dirname(HERE), "plugins", "rein", "bin", "rein")
+        proc = subprocess.run([sys.executable, rein, "quick", "close", "the", "modal"],
+                              capture_output=True, text=True, cwd=self.tmp)
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn('rein quick "<sentence>"', proc.stdout)
 
 
 if __name__ == "__main__":

@@ -44,28 +44,93 @@ def _base_name(repo: Optional[dict], git: Callable[..., tuple], path: str) -> st
     return DEFAULT_BASE
 
 
+IGNORED_OK = ("node_modules", ".rein", "dist", "build", ".angular", "__pycache__", ".venv", "coverage")
+
+
+def _short_branch(name: str) -> str:
+    name = (name or "").strip()
+    return name[len("refs/heads/"):] if name.startswith("refs/heads/") else name
+
+
+def orca_rows(client: OrcaClient) -> dict:
+    """`{realpath: row}` of `orca worktree list`; empty when Orca cannot say."""
+    try:
+        listed = client.worktree_list().get("worktrees")
+    except OrcaError:
+        return {}
+    return {os.path.realpath(str(w["path"])): w for w in listed or [] if isinstance(w, dict) and w.get("path")}
+
+
+def is_main_worktree(path: str, row: Optional[dict], git: Callable[..., tuple]) -> bool:
+    """Orca's `isMainWorktree`, or git's own answer: a main checkout's git dir IS the common dir."""
+    if (row or {}).get("isMainWorktree") is True:
+        return True
+    code1, gd = git(path, "rev-parse", "--git-dir")
+    code2, cd = git(path, "rev-parse", "--git-common-dir")
+    if code1 != 0 or code2 != 0:
+        return True  # cannot tell: never treat it as removable
+    return os.path.realpath(os.path.join(path, gd.strip())) == os.path.realpath(os.path.join(path, cd.strip()))
+
+
+def branch_of(path: str, row: Optional[dict], git: Callable[..., tuple]) -> str:
+    named = _short_branch(str((row or {}).get("branch") or ""))
+    if named:
+        return named
+    code, out = git(path, "symbolic-ref", "--quiet", "--short", "HEAD")
+    return out.strip() if code == 0 else ""
+
+
+def _ignored_files(path: str, git: Callable[..., tuple]) -> list:
+    code, out = git(path, "status", "--porcelain", "--ignored", "--untracked-files=all")
+    found = []
+    for line in out.splitlines() if code == 0 else []:
+        if not line.startswith("!! "):
+            continue
+        name = line[3:].strip().strip('"')
+        if not any(part in IGNORED_OK for part in name.strip("/").split("/")):
+            found.append(name)
+    return found
+
+
 def check_worktree(path: str, base: str, git: Callable[..., tuple], fetch: Callable[[str, str], tuple],
-                   base_sha: str = "") -> str:
-    """"" when `path` is clean and integrated into `origin/<base>`, else the reason it is not."""
-    code, porcelain = git(path, "status", "--porcelain")
+                   base_sha: str = "", branch: str = "", warnings: Optional[list] = None) -> str:
+    """"" when `path` is clean and integrated into `origin/<base>`, else the reason it is not.
+
+    Both HEAD and `branch` (the one Orca deletes with the worktree) must be integrated; a
+    detached HEAD with no known branch cannot be vouched for. Gitignored files that would be
+    lost (`.env` ...) are appended to `warnings`, they do not block by themselves.
+    """
+    code, porcelain = git(path, "status", "--porcelain", "--untracked-files=all")
     if code != 0:
         return "cannot read its git status"
     if qd._is_dirty(porcelain):
         return "uncommitted changes"
+    if not branch:
+        return "detached HEAD and no known branch: cannot tell what would be lost"
+    if warnings is not None:
+        warnings.extend((path, name) for name in _ignored_files(path, git))
     fetch_code, why = fetch(path, base)
     if fetch_code != 0:
         return "cannot fetch origin/%s to verify it: %s" % (base, why)
     if base_sha:  # a quick record with no commits beyond its base has nothing to keep
-        code, head = git(path, "rev-parse", "HEAD")
-        if code == 0 and head.strip() == base_sha:
+        tips = {git(path, "rev-parse", "--verify", "--quiet", ref)[1].strip()
+                for ref in ("HEAD", "refs/heads/" + branch)}
+        if tips == {base_sha}:
             return ""
-    code, out = git(path, "cherry", "origin/" + base, "HEAD")
-    if code != 0:
-        return "cannot compare it with origin/%s" % base
-    unmerged = [ln for ln in out.splitlines() if ln.startswith("+")]
-    if unmerged:
-        return "not integrated: %d commit(s) are not in origin/%s" % (len(unmerged), base)
+    for ref in ("HEAD", "refs/heads/" + branch):
+        code, out = git(path, "cherry", "origin/" + base, ref)
+        if code != 0:
+            return "cannot compare %s with origin/%s" % (ref, base)
+        unmerged = [ln for ln in out.splitlines() if ln.startswith("+")]
+        if unmerged:
+            return "not integrated: %d commit(s) of %s are not in origin/%s" % (len(unmerged), ref, base)
     return ""
+
+
+def _warn(warnings: list, say: Callable[[str], None]) -> None:
+    say("WARNING: these gitignored files would be lost:")
+    for path, name in warnings:
+        say("  %s: %s" % (path, name))
 
 
 def _load_state(path: str):
@@ -95,7 +160,45 @@ def _archive_target(root: str, change: str, today: str) -> Optional[tuple]:
     return src, os.path.join(root, "openspec", "changes", "archive", "%s-%s" % (today, change))
 
 
-def run_done(root: str, change: str, client: OrcaClient, *, dry_run: bool = False,
+def _archive_blockers(root: str, src: str, dst: str, git: Callable[..., tuple]) -> list:
+    out = []
+    if os.path.exists(dst):
+        out.append("archive folder already exists: %s" % dst)
+    if git(root, "ls-files", "--error-unmatch", "--", src)[0] != 0:
+        out.append("the plan %s is not tracked by git, so it cannot be moved with git mv" % src)
+    if git(root, "symbolic-ref", "--quiet", "HEAD")[0] != 0:
+        out.append("the plan repo is on a detached HEAD (no branch to commit the archive on)")
+    return out
+
+
+def _archive_plan(root: str, change: str, src: str, dst: str, git: Callable[..., tuple]) -> bool:
+    """git mv + commit; a rejected commit (hooks) puts the plan back exactly as it was."""
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    if git(root, "mv", src, dst)[0] != 0:
+        return False
+    code, _ = git(root, "commit", "-q", "-m", "docs(openspec): archive %s" % change, "--only", "--", src, dst)
+    if code == 0:
+        return True
+    git(root, "reset", "-q", "HEAD", "--", src, dst)
+    if os.path.isdir(dst) and not os.path.exists(src):
+        os.rename(dst, src)
+    git(root, "reset", "-q", "HEAD", "--", src, dst)
+    try:
+        os.rmdir(os.path.dirname(dst))  # only if the archive folder we made is empty
+    except OSError:
+        pass
+    return False
+
+
+def _already_archived(root: str, change: str) -> bool:
+    folder = os.path.join(root, "openspec", "changes", "archive")
+    try:
+        return any(n.endswith("-" + change) for n in os.listdir(folder))
+    except OSError:
+        return False
+
+
+def run_done(root: str, change: str, client: OrcaClient, *, dry_run: bool = False, yes: bool = False,
              git: Callable[..., tuple] = qd.run_git, fetch: Callable[[str, str], tuple] = qd.run_fetch,
              driver_alive: Callable[[str], bool] = sw.driver_alive, today: str = "",
              say: Callable[[str], None] = print) -> int:
@@ -114,26 +217,35 @@ def run_done(root: str, change: str, client: OrcaClient, *, dry_run: bool = Fals
         say("rein done: `rein ship %s` is still running; nothing removed" % change)
         return 1
 
-    repos = _repos_by_name(client)
-    blockers, present, gone = [], [], []
+    repos, rows = _repos_by_name(client), orca_rows(client)
+    blockers, present, gone, warnings = [], [], [], []
     for repo, path in _worktree_paths(state).items():
         if not os.path.isdir(path):
             gone.append((repo, path))
             continue
+        row = rows.get(os.path.realpath(path))
+        if is_main_worktree(path, row, git):
+            blockers.append((repo, path, "it is a main checkout; Rein never removes those"))
+            continue
         base = _base_name(repos.get(repo), git, path)
-        why = check_worktree(path, base, git, fetch)
+        why = check_worktree(path, base, git, fetch, branch=branch_of(path, row, git), warnings=warnings)
         if why:
             blockers.append((repo, path, why))
         else:
             present.append((repo, path))
     archive = _archive_target(root, change, today)
-    if archive and os.path.exists(archive[1]):
-        blockers.append(("plan", archive[1], "archive folder already exists"))
+    if archive:
+        blockers += [("plan", root, why) for why in _archive_blockers(root, archive[0], archive[1], git)]
     if blockers:
         say("rein done: %s is NOT ready to close; nothing was removed:" % change)
         for repo, path, why in blockers:
             say("  blocker: %s (%s): %s" % (repo, path, why))
         return 1
+    if warnings:
+        _warn(warnings, say)
+        if not yes:
+            say("nothing was removed; re-run with --yes only if losing them is fine")
+            return 1
 
     prefix = "would " if dry_run else ""
     for repo, path in present:
@@ -142,17 +254,24 @@ def run_done(root: str, change: str, client: OrcaClient, *, dry_run: bool = Fals
         say("already gone: %s (%s)" % (repo, path))
     if archive:
         say("%sarchive plan %s -> %s" % (prefix, os.path.relpath(archive[0], root), os.path.relpath(archive[1], root)))
+    elif _already_archived(root, change):
+        say("plan already archived")
     say("%sclose tab 'rein ship %s', archive the state and drop the mailbox" % (prefix, change))
     if dry_run:
         return 0
 
-    errors = 0
+    failed = 0
     for repo, path in present:
         try:
             client.worktree_rm("path:" + path)
         except OrcaError as exc:
-            errors += 1
+            failed += 1
             say("orca could not remove %s (%s): %s" % (repo, path, exc.message))
+    if failed:
+        say("state and mailbox kept: fix the above and run `rein done %s` again" % change)
+        return 126
+
+    errors = 0
     title = "rein ship %s" % change
     try:
         for t in oc.terminals_of(client.terminal_list("path:" + root)):
@@ -164,16 +283,9 @@ def run_done(root: str, change: str, client: OrcaClient, *, dry_run: bool = Fals
         say("orca could not close the tab '%s': %s" % (title, exc.message))
 
     if archive:
-        src, dst = archive
-        os.makedirs(os.path.dirname(dst), exist_ok=True)
-        code1, _ = git(root, "mv", src, dst)
-        code2 = 1
-        if code1 == 0:
-            code2, _ = git(root, "commit", "-q", "-m", "docs(openspec): archive %s" % change,
-                              "--only", "--", src, dst)
-        if code1 != 0 or code2 != 0:
-            errors += 1
-            say("could not archive the plan with git (is it tracked?); state kept so you can retry")
+        if not _archive_plan(root, change, archive[0], archive[1], git):
+            say("could not archive the plan (git rejected it); the move was undone and the state kept; "
+                "run `rein done %s` again" % change)
             return 126
         branch = git(root, "rev-parse", "--abbrev-ref", "HEAD")[1].strip() or "the plan branch"
         say("archived plan: committed on %s (no push); push it when ready" % branch)
@@ -196,32 +308,24 @@ def _has_record(path: str) -> bool:
     return os.path.isfile(os.path.join(path, quick.RECORD))
 
 
-def _is_main_checkout(path: str) -> bool:
-    """A `--here` workspace is a repo's main checkout: its `.git` is a directory, not a linked file."""
-    return os.path.isdir(os.path.join(path, ".git"))
-
-
 def _toplevel(cwd: str, git: Callable[..., tuple]) -> str:
     code, out = git(cwd, "rev-parse", "--show-toplevel")
     return out.strip() if code == 0 else ""
 
 
-def _orca_worktree_paths(client: OrcaClient) -> list:
-    listed = client.worktree_list().get("worktrees")
-    return [str(w["path"]) for w in listed or [] if isinstance(w, dict) and w.get("path")]
-
-
-def run_quick_close(arg: str, client: OrcaClient, *, cwd: str = ".", dry_run: bool = False,
+def run_quick_close(arg: str, client: OrcaClient, *, cwd: str = ".", dry_run: bool = False, yes: bool = False,
                     git: Callable[..., tuple] = qd.run_git, fetch: Callable[[str, str], tuple] = qd.run_fetch,
                     say: Callable[[str], None] = print) -> int:
-    try:
-        listed = _orca_worktree_paths(client)
-    except OrcaError as exc:
-        if arg and os.path.isdir(arg):
-            listed = []  # an explicit path does not need Orca to be found
-        else:
+    """Worktrees are removed only when linked AND on a `quick-*` branch; any other location with a
+    record (a `--here` checkout, a main worktree) only loses its record, and only when integrated."""
+    rows = orca_rows(client)
+    if not rows and not (arg and os.path.isdir(arg)):
+        try:
+            client.worktree_list()
+        except OrcaError as exc:
             say("orca failed: %s" % exc.message)
             return 126
+    listed = [str(r["path"]) for r in rows.values()]
     if arg:
         if os.path.isdir(arg) and _has_record(arg):
             targets = [os.path.abspath(arg)]
@@ -246,26 +350,35 @@ def run_quick_close(arg: str, client: OrcaClient, *, cwd: str = ".", dry_run: bo
             return 0
 
     blocked = errors = closed = 0
+    plan, warnings = [], []
     for path in targets:
         record, why = qd._load_record(path)
         if record is None:
             blocked += 1
             say("blocker: %s: %s" % (path, why))
             continue
+        row = rows.get(os.path.realpath(path))
         base = str(record.get("base") or DEFAULT_BASE)
-        if not os.path.isdir(path):
-            continue
-        reason = check_worktree(path, base, git, fetch, base_sha=str(record.get("base_sha") or ""))
+        branch = branch_of(path, row, git)
+        reason = check_worktree(path, base, git, fetch, base_sha=str(record.get("base_sha") or ""),
+                                branch=branch, warnings=warnings)
         if reason:
             blocked += 1
             say("kept: %s: %s" % (path, reason))
             continue
-        here = _is_main_checkout(path)
+        removable = not is_main_worktree(path, row, git) and "quick-" in branch
+        plan.append((path, removable))
+    if warnings:
+        _warn(warnings, say)
+        if not yes:
+            say("nothing was removed; re-run with --yes only if losing them is fine")
+            return 1
+    for path, removable in plan:
         if dry_run:
-            say("would %s" % ("delete the record in %s" % path if here else "remove worktree %s" % path))
+            say("would %s" % ("remove worktree %s" % path if removable else "delete the record in %s" % path))
             closed += 1
             continue
-        if not here:
+        if removable:
             try:
                 client.worktree_rm("path:" + path)
             except OrcaError as exc:
@@ -274,7 +387,7 @@ def run_quick_close(arg: str, client: OrcaClient, *, cwd: str = ".", dry_run: bo
                 continue
             say("removed worktree %s" % path)
         else:
-            say("kept the checkout %s (it is a main checkout); deleted its quick record" % path)
+            say("kept the checkout %s (main checkout or not a quick-* branch); deleted its quick record" % path)
         try:
             os.unlink(os.path.join(path, quick.RECORD))
         except OSError:
