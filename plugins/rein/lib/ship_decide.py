@@ -24,7 +24,6 @@ import quota
 from ship_state import ShipState, TaskState
 
 _DEFAULT_RISKY = ["**/auth/**", "**/payments/**", "**/migrations/**"]
-_FAILURE_CAP = 2000
 GATE_FAILURE_CAP = 6000  # a failed gate's detail: the real error lines, not a 2000-char tail
 _BUSY = ("running", "gating", "gated")  # statuses that hold a repo's worktree
 _FIX_PREFIX = "AUDIT"
@@ -654,7 +653,12 @@ def _on_gate_resolved(state: ShipState, event: GateResolved, cfg: ShipConfig, ac
                 actions.append(Finish())
     elif kind == "audit_exhausted":
         if state.phase == "auditing":
-            if resolution == "fix":
+            if resolution == "fix" and not state.pending_findings:
+                _open(state, actions, None,
+                      "Rein found no audit findings to fix (none were stored and the latest review episode has "
+                      "none), so no fix round was started. Retry re-lists the changes and audits again; skip ends "
+                      "the audit unapproved.", ["retry", "skip"], "setup")
+            elif resolution == "fix":
                 state.extra_audit_rounds += 1
                 _start_fix_round(state, state.pending_changed_files, state.pending_findings)
                 state.pending_findings, state.pending_changed_files = [], []
@@ -837,12 +841,21 @@ def _on_audit_verdict(state: ShipState, event: AuditVerdict, cfg: ShipConfig, ac
     _start_fix_round(state, event.changed_files, list(event.findings))
 
 
+_SEVERITY_ORDER = {"BLOCKING": 0, "IMPORTANT": 1, "SUGGESTION": 2}
+
+
+def _by_severity(findings: list) -> list:
+    """BLOCKING first, then IMPORTANT, then SUGGESTION; the order within a severity is kept."""
+    return sorted(findings, key=lambda f: _SEVERITY_ORDER.get(f.split(":", 1)[0].strip().upper(), 3))
+
+
 def _start_fix_round(state: ShipState, changed_files: list, findings: list) -> None:
     state.audit_rounds += 1
+    findings = _by_severity(findings)
     for repo, repo_findings in _fix_assignments(state, list(changed_files), list(findings)):
         fix_id = "%s%d-%s" % (_FIX_PREFIX, state.audit_rounds, repo)
         state.tasks[fix_id] = TaskState(
             id=fix_id, repo=repo, deps=[], human_review=False, verification="",
-            type="implementation", last_failure="\n".join(repo_findings)[:_FAILURE_CAP],
+            type="implementation", last_failure="\n".join(repo_findings)[:GATE_FAILURE_CAP],
         )
     state.phase = "fixing"

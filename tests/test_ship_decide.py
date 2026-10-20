@@ -899,6 +899,25 @@ class Audit(unittest.TestCase):
         self.assertEqual((loaded.extra_audit_rounds, loaded.pending_findings, loaded.pending_changed_files),
                          (0, [], []))
 
+    def test_fix_tasks_carry_blocking_findings_first_and_up_to_the_gate_cap(self):
+        findings = ["SUGGESTION: s", "IMPORTANT: i", "BLOCKING: " + "b" * 4000, "BLOCKING: second"]
+        verdict = sd.AuditVerdict("CHANGES_REQUESTED", 2, ["a/x.py"], findings)
+        new, _ = sd.decide(self.audited(), verdict, CFG)
+        text = new.tasks["AUDIT1-a"].last_failure
+        self.assertTrue(text.startswith("BLOCKING: bbb"))
+        self.assertGreater(len(text), 4000)
+        self.assertLessEqual(len(text), sd.GATE_FAILURE_CAP)
+        self.assertLess(text.index("BLOCKING: second"), text.index("IMPORTANT: i") if "IMPORTANT: i" in text else 10**9)
+
+    def test_fix_with_no_findings_opens_a_setup_gate_instead_of_empty_fix_tasks(self):
+        state = self.audited(audit_rounds=1)
+        state.gates["g"] = {"task_id": None, "kind": "audit_exhausted", "message_id": ""}
+        new, actions = sd.decide(state, sd.GateResolved("g", "fix"), CFG)
+        self.assertEqual([(type(a), a.kind, a.options) for a in actions],
+                         [(sd.OpenGate, "setup", ["retry", "skip"])])
+        self.assertEqual((new.extra_audit_rounds, new.audit_rounds, new.phase), (0, 1, "auditing"))
+        self.assertEqual(set(new.tasks), {"1", "2"})
+
     def test_fix_tasks_only_for_repos_with_changed_files(self):
         state = self.audited(worktree_paths={"a": "/w/a", "b": "/w/b"})
         verdict = sd.AuditVerdict("CHANGES_REQUESTED", 1, ["/w/b/src/y.py"], ["f"])
@@ -957,9 +976,9 @@ class Audit(unittest.TestCase):
         self.assertEqual(set(out), {"AUDIT1-b"})
 
     def test_last_failure_is_capped(self):
-        verdict = sd.AuditVerdict("CHANGES_REQUESTED", 1, ["a/x"], ["y" * 5000])
+        verdict = sd.AuditVerdict("CHANGES_REQUESTED", 1, ["a/x"], ["y" * 9000])
         new, _ = sd.decide(self.audited(), verdict, CFG)
-        self.assertEqual(len(new.tasks["AUDIT1-a"].last_failure), 2000)
+        self.assertEqual(len(new.tasks["AUDIT1-a"].last_failure), sd.GATE_FAILURE_CAP)
 
     def test_findings_default_is_not_shared(self):
         a, b = sd.AuditVerdict("APPROVED", 0, []), sd.AuditVerdict("APPROVED", 0, [])
