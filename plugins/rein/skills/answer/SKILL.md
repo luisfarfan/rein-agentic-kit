@@ -6,7 +6,7 @@ license: MIT
 
 # /answer
 
-Relays the owner's words to `rein ship`'s open gates; the owner never types Orca commands.
+Relays the owner's words to `rein ship`'s open gates; also used by /ship's watcher. Owner never types Orca commands.
 Never edits code, and **never invents an answer the user did not give.**
 
 ## Steps

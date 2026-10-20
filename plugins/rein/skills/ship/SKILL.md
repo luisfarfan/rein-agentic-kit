@@ -6,7 +6,8 @@ license: MIT
 
 # /ship
 
-Hands a planned change to `rein ship` in its own Orca tab (`/rein:ship` when namespaced).
+Hands a planned change to `rein ship` in its own Orca tab (`/rein:ship` when namespaced), then
+keeps the owner in THIS session: Rein's questions come back here.
 **Never edits code, pushes, merges or opens a PR.**
 
 Usage: `/ship <change> [--root <plan repo>]`
@@ -19,9 +20,17 @@ It applies to every task.
 
 1. Confirm the plan exists: `rein tasks <root> --change <change>` (root `.` or the user's
    `--root`). None: stop, suggest `/rein:rein-plan`.
-2. Run `rein ship <change> --root <root> --detach`.
-3. Report the tab name and tell the user they can close this session. Worker questions arrive
-   as Orca decision gates; they answer with "¿qué me pregunta rein?" (`/rein:answer`).
-4. If it refuses (a tab is already running, or a preflight error), show its output; never
-   retry, and never run the loop in the foreground or background of this session.
-   `--dry-run` previews; it cannot be detached.
+2. Run `rein ship <change> --root <root> --detach`. If it refuses (a tab is already running, or a
+   preflight error), show its output; never retry, and never run the loop in this session.
+3. Immediately run `rein watch <change> --root <root>` as a BACKGROUND command. Tell the owner
+   to stay in this session: Rein's decision gate questions will appear here.
+4. When the watcher wakes, act on its first word:
+   - **QUESTION**: read the question in full; look briefly (read-only) at the relevant files,
+     diff or logs. Tell the owner in plain language what is asked, the options, and your
+     recommendation with one-line reasons. Wait for the owner, then run
+     `rein answer <change> "<text>" --gate <id> --root <root>` (option gates: exactly one listed
+     option; never invent an answer) and start the watcher again.
+   - **FINISHED**: summarise the tasks, the audit result and where the work is; suggest
+     reviewing the diff and pushing to develop themselves. Do not restart the watcher.
+   - **STOPPED**: tell the owner and offer to resume it in the Orca tab "rein ship <change>";
+     restart the watcher after.

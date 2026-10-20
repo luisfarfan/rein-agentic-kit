@@ -122,7 +122,7 @@ Coming from v1? `rein migrate-config` rewrites `flow.config.json` (drops `models
 |---|---|
 | 🔭 **`/rein:rein-discover`** | Think a problem through before committing to a shape. **Writes no plan, implements nothing** |
 | 🧭 **`/rein:rein-plan`** | Plan into verifiable tasks — dry-run and **explicit confirmation** before writing |
-| 🚢 **`/ship`** (`/rein:ship`) | Open a detached Orca tab running `rein ship <change>`; you can close the session. Never edits code or opens a PR |
+| 🚢 **`/ship`** (`/rein:ship`) | Open a detached Orca tab running `rein ship <change>`, then watch it (`rein watch`) so Rein's questions and the final result appear in this session. Never edits code or opens a PR |
 | 💬 **`/answer`** (`/rein:answer`) | "¿Qué me pregunta rein?" / "respóndele: …": show and answer the run's pending gates |
 | ⚡ **`/quick`** (`/rein:quick`) | "Tarea rápida: …": hand a small change to a cheap agent in its own tab, no plan. You talk to it; "listo" runs the light gate. Never edits code itself |
 | 🔍 **`/rein:rein-audit`** | The independent gate: mechanical checks first, then five-axis judgement |

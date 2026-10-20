@@ -21,7 +21,7 @@ sys.path.insert(0, os.path.join(PLUGIN, "lib"))
 
 import roles  # noqa: E402
 
-BUDGETS = {"rein-plan": 700, "ship": 200, "answer": 200, "quick": 200}
+BUDGETS = {"rein-plan": 700, "ship": 350, "answer": 200, "quick": 200}
 
 
 def _skill_files() -> list:
@@ -82,7 +82,7 @@ class TestSkillBudget(unittest.TestCase):
         ship = _read(os.path.join(SKILLS, "ship", "SKILL.md"))
         self.assertIn("rein tasks <root> --change <change>", ship)
         self.assertIn("rein ship <change> --root <root> --detach", ship)
-        self.assertIn("background", ship)  # named only to forbid running the loop there
+        self.assertIn("BACKGROUND", ship)  # the watcher runs there, never the loop
         self.assertIn("/rein:ship", ship)
         plan = _read(os.path.join(SKILLS, "rein-plan", "SKILL.md"))
         self.assertIn("rein tasks <root> --change <c>", plan)
@@ -93,8 +93,24 @@ class TestSkillBudget(unittest.TestCase):
         self.assertIn("rein ship", text)
         self.assertIn("decision gate", text)
         self.assertIn("Orca", text)
-        self.assertIn("close this session", text)
-        self.assertIn("never run the loop in the foreground or background", text)
+        self.assertNotIn("close this session", text)
+        self.assertIn("never run the loop", text)
+
+    def test_ship_keeps_the_owner_in_the_session_with_a_watcher(self):
+        text = _read(os.path.join(SKILLS, "ship", "SKILL.md"))
+        self.assertIn("rein watch <change> --root <root>", text)
+        self.assertIn("BACKGROUND", text)
+        for marker in ("QUESTION", "FINISHED", "STOPPED"):
+            self.assertIn(marker, text)
+        self.assertIn('rein answer <change> "<text>" --gate <id> --root <root>', text)
+        self.assertIn("--agent codex", text)  # the agent-flag mapping stays
+        self.assertIn("rein ship <change>", text)
+        for forbidden in ("pushes", "merges"):
+            self.assertIn(forbidden, text)
+
+    def test_answer_mentions_the_ship_watcher(self):
+        text = _read(os.path.join(SKILLS, "answer", "SKILL.md"))
+        self.assertIn("watcher", text.split("\n# /answer", 1)[1][:400])
 
     def test_answer_runs_the_cli_and_never_invents(self):
         text = _read(os.path.join(SKILLS, "answer", "SKILL.md"))
