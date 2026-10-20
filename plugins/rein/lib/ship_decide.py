@@ -582,7 +582,7 @@ _RESOLUTIONS = {
     "setup": ("retry", "skip"),
     "timeout": ("retry", "skip"),
     "brake": ("retry", "pause", "switch-to-codex"),  # switch-to-codex: gates opened by an older Rein
-    "audit_exhausted": ("accept", "reject"),
+    "audit_exhausted": ("fix", "accept", "reject"),
     "audit_timeout": ("retry", "skip"),
     "audit_failed": ("retry-audit", "accept", "reject"),
 }
@@ -654,7 +654,12 @@ def _on_gate_resolved(state: ShipState, event: GateResolved, cfg: ShipConfig, ac
                 actions.append(Finish())
     elif kind == "audit_exhausted":
         if state.phase == "auditing":
-            _end_audit(state, actions, "approved" if resolution == "accept" else "rejected")
+            if resolution == "fix":
+                state.extra_audit_rounds += 1
+                _start_fix_round(state, state.pending_changed_files, state.pending_findings)
+                state.pending_findings, state.pending_changed_files = [], []
+            else:
+                _end_audit(state, actions, "approved" if resolution == "accept" else "rejected")
     elif kind in ("audit_timeout", "audit_failed") and state.phase != "auditing":
         pass  # the audit moved on while the owner was deciding
     elif kind == "audit_timeout" and gate.get("audit") != state.audit_dispatch:
@@ -817,18 +822,24 @@ def _on_audit_verdict(state: ShipState, event: AuditVerdict, cfg: ShipConfig, ac
         _end_audit(state, actions, "approved")
         return
     # maxAuditRounds counts audits: with the default 2, one fix round and a second, final audit.
-    if state.audit_rounds + 1 >= cfg.max_audit_rounds:
+    if state.audit_rounds + 1 >= cfg.max_audit_rounds + state.extra_audit_rounds:
         if _owner_gate_open(state, "audit_exhausted"):
             return
+        state.pending_findings = list(event.findings)
+        state.pending_changed_files = list(event.changed_files)
         summary = "\n".join(event.findings)[:600]
         # The run ends only when the owner answers: accept makes the audit approved, reject rejected.
         _open(state, actions, None,
-              "The audit still has %d blocking finding(s) after %d audit(s). Accept the change anyway, or reject it? %s"
+              "The audit still has %d blocking finding(s) after %d audit(s). Fix them in one more round, accept the change anyway, or reject it? %s"
               % (event.blocking, state.audit_rounds + 1, summary),
-              ["accept", "reject"], "audit_exhausted")
+              ["fix", "accept", "reject"], "audit_exhausted")
         return
+    _start_fix_round(state, event.changed_files, list(event.findings))
+
+
+def _start_fix_round(state: ShipState, changed_files: list, findings: list) -> None:
     state.audit_rounds += 1
-    for repo, repo_findings in _fix_assignments(state, event.changed_files, list(event.findings)):
+    for repo, repo_findings in _fix_assignments(state, list(changed_files), list(findings)):
         fix_id = "%s%d-%s" % (_FIX_PREFIX, state.audit_rounds, repo)
         state.tasks[fix_id] = TaskState(
             id=fix_id, repo=repo, deps=[], human_review=False, verification="",

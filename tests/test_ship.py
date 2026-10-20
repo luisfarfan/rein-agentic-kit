@@ -874,6 +874,47 @@ class TestGateDurability(ShipCase):
         self.assertEqual(self.run_ship(fake, scripted_gate()), 1)  # nothing left to do: the run ends
         self.assertEqual([c for c in fake.calls if c[:2] == ["orchestration", "gate-create"]], [])
 
+    def test_resume_supersedes_an_old_audit_exhausted_gate_and_fix_recovers_the_findings(self):
+        """A gate opened by the older Rein offers only accept/reject and stored no findings."""
+        state = self.one_task_state(status="done")
+        state.phase, state.audit_rounds, state.audit_root = "auditing", 1, self.wtpath("proxima-api")
+        state.gates["gate_old"] = {"task_id": None, "kind": "audit_exhausted", "message_id": "",
+                                   "audit": "", "holder_task": "h_old"}
+        ship_state.save(state, self.state_file)
+        self.approve_audit("CHANGES_REQUESTED", ["BLOCKING: broken thing", "NIT: style"])()
+        fake = FakeOrca(self.root, autocomplete=False)
+        fake.gates.append({"id": "gate_old", "task_id": "h_old", "question": "still blocking",
+                           "options": '["accept", "reject"]', "status": "pending", "resolution": None})
+        fake.pending = [lambda f: f.resolve_gate(1, "fix") or []]
+        with self.assertRaises(Drained):
+            self.run_ship(fake, scripted_gate())
+        creates = [c for c in fake.calls if c[:2] == ["orchestration", "gate-create"]]
+        self.assertEqual(len(creates), 1)
+        self.assertEqual(_flag(creates[0], "--options"), '["fix", "accept", "reject"]')
+        self.assertEqual(_flag(creates[0], "--question"), "still blocking")
+        self.assertNotIn("gate_old", ship_state.load(self.state_file).gates)
+        self.assertEqual(fake.gates[0]["status"], "pending", "the old gate is never resolved with a verdict")
+        final = ship_state.load(self.state_file)
+        self.assertEqual(final.extra_audit_rounds, 1)
+        fixes = [t for t in final.tasks.values() if t.id.startswith("AUDIT2-")]
+        self.assertTrue(fixes)
+        self.assertIn("BLOCKING: broken thing", fixes[0].last_failure)
+        self.assertIn("NIT: style", fixes[0].last_failure)
+
+    def test_resume_leaves_a_current_audit_exhausted_gate_alone(self):
+        state = self.one_task_state(status="done")
+        state.phase, state.audit_rounds = "auditing", 1
+        state.gates["gate_new"] = {"task_id": None, "kind": "audit_exhausted", "message_id": "",
+                                   "audit": "", "holder_task": "h"}
+        ship_state.save(state, self.state_file)
+        fake = FakeOrca(self.root, autocomplete=False)
+        fake.gates.append({"id": "gate_new", "task_id": "h", "question": "q",
+                           "options": '["fix", "accept", "reject"]', "status": "pending", "resolution": None})
+        with self.assertRaises(Drained):
+            self.run_ship(fake, scripted_gate())
+        self.assertEqual([c for c in fake.calls if c[:2] == ["orchestration", "gate-create"]], [])
+        self.assertIn("gate_new", ship_state.load(self.state_file).gates)
+
     def test_a_lost_gate_of_a_task_with_a_held_worker_comes_back_as_a_timeout_gate(self):
         """So the owner's retry/skip stops that worker and waits for proof, instead of releasing it blind."""
         ship_state.save(self.one_task_state(status="gated", dispatch_id="d1"), self.state_file)

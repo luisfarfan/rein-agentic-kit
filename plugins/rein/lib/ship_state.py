@@ -76,6 +76,11 @@ class ShipState:
     quota_before: dict = field(default_factory=dict)
     # Set by the brake's "pause": dispatch nothing new, exit once running workers settle.
     paused: bool = False
+    # Audits the owner granted beyond maxAuditRounds (the "fix" answer of an exhausted audit).
+    extra_audit_rounds: int = 0
+    # The verdict that opened an audit_exhausted gate: what a "fix" answer turns into fix tasks.
+    pending_findings: list = field(default_factory=list)
+    pending_changed_files: list = field(default_factory=list)
 
 
 def state_path(repo_root: str, change: str) -> str:

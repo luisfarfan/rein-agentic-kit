@@ -241,7 +241,7 @@ Everything is optional. Drop a `flow.config.json` at your project root to overri
 ```
 
 The `ship` block shows its defaults. `maxRetries` is how many times a red task is retried with a
-fresh worker, `maxAuditRounds` bounds audit and fix rounds, `taskTimeoutMinutes` opens a gate
+fresh worker, `maxAuditRounds` bounds audit and fix rounds (when it runs out with blocking findings, the gate offers `fix` for one more fix round and audit, `accept` or `reject`), `taskTimeoutMinutes` opens a gate
 instead of waiting forever, `gateTimeoutSeconds` is the per-command timeout of each task's gate
 (raise it for a slow suite), and a change that touches `riskyPaths` or more than `largeChangeFiles`
 files gets an Opus audit.

@@ -341,7 +341,29 @@ class _Driver:
             self.state.quota_before = {p: dict(w) for p, w in limits.items()}
             self.save()
 
+    def recover_exhausted_findings(self, event):
+        """A "fix" on an audit_exhausted gate opened by an older Rein: it stored no findings.
+        Take them from the latest review episode, and the changed files from the worktrees."""
+        gate = self.state.gates.get(event.gate_id) or {}
+        if (gate.get("kind") != "audit_exhausted" or event.resolution != "fix"
+                or self.state.phase != "auditing" or self.state.pending_findings):
+            return
+        findings = []
+        if self.state.audit_root:
+            found = _gate.check_review(self.state.audit_root, self.change).get("findings") or []
+            findings = ["%s: %s" % (f["severity"], f["text"]) for f in found]
+        self.state.pending_findings = findings
+        if not self.state.pending_changed_files:
+            changes = self.compute_changes()
+            if isinstance(changes, sd.ChangesComputed):
+                self.state.pending_changed_files = list(changes.changed_files)
+            else:
+                self.state.pending_changed_files = list(self.state.changed_files)
+        self.save()
+
     def feed(self, event):
+        if isinstance(event, sd.GateResolved):
+            self.recover_exhausted_findings(event)
         queue = [event]
         while queue:
             self.state, actions = sd.decide(self.state, queue.pop(0), self.cfg)
@@ -765,9 +787,32 @@ class _Driver:
                 "question": "The run was braked on quota. Retry once quota frees up, or pause?"})
         self.save()
 
+    def supersede_old_exhausted_gates(self):
+        """An audit_exhausted gate opened by an older Rein offers only accept/reject. Stop tracking it
+        (Orca may keep it pending; it is never resolved with a verdict) and queue one that offers "fix"."""
+        olds = [gid for gid, g in self.state.gates.items() if g.get("kind") == "audit_exhausted"]
+        if not olds:
+            return
+        try:
+            listed = {g.get("id"): g for g in oc.gates_of(self.client.gate_list()) if isinstance(g, dict)}
+        except OrcaError as exc:
+            self.say("could not read the gates to check the audit gate, will retry on the next resume: %s" % exc)
+            return
+        for gid in olds:
+            orca = listed.get(gid)
+            if orca is None or orca.get("status") != "pending" or "fix" in (orca.get("options") or []):
+                continue
+            del self.state.gates[gid]
+            self.state.pending_gates.append({
+                "task_id": None, "kind": "audit_exhausted", "message_id": "", "audit": "",
+                "options": ["fix", "accept", "reject"], "question": str(orca.get("question") or "")})
+            self.say("replaced the old audit gate %s with one that also offers \"fix\"" % gid)
+        self.save()
+
     def resume(self, owner_restart: bool = True):
         if owner_restart:  # running `rein ship` again is the owner asking to continue; an automatic resume keeps a pause
             self.state.paused = False
+        self.supersede_old_exhausted_gates()
         self.requeue_orphans()
         self.open_pending()
         self.apply_answers()

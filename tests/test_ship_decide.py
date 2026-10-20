@@ -818,7 +818,7 @@ class Audit(unittest.TestCase):
         new, actions = sd.decide(new, verdict, CFG)
         self.assertEqual([type(a) for a in actions], [sd.OpenGate], "the run does not finish before the owner answers")
         self.assertEqual((actions[0].task_id, actions[0].options, actions[0].kind),
-                         (None, ["accept", "reject"], "audit_exhausted"))
+                         (None, ["fix", "accept", "reject"], "audit_exhausted"))
         self.assertIn("bug one", actions[0].question)
         self.assertIn("2 audit(s)", actions[0].question)
         self.assertEqual((new.audit_rounds, new.phase, new.audit_result), (1, "auditing", ""))
@@ -848,6 +848,56 @@ class Audit(unittest.TestCase):
             new, actions = sd.decide(state, sd.GateResolved("g", resolution), CFG)
             self.assertEqual(actions, [sd.Finish()])
             self.assertEqual((new.phase, new.audit_result), ("done", result))
+
+    def test_fix_on_an_exhausted_audit_grants_exactly_one_more_audit(self):
+        files, findings = ["a/x.py", "b/y.py"], ["BLOCKING: bug one", "BLOCKING: bug two"]
+        verdict = sd.AuditVerdict("CHANGES_REQUESTED", 2, files, findings)
+        state = self.audited(audit_rounds=1)
+        gated, actions = sd.decide(state, verdict, CFG)
+        self.assertEqual(actions[0].options, ["fix", "accept", "reject"])
+        self.assertEqual((gated.pending_findings, gated.pending_changed_files), (findings, files))
+        gated.gates["g"] = {"task_id": None, "kind": "audit_exhausted", "message_id": ""}
+        gated.pending_gates = []
+        new, actions = sd.decide(gated, sd.GateResolved("g", "fix"), CFG)
+        self.assertEqual(actions, [])
+        self.assertEqual((new.phase, new.audit_rounds, new.extra_audit_rounds, new.audit_result),
+                         ("fixing", 2, 1, ""))
+        self.assertEqual(set(new.tasks) - {"1", "2"}, {"AUDIT2-a", "AUDIT2-b"})
+        self.assertEqual(new.tasks["AUDIT2-a"].last_failure, "\n".join(findings))
+        self.assertEqual((new.pending_findings, new.pending_changed_files, new.gates), ([], [], {}))
+
+        # The extra audit runs; if it still finds blockers the cap is max + 1, so the gate opens again with fix.
+        for t in new.tasks.values():
+            t.status = "done"
+        new.phase = "auditing"
+        again, actions = sd.decide(new, verdict, CFG)
+        self.assertEqual([type(a) for a in actions], [sd.OpenGate])
+        self.assertEqual(actions[0].options, ["fix", "accept", "reject"])
+        self.assertEqual(again.extra_audit_rounds, 1)
+
+    def test_the_cap_includes_the_extra_audits(self):
+        verdict = sd.AuditVerdict("CHANGES_REQUESTED", 1, ["a/x.py"], ["bug"])
+        state = self.audited(audit_rounds=2, extra_audit_rounds=1)
+        _, actions = sd.decide(state, verdict, CFG)
+        self.assertTrue(any(isinstance(a, sd.OpenGate) for a in actions))
+        state = self.audited(audit_rounds=1, extra_audit_rounds=1)
+        new, actions = sd.decide(state, verdict, CFG)
+        self.assertEqual((actions, new.phase), ([], "fixing"))
+
+    def test_state_without_the_new_fields_loads(self):
+        import tempfile, json, ship_state
+        with tempfile.TemporaryDirectory() as d:
+            path = d + "/s.json"
+            ship_state.save(ship(task("1")), path)
+            with open(path) as fh:
+                data = json.load(fh)
+            for k in ("extra_audit_rounds", "pending_findings", "pending_changed_files"):
+                data.pop(k)
+            with open(path, "w") as fh:
+                json.dump(data, fh)
+            loaded = ship_state.load(path)
+        self.assertEqual((loaded.extra_audit_rounds, loaded.pending_findings, loaded.pending_changed_files),
+                         (0, [], []))
 
     def test_fix_tasks_only_for_repos_with_changed_files(self):
         state = self.audited(worktree_paths={"a": "/w/a", "b": "/w/b"})
