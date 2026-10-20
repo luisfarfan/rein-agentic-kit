@@ -107,6 +107,27 @@ OUTCOME_INCONCLUSIVE = "inconclusive"
 
 OUTPUT_HEAD_LINES = 20
 
+ERROR_LINES_CAP = 40
+_CONTEXT = 2
+_LINE_MAX = 400  # one pathological line must not flood the summary
+_ERROR_RE = re.compile(r"error|fail|\u2717|\u00d7|AssertionError", re.IGNORECASE)
+
+
+def error_lines(text: str, cap: int = ERROR_LINES_CAP) -> list:
+    """Lines matching error/FAIL/marks with two lines of context each, at most `cap`.
+
+    Tolerates anything: not a string, megabytes of output, replacement characters."""
+    if not isinstance(text, str) or not text:
+        return []
+    lines = text.splitlines()
+    chosen = set()
+    for i, line in enumerate(lines):
+        if _ERROR_RE.search(line):
+            chosen.update(range(max(0, i - _CONTEXT), min(len(lines), i + _CONTEXT + 1)))
+            if len(chosen) >= cap:
+                break
+    return [lines[i][:_LINE_MAX] for i in sorted(chosen)[:cap]]
+
 # Matched against `testOne`'s output ONLY when it ran against the synthetic
 # `_cheap_target()` and exited non-zero: known "found nothing to run" phrasing
 # from mainstream test runners, distinct from `_SETUP_FAILURE_PATTERNS`
@@ -355,9 +376,14 @@ def verify_commands(resolved: dict, timeout: float = DEFAULT_TIMEOUT, only: set[
                     error="testOne ran against the synthetic {target} placeholder, which no real test "
                           "suite owns -- the runner reported nothing to run for it, which says nothing "
                           "about whether the CONFIGURED testOne command works on a real target",
-                    executed_command=result.executed_command,
+                    executed_command=result.executed_command, output=result.output,
                 )
-            results[slot] = result.to_dict()
+            entry = result.to_dict()
+            if result.outcome != OUTCOME_OK:
+                # `outputHead` is only the first lines; the failing assertion of
+                # a long suite is far past them.
+                entry["errorLines"] = error_lines(result.output)
+            results[slot] = entry
     finally:
         if tmp_target and os.path.exists(tmp_target):
             with contextlib.suppress(OSError):

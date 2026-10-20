@@ -108,10 +108,7 @@ def new_record(repo: str, workspace: str, base: str, base_sha: str, agent: str,
 # --- close: `rein quick done` ------------------------------------------------
 
 MAX_RELATED_TESTS = 10
-ERROR_LINES_CAP = 40
-_CONTEXT = 2
-_LINE_MAX = 400  # one pathological line must not flood the summary
-_ERROR_RE = re.compile(r"error|fail|\u2717|\u00d7|AssertionError", re.IGNORECASE)
+from verify import ERROR_LINES_CAP, error_lines  # noqa: E402,F401  (shared with the gate report)
 
 
 def _is_test_file(path: str) -> bool:
@@ -185,22 +182,6 @@ def verdict(results: list) -> str:
     if any(o not in ("ok", "failed") for o in outcomes):
         return "setup"
     return "red" if "failed" in outcomes else "green"
-
-
-def error_lines(text: str, cap: int = ERROR_LINES_CAP) -> list:
-    """Lines matching error/FAIL/marks with two lines of context each, at most `cap`.
-
-    Tolerates anything: not a string, megabytes of output, replacement characters."""
-    if not isinstance(text, str) or not text:
-        return []
-    lines = text.splitlines()
-    chosen = set()
-    for i, line in enumerate(lines):
-        if _ERROR_RE.search(line):
-            chosen.update(range(max(0, i - _CONTEXT), min(len(lines), i + _CONTEXT + 1)))
-            if len(chosen) >= cap:
-                break
-    return [lines[i][:_LINE_MAX] for i in sorted(chosen)[:cap]]
 
 
 def summary(results: list, outputs: dict, notes: list, audit_pending: bool = False) -> str:

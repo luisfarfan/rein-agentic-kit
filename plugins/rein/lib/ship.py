@@ -41,6 +41,7 @@ WAIT_MS = 15000      # bounded: gate-resolve sends no inbox message, so a wait m
 IDLE_POLLS = 3       # empty waits in a row before asking worker-list what needs doing
 SAFE_NEXT_ACTIONS = ("release", "retain")
 _TAIL = 2000
+_FAILURE_CAP = 6000
 
 
 # --- specs ---------------------------------------------------------------------
@@ -122,6 +123,35 @@ def changed_files(worktree_path: str, base_ref: str) -> list:
 _GATE_COMMANDS_BOUND = 6  # generous bound on configured gate commands (test, lint, typecheck, ...)
 
 
+def failure_detail(out: str) -> str:
+    """What a failed gate tells the worker: the failing slots' real error lines.
+
+    Built from the `rein gate --json` report when it parses; anything else
+    (timeout message, crash) keeps the plain tail."""
+    out = out or ""
+    try:
+        results = json.loads(out)["report"]["results"]
+        blocks = []
+        for slot, res in sorted(results.items()):
+            if res.get("outcome") == "ok":
+                continue
+            lines = res.get("errorLines") or res.get("outputHead") or []
+            blocks.append("%s [%s] exit=%s $ %s\n%s" % (
+                res.get("slot") or slot, res.get("outcome"), res.get("exitCode"), res.get("command"),
+                "\n".join(str(x) for x in lines)))
+    except (ValueError, KeyError, TypeError, AttributeError):
+        return out[-_TAIL:]
+    if not blocks:
+        return out[-_TAIL:]
+    detail = "\n\n".join(b.rstrip() for b in blocks)
+    if len(detail) <= _FAILURE_CAP:
+        return detail
+    # Keep the head of every block: share the cap evenly, headers never cut.
+    share = max(_FAILURE_CAP // len(blocks) - 2, 1)
+    detail = "\n\n".join(b.rstrip()[:share] for b in blocks)
+    return detail[:_FAILURE_CAP]
+
+
 def default_gate_runner(path: str, unit_only: bool, timeout: float = 900.0) -> tuple:
     """`rein gate <path> --json [--unit-only] --timeout <s>`, with this process's Python and this checkout's bin.
 
@@ -135,7 +165,8 @@ def default_gate_runner(path: str, unit_only: bool, timeout: float = 900.0) -> t
         proc = subprocess.run(argv, capture_output=True, text=True, timeout=outer)
     except subprocess.TimeoutExpired:
         return 126, "gate timed out: `rein gate` exceeded %gs overall" % outer
-    return proc.returncode, ((proc.stdout or "") + (proc.stderr or ""))[-_TAIL:]
+    # The whole capture: `failure_detail` reads the JSON, and falls back to the tail.
+    return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
 
 
 # --- preflight -----------------------------------------------------------------
@@ -479,7 +510,7 @@ class _Driver:
         except OSError as exc:
             code, out = 126, "gate could not run: %s" % exc
         self.say("%s gate exit %s" % (task.id, code))
-        return sd.GateVerdict(a.task_id, code, (out or "")[-_TAIL:])
+        return sd.GateVerdict(a.task_id, code, failure_detail(out))
 
     def compute_changes(self):
         if self.state.audit_dispatch:

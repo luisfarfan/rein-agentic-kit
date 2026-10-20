@@ -1816,5 +1816,55 @@ class TestChangedFiles(unittest.TestCase):
             self.assertEqual(ship.changed_files(d, "main"), ["b.txt", "c.txt", "new/d.txt"])
 
 
+def _gate_json(slots):
+    return json.dumps({"decision": {"decision": "red"}, "report": {"results": slots}})
+
+
+class TestFailureDetail(ShipCase):
+    def _verdict(self, out):
+        class T:  # minimal driver surface for run_gate
+            pass
+        drv = ship._Driver.__new__(ship._Driver)
+        task = T(); task.repo = "r"; task.id = "T001"
+        drv.state = T(); drv.state.tasks = {"T001": task}; drv.state.worktree_paths = {"r": "/wt"}
+        drv.gate_runner = lambda path, unit_only, timeout=900.0: (1, out)
+        drv.cfg = T(); drv.cfg.gate_timeout_seconds = 900.0
+        drv.say = lambda *a, **k: None
+        a = T(); a.task_id = "T001"; a.unit_only = True
+        return drv.run_gate(a)
+
+    def test_detail_from_gate_json_has_deep_error(self):
+        out = _gate_json({
+            "lint": {"slot": "lint", "outcome": "ok", "exitCode": 0, "command": "ruff", "outputHead": ["fine"]},
+            "test": {"slot": "test", "outcome": "failed", "exitCode": 1, "command": "pytest -q",
+                     "outputHead": ["head %d" % i for i in range(20)],
+                     "errorLines": ["FAILED test_x - AssertionError: deep boom"]},
+        })
+        v = self._verdict(out)
+        self.assertIn("test [failed] exit=1 $ pytest -q", v.reason)
+        self.assertIn("deep boom", v.reason)
+        self.assertNotIn("lint [", v.reason)
+        self.assertNotIn("head 3", v.reason)
+
+    def test_falls_back_to_output_head_when_no_error_lines(self):
+        out = _gate_json({"test": {"slot": "test", "outcome": "timeout", "exitCode": None, "command": "t",
+                                   "outputHead": ["started"], "errorLines": []}})
+        self.assertIn("started", self._verdict(out).reason)
+
+    def test_non_json_falls_back_to_tail(self):
+        out = "x" * 5000 + "gate timed out"
+        v = self._verdict(out)
+        self.assertEqual(v.reason, out[-ship._TAIL:])
+
+    def test_cap_respected_and_first_header_kept(self):
+        slots = {n: {"slot": n, "outcome": "failed", "exitCode": 1, "command": "c-" + n,
+                     "outputHead": [], "errorLines": ["e%d %s" % (i, "y" * 100) for i in range(40)]}
+                 for n in ("aaa", "test")}
+        v = self._verdict(_gate_json(slots))
+        self.assertLessEqual(len(v.reason), ship._FAILURE_CAP)
+        self.assertTrue(v.reason.startswith("aaa [failed] exit=1 $ c-aaa"))
+        self.assertIn("test [failed]", v.reason)
+
+
 if __name__ == "__main__":
     unittest.main()

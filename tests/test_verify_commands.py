@@ -434,5 +434,18 @@ class TestInconclusiveTestOne(unittest.TestCase):
         self.assertTrue(report["allInvocable"])
 
 
+class TestErrorLines(unittest.TestCase):
+    def test_failed_slot_carries_error_lines_ok_slot_does_not(self):
+        script = "i=1; while [ $i -le 30 ]; do echo filler $i; i=$((i+1)); done; echo 'AssertionError: deep boom'; exit 1"
+        with Project({"ok.sh": "#!/bin/sh\nexit 0\n", "bad.sh": "#!/bin/sh\n" + script + "\n"}) as root:
+            report = verify.verify_commands(_resolved(root, {"test": "./bad.sh", "lint": "./ok.sh"}))
+        bad, ok = report["results"]["test"], report["results"]["lint"]
+        self.assertNotIn("errorLines", ok)
+        self.assertTrue(any("deep boom" in line for line in bad["errorLines"]))
+        self.assertFalse(any("deep boom" in line for line in bad["outputHead"]))
+        for key in ("slot", "command", "outcome", "exitCode", "outputHead", "elapsedMs"):
+            self.assertIn(key, bad)
+
+
 if __name__ == "__main__":
     unittest.main()
