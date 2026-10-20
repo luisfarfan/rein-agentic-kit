@@ -357,11 +357,6 @@ class QuickCloseTests(Env):
 
     def test_no_commits_beyond_base_sha_is_nothing_to_keep(self):
         path, _ = self.linked("fix")
-        self.record(path, base="nonexistent-but-unused")
-        # base cannot be fetched, but HEAD == base_sha: nothing to keep... still must fetch to be sure
-        code, _ = self.close(arg=path)
-        self.assertEqual(code, 1)  # an unverifiable base blocks even here
-        self.out.clear()
         self.record(path)
         code, orca = self.close(arg=path)
         self.assertEqual(code, 0, self.text())
@@ -598,6 +593,77 @@ class DoneSafetyTests(Env):
         self.assertFalse(os.path.exists(os.path.join(root, "openspec", "changes", "archive")))
         self.assertEqual(git(root, "status", "--porcelain").strip(), "")
         self.assertTrue(os.path.isfile(sp))
+
+
+class NoiseTests(Env):
+    def ignore_env(self, wt):
+        excl = git(wt, "rev-parse", "--git-path", "info/exclude").strip()
+        excl = excl if os.path.isabs(excl) else os.path.join(wt, excl)
+        os.makedirs(os.path.dirname(excl), exist_ok=True)
+        with open(excl, "a") as fh:
+            fh.write(".env\n.env.local\n.claude/\n.pytest_cache/\n.mcp.json\n.codegraph/\n.next/\n")
+
+    def write(self, base, rel, text):
+        full = os.path.join(base, rel)
+        os.makedirs(os.path.dirname(full), exist_ok=True)
+        with open(full, "w") as fh:
+            fh.write(text)
+
+    def test_tool_caches_and_mcp_json_are_not_warned(self):
+        root = self.plan_repo()
+        wt = self.worktree()
+        self.ignore_env(wt)
+        for rel in (".claude/settings.local.json", ".pytest_cache/v/x", ".mcp.json", ".codegraph/db",
+                    ".next/cache/a"):
+            self.write(wt, rel, "x")
+        self.state(root, {"api": wt})
+        code, _ = self.run_done(root)
+        self.assertEqual(code, 0, self.text())
+        self.assertNotIn("WARNING", self.text())
+
+    def test_identical_copy_in_main_checkout_is_not_lost(self):
+        root = self.plan_repo()
+        wt = self.worktree()
+        main = wt + "-main"
+        self.ignore_env(wt)
+        self.write(wt, ".env", "SECRET=1")
+        self.write(main, ".env", "SECRET=1")
+        self.write(wt, ".env.local", "A=2")
+        self.write(main, ".env.local", "A=DIFFERENT")
+        self.write(wt, "only-here.txt", "z")
+        excl = git(wt, "rev-parse", "--git-path", "info/exclude").strip()
+        excl = excl if os.path.isabs(excl) else os.path.join(wt, excl)
+        with open(excl, "a") as fh:
+            fh.write("only-here.txt\n")
+        self.state(root, {"api": wt})
+        code, _ = self.run_done(root)
+        self.assertEqual(code, 1)
+        text = self.text()
+        self.assertIn(".env.local", text)
+        self.assertIn("only-here.txt", text)
+        self.assertNotIn("SECRET", text)
+        lines = [l for l in self.out if l.strip().endswith(": .env")]
+        self.assertEqual(lines, [])
+
+    def test_quick_close_checks_develop_when_base_is_not_on_the_remote(self):
+        main = os.path.join(self.tmp, "qm")
+        self.clone(self.origin, main)
+        path = os.path.join(self.tmp, "quick-x")
+        git(main, "worktree", "add", "-q", "-b", "quick-x", path, "origin/develop")
+        sha = git(path, "rev-parse", "HEAD").strip()
+        self.write(path, ".rein/quick.json", json.dumps({"base": "ship/some-change", "base_sha": "0" * 40}))
+        client = OrcaClient(executable="ORCA", runner=FakeOrca())
+        code = ship_done.run_quick_close(path, client, cwd=self.tmp, say=self.say)
+        self.assertEqual(code, 0, self.text())
+        self.assertIn("origin/develop", self.text())
+        # an unmerged commit still blocks under the fallback ref
+        self.out.clear()
+        self.write(path, ".rein/quick.json", json.dumps({"base": "ship/some-change", "base_sha": "0" * 40}))
+        commit_file(path, "new.txt")
+        code = ship_done.run_quick_close(path, client, cwd=self.tmp, say=self.say)
+        self.assertEqual(code, 1)
+        self.assertIn("not integrated", self.text())
+        self.assertEqual(sha, git(main, "rev-parse", "origin/develop").strip())
 
 
 class QuickCloseSafetyTests(QuickCloseTests):

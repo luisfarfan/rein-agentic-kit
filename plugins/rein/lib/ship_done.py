@@ -9,6 +9,7 @@ fetched -- blocks the WHOLE operation: nothing is removed and the reasons are pr
 from __future__ import annotations
 
 import datetime
+import filecmp
 import json
 import os
 import shutil
@@ -44,7 +45,9 @@ def _base_name(repo: Optional[dict], git: Callable[..., tuple], path: str) -> st
     return DEFAULT_BASE
 
 
-IGNORED_OK = ("node_modules", ".rein", "dist", "build", ".angular", "__pycache__", ".venv", "coverage")
+IGNORED_OK = ("node_modules", ".rein", "dist", "build", ".angular", "__pycache__", ".venv", "coverage",
+              ".claude", ".codegraph", ".ruff_cache", ".pytest_cache", ".mypy_cache", ".cursor", ".turbo",
+              ".nx", ".next", ".parcel-cache", ".mcp.json")
 
 
 def _short_branch(name: str) -> str:
@@ -80,20 +83,59 @@ def branch_of(path: str, row: Optional[dict], git: Callable[..., tuple]) -> str:
     return out.strip() if code == 0 else ""
 
 
+def _main_checkout(path: str, git: Callable[..., tuple]) -> str:
+    """The repo's main checkout (parent of the common git dir); "" when it cannot be told."""
+    code, out = git(path, "rev-parse", "--git-common-dir")
+    if code != 0 or not out.strip():
+        return ""
+    common = os.path.realpath(os.path.join(path, out.strip()))
+    return os.path.dirname(common) if os.path.basename(common) == ".git" else ""
+
+
+def _same_as_main(main: str, path: str, name: str) -> bool:
+    """Byte-identical to the same relative path in the main checkout (contents are never printed)."""
+    if not main or name.endswith("/") or os.path.realpath(main) == os.path.realpath(path):
+        return False
+    theirs = os.path.join(main, name)
+    try:
+        return os.path.isfile(theirs) and filecmp.cmp(os.path.join(path, name), theirs, shallow=False)
+    except OSError:
+        return False
+
+
 def _ignored_files(path: str, git: Callable[..., tuple]) -> list:
     code, out = git(path, "status", "--porcelain", "--ignored", "--untracked-files=all")
+    main = _main_checkout(path, git)
     found = []
     for line in out.splitlines() if code == 0 else []:
         if not line.startswith("!! "):
             continue
         name = line[3:].strip().strip('"')
-        if not any(part in IGNORED_OK for part in name.strip("/").split("/")):
-            found.append(name)
+        if any(part in IGNORED_OK for part in name.strip("/").split("/")) or _same_as_main(main, path, name):
+            continue
+        found.append(name)
     return found
 
 
+def _resolve_base(path: str, base: str, git: Callable[..., tuple], fetch: Callable[[str, str], tuple],
+                  fallback: bool, notes: list) -> tuple:
+    """`(base to compare against, "")` or `("", why)`. With `fallback`, a base that is not on the
+    remote (a local ship branch) is replaced by develop, then main, and the notes say so."""
+    code, why = fetch(path, base)
+    if code == 0 and qd._ref_exists(git, path, "refs/remotes/origin/" + base):
+        return base, ""
+    if fallback:
+        for other in (DEFAULT_BASE, "main"):
+            if other != base and fetch(path, other)[0] == 0 and \
+                    qd._ref_exists(git, path, "refs/remotes/origin/" + other):
+                notes.append("origin/%s is not on the remote; checked against origin/%s instead" % (base, other))
+                return other, ""
+    return "", "cannot fetch origin/%s to verify it: %s" % (base, why or "no such remote branch")
+
+
 def check_worktree(path: str, base: str, git: Callable[..., tuple], fetch: Callable[[str, str], tuple],
-                   base_sha: str = "", branch: str = "", warnings: Optional[list] = None) -> str:
+                   base_sha: str = "", branch: str = "", warnings: Optional[list] = None,
+                   fallback: bool = False, notes: Optional[list] = None) -> str:
     """"" when `path` is clean and integrated into `origin/<base>`, else the reason it is not.
 
     Both HEAD and `branch` (the one Orca deletes with the worktree) must be integrated; a
@@ -109,9 +151,9 @@ def check_worktree(path: str, base: str, git: Callable[..., tuple], fetch: Calla
         return "detached HEAD and no known branch: cannot tell what would be lost"
     if warnings is not None:
         warnings.extend((path, name) for name in _ignored_files(path, git))
-    fetch_code, why = fetch(path, base)
-    if fetch_code != 0:
-        return "cannot fetch origin/%s to verify it: %s" % (base, why)
+    base, why = _resolve_base(path, base, git, fetch, fallback, notes if notes is not None else [])
+    if not base:
+        return why
     if base_sha:  # a quick record with no commits beyond its base has nothing to keep
         tips = {git(path, "rev-parse", "--verify", "--quiet", ref)[1].strip()
                 for ref in ("HEAD", "refs/heads/" + branch)}
@@ -359,9 +401,12 @@ def run_quick_close(arg: str, client: OrcaClient, *, cwd: str = ".", dry_run: bo
             continue
         row = rows.get(os.path.realpath(path))
         base = str(record.get("base") or DEFAULT_BASE)
-        branch = branch_of(path, row, git)
+        branch, notes = branch_of(path, row, git), []
         reason = check_worktree(path, base, git, fetch, base_sha=str(record.get("base_sha") or ""),
-                                branch=branch, warnings=warnings)
+                                branch=branch, warnings=warnings,
+                                fallback=True, notes=notes)
+        for note in notes:
+            say("%s: %s" % (path, note))
         if reason:
             blocked += 1
             say("kept: %s: %s" % (path, reason))
