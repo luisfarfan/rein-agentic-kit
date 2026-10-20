@@ -447,5 +447,21 @@ class TestErrorLines(unittest.TestCase):
             self.assertIn(key, bad)
 
 
+class TestFailureLines(unittest.TestCase):
+    def test_real_failure_beats_early_error_named_passes(self):
+        noise = "\n".join("test_error_handling_%d ... ok" % i for i in range(80))
+        text = noise + "\nFAIL: test_x\nAssertionError: real one\n"
+        got = verify.failure_lines(text)
+        self.assertTrue(any("real one" in line for line in got))
+        self.assertLessEqual(len(got), verify.ERROR_LINES_CAP)
+
+    def test_over_cap_keeps_the_last_failures(self):
+        text = "\n".join("FAIL: t%d" % i for i in range(200))
+        got = verify.failure_lines(text, cap=10)
+        self.assertEqual(len(got), 10)
+        self.assertIn("FAIL: t199", got)
+        self.assertNotIn("FAIL: t0", got)
+
+
 if __name__ == "__main__":
     unittest.main()

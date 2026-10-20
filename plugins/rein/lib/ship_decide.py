@@ -24,6 +24,7 @@ from ship_state import ShipState, TaskState
 
 _DEFAULT_RISKY = ["**/auth/**", "**/payments/**", "**/migrations/**"]
 _FAILURE_CAP = 2000
+GATE_FAILURE_CAP = 6000  # a failed gate's detail: the real error lines, not a 2000-char tail
 _BUSY = ("running", "gating", "gated")  # statuses that hold a repo's worktree
 _FIX_PREFIX = "AUDIT"
 # Task-less owner gates that hold the audit: no audit may start behind one.
@@ -497,7 +498,7 @@ def _on_tick(state: ShipState, event: Tick, cfg: ShipConfig, actions: list) -> N
 
 
 def _red(state: ShipState, task: TaskState, reason: str, cfg: ShipConfig, actions: list) -> None:
-    task.last_failure = reason[:_FAILURE_CAP]
+    task.last_failure = reason[:GATE_FAILURE_CAP]
     if task.attempts < cfg.max_retries:
         # Back to pending: the next Tick re-dispatches it, so a retry meets the
         # same brake, caps, one-worker-per-repo rule and implementer choice as

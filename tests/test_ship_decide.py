@@ -306,10 +306,11 @@ class WorkerEvents(unittest.TestCase):
 
         # red with retries left: back to pending for the next Tick
         state = ship(gating(attempts=1), worktrees={"a": "wt-a"})
-        new, actions = sd.decide(state, sd.GateVerdict("1", 1, "x" * 3000), CFG)
+        new, actions = sd.decide(state, sd.GateVerdict("1", 1, "x" * 4500 + "LATE" + "x" * 3000), CFG)
         self.assertEqual(actions, [sd.Release("d1")])
         t = new.tasks["1"]
-        self.assertEqual((t.status, t.attempts, len(t.last_failure)), ("pending", 2, 2000))
+        self.assertEqual((t.status, t.attempts, len(t.last_failure)), ("pending", 2, sd.GATE_FAILURE_CAP))
+        self.assertIn("LATE", t.last_failure)  # text past 2000 chars survives
 
         # red, retries exhausted
         new, actions = sd.decide(ship(gating(attempts=2)), sd.GateVerdict("1", 1, "boom"), CFG)

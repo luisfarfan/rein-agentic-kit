@@ -41,7 +41,7 @@ WAIT_MS = 15000      # bounded: gate-resolve sends no inbox message, so a wait m
 IDLE_POLLS = 3       # empty waits in a row before asking worker-list what needs doing
 SAFE_NEXT_ACTIONS = ("release", "retain")
 _TAIL = 2000
-_FAILURE_CAP = 6000
+_FAILURE_CAP = sd.GATE_FAILURE_CAP
 
 
 # --- specs ---------------------------------------------------------------------
@@ -133,7 +133,10 @@ def failure_detail(out: str) -> str:
         results = json.loads(out)["report"]["results"]
         blocks = []
         for slot, res in sorted(results.items()):
-            if res.get("outcome") == "ok":
+            if res.get("outcome") == "ok" or (
+                    res.get("outcome") == "skipped"
+                    or (res.get("outcome") == "proves_nothing"
+                        and not (res.get("errorLines") or res.get("outputHead")))):
                 continue
             lines = res.get("errorLines") or res.get("outputHead") or []
             blocks.append("%s [%s] exit=%s $ %s\n%s" % (

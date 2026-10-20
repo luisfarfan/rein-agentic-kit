@@ -205,6 +205,39 @@ class CommandResult:
         }
 
 
+_STRONG_RE = re.compile(
+    r"\bFAIL(?:ED|URES?)?\b|\bERROR\b|\w*Error:|AssertionError|\u2717|\u00d7|^=+ .*\b(?:failed|FAILURES)\b"
+)
+
+
+def failure_lines(text: str, cap: int = ERROR_LINES_CAP) -> list:
+    """The lines that explain a failure in a long capture, at most `cap`.
+
+    `error_lines` keeps the FIRST matches, so in a long suite names like
+    `test_error_handling ... ok` crowd out the assertion at the end. Here real
+    failure markers (FAIL/FAILED/ERROR/`XError:`/AssertionError/marks/a runner's
+    failure summary) come first, other matches only fill what is left, and over
+    the cap the LAST lines win -- a runner reports its failures last."""
+    if not isinstance(text, str) or not text:
+        return []
+    lines = text.splitlines()
+
+    def span(i):
+        return range(max(0, i - _CONTEXT), min(len(lines), i + _CONTEXT + 1))
+
+    strong, weak = set(), set()
+    for i, line in enumerate(lines):
+        if _STRONG_RE.search(line):
+            strong.update(span(i))
+        elif _ERROR_RE.search(line):
+            weak.update(span(i))
+    chosen = sorted(strong)[-cap:]
+    room = cap - len(chosen)
+    if room > 0:
+        chosen = sorted(set(chosen) | set(sorted(weak - strong)[-room:]))
+    return [lines[i][:_LINE_MAX] for i in chosen]
+
+
 def _first_lines(text: str, n: int = OUTPUT_HEAD_LINES) -> list[str]:
     return text.splitlines()[:n]
 
@@ -382,7 +415,7 @@ def verify_commands(resolved: dict, timeout: float = DEFAULT_TIMEOUT, only: set[
             if result.outcome != OUTCOME_OK:
                 # `outputHead` is only the first lines; the failing assertion of
                 # a long suite is far past them.
-                entry["errorLines"] = error_lines(result.output)
+                entry["errorLines"] = failure_lines(result.output)
             results[slot] = entry
     finally:
         if tmp_target and os.path.exists(tmp_target):

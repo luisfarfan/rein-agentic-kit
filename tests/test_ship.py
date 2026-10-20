@@ -1856,6 +1856,24 @@ class TestFailureDetail(ShipCase):
         v = self._verdict(out)
         self.assertEqual(v.reason, out[-ship._TAIL:])
 
+    def test_error_after_failing_lint_survives_the_decide_cap(self):
+        lint = {"slot": "lint", "outcome": "failed", "exitCode": 1, "command": "ruff",
+                "outputHead": [], "errorLines": ["lint error %d %s" % (i, "z" * 60) for i in range(40)]}
+        test = {"slot": "test", "outcome": "failed", "exitCode": 1, "command": "pytest",
+                "outputHead": [], "errorLines": ["AssertionError: the real one"]}
+        reason = self._verdict(_gate_json({"lint": lint, "test": test})).reason
+        self.assertGreater(len(reason), 2000)
+        self.assertLessEqual(len(reason), ship._FAILURE_CAP)
+        self.assertIn("the real one", reason)
+
+    def test_skipped_slot_is_left_out(self):
+        out = _gate_json({"serve": {"slot": "serve", "outcome": "skipped", "exitCode": None, "command": "dev",
+                                    "outputHead": [], "error": "x"},
+                          "test": {"slot": "test", "outcome": "failed", "exitCode": 1, "command": "t",
+                                   "outputHead": [], "errorLines": ["boom"]}})
+        self.assertNotIn("serve [", self._verdict(out).reason)
+
+
     def test_cap_respected_and_first_header_kept(self):
         slots = {n: {"slot": n, "outcome": "failed", "exitCode": 1, "command": "c-" + n,
                      "outputHead": [], "errorLines": ["e%d %s" % (i, "y" * 100) for i in range(40)]}
