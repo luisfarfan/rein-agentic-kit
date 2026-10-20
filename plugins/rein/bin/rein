@@ -44,10 +44,11 @@ Subcommands:
                       list (no text) or resolve the owner gates a running `rein ship`
                       is waiting on; option gates take one of their options. Exit 0 /
                       1 failure / 2 usage (ambiguous change or gate, invalid option)
-  rein watch <change> [--root <plan repo>] [--once]
+  rein watch <change> [--root <plan repo>] [--once] [--skip <id,id>]
                       block until `rein ship <change>` needs the owner (a new question,
                       the run finished, or the driver died), print it, exit 0. --once
-                      polls a single time and exits 1 when nothing is pending. Exit 2
+                      polls a single time and exits 1 when nothing is pending; --skip hides
+                      gates the owner deferred. Exit 2
                       usage
   rein quick "<sentence>" [--repo <name>] [--base <branch>] [--here [--dirty-ok]]
                       [--agent <id> [--model <m>]] [--linear <id>]
@@ -884,14 +885,14 @@ def cmd_answer(argv: list[str]) -> int:
 
 def cmd_watch(argv: list[str]) -> int:
     """`rein watch <change>`: wake the planning session when Rein needs the owner."""
-    usage = "usage: rein watch <change> [--root <plan repo>] [--once]"
+    usage = "usage: rein watch <change> [--root <plan repo>] [--once] [--skip <id,id>]"
     words, skip, once = [], False, False
     for a in argv:
         if skip:
             skip = False
-        elif a == "--root":
+        elif a in ("--root", "--skip"):
             skip = True
-        elif a.startswith("--root="):
+        elif a.startswith(("--root=", "--skip=")):
             continue
         elif a == "--once":
             once = True
@@ -903,7 +904,11 @@ def cmd_watch(argv: list[str]) -> int:
     if skip or len(words) != 1:
         print(usage)
         return 2
-    return _watch.run_watch(_opt(argv, "root", "."), words[0], _ship.OrcaClient(), once=once)
+    skipped = frozenset(i.strip() for i in _opt(argv, "skip").split(",") if i.strip())
+    if ("--skip" in argv or any(a.startswith("--skip=") for a in argv)) and not skipped:
+        print(usage)
+        return 2
+    return _watch.run_watch(_opt(argv, "root", "."), words[0], _ship.OrcaClient(), once=once, skip=skipped)
 
 
 def cmd_quick(argv: list[str]) -> int:

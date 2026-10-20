@@ -21,7 +21,7 @@ from test_ship_ux import FakeOrca, UxCase, _gate  # noqa: E402
 
 
 class WatchCase(UxCase):
-    def watch(self, fake, change="demo", once=False, alive=True, max_polls=5):
+    def watch(self, fake, change="demo", once=False, alive=True, max_polls=5, skip=()):
         sleeps = []
 
         def sleep(s):
@@ -31,7 +31,7 @@ class WatchCase(UxCase):
 
         self.sleeps = sleeps
         return self.capture(ship_watch.run_watch, self.root, change, self.client(fake), once=once,
-                            sleep=sleep, driver_alive=lambda c: alive)
+                            sleep=sleep, driver_alive=lambda c: alive, skip=frozenset(skip))
 
     def set_phase(self, change, phase, **kw):
         path = ship_state.state_path(self.root, change)
@@ -100,6 +100,31 @@ class TestWatchGates(WatchCase):
         self.assertEqual(polls, [ship_watch.WATCH_POLL_SECONDS] * 2)
         self.assertIn("QUESTION g1", out)
         self.assertNotIn("PENDING", out)
+
+    def test_skip_suppresses_only_the_listed_ids(self):
+        self.write_state("demo", {"g1": "question", "g2": "question"})
+        fake = FakeOrca(gates=[_gate("g1"), _gate("g2")])
+        code, out = self.watch(fake, skip=["g1"])
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("g1", out)
+        self.assertIn("PENDING g2", out)
+
+    def test_skipping_everything_pending_waits_and_a_new_gate_still_wakes(self):
+        self.write_state("demo", {"g1": "question", "g2": "question"})
+        fake = FakeOrca(gates=[_gate("g1")])
+        polls = []
+
+        def sleep(s):
+            polls.append(s)
+            if len(polls) == 2:
+                fake.gates.append(_gate("g2"))
+
+        code, out = self.capture(ship_watch.run_watch, self.root, "demo", self.client(fake),
+                                 sleep=sleep, driver_alive=lambda c: True, skip=frozenset(["g1"]))
+        self.assertEqual(code, 0, out)
+        self.assertEqual(len(polls), 2)
+        self.assertIn("QUESTION g2", out)
+        self.assertNotIn("g1", out)
 
     def test_a_gate_with_a_queued_answer_is_ignored(self):
         self.write_state("demo", {"g1": "question"})
@@ -186,8 +211,15 @@ class TestWatchCli(unittest.TestCase):
         (root, change), kw = self.seen[0]
         self.assertEqual((root, change, kw["once"]), ("/r", "demo", True))
 
+    def test_skip_is_parsed(self):
+        self.assertEqual(self.cli.main(["watch", "demo", "--skip", "g1,g2"]), 0)
+        self.assertEqual(self.seen[0][1]["skip"], frozenset(["g1", "g2"]))
+        self.assertEqual(self.cli.main(["watch", "demo", "--skip=g3"]), 0)
+        self.assertEqual(self.seen[1][1]["skip"], frozenset(["g3"]))
+
     def test_usage_is_two(self):
-        for argv in ([], ["a", "b"], ["demo", "--nope"], ["demo", "--root"]):
+        for argv in ([], ["a", "b"], ["demo", "--nope"], ["demo", "--root"], ["demo", "--skip"],
+                     ["demo", "--skip", ""], ["demo", "--skip", ","]):
             buf = io.StringIO()
             with redirect_stdout(buf):
                 self.assertEqual(self.cli.main(["watch", *argv]), 2, argv)

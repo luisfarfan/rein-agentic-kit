@@ -73,11 +73,13 @@ def _poll(root: str, change: str, client: OrcaClient, printed: set, first: bool)
 
 def run_watch(root: str, change: str, client: OrcaClient, once: bool = False,
               sleep: Callable[[float], None] = time.sleep,
-              driver_alive: Callable[[str], bool] = driver_alive) -> int:
-    """Exit 0 once something was printed; 1 when `once` found nothing pending."""
+              driver_alive: Callable[[str], bool] = driver_alive, skip: frozenset = frozenset()) -> int:
+    """Exit 0 once something was printed; 1 when `once` found nothing pending.
+
+    Gate ids in `skip` (deferred by the owner) are never printed by this run."""
     root = os.path.abspath(root)
     dead_polls = 0
-    printed, first = set(), True
+    printed, first = set(skip), True
     while True:
         try:
             code, phase = _poll(root, change, client, printed, first)

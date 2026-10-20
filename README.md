@@ -149,12 +149,13 @@ rein answer [<change>] ["<text>"] [--gate <id>] [--root <plan repo>]
                  # another Orca terminal (which Orca fences) the answer is queued under
                  # .rein/ship/<change>.answers/ and the driver applies it within ~15 s.
                  # Exit: 0 ok · 1 Orca error or nothing to answer · 2 usage (ambiguous or invalid)
-rein watch <change> [--root <plan repo>] [--once]
+rein watch <change> [--root <plan repo>] [--once] [--skip <id,id>]
                  # block until the run needs you: prints PENDING <gate> for every open gate
                  # on its first poll, then QUESTION <gate> (full text, options) for new ones,
                  # FINISHED (audit result, task statuses) or STOPPED (driver not running), then
                  # exits 0. /ship runs it in the background so questions reach the planning
                  # session. Nothing is hidden across restarts.
+                 # --skip hides deferred gate ids (FINISHED/STOPPED/new gates still wake it).
                  # --once polls once, exit 1 if nothing pending · 2 usage
 rein quick "<sentence>" [--repo <name>] [--base <branch>] [--here [--dirty-ok]] [--agent <id> [--model <m>]] [--linear <id>]
                  # hand a small change to a cheap agent chosen by quota, in a tab you talk to.

@@ -7,7 +7,7 @@ license: MIT
 # /ship
 
 Hands a planned change to `rein ship` in its own Orca tab (`/rein:ship` when namespaced), then
-keeps the owner in THIS session: Rein's questions come back here.
+keeps the owner in THIS session.
 **Never edits code, pushes, merges or opens a PR.**
 
 Usage: `/ship <change> [--root <plan repo>]`
@@ -26,12 +26,12 @@ It applies to every task.
    to stay in this session: Rein's decision gate questions will appear here.
 4. When the watcher wakes, act on its first word:
    - **QUESTION** / **PENDING** (handle ALL listed gates, one by one): read each question in
-     full; look briefly (read-only) at the relevant files, diff or logs. Tell the owner in plain
-     language what is asked, the options, and your recommendation with one-line reasons. Wait for
-     the owner, then run `rein answer <change> "<text>" --gate <id> --root <root>` (option gates:
-     exactly one listed option; never invent an answer). On exit 2, re-show the options and ask
-     again. Start the watcher again only once every gate is answered or the owner defers.
-   - **FINISHED**: summarise the tasks, the audit result and where the work is; suggest
+     full; look briefly (read-only) at the relevant files or logs. Tell the owner in plain language
+     what is asked, the options, and a recommendation with one-line reasons. Wait for
+     the owner, then run `rein answer <change> "<text>" --gate <id> --root <root>` (option gates: one listed
+     option; never invent an answer). On exit 2, re-show the options, ask again. Start the watcher again once every gate is answered or deferred; for deferred ones use
+     `--skip <ids>` and say they can answer later with "¿qué me pregunta rein?".
+   - **FINISHED**: summarise tasks, audit result and where the work is; suggest
      reviewing the diff and pushing to develop themselves. Do not restart the watcher.
    - **STOPPED**: tell the owner and offer to resume it in the Orca tab "rein ship <change>";
      restart the watcher after.
