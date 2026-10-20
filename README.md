@@ -157,6 +157,11 @@ rein watch <change> [--root <plan repo>] [--once] [--skip <id,id>]
                  # session. Nothing is hidden across restarts.
                  # --skip hides deferred gate ids (FINISHED/STOPPED/new gates still wake it).
                  # --once polls once, exit 1 if nothing pending · 2 usage
+rein done <change> [--root <plan repo>] [--dry-run]
+                 # close a finished change: remove its Orca worktrees, close the "rein ship" tab,
+                 # archive the openspec plan (local commit, no push), archive the ship state.
+                 # Removes NOTHING if any worktree is dirty or has commits not in origin/<base>.
+                 # Exit: 0 closed · 1 blockers · 2 usage · 126 Orca error
 rein quick "<sentence>" [--repo <name>] [--base <branch>] [--here [--dirty-ok]] [--agent <id> [--model <m>]] [--linear <id>]
                  # hand a small change to a cheap agent chosen by quota, in a tab you talk to.
                  # Default: its own worktree off develop, or the remote's default branch when there is none; --here uses the main checkout

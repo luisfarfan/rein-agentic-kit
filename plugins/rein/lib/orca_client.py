@@ -209,6 +209,10 @@ class OrcaClient:
             args += ["--worktree", worktree]
         return self._call(*args)
 
+    def terminal_close(self, handle: str) -> dict:
+        """Close one terminal by its runtime handle."""
+        return self._call("terminal", "close", "--terminal", handle)
+
     # -- worktrees --------------------------------------------------------
     def worktree_create(
         self, repo: str, name: str, base: str, agent: str, model: str, prompt: str,
@@ -228,6 +232,16 @@ class OrcaClient:
         """Start a fresh agent in an existing worktree (`worktree` is a selector)."""
         return self._call("agent", "launch", "--worktree", worktree, "--agent", agent,
                           "--model", model, "--prompt", prompt, "--focus")
+
+    def worktree_list(self, repo: str = "") -> dict:
+        args = ["worktree", "list"]
+        if repo:  # an Orca selector such as `path:/abs/dir`
+            args += ["--repo", repo]
+        return self._call(*args)
+
+    def worktree_rm(self, selector: str) -> dict:
+        """Remove a worktree from Orca and git. Never forced: a dirty one is refused by Orca."""
+        return self._call("worktree", "rm", "--worktree", selector)
 
     def worktree_set(
         self, selector: str, *, workspace_status: str = "", comment: str = ""

@@ -58,6 +58,11 @@ Subcommands:
   rein quick done     run by that agent when you say "listo": light gate on the
                       changed files, plus an audit only for risky paths. Never commits
                       or pushes. Exit 0 green / 1 red / 2 no quick task / 126 setup
+  rein done <change> [--root <plan repo>] [--dry-run]
+                      close a finished change: remove its worktrees, close its tab,
+                      archive the openspec plan (local commit, never pushed). Removes
+                      NOTHING if any worktree is dirty or not integrated into
+                      origin/<base>. Exit 0 closed / 1 blockers / 2 usage / 126 Orca error
   rein migrate-config [root] [--write]
                       v1 -> v2 flow.config.json: drop models/limits/worktree, add the
                       ship block. Prints a diff; writes only with --write
@@ -91,6 +96,7 @@ import roles as _roles  # noqa: E402
 import serve as _serve  # noqa: E402
 import ship as _ship  # noqa: E402
 import ship_answer as _answer  # noqa: E402
+import ship_done as _done  # noqa: E402
 import ship_watch as _watch  # noqa: E402
 import token_report as _tr  # noqa: E402
 import verify as _verify  # noqa: E402
@@ -911,6 +917,30 @@ def cmd_watch(argv: list[str]) -> int:
     return _watch.run_watch(_opt(argv, "root", "."), words[0], _ship.OrcaClient(), once=once, skip=skipped)
 
 
+def cmd_done(argv: list[str]) -> int:
+    """`rein done <change>`: remove what a finished change left behind, safely."""
+    usage = "usage: rein done <change> [--root <plan repo>] [--dry-run]"
+    words, skip, dry = [], False, False
+    for a in argv:
+        if skip:
+            skip = False
+        elif a == "--root":
+            skip = True
+        elif a.startswith("--root="):
+            continue
+        elif a == "--dry-run":
+            dry = True
+        elif a.startswith("-"):
+            print(usage)
+            return 2
+        else:
+            words.append(a)
+    if skip or len(words) != 1 or not _opt(argv, "root", "."):
+        print(usage)
+        return 2
+    return _done.run_done(_opt(argv, "root", "."), words[0], _ship.OrcaClient(), dry_run=dry)
+
+
 def cmd_quick(argv: list[str]) -> int:
     """Start a quick task (`rein quick "<sentence>"`) or close it (`rein quick done`).
 
@@ -1014,6 +1044,7 @@ COMMANDS = {
     "ship": cmd_ship,
     "answer": cmd_answer,
     "watch": cmd_watch,
+    "done": cmd_done,
     "quick": cmd_quick,
     "migrate-config": cmd_migrate_config,
 }
