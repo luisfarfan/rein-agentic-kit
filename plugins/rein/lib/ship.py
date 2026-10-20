@@ -110,6 +110,11 @@ REAUDIT_SCOPE = (
 )
 
 
+INLINE_REVIEW = ("If you cannot launch the code-reviewer agent (Codex, Antigravity and other non-Claude "
+                 "auditors cannot), do the five-axis review yourself: correctness, readability, "
+                 "architecture, security, performance. Never ask the gate for a reviewer.")
+
+
 def build_audit_spec(plan: dict, changed: dict, reviewer_profile: str,
                      audit_root: str = "", change: str = "", previous_blocking: list = (),
                      fix_commits: dict = None) -> str:
@@ -126,6 +131,7 @@ def build_audit_spec(plan: dict, changed: dict, reviewer_profile: str,
         lines.append("Audit the change as a whole; you wrote none of it.")
     if plan.get("why"):
         lines.append("Why: %s" % plan["why"])
+    lines.append(INLINE_REVIEW)
     lines.append("Audit worktree (your working directory): %s" % audit_root)
     for path, files in changed.items():
         lines.append("Run the rein-audit skill on %s" % path)

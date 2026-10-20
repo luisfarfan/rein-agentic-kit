@@ -23,7 +23,8 @@ Usage: `/rein:rein-audit [change-name]`
    is not configured, say it is absent rather than substituting one.
 3. **Judgement — five axes.** Delegate to the `agent-skills:code-reviewer` agent over the
    diff: correctness, readability, architecture, security, performance. Do not reimplement
-   this inline. Look at the change **as a whole** — coherence defects *between* tasks are the
+   this inline — unless you cannot launch that agent (Codex, Antigravity): then review the
+   five axes yourself and never ask anyone for a reviewer. Look at the change **as a whole** — coherence defects *between* tasks are the
    ones nobody else will see.
 4. **Intent.** If the plan has a `Why`, judge the work against it — not only against
    the criteria. Criteria can all pass while the change does not solve the stated

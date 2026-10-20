@@ -1785,6 +1785,17 @@ class TestSpecs(unittest.TestCase):
         fix = self.task(id="AUDIT1-proxima-api", last_failure="BLOCKING: missing test", verification="")
         self.assertIn("missing test", ship.build_task_spec(fix, self.PLAN))
 
+    def test_audit_spec_lets_a_non_claude_auditor_review_the_five_axes_itself(self):
+        # Codex cannot launch Claude's code-reviewer agent; it must not stall on the gate.
+        for spec in (ship.build_audit_spec(self.PLAN, {"/wt/a": ["x.py"]}, "R", "/wt/a", "demo"),
+                     ship.build_audit_spec(self.PLAN, {"/wt/a": ["x.py"]}, "R", "/wt/a", "demo",
+                                           previous_blocking=["BLOCKING: x"])):
+            self.assertIn("do the five-axis review yourself", spec)
+            self.assertIn("Never ask the gate for a reviewer", spec)
+        skill = open(os.path.join(os.path.dirname(__file__), "..", "plugins", "rein", "skills",
+                                  "rein-audit", "SKILL.md")).read()
+        self.assertIn("review the\n   five axes yourself", skill)
+
     def test_audit_spec_names_every_worktree_and_the_exact_record_command(self):
         spec = ship.build_audit_spec(self.PLAN, {"/wt/a": ["x.py"], "/wt/b": ["y.py"]}, "REVIEWER",
                                      "/wt/a", "demo")
