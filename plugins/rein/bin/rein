@@ -44,6 +44,11 @@ Subcommands:
                       list (no text) or resolve the owner gates a running `rein ship`
                       is waiting on; option gates take one of their options. Exit 0 /
                       1 failure / 2 usage (ambiguous change or gate, invalid option)
+  rein watch <change> [--root <plan repo>] [--once]
+                      block until `rein ship <change>` needs the owner (a new question,
+                      the run finished, or the driver died), print it, exit 0. --once
+                      polls a single time and exits 1 when nothing is pending. Exit 2
+                      usage
   rein quick "<sentence>" [--repo <name>] [--base <branch>] [--here [--dirty-ok]]
                       [--agent <id> [--model <m>]] [--linear <id>]
                       hand a small change to a cheap agent chosen by quota, in a tab
@@ -85,6 +90,7 @@ import roles as _roles  # noqa: E402
 import serve as _serve  # noqa: E402
 import ship as _ship  # noqa: E402
 import ship_answer as _answer  # noqa: E402
+import ship_watch as _watch  # noqa: E402
 import token_report as _tr  # noqa: E402
 import verify as _verify  # noqa: E402
 
@@ -876,6 +882,30 @@ def cmd_answer(argv: list[str]) -> int:
     return _answer.run_answer(_opt(argv, "root", "."), change, text, _opt(argv, "gate"), _ship.OrcaClient())
 
 
+def cmd_watch(argv: list[str]) -> int:
+    """`rein watch <change>`: wake the planning session when Rein needs the owner."""
+    usage = "usage: rein watch <change> [--root <plan repo>] [--once]"
+    words, skip, once = [], False, False
+    for a in argv:
+        if skip:
+            skip = False
+        elif a == "--root":
+            skip = True
+        elif a.startswith("--root="):
+            continue
+        elif a == "--once":
+            once = True
+        elif a.startswith("-"):
+            print(usage)
+            return 2
+        else:
+            words.append(a)
+    if skip or len(words) != 1:
+        print(usage)
+        return 2
+    return _watch.run_watch(_opt(argv, "root", "."), words[0], _ship.OrcaClient(), once=once)
+
+
 def cmd_quick(argv: list[str]) -> int:
     """Start a quick task (`rein quick "<sentence>"`) or close it (`rein quick done`).
 
@@ -978,6 +1008,7 @@ COMMANDS = {
     "serve-probe": cmd_serve_probe,
     "ship": cmd_ship,
     "answer": cmd_answer,
+    "watch": cmd_watch,
     "quick": cmd_quick,
     "migrate-config": cmd_migrate_config,
 }
