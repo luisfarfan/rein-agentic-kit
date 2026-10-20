@@ -81,5 +81,8 @@ Usage: `/rein:rein-plan <change-name> [description]`
 - Every task has a **runnable** `Verification` (one test file or id, never "the suite") or
   `Human review: true`. Check commands against `config.commands`; say which are missing.
 - Criteria are checkable and name the **guarantee**, not a proxy a fixture can dodge.
+- `Human review: true` only for a product decision or content the owner must sign (labels,
+  copy, prices, a go/no-go) — never for technical work the Verification and the audit already
+  check; at most 2 per change.
 - A task fits one worker session; `Depends on` is real and drives the order.
 - If the request is too vague for checkable criteria, say so and ask.

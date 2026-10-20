@@ -1795,6 +1795,22 @@ class TestSpecs(unittest.TestCase):
         self.assertIn("BLOCKING: x.py leaks", spec)
         self.assertIn("BLOCKING: y.py crashes", spec)
 
+    def test_task_spec_carries_the_plans_decisions_capped(self):
+        plan = {**self.PLAN, "decisions": [
+            {"id": "D1", "title": "Use Postgres", "rationale": "the team runs it"},
+            {"id": "D2", "title": "No cache", "rationale": ""}]}
+        spec = ship.build_task_spec(self.task(), plan)
+        self.assertIn("Decisions (binding):", spec)
+        self.assertIn("- D1: Use Postgres \u2014 the team runs it", spec)
+        self.assertIn("- D2: No cache", spec)
+        self.assertLess(spec.index("Why: Because."), spec.index("Decisions (binding):"))
+        self.assertNotIn("Decisions (binding):", ship.build_task_spec(self.task(), self.PLAN))
+        big = {**self.PLAN, "decisions": [{"id": "D%d" % i, "title": "t" * 100, "rationale": "r" * 100}
+                                          for i in range(30)]}
+        block = ship.build_task_spec(self.task(), big).split("Decisions (binding):\n", 1)[1]
+        block = block.split("\n\n", 1)[0].split("\nOut of scope:", 1)[0]
+        self.assertLessEqual(len(block), 1500)
+
     def test_audit_spec_quotes_paths_with_spaces(self):
         spec = ship.build_audit_spec(self.PLAN, {"/w t/a": ["x.py"]}, "R", "/w t/a", "demo")
         self.assertIn("--root '/w t/a' --change demo", spec)

@@ -57,6 +57,26 @@ WORKER_PREAMBLE = (
 )
 
 
+DECISIONS_LIMIT = 1500
+
+
+def _decisions_block(decisions: list) -> str:
+    """One line per plan decision, whole lines only, at most DECISIONS_LIMIT characters."""
+    out, size = [], 0
+    for d in decisions:
+        line = "- %s: %s" % (d.get("id"), d.get("title"))
+        if d.get("rationale"):
+            line += " \u2014 %s" % d["rationale"]
+        line = line.replace("\n", " ")
+        if size + len(line) + (1 if out else 0) > DECISIONS_LIMIT:
+            if not out:
+                out.append(line[:DECISIONS_LIMIT])
+            break
+        out.append(line)
+        size += len(line) + (1 if len(out) > 1 else 0)
+    return "\n".join(out)
+
+
 def build_task_spec(task: ss.TaskState, plan: dict) -> str:
     entry = next((t for t in plan.get("tasks") or [] if t.get("id") == task.id), {})
     lines = [WORKER_PREAMBLE, "", "Task %s: %s" % (task.id, entry.get("title") or task.id)]
@@ -66,6 +86,9 @@ def build_task_spec(task: ss.TaskState, plan: dict) -> str:
         lines.append("Verification command: %s" % task.verification)
     if plan.get("why"):
         lines += ["", "Why: %s" % plan["why"]]
+    decisions = _decisions_block(plan.get("decisions") or [])
+    if decisions:
+        lines += ["", "Decisions (binding):", decisions]
     if plan.get("scopeOut"):
         lines += ["Out of scope:"] + ["- %s" % s for s in plan["scopeOut"]]
     if task.last_failure and task.attempts > 0:

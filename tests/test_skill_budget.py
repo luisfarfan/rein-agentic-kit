@@ -108,6 +108,11 @@ class TestSkillBudget(unittest.TestCase):
         for forbidden in ("pushes", "merges"):
             self.assertIn(forbidden, text)
 
+    def test_plan_limits_human_review_to_owner_decisions(self):
+        text = _read(os.path.join(SKILLS, "rein-plan", "SKILL.md"))
+        self.assertIn("at most 2 per change", text)
+        self.assertIn("never for technical work", text)
+
     def test_answer_mentions_the_ship_watcher(self):
         text = _read(os.path.join(SKILLS, "answer", "SKILL.md"))
         self.assertIn("watcher", text.split("\n# /answer", 1)[1][:400])
