@@ -6,8 +6,7 @@ license: MIT
 
 # /quick
 
-Starts a small change with `rein quick`; a cheap agent does it, the owner talks to that agent.
-Never edits code itself.
+Starts a small change with `rein quick`; a cheap agent does it and the owner talks to it. Never edits code.
 
 ## Steps
 
@@ -16,8 +15,7 @@ Never edits code itself.
    `PPR-…` id → `--linear <id>`.
 2. A sentence naming two repos: stop. Suggest `/rein:rein-plan`, then `/ship`.
 3. Run once: `rein quick "<sentence>" [flags]`.
-4. Report the agent, the workspace and the tab. The owner now talks to that agent there; when
-   they say "listo", the agent runs `rein quick done`.
-5. Exit 2 (e.g. a dirty checkout with "aquí mismo"): show the message and ask the owner before
-   re-running with `--dirty-ok`.
-6. Exit 1 or 126: show the output and stop; never retry.
+4. Report the agent, workspace and tab. When the owner says "listo", that agent runs `rein quick done`.
+5. Exit 2 (e.g. a dirty checkout with "aquí mismo"): ask the owner before re-running with `--dirty-ok`.
+6. Exit 1 or 126: show the output; never retry.
+7. "ciérrala" / "está done", change already in develop: `rein quick close <workspace>`; show blockers and stop.

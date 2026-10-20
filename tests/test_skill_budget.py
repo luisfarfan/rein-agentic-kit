@@ -21,7 +21,7 @@ sys.path.insert(0, os.path.join(PLUGIN, "lib"))
 
 import roles  # noqa: E402
 
-BUDGETS = {"rein-plan": 700, "ship": 350, "answer": 200, "quick": 200}
+BUDGETS = {"rein-plan": 700, "ship": 420, "answer": 200, "quick": 200}
 
 
 def _skill_files() -> list:
@@ -110,6 +110,7 @@ class TestSkillBudget(unittest.TestCase):
         self.assertIn("¿qué me pregunta rein?", text)
         self.assertIn("--agent codex", text)  # the agent-flag mapping stays
         self.assertIn("rein ship <change>", text)
+        self.assertIn("rein done <change> --root <root>", text)
         for forbidden in ("pushes", "merges"):
             self.assertIn(forbidden, text)
 
@@ -135,6 +136,8 @@ class TestSkillBudget(unittest.TestCase):
         self.assertIn("rein quick", text)
         self.assertIn("/rein:rein-plan", text)
         self.assertIn("never retry", text)
+        self.assertIn("rein quick close", text)
+        self.assertIn("está done", text)
         for trigger in ("tarea rápida", "arréglalo rápido", "cambio rápido", "quick task", "/quick"):
             self.assertIn(trigger, text)
 

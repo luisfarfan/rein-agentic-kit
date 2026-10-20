@@ -31,7 +31,10 @@ It applies to every task.
      the owner, then run `rein answer <change> "<text>" --gate <id> --root <root>` (option gates: one listed
      option; never invent an answer). On exit 2, re-show the options, ask again. Start the watcher again once every gate is answered or deferred; for deferred ones use
      `--skip <ids>` and say they can answer later with "¿qué me pregunta rein?".
-   - **FINISHED**: summarise tasks, audit result and where the work is; suggest
-     reviewing the diff and pushing to develop themselves. Do not restart the watcher.
+   - **FINISHED**: summarise tasks, audit result and where the work is. Then offer: push to
+     develop (only with the owner's yes: api first, then admin, respecting the hooks), and after
+     that close it with `rein done <change> --root <root>` (add `--dry-run` to preview). On
+     blockers (dirty or unintegrated worktrees) show them and stop; it removes nothing then.
+     Do not restart the watcher.
    - **STOPPED**: tell the owner and offer to resume it in the Orca tab "rein ship <change>";
      restart the watcher after.
