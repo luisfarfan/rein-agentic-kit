@@ -170,6 +170,10 @@ rein quick "<sentence>" [--repo <name>] [--base <branch>] [--here [--dirty-ok]] 
 rein quick done  # run by that agent on "listo": lint/typecheck plus the tests related to the
                  # changed files; an audit only if a risky path changed. Never commits.
                  # Exit: 0 green · 1 red · 2 no quick task here · 126 setup (not a verdict)
+rein quick close [<workspace path or quick-<slug> name>] [--dry-run]
+                 # remove the worktrees of finished quick tasks (all when no argument) and their
+                 # records, only if clean and integrated into origin/<base>; blocked ones are kept
+                 # and listed. A --here task only loses its record. Exit: 0 · 1 blockers · 126 Orca
 rein migrate-config # v1 -> v2 flow.config.json: drop models/limits/worktree, add `ship`.
                  # Prints a diff; writes only with --write
 rein doctor      # 🩺 start here: stack, resolved commands, and the source of each

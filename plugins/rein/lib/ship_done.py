@@ -188,3 +188,97 @@ def run_done(root: str, change: str, client: OrcaClient, *, dry_run: bool = Fals
         return 126
     say("done: %s closed" % change)
     return 126 if errors else 0
+
+
+# --- `rein quick close` -------------------------------------------------------
+
+def _has_record(path: str) -> bool:
+    return os.path.isfile(os.path.join(path, quick.RECORD))
+
+
+def _is_main_checkout(path: str) -> bool:
+    """A `--here` workspace is a repo's main checkout: its `.git` is a directory, not a linked file."""
+    return os.path.isdir(os.path.join(path, ".git"))
+
+
+def _toplevel(cwd: str, git: Callable[..., tuple]) -> str:
+    code, out = git(cwd, "rev-parse", "--show-toplevel")
+    return out.strip() if code == 0 else ""
+
+
+def _orca_worktree_paths(client: OrcaClient) -> list:
+    listed = client.worktree_list().get("worktrees")
+    return [str(w["path"]) for w in listed or [] if isinstance(w, dict) and w.get("path")]
+
+
+def run_quick_close(arg: str, client: OrcaClient, *, cwd: str = ".", dry_run: bool = False,
+                    git: Callable[..., tuple] = qd.run_git, fetch: Callable[[str, str], tuple] = qd.run_fetch,
+                    say: Callable[[str], None] = print) -> int:
+    try:
+        listed = _orca_worktree_paths(client)
+    except OrcaError as exc:
+        if arg and os.path.isdir(arg):
+            listed = []  # an explicit path does not need Orca to be found
+        else:
+            say("orca failed: %s" % exc.message)
+            return 126
+    if arg:
+        if os.path.isdir(arg) and _has_record(arg):
+            targets = [os.path.abspath(arg)]
+        else:
+            targets = [p for p in listed if os.path.basename(p.rstrip("/")) == arg and _has_record(p)]
+        if not targets:
+            say("rein quick close: no quick task found for %r" % arg)
+            return 1
+    else:
+        candidates = list(listed)
+        top = _toplevel(cwd, git)
+        if top:
+            candidates.append(top)
+        targets, seen = [], set()
+        for path in candidates:
+            real = os.path.realpath(path)
+            if real not in seen and _has_record(path):
+                seen.add(real)
+                targets.append(path)
+        if not targets:
+            say("no quick tasks to close")
+            return 0
+
+    blocked = errors = closed = 0
+    for path in targets:
+        record, why = qd._load_record(path)
+        if record is None:
+            blocked += 1
+            say("blocker: %s: %s" % (path, why))
+            continue
+        base = str(record.get("base") or DEFAULT_BASE)
+        if not os.path.isdir(path):
+            continue
+        reason = check_worktree(path, base, git, fetch, base_sha=str(record.get("base_sha") or ""))
+        if reason:
+            blocked += 1
+            say("kept: %s: %s" % (path, reason))
+            continue
+        here = _is_main_checkout(path)
+        if dry_run:
+            say("would %s" % ("delete the record in %s" % path if here else "remove worktree %s" % path))
+            closed += 1
+            continue
+        if not here:
+            try:
+                client.worktree_rm("path:" + path)
+            except OrcaError as exc:
+                errors += 1
+                say("orca could not remove %s: %s" % (path, exc.message))
+                continue
+            say("removed worktree %s" % path)
+        else:
+            say("kept the checkout %s (it is a main checkout); deleted its quick record" % path)
+        try:
+            os.unlink(os.path.join(path, quick.RECORD))
+        except OSError:
+            pass
+        closed += 1
+    say("closed %d, kept %d" % (closed, blocked))
+    return 126 if errors else (1 if blocked else 0)

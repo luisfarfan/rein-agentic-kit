@@ -63,6 +63,11 @@ Subcommands:
                       archive the openspec plan (local commit, never pushed). Removes
                       NOTHING if any worktree is dirty or not integrated into
                       origin/<base>. Exit 0 closed / 1 blockers / 2 usage / 126 Orca error
+  rein quick close [<workspace path or quick-<slug> name>] [--dry-run]
+                      remove the worktrees of finished quick tasks (all of them when
+                      no argument) and their records, only when clean and integrated
+                      into origin/<base>; blocked ones are listed and kept. A --here
+                      task only loses its record. Exit 0 closed / 1 blockers / 126 Orca
   rein migrate-config [root] [--write]
                       v1 -> v2 flow.config.json: drop models/limits/worktree, add the
                       ship block. Prints a diff; writes only with --write
@@ -954,6 +959,14 @@ def cmd_quick(argv: list[str]) -> int:
     # One pass over argv. A value flag takes the next token as its value (or `--flag=value`);
     # a missing, empty or `-`-led value is a usage error, and the token that was not consumed
     # stays visible as its own flag. Everything else that is not a flag is a bare word.
+    if argv and argv[0] == "close":
+        close_usage = "usage: rein quick close [<workspace path or quick-<slug> name>] [--dry-run]"
+        rest = [a for a in argv[1:] if a != "--dry-run"]
+        if len(rest) > 1 or any(a.startswith("-") for a in rest):
+            print(close_usage)
+            return 2
+        return _done.run_quick_close(rest[0] if rest else "", _ship.OrcaClient(), cwd=".",
+                                     dry_run="--dry-run" in argv)
     value_flags = ("repo", "base", "agent", "model", "linear")
     values: dict = {}
     words: list = []

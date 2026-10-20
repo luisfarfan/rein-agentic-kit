@@ -299,5 +299,136 @@ class DoneTests(Env):
         self.assertEqual(code, 0, self.text())
 
 
+class QuickCloseTests(Env):
+    def record(self, workspace, base="develop", at_base=True):
+        sha = git(workspace, "rev-parse", "HEAD").strip()
+        os.makedirs(os.path.join(workspace, ".rein"), exist_ok=True)
+        with open(os.path.join(workspace, ".rein", "quick.json"), "w") as fh:
+            json.dump({"repo": "api", "workspace": workspace, "base": base, "base_sha": sha}, fh)
+
+    def quick_wt(self, name="quick-fix"):
+        path = self.worktree(name)
+        # a linked worktree has a `.git` FILE; emulate that so "not --here" is recognised
+        return path
+
+    def close(self, arg="", cwd=None, orca=None, dry=False):
+        orca = orca or FakeOrca()
+        client = OrcaClient(executable="ORCA", runner=orca)
+        code = ship_done.run_quick_close(arg, client, cwd=cwd or self.tmp, dry_run=dry, say=self.say)
+        return code, orca
+
+    def linked(self, name):
+        """A real linked worktree of a clone, like Orca makes."""
+        main = os.path.join(self.tmp, name + "-main")
+        self.clone(self.origin, main)
+        path = os.path.join(self.tmp, name)
+        git(main, "worktree", "add", "-q", "-b", "quick-" + name, path, "origin/develop")
+        return path, main
+
+    def test_clean_integrated_removed_and_record_deleted(self):
+        path, _ = self.linked("fix")
+        self.record(path)
+        code, orca = self.close(arg=path)
+        self.assertEqual(code, 0, self.text())
+        self.assertEqual(orca.rm_paths(), [path])
+
+    def test_dirty_blocks(self):
+        path, _ = self.linked("fix")
+        self.record(path)
+        with open(os.path.join(path, "wip"), "w") as fh:
+            fh.write("x")
+        code, orca = self.close(arg=path)
+        self.assertEqual(code, 1)
+        self.assertEqual(orca.rm_paths(), [])
+        self.assertTrue(os.path.isfile(os.path.join(path, ".rein", "quick.json")))
+
+    def test_unmerged_blocks(self):
+        path, _ = self.linked("fix")
+        self.record(path)
+        commit_file(path, "new.txt")
+        code, orca = self.close(arg=path)
+        self.assertEqual(code, 1)
+        self.assertEqual(orca.rm_paths(), [])
+        self.assertIn("not integrated", self.text())
+
+    def test_no_commits_beyond_base_sha_is_nothing_to_keep(self):
+        path, _ = self.linked("fix")
+        self.record(path, base="nonexistent-but-unused")
+        # base cannot be fetched, but HEAD == base_sha: nothing to keep... still must fetch to be sure
+        code, _ = self.close(arg=path)
+        self.assertEqual(code, 1)  # an unverifiable base blocks even here
+        self.out.clear()
+        self.record(path)
+        code, orca = self.close(arg=path)
+        self.assertEqual(code, 0, self.text())
+
+    def test_here_record_only_deletes_the_record(self):
+        main = os.path.join(self.tmp, "main")
+        self.clone(self.origin, main)
+        git(main, "checkout", "-q", "develop")
+        self.record(main)
+        code, orca = self.close(arg=main)
+        self.assertEqual(code, 0, self.text())
+        self.assertEqual(orca.rm_paths(), [])
+        self.assertFalse(os.path.exists(os.path.join(main, ".rein", "quick.json")))
+        self.assertTrue(os.path.isdir(main))
+
+    def test_here_record_unmerged_is_kept(self):
+        main = os.path.join(self.tmp, "main")
+        self.clone(self.origin, main)
+        git(main, "checkout", "-q", "develop")
+        self.record(main)
+        commit_file(main, "new.txt")
+        code, _ = self.close(arg=main)
+        self.assertEqual(code, 1)
+        self.assertTrue(os.path.isfile(os.path.join(main, ".rein", "quick.json")))
+
+    def test_no_argument_scans_orca_worktrees_and_cwd(self):
+        a, _ = self.linked("a")
+        b, _ = self.linked("b")
+        c, _ = self.linked("c")
+        for p in (a, b):
+            self.record(p)
+        commit_file(b, "new.txt")  # b is blocked
+        here = os.path.join(self.tmp, "here")
+        self.clone(self.origin, here)
+        git(here, "checkout", "-q", "develop")
+        self.record(here)
+        orca = FakeOrca(worktrees=[{"path": a}, {"path": b}, {"path": c}])
+        code, orca = self.close(cwd=here, orca=orca)
+        self.assertEqual(code, 1)
+        self.assertEqual(orca.rm_paths(), [a])
+        self.assertFalse(os.path.exists(os.path.join(here, ".rein", "quick.json")))
+        self.assertTrue(os.path.isfile(os.path.join(b, ".rein", "quick.json")))
+        self.assertIn(b, self.text())
+
+    def test_argument_by_name(self):
+        a, _ = self.linked("a")
+        self.record(a)
+        orca = FakeOrca(worktrees=[{"path": a}])
+        code, orca = self.close(arg="a", orca=orca)
+        self.assertEqual(code, 0, self.text())
+        self.assertEqual(orca.rm_paths(), [a])
+
+    def test_dry_run_changes_nothing(self):
+        a, _ = self.linked("a")
+        self.record(a)
+        code, orca = self.close(arg=a, dry=True)
+        self.assertEqual(code, 0)
+        self.assertEqual(orca.rm_paths(), [])
+        self.assertTrue(os.path.isfile(os.path.join(a, ".rein", "quick.json")))
+
+    def test_orca_error_is_126(self):
+        a, _ = self.linked("a")
+        self.record(a)
+        code, _ = self.close(arg=a, orca=FakeOrca(fail_rm=(a,)))
+        self.assertEqual(code, 126)
+        self.assertTrue(os.path.isfile(os.path.join(a, ".rein", "quick.json")))
+
+    def test_unknown_argument(self):
+        code, _ = self.close(arg="nope")
+        self.assertEqual(code, 1)
+
+
 if __name__ == "__main__":
     unittest.main()
