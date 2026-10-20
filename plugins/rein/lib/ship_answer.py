@@ -22,7 +22,7 @@ import orca_client as oc
 import ship_state as ss
 from orca_client import OrcaClient, OrcaError
 
-QUESTION_LIMIT = 500
+QUESTION_LIMIT = 4000  # a worker question is capped at 2000 upstream; show it whole
 
 
 def _read_state(path: str) -> Optional[dict]:

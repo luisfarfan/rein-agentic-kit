@@ -301,9 +301,16 @@ class TestAnswerList(UxCase):
         self.assertIn("question", out)
         self.assertIn("T001", out)
         self.assertIn("Which db?", out)
-        self.assertNotIn("x" * 501, out)
+        self.assertIn("x" * 600, out, "a worker's question must reach the owner in full")
         self.assertNotIn("g2", out)
         self.assertEqual(fake.commands("orchestration", "gate-list")[0][-3:-1], ["--run", "run_1"])
+
+    def test_a_huge_question_is_still_capped(self):
+        self.write_state("demo", {"g1": "question"})
+        fake = FakeOrca(gates=[_gate("g1", question="Q" + "y" * 9000)])
+        code, out = self.capture(ship_answer.run_answer, self.root, "demo", None, "", self.client(fake))
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("y" * (ship_answer.QUESTION_LIMIT + 1), out)
 
     def test_lists_options(self):
         self.write_state("demo", {"g1": "timeout"})
