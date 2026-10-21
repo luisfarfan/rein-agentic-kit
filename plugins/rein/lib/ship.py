@@ -515,8 +515,9 @@ def preflight(root: str, change: str, client: OrcaClient, env: dict,
         with open(plan["path"], encoding="utf-8", errors="replace") as fh:
             text = fh.read()
         findings = _plan_check.mechanical_findings(text)
-        findings += [f for f in _plan_check.unbacked_findings(text, root)
-                     if next((t["repo"] for t in plan["tasks"] if t["id"] == f.get("taskId")), "") in ("", default_repo)]
+        # Each task's verification in its own repo: Orca knows where every registered repo lives.
+        known = {n: str(r.get("path") or "") for n, r in ctx["repos"].items() if n}
+        findings += _plan_check.unbacked_findings(text, root, repo_paths=known)
         decision = _plan_check.decide_plan_check(findings, [t["id"] for t in pending])
         if decision["decision"] == _plan_check.DECISION_STOP:
             errors += ["plan-check BLOCKING: %s" % f.get("text") for f in decision["blocking"]]

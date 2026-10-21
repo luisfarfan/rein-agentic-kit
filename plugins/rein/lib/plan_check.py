@@ -19,6 +19,7 @@ an agent's mood again.
 
 from __future__ import annotations
 
+import os
 import re
 
 import plan as _plan
@@ -257,7 +258,29 @@ def shape_findings(tasks: list) -> list[dict]:
     return findings
 
 
-def unbacked_findings(text: str, root: str) -> list[dict]:
+def repo_root(plan_root: str, repo: str, repo_paths: dict = None) -> str:
+    """Where a task's repo is checked out; "" when it cannot be found.
+
+    The plan repo itself when the task names no other; else `plan.repos` in the plan root's
+    flow.config.json (name -> path, relative to the plan root), else `repo_paths` (what the
+    caller knows, e.g. Orca's registered repos), else the plan root's sibling of that name."""
+    plan_root = os.path.abspath(plan_root)
+    if not repo or repo == os.path.basename(plan_root.rstrip(os.sep)):
+        return plan_root
+    import detect as _detect  # local: plan_check stays importable without it
+
+    configured = (_detect.resolve(plan_root).get("plan") or {}).get("repos")
+    candidates = []
+    if isinstance(configured, dict) and isinstance(configured.get(repo), str):
+        candidates.append(os.path.join(plan_root, os.path.expanduser(configured[repo])))
+    known = (repo_paths or {}).get(repo)
+    if isinstance(known, str) and known:
+        candidates.append(known)
+    candidates.append(os.path.join(os.path.dirname(plan_root), repo))
+    return next((os.path.normpath(c) for c in candidates if os.path.isdir(c)), "")
+
+
+def unbacked_findings(text: str, root: str, repo_paths: dict = None) -> list[dict]:
     """Class 1, the half a regex over the plan text alone cannot decide.
 
     `mechanical_findings` reads only the plan, by design. But whether a
@@ -268,19 +291,39 @@ def unbacked_findings(text: str, root: str) -> list[dict]:
     BLOCKING here, unlike reused-verification: this one is decidable. A module
     that neither exists nor is promised cannot confirm anything, ever --
     there is no convention under which that is fine.
+
+    Each task is checked in ITS repo (`repo_root`): a cross-repo plan's `Repo: api` task
+    names api's tests, not the plan repo's. A repo that cannot be found is reported
+    IMPORTANT, never checked against the wrong tree.
     """
     import verify as _verify  # local: plan_check stays importable without it
 
-    tasks = _plan.parse_tasks_md(text)
-    return [
-        {
-            "taskId": u["taskId"],
-            "severity": "BLOCKING",
-            "classId": BLOCKING_CLASSES[0],
-            "text": f"{u['taskId']}'s verification (`{u['verification']}`) names {u['reason']}",
-        }
-        for u in _verify.unbacked_verifications(root, tasks)
-    ]
+    root = os.path.abspath(root)
+    out = []
+    for task in _plan.parse_tasks_md(text):
+        repo = task.get("repo") or ""
+        where = repo_root(root, repo, repo_paths)
+        if not where:
+            if _verify._TEST_MODULE_RE.search(task.get("verification") or ""):
+                out.append({
+                    "taskId": task.get("id") or "?",
+                    "severity": "IMPORTANT",
+                    "classId": BLOCKING_CLASSES[0],
+                    "text": (f"{task.get('id')}'s verification was not checked: its repo {repo} is not "
+                             f"next to {root} and plan.repos in flow.config.json does not name it"),
+                })
+            continue
+        place = f" in {repo} ({where})" if where != root else ""
+        out += [
+            {
+                "taskId": u["taskId"],
+                "severity": "BLOCKING",
+                "classId": BLOCKING_CLASSES[0],
+                "text": f"{u['taskId']}'s verification (`{u['verification']}`) names {u['reason']}{place}",
+            }
+            for u in _verify.unbacked_verifications(where, [task])
+        ]
+    return out
 
 
 DECISION_STOP = "stop"

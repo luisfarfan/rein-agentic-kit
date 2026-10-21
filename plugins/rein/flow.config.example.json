@@ -18,7 +18,9 @@
   "plan": {
     "$comment": "openspec = openspec/changes/<change>/{proposal,design,tasks,specs}. tasks-md = a plain tasks.md with checkboxes.",
     "source": "tasks-md",
-    "path": "tasks.md"
+    "path": "tasks.md",
+    "$repos": "Cross-repo plans: where each task's `Repo:` is checked out (name -> path, relative to this file), used by `rein plan-check` to look up a task's Verification in its own repo. Unset: the sibling directory of that name.",
+    "repos": {}
   },
 
   "tracker": {

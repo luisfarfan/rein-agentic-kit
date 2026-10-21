@@ -31,7 +31,10 @@ Subcommands:
                       as plain markdown -- the same section Claude Code reads via
                       /rein:rein-role, for any agent that cannot invoke a skill
   rein tasks          parsed plan as JSON (tasks.md or openspec)
-  rein plan-check     mechanical findings on a drafted plan's own text, as JSON.
+  rein plan-check     mechanical findings on a drafted plan's own text, as JSON. A task's
+                      Verification is looked up in its Repo: the plan root (--root, else
+                      the plan file's checkout), plan.repos in its flow.config.json, or
+                      the plan root's sibling directory of that name.
                       Always exits 0 (D5: never a silent skip, never a hard stop) --
                       it runs inside the planning skill, where the judgement is the
                       planner's. `--gate` is for a RUNNER instead: exits 1 on a
@@ -447,6 +450,13 @@ def cmd_tasks(argv: list[str]) -> int:
     return 0
 
 
+def _plan_root_of(path: str) -> str:
+    """The checkout holding a plan file (its git toplevel), else the file's directory."""
+    folder = os.path.dirname(os.path.abspath(path)) or "."
+    code, top = _quick.run_git(folder, "rev-parse", "--show-toplevel")
+    return top.strip() if code == 0 and top.strip() else folder
+
+
 def cmd_plan_check(argv: list[str]) -> int:
     """Mechanical, pre-agent findings on a drafted plan's own text (T001:
     the-plan-checks-itself) -- the shipped entry point for `plugins/rein/lib/
@@ -484,7 +494,9 @@ def cmd_plan_check(argv: list[str]) -> int:
 
             # module that neither exists nor is promised. Decidable, so BLOCKING.
 
-            findings += _plan_check.unbacked_findings(text, os.path.dirname(os.path.abspath(path)) or '.')
+            # Each task's verification in ITS repo: the plan root (`--root`, else the plan
+            # file's git checkout), `plan.repos`, or the plan root's sibling of that name.
+            findings += _plan_check.unbacked_findings(text, _opt(argv, "root") or _plan_root_of(path))
     # Scoped to the tasks this run will actually execute: a BLOCKING finding
     # pinned to a task nobody will touch cannot waste an implementer, and
     # stopping for it is the false stop the scoping exists to prevent. A
