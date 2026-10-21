@@ -106,9 +106,12 @@ def resolve_at(path: str, base: str):
             _extract(path, sha, name, tmp)
         sub = str((_detect.resolve(tmp).get("subproject") or "")).strip("/")
         if sub:
-            code, listing = _git(path, "ls-tree", "--name-only", sha, sub + "/")
-            for name in listing.splitlines() if code == 0 else []:
-                _extract(path, sha, name, tmp)
+            # The sub-project's own files: blobs only (a tree is a folder, never a file to write).
+            code, listing = _git(path, "ls-tree", sha, sub + "/")
+            for line in listing.splitlines() if code == 0 else []:
+                meta, _, name = line.partition("\t")
+                if name and meta.split()[1:2] == ["blob"]:
+                    _extract(path, sha, name, tmp)
         return _detect.resolve(tmp)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
@@ -141,9 +144,14 @@ def _extract(path: str, sha: str, name: str, into: str) -> None:
     if proc.returncode != 0:
         return
     target = os.path.join(into, name)
-    os.makedirs(os.path.dirname(target), exist_ok=True)
-    with open(target, "wb") as fh:
-        fh.write(proc.stdout)
+    if os.path.isdir(target):
+        return  # a folder already made for a file below it: never write a listing over it
+    try:
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        with open(target, "wb") as fh:
+            fh.write(proc.stdout)
+    except OSError:
+        pass  # one unwritable input only makes the base resolution less complete
 
 
 def config_changes(changed: list, patterns: list, allowed=()) -> list:
