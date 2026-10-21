@@ -142,3 +142,15 @@ class Archived(DoneEnv):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class QuickLogAfterGuard(DoneCase):
+    def test_a_guard_rejection_is_what_the_log_keeps(self):
+        self.make_repo()
+        self.write("src/foo.ts", "v2\n")
+        self.write("flow.config.json", json.dumps({"commands": {"test": "true"}}))
+        code, _, _ = self.done()
+        self.assertEqual(code, 1, self.text())
+        [entry] = gate_log.read(gate_log.root_log_path(self.ws))
+        self.assertEqual(entry["exit"], 1)
+        self.assertIn("flow.config.json", entry["guard"])

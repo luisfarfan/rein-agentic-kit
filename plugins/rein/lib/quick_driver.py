@@ -708,10 +708,6 @@ def done_quick(*, cwd: str = ".", client: OrcaClient, run=verify.run_one,
     results = [_Slot(e) for e in report["results"].values()]
     outputs = {e["slot"]: "\n".join(e.get("errorLines") or []) for e in report["results"].values()}
     outcome = quick.verdict(results)
-    _gate_log.append(_gate_log.root_log_path(workspace), dict(
-        _gate_log.summarize(report), kind="quick", repo=repo, tier="task+full-suite" if full_suite else "task",
-        env=sorted(gate_vars), affected=planned.get("affected"), base=record["base_sha"],
-        exit={"green": 0, "red": 1}.get(outcome, 126)))
     notes = _gate_notes(planned, full_suite, changed, cfg, commands)
     say(quick.summary(results, outputs, notes, audit_pending=pending))
     # The guard: the gate config untouched (unless the task asked for it) and every commit through
@@ -721,6 +717,13 @@ def done_quick(*, cwd: str = ".", client: OrcaClient, run=verify.run_one,
     problems += _guard.outside_changes(record.get("outside_before") or {})
     for problem in problems:
         say("guard: %s" % problem)
+    # Logged once the guard has spoken: the line keeps the verdict `done` actually gives.
+    verdict_code = 126 if outcome == "setup" else (1 if outcome == "red" or problems else 0)
+    entry = dict(_gate_log.summarize(report), kind="quick", repo=repo, tier="task+full-suite" if full_suite else "task",
+                 env=sorted(gate_vars), affected=planned.get("affected"), base=record["base_sha"], exit=verdict_code)
+    if problems:
+        entry["guard"] = "; ".join(problems)[:600]
+    _gate_log.append(_gate_log.root_log_path(workspace), entry)
     if outcome == "red" or (problems and outcome != "setup"):
         return 1
     if outcome == "setup":
