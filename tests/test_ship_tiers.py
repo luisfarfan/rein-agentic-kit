@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(HERE), "plugins", "rein", "lib")
 import ship  # noqa: E402
 import ship_decide as sd  # noqa: E402
 from test_ship import FakeOrca, ShipCase  # noqa: E402
-from test_ship_decide import CFG, OK, NOW, ship as make_state, task, tick  # noqa: E402
+from test_ship_decide import CFG, ship as make_state, task, tick  # noqa: E402
 
 WTS = {"api": "wt-api", "admin": "wt-admin"}
 
