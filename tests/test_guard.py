@@ -192,3 +192,36 @@ class ShipTask(ShipCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Renames(unittest.TestCase):
+    """I2: a renamed (or deleted) gate config is a change to it: both ends of a rename count."""
+
+    def setUp(self):
+        self.tmp = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.repo = os.path.join(self.tmp, "repo")
+        self.base = make_repo(self.repo, hook=False)
+
+    def test_renaming_flow_config_away_is_caught(self):
+        run_git(self.repo, "mv", "flow.config.json", "old-config.json")
+        run_git(self.repo, "commit", "-q", "-m", "chore: tidy")
+        problems = guard.check(self.repo, self.base, {})
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("flow.config.json", problems[0])
+
+    def test_an_uncommitted_rename_is_caught(self):
+        run_git(self.repo, "mv", "flow.config.json", "old-config.json")
+        self.assertEqual(len(guard.check(self.repo, self.base, {})), 1)
+
+    def test_renaming_something_onto_it_is_caught(self):
+        run_git(self.repo, "rm", "-q", "flow.config.json")
+        run_git(self.repo, "commit", "-q", "-m", "chore: drop")
+        with open(os.path.join(self.repo, "cfg.json"), "w") as fh:
+            fh.write('{"commands": {"test": "true"}}')
+        run_git(self.repo, "add", "cfg.json")
+        run_git(self.repo, "commit", "-q", "-m", "chore: add")
+        base = run_git(self.repo, "rev-parse", "HEAD").strip()
+        run_git(self.repo, "mv", "cfg.json", "flow.config.json")
+        run_git(self.repo, "commit", "-q", "-m", "chore: move")
+        self.assertEqual(len(guard.check(self.repo, base, {})), 1)

@@ -22,7 +22,6 @@ import os
 import subprocess
 import tempfile
 
-import affected as _affected
 
 # Environment variables that switch a repo's hooks off (lefthook, husky, pre-commit).
 BYPASS_ENV = ("LEFTHOOK", "LEFTHOOK_EXCLUDE", "LEFTHOOK_SKIP", "HUSKY", "HUSKY_SKIP_HOOKS", "SKIP",
@@ -61,6 +60,21 @@ def _git(path: str, *args: str) -> tuple:
     except (OSError, subprocess.SubprocessError):
         return 127, ""
     return proc.returncode, proc.stdout
+
+
+def changed_paths(path: str, base: str) -> list:
+    """Every path the change since `base` touches -- commits (`base...HEAD`), staged and unstaged
+    edits, new files -- with rename detection OFF, so a rename lists both its ends: renaming
+    flow.config.json away is a change to flow.config.json. RuntimeError when git cannot say."""
+    found = set()
+    for args in (("diff", "--name-only", "--no-renames", "%s...HEAD" % base),
+                 ("diff", "--name-only", "--no-renames", "HEAD"),
+                 ("ls-files", "--others", "--exclude-standard")):
+        code, out = _git(path, *args)
+        if code != 0:
+            raise RuntimeError("git %s failed in %s" % (args[0], path))
+        found.update(line for line in out.splitlines() if line.strip())
+    return sorted(f for f in found if not f.startswith(".rein/"))
 
 
 def _hook_env(env=None) -> dict:
@@ -120,7 +134,7 @@ def check(path: str, base: str, resolved: dict, allowed_text: str = "", env=None
     if not base:
         return []
     try:
-        changed = _affected.changed_files(path, base)
+        changed = changed_paths(path, base)
     except (RuntimeError, OSError):
         return []
     problems = ["it changes %s, the configuration Rein gates it with; revert that change (only a task "
