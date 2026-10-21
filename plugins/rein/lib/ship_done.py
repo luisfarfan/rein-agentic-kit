@@ -1,8 +1,9 @@
 """`rein done <change>` and `rein quick close`: remove what is integrated, keep everything else.
 
-The rule above all: a worktree is removed only when it is clean AND every commit it has
-beyond `origin/<base>` is already in there (patch-equivalent, so rebases and squash-free
-cherry-picks count). Any doubt -- a dirty tree, an unmerged commit, a base that cannot be
+The rule above all: a worktree is removed only when it is clean AND everything it has beyond
+`origin/<base>` is already in there: merging its tip into `origin/<base>` changes nothing
+(so merge commits, squash merges and rebases are judged by content), or, for a history
+without merge commits, every commit is patch-equivalent to one upstream. Any doubt -- a dirty tree, an unmerged commit, a base that cannot be
 fetched -- blocks the WHOLE operation: nothing is removed and the reasons are printed.
 """
 
@@ -47,7 +48,15 @@ def _base_name(repo: Optional[dict], git: Callable[..., tuple], path: str) -> st
 
 IGNORED_OK = ("node_modules", ".rein", "dist", "build", ".angular", "__pycache__", ".venv", "coverage",
               ".claude", ".codegraph", ".ruff_cache", ".pytest_cache", ".mypy_cache", ".cursor", ".turbo",
-              ".nx", ".next", ".parcel-cache", ".mcp.json")
+              ".nx", ".next", ".parcel-cache", ".mcp.json",
+              # operating-system junk
+              ".DS_Store", ".AppleDouble", ".Spotlight-V100", ".Trashes", ".fseventsd", ".TemporaryItems",
+              "Thumbs.db", "ehthumbs.db", "Desktop.ini", "desktop.ini", "$RECYCLE.BIN", ".directory")
+
+
+def _is_junk(name: str) -> bool:
+    parts = name.strip("/").split("/")
+    return any(part in IGNORED_OK for part in parts) or parts[-1].startswith("._")
 
 
 def _short_branch(name: str) -> str:
@@ -104,14 +113,15 @@ def _same_as_main(main: str, path: str, name: str) -> bool:
 
 
 def _ignored_files(path: str, git: Callable[..., tuple]) -> list:
-    code, out = git(path, "status", "--porcelain", "--ignored", "--untracked-files=all")
+    # -z: names come back verbatim (no C-quoting of spaces or non-ASCII bytes)
+    code, out = git(path, "status", "--porcelain", "-z", "--ignored", "--untracked-files=all")
     main = _main_checkout(path, git)
     found = []
-    for line in out.splitlines() if code == 0 else []:
-        if not line.startswith("!! "):
+    for entry in out.split("\0") if code == 0 else []:
+        if not entry.startswith("!! "):
             continue
-        name = line[3:].strip().strip('"')
-        if any(part in IGNORED_OK for part in name.strip("/").split("/")) or _same_as_main(main, path, name):
+        name = entry[3:]
+        if _is_junk(name) or _same_as_main(main, path, name):
             continue
         found.append(name)
     return found
@@ -140,7 +150,8 @@ def check_worktree(path: str, base: str, git: Callable[..., tuple], fetch: Calla
 
     Both HEAD and `branch` (the one Orca deletes with the worktree) must be integrated; a
     detached HEAD with no known branch cannot be vouched for. Gitignored files that would be
-    lost (`.env` ...) are appended to `warnings`, they do not block by themselves.
+    lost (`.env` ...) are appended to `warnings` -- only for an integrated worktree, since a
+    kept one loses nothing; pass `warnings=None` when the checkout will not be removed.
     """
     code, porcelain = git(path, "status", "--porcelain", "--untracked-files=all")
     if code != 0:
@@ -149,8 +160,6 @@ def check_worktree(path: str, base: str, git: Callable[..., tuple], fetch: Calla
         return "uncommitted changes"
     if not branch:
         return "detached HEAD and no known branch: cannot tell what would be lost"
-    if warnings is not None:
-        warnings.extend((path, name) for name in _ignored_files(path, git))
     base, why = _resolve_base(path, base, git, fetch, fallback, notes if notes is not None else [])
     if not base:
         return why
@@ -158,14 +167,54 @@ def check_worktree(path: str, base: str, git: Callable[..., tuple], fetch: Calla
         tips = {git(path, "rev-parse", "--verify", "--quiet", ref)[1].strip()
                 for ref in ("HEAD", "refs/heads/" + branch)}
         if tips == {base_sha}:
-            return ""
+            return _integrated(path, git, warnings)
     for ref in ("HEAD", "refs/heads/" + branch):
-        code, out = git(path, "cherry", "origin/" + base, ref)
-        if code != 0:
-            return "cannot compare %s with origin/%s" % (ref, base)
-        unmerged = [ln for ln in out.splitlines() if ln.startswith("+")]
-        if unmerged:
-            return "not integrated: %d commit(s) of %s are not in origin/%s" % (len(unmerged), ref, base)
+        why = integration_gap(path, "origin/" + base, ref, git)
+        if why:
+            return why
+    return _integrated(path, git, warnings)
+
+
+def _integrated(path: str, git: Callable[..., tuple], warnings: Optional[list]) -> str:
+    if warnings is not None:
+        warnings.extend((path, name) for name in _ignored_files(path, git))
+    return ""
+
+
+def integration_gap(path: str, upstream: str, ref: str, git: Callable[..., tuple]) -> str:
+    """"" when everything `ref` holds is already in `upstream`, else why not.
+
+    The rule is about content, so merge commits (which `git cherry` never looks at), squash
+    merges and a base merged into the branch are all judged alike: `ref` is integrated when
+    merging it into `upstream` would leave `upstream`'s tree exactly as it is
+    (`git merge-tree --write-tree`, git >= 2.38). A history with no merge commits is also
+    accepted when every commit is patch-equivalent to one in `upstream` (`git cherry`), so a
+    change that landed and was later reverted upstream still counts as integrated. Without
+    merge-tree, a history with merge commits cannot be vouched for and blocks.
+    """
+    code, out = git(path, "rev-list", "--merges", "--count", "%s..%s" % (upstream, ref))
+    if code != 0:
+        return "cannot compare %s with %s" % (ref, upstream)
+    merges = int(out.strip() or "0")
+    code, out = git(path, "merge-tree", "--write-tree", "--no-messages", upstream, ref)
+    tree_ok = code in (0, 1)
+    if code == 0:
+        lines = out.split()
+        code2, base_tree = git(path, "rev-parse", "--verify", "--quiet", upstream + "^{tree}")
+        if code2 == 0 and lines and lines[0] == base_tree.strip():
+            return ""
+    if merges:
+        if not tree_ok:
+            return ("cannot verify the %d merge commit(s) of %s against %s: `git merge-tree "
+                    "--write-tree` failed (it needs git >= 2.38)" % (merges, ref, upstream))
+        return "not integrated: merging %s into %s would change it (its history has %d merge commit(s))" % (
+            ref, upstream, merges)
+    code, out = git(path, "cherry", upstream, ref)
+    if code != 0:
+        return "cannot compare %s with %s" % (ref, upstream)
+    unmerged = [ln for ln in out.splitlines() if ln.startswith("+")]
+    if unmerged:
+        return "not integrated: %d commit(s) of %s are not in %s" % (len(unmerged), ref, upstream)
     return ""
 
 
@@ -202,14 +251,53 @@ def _archive_target(root: str, change: str, today: str) -> Optional[tuple]:
     return src, os.path.join(root, "openspec", "changes", "archive", "%s-%s" % (today, change))
 
 
-def _archive_blockers(root: str, src: str, dst: str, git: Callable[..., tuple]) -> list:
+def _default_branches(root: str, git: Callable[..., tuple], repos: dict) -> set:
+    """The plan repo's default branch(es): the remote's HEAD and Orca's base ref for this repo."""
+    found = set()
+    code, out = git(root, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD")
+    if code == 0 and out.strip():
+        head = out.strip()
+        found.add(head[len("origin/"):] if head.startswith("origin/") else head)
+    for repo in repos.values():
+        if repo.get("path") and os.path.realpath(str(repo["path"])) == os.path.realpath(root):
+            ref = str(repo.get("worktreeBaseRef") or "")
+            if ref:
+                found.add(ref[len("origin/"):] if ref.startswith("origin/") else ref)
+    if not found:
+        fallback = qd._fallback_base(git, root)
+        if fallback:
+            found.add(fallback)
+    return found
+
+
+_IN_PROGRESS = (("MERGE_HEAD", "a merge"), ("rebase-merge", "a rebase"), ("rebase-apply", "a rebase or am"),
+                ("CHERRY_PICK_HEAD", "a cherry-pick"), ("REVERT_HEAD", "a revert"))
+
+
+def _archive_blockers(root: str, src: str, dst: str, git: Callable[..., tuple], repos: Optional[dict] = None) -> list:
     out = []
     if os.path.exists(dst):
         out.append("archive folder already exists: %s" % dst)
     if git(root, "ls-files", "--error-unmatch", "--", src)[0] != 0:
         out.append("the plan %s is not tracked by git, so it cannot be moved with git mv" % src)
-    if git(root, "symbolic-ref", "--quiet", "HEAD")[0] != 0:
+    code, branch = git(root, "symbolic-ref", "--quiet", "--short", "HEAD")
+    if code != 0:
         out.append("the plan repo is on a detached HEAD (no branch to commit the archive on)")
+    else:
+        allowed = _default_branches(root, git, repos or {})
+        if not allowed:
+            out.append("cannot tell the plan repo's default branch (no origin/HEAD, no main); "
+                       "the archive commit would land on %s" % branch.strip())
+        elif branch.strip() not in allowed:
+            out.append("the plan repo is on %s, not its default branch (%s); check that out so the "
+                       "archive commit lands there" % (branch.strip(), " or ".join(sorted(allowed))))
+    code, porcelain = git(root, "status", "--porcelain", "--untracked-files=all", "--", src)
+    if code != 0 or porcelain.strip():
+        out.append("the plan folder %s has uncommitted changes; commit or discard them first" % src)
+    for marker, what in _IN_PROGRESS:
+        code, rel = git(root, "rev-parse", "--git-path", marker)
+        if code == 0 and rel.strip() and os.path.exists(os.path.join(root, rel.strip())):
+            out.append("the plan repo is in the middle of %s; finish or abort it first" % what)
     return out
 
 
@@ -242,9 +330,10 @@ def _already_archived(root: str, change: str) -> bool:
 
 def run_done(root: str, change: str, client: OrcaClient, *, dry_run: bool = False, yes: bool = False,
              git: Callable[..., tuple] = qd.run_git, fetch: Callable[[str, str], tuple] = qd.run_fetch,
-             driver_alive: Callable[[str], bool] = sw.driver_alive, today: str = "",
-             say: Callable[[str], None] = print) -> int:
+             driver_alive: Optional[Callable[[str], bool]] = None, today: str = "",
+             say: Callable[[str], None] = print, env: Optional[dict] = None) -> int:
     root = os.path.abspath(root)
+    env = os.environ if env is None else env
     today = today or datetime.date.today().isoformat()
     state_file = ss.state_path(root, change)
     state = _load_state(state_file)
@@ -255,7 +344,7 @@ def run_done(root: str, change: str, client: OrcaClient, *, dry_run: bool = Fals
     if phase != "done":
         say("rein done: %s is in phase %s, not done; nothing removed" % (change, phase))
         return 1
-    if driver_alive(change):
+    if (driver_alive or (lambda c: sw.driver_alive(c, root=root)))(change):
         say("rein done: `rein ship %s` is still running; nothing removed" % change)
         return 1
 
@@ -277,7 +366,7 @@ def run_done(root: str, change: str, client: OrcaClient, *, dry_run: bool = Fals
             present.append((repo, path))
     archive = _archive_target(root, change, today)
     if archive:
-        blockers += [("plan", root, why) for why in _archive_blockers(root, archive[0], archive[1], git)]
+        blockers += [("plan", root, why) for why in _archive_blockers(root, archive[0], archive[1], git, repos)]
     if blockers:
         say("rein done: %s is NOT ready to close; nothing was removed:" % change)
         for repo, path, why in blockers:
@@ -315,9 +404,13 @@ def run_done(root: str, change: str, client: OrcaClient, *, dry_run: bool = Fals
 
     errors = 0
     title = "rein ship %s" % change
+    own = str(env.get("ORCA_TERMINAL_HANDLE") or "")
     try:
         for t in oc.terminals_of(client.terminal_list("path:" + root)):
             if t.get("title") == title and t.get("handle"):
+                if own and str(t["handle"]) == own:
+                    say("left the tab '%s' open: this `rein done` runs in it; close it yourself" % title)
+                    continue
                 client.terminal_close(str(t["handle"]))
                 say("closed tab '%s'" % title)
     except OrcaError as exc:
@@ -392,7 +485,7 @@ def run_quick_close(arg: str, client: OrcaClient, *, cwd: str = ".", dry_run: bo
             return 0
 
     blocked = errors = closed = 0
-    plan, warnings = [], []
+    plan, warned = [], []
     for path in targets:
         record, why = qd._load_record(path)
         if record is None:
@@ -402,6 +495,9 @@ def run_quick_close(arg: str, client: OrcaClient, *, cwd: str = ".", dry_run: bo
         row = rows.get(os.path.realpath(path))
         base = str(record.get("base") or DEFAULT_BASE)
         branch, notes = branch_of(path, row, git), []
+        # only a removed worktree can lose gitignored files; a kept checkout just loses its record
+        removable = not is_main_worktree(path, row, git) and "quick-" in branch
+        warnings: Optional[list] = [] if removable else None
         reason = check_worktree(path, base, git, fetch, base_sha=str(record.get("base_sha") or ""),
                                 branch=branch, warnings=warnings,
                                 fallback=True, notes=notes)
@@ -411,13 +507,17 @@ def run_quick_close(arg: str, client: OrcaClient, *, cwd: str = ".", dry_run: bo
             blocked += 1
             say("kept: %s: %s" % (path, reason))
             continue
-        removable = not is_main_worktree(path, row, git) and "quick-" in branch
+        if warnings and not yes:
+            blocked += 1
+            warned += warnings
+            say("kept: %s: gitignored files would be lost (listed below)" % path)
+            continue
+        if warnings:
+            _warn(warnings, say)
         plan.append((path, removable))
-    if warnings:
-        _warn(warnings, say)
-        if not yes:
-            say("nothing was removed; re-run with --yes only if losing them is fine")
-            return 1
+    if warned:
+        _warn(warned, say)
+        say("those were kept; re-run with --yes only if losing them is fine")
     for path, removable in plan:
         if dry_run:
             say("would %s" % ("remove worktree %s" % path if removable else "delete the record in %s" % path))

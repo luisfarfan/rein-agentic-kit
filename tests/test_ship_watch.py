@@ -155,18 +155,69 @@ class TestWatchEnd(WatchCase):
         self.assertIn("T001 done", out)
         self.assertNotIn("QUESTION", out)
 
-    def test_stopped_after_two_polls_without_a_driver(self):
+    def run_with(self, alive_seq, on_sleep=None, max_polls=40):
+        """`alive_seq[i]` is what driver_alive answers on poll i (the last value repeats)."""
+        polls = []
+
+        def alive(change):
+            return alive_seq[min(len(polls), len(alive_seq) - 1)]
+
+        def sleep(s):
+            polls.append(s)
+            if on_sleep:
+                on_sleep(len(polls))
+            if len(polls) >= max_polls:
+                raise AssertionError("watch never exited")
+
+        code, out = self.capture(ship_watch.run_watch, self.root, "demo", self.client(FakeOrca()),
+                                 sleep=sleep, driver_alive=alive)
+        return code, out, polls
+
+    def test_stopped_after_the_startup_grace_when_never_seen(self):
         self.write_state("demo", {})
-        code, out = self.watch(FakeOrca(), alive=False)
+        code, out, polls = self.run_with([False])
         self.assertEqual(code, 0, out)
-        self.assertEqual(len(self.sleeps), 1)
+        self.assertEqual(len(polls), ship_watch.STARTUP_GRACE_POLLS - 1)
         self.assertIn("STOPPED demo: the ship driver is not running (phase running); resume it in "
                       'the Orca tab "rein ship demo"', out)
+
+    def test_a_slow_starting_driver_is_not_stopped(self):
+        self.write_state("demo", {})
+        with self.assertRaises(AssertionError):
+            self.run_with([False, False, False, False, True], max_polls=12)
+
+    def test_stopped_two_polls_after_a_seen_driver_dies(self):
+        self.write_state("demo", {})
+        code, out, polls = self.run_with([True, True, False])
+        self.assertEqual(code, 0, out)
+        self.assertEqual(len(polls), 3)
+        self.assertIn("STOPPED demo", out)
+
+    def test_a_state_file_being_written_keeps_the_watch_alive(self):
+        self.write_state("demo", {})
+        path = ship_state.state_path(self.root, "demo")
+
+        def touch(n):
+            os.utime(path, (1000 + n, 1000 + n))
+
+        with self.assertRaises(AssertionError):
+            self.run_with([True, False], on_sleep=touch, max_polls=10)
 
     def test_a_live_driver_is_never_stopped(self):
         self.write_state("demo", {})
         with self.assertRaises(AssertionError):
             self.watch(FakeOrca(), alive=True, max_polls=4)
+
+    def test_once_orca_error_is_126_not_nothing_pending(self):
+        self.write_state("demo", {"g1": "question"})
+
+        def broken(argv):
+            return 1, '{"ok": false, "error": {"code": "down", "message": "orca is down"}}'
+
+        code, out = self.capture(ship_watch.run_watch, self.root, "demo", self.client(broken), once=True,
+                                 sleep=lambda s: None, driver_alive=lambda c: True)
+        self.assertEqual(code, 126, out)
+        self.assertIn("orca error", out)
 
     def test_once_never_reports_stopped(self):
         self.write_state("demo", {})
@@ -187,6 +238,34 @@ class TestDriverDetection(unittest.TestCase):
     def test_a_change_or_path_containing_watch_is_not_the_watcher(self):
         ps = lambda: ["100 python3 /x/bin/rein ship watch-tower --root /w/watch"]
         self.assertTrue(ship_watch.driver_alive("watch-tower", ps=ps, own_pid=999))
+
+    def test_only_a_rein_process_running_ship_matches(self):
+        for line in ("300 grep rein ship demo",
+                     "301 tail -f /tmp/rein ship demo",
+                     "302 claude -p please run rein ship demo now",
+                     "303 vim /x/bin/rein ship demo",
+                     "304 orca terminal send --text rein ship demo",
+                     "305 python3 /x/bin/rein answer demo ship",
+                     "306 python3 /x/bin/rein ship demo extra words",
+                     "307 python3 -c import x; rein ship demo"):
+            self.assertFalse(ship_watch.driver_alive("demo", ps=lambda: [line], own_pid=999), line)
+        for line in ("400 /usr/bin/python3 /x/bin/rein ship demo",
+                     "401 /opt/py/bin/python3.12 -u /x/bin/rein ship demo --root /w --agent codex --model m",
+                     "402 /Library/Frameworks/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python "
+                     "/v/bin/rein ship demo --root=/w",
+                     "403 /v/bin/rein ship demo"):
+            self.assertTrue(ship_watch.driver_alive("demo", ps=lambda: [line], own_pid=999), line)
+
+    def test_root_is_respected(self):
+        ps = lambda: ["100 python3 /x/bin/rein ship demo --root /other/plan"]
+        self.assertFalse(ship_watch.driver_alive("demo", ps=ps, own_pid=999, root="/w/plan"))
+        self.assertTrue(ship_watch.driver_alive("demo", ps=ps, own_pid=999, root="/other/plan"))
+        spaced = lambda: ["100 python3 /x/bin/rein ship demo --root /w/my plan --agent codex --model m"]
+        self.assertTrue(ship_watch.driver_alive("demo", ps=spaced, own_pid=999, root="/w/my plan"))
+        self.assertFalse(ship_watch.driver_alive("demo", ps=spaced, own_pid=999, root="/w/my"))
+        # no --root (or a relative one): its plan repo cannot be told, so it counts (never a false "dead")
+        bare = lambda: ["100 python3 /x/bin/rein ship demo"]
+        self.assertTrue(ship_watch.driver_alive("demo", ps=bare, own_pid=999, root="/w/plan"))
 
     def test_never_matches_the_watcher_itself(self):
         ps = lambda: ["200 python3 /x/bin/rein watch demo --root /w",

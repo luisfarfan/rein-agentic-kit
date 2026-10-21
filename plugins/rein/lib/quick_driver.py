@@ -89,6 +89,18 @@ def _resolve_repo(repos: list, name: str, cwd: str):
     return best[1] if best else None
 
 
+def _checkout_of(git: Callable[..., tuple], cwd: str) -> tuple:
+    """`(toplevel, main checkout)` of the git checkout holding `cwd` -- a main checkout or a
+    linked worktree; `("", "")` when git cannot tell."""
+    code, top = git(cwd, "rev-parse", "--show-toplevel")
+    code2, common = git(cwd, "rev-parse", "--git-common-dir")
+    if code != 0 or code2 != 0 or not top.strip() or not common.strip():
+        return "", ""
+    common_dir = os.path.realpath(os.path.join(cwd, common.strip()))
+    main = os.path.dirname(common_dir) if os.path.basename(common_dir) == ".git" else ""
+    return os.path.realpath(top.strip()), main
+
+
 def _is_dirty(porcelain: str) -> bool:
     for line in porcelain.splitlines():
         path = line[3:].strip().strip('"')
@@ -172,6 +184,12 @@ def start_quick(
         return _failed(say, error)
     repos = [r for r in listed if isinstance(r, dict)] if isinstance(listed, list) else []
     chosen = _resolve_repo(repos, repo, cwd)
+    top = main = ""
+    if here or (chosen is None and not repo):
+        top, main = _checkout_of(git, cwd)
+    if chosen is None and not repo and main:
+        # cwd is a linked worktree (an Orca workspace) of a repo Orca knows by its main checkout
+        chosen = next((r for r in repos if os.path.realpath(str(r.get("path") or "/nonexistent")) == main), None)
     if chosen is None:
         names = ", ".join(sorted(str(r.get("displayName")) for r in repos)) or "none"
         what = "unknown repo %r" % repo if repo else "%s is not inside a repo Orca knows" % cwd
@@ -179,24 +197,27 @@ def start_quick(
         return 2
     repo_name, repo_id = str(chosen.get("displayName")), str(chosen.get("id"))
     repo_path = str(chosen.get("path"))
+    # --here works in the checkout it is run from when that is the chosen repo's main checkout or
+    # one of its linked worktrees; otherwise (a --repo elsewhere) in the repo's main checkout.
+    here_path = top if (top and main == os.path.realpath(repo_path)) else repo_path
 
     # 2. Refusals (only --here looks at the checkout's state)
     dirty = False
     if here and not base:
-        code, porcelain = git(repo_path, "status", "--porcelain")
+        code, porcelain = git(here_path, "status", "--porcelain")
         if code != 0:
-            say("cannot read the state of %s: not a git checkout?" % repo_path)
+            say("cannot read the state of %s: not a git checkout?" % here_path)
             return 126
         dirty = _is_dirty(porcelain)
     refusal = quick.start_refusal(here, bool(base), dirty, dirty_ok)
     if refusal:
         say(refusal)
         return 2
-    if here and os.path.exists(os.path.join(repo_path, quick.RECORD)):
-        record_path = os.path.join(repo_path, quick.RECORD)
+    if here and os.path.exists(os.path.join(here_path, quick.RECORD)):
+        record_path = os.path.join(here_path, quick.RECORD)
         say("%s already has %s: one quick task per workspace; "
             "borra %s cuando la tarea anterior esté commiteada"
-            % (repo_path, quick.RECORD, record_path))
+            % (here_path, quick.RECORD, record_path))
         return 2
 
     # 3. Implementer
@@ -224,7 +245,7 @@ def start_quick(
     # 4. Placement
     handle = ""
     if here:
-        workspace = repo_path
+        workspace = here_path  # its current branch is the base, local-only or not: no fetch
         code, sha = git(workspace, "rev-parse", "HEAD")
         code2, branch = git(workspace, "rev-parse", "--abbrev-ref", "HEAD")
         if code != 0 or code2 != 0 or not sha.strip():
@@ -253,11 +274,13 @@ def start_quick(
                 return 2
             say("este repo no tiene develop; parto de %s" % base)
             fetch_code, reason = fetch(repo_path, base)
-        if fetch_code != 0:
-            say("no pude actualizar origin/%s: %s; uso %s local" % (base, reason, base))
         remote_code, _ = git(repo_path, "rev-parse", "--verify", "--quiet",
                              "refs/remotes/origin/" + base)
         start_point = "origin/" + base if remote_code == 0 else base
+        if fetch_code != 0:
+            using = ("uso origin/%s tal como estaba (puede estar desactualizado)" % base
+                     if remote_code == 0 else "uso %s local" % base)
+            say("no pude actualizar origin/%s: %s; %s" % (base, reason, using))
         try:
             created = client.worktree_create("id:" + repo_id, name, start_point, agent, model,
                                              brief, linear)

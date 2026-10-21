@@ -47,27 +47,30 @@ Subcommands:
   rein watch <change> [--root <plan repo>] [--once] [--skip <id,id>]
                       block until `rein ship <change>` needs the owner (a new question,
                       the run finished, or the driver died), print it, exit 0. --once
-                      polls a single time and exits 1 when nothing is pending; --skip hides
-                      gates the owner deferred. Exit 2
+                      polls a single time and exits 1 when nothing is pending (126 when
+                      Orca cannot be asked); --skip hides gates the owner deferred. Exit 2
                       usage
   rein quick "<sentence>" [--repo <name>] [--base <branch>] [--here [--dirty-ok]]
                       [--agent <id> [--model <m>]] [--linear <id>]
                       hand a small change to a cheap agent chosen by quota, in a tab
-                      you talk to. Default: its own worktree; --here uses the main
-                      checkout. Exit 0 started / 1 failed / 2 usage / 126 environment
+                      you talk to. Default: its own worktree; --here uses the checkout
+                      you are in (main or a linked worktree) on its current branch, even
+                      a local-only one. Exit 0 started / 1 failed / 2 usage / 126 environment
   rein quick done     run by that agent when you say "listo": light gate on the
                       changed files, plus an audit only for risky paths. Never commits
                       or pushes. Exit 0 green / 1 red / 2 no quick task / 126 setup
   rein done <change> [--root <plan repo>] [--dry-run] [--yes]
                       close a finished change: remove its worktrees, close its tab,
-                      archive the openspec plan (local commit, never pushed). Removes
+                      archive the openspec plan (local commit on the plan repo's default
+                      branch, never pushed; its folder must be committed). Removes
                       NOTHING if any worktree is dirty, a main checkout or not integrated
                       (HEAD and branch) into origin/<base>; gitignored files that would be
                       lost (.env ...) are listed and need --yes. Exit 0 closed / 1 blockers / 2 usage / 126 Orca error
   rein quick close [<workspace path or quick-<slug> name>] [--dry-run] [--yes]
                       remove the worktrees of finished quick tasks (all of them when
                       no argument) and their records, only when clean and integrated
-                      into origin/<base>; blocked ones are listed and kept. A --here
+                      into origin/<base>; blocked ones are listed and kept (also one
+                      whose gitignored files would be lost, until --yes). A --here
                       task only loses its record. Exit 0 closed / 1 blockers / 126 Orca
   rein migrate-config [root] [--write]
                       v1 -> v2 flow.config.json: drop models/limits/worktree, add the
@@ -958,17 +961,23 @@ def cmd_quick(argv: list[str]) -> int:
     (`--agent --model x`) is a usage error, judged here rather than by `_opt`.
     """
     usage = ('usage: rein quick "<sentence>" [--repo <name>] [--base <branch>] [--here [--dirty-ok]] '
-             "[--agent <id> [--model <m>]] [--linear <id>]  |  rein quick done")
+             "[--agent <id> [--model <m>]] [--linear <id>]  |  rein quick done  |  "
+             "rein quick close [<path or quick-<slug>>] [--dry-run] [--yes]")
     # One pass over argv. A value flag takes the next token as its value (or `--flag=value`);
     # a missing, empty or `-`-led value is a usage error, and the token that was not consumed
     # stays visible as its own flag. Everything else that is not a flag is a bare word.
     # `close` is the subcommand only when what follows is flags, one path, one quick-* name or
     # nothing; anything else ("close the modal") is a task sentence and falls through.
+    # `close` followed by any other flag is a malformed close, never a task called "close".
     tail = [a for a in argv[1:] if a not in ("--dry-run", "--yes")]
-    if (argv and argv[0] == "close" and len(tail) <= 1 and (not tail or (not tail[0].startswith("-") and (
-            tail[0].startswith("quick-") or os.sep in tail[0] or os.path.isdir(tail[0]))))):
-        return _done.run_quick_close(tail[0] if tail else "", _ship.OrcaClient(), cwd=".",
-                                     dry_run="--dry-run" in argv, yes="--yes" in argv)
+    if argv and argv[0] == "close":
+        if len(tail) <= 1 and (not tail or (not tail[0].startswith("-") and (
+                tail[0].startswith("quick-") or os.sep in tail[0] or os.path.isdir(tail[0])))):
+            return _done.run_quick_close(tail[0] if tail else "", _ship.OrcaClient(), cwd=".",
+                                         dry_run="--dry-run" in argv, yes="--yes" in argv)
+        if any(a.startswith("-") for a in tail):
+            print(usage)
+            return 2
     value_flags = ("repo", "base", "agent", "model", "linear")
     values: dict = {}
     words: list = []
@@ -997,7 +1006,8 @@ def cmd_quick(argv: list[str]) -> int:
     sentence = words[0] if words else ""
     agent, model = values.get("agent", ""), values.get("model", "")
     # A lone --agent is fine (the driver supplies its default model); a lone --model is not.
-    if bad or len(words) != 1 or ("model" in values and "agent" not in values) or (dirty_ok and not here):
+    if bad or len(words) != 1 or ("model" in values and "agent" not in values) or (dirty_ok and not here) \
+            or sentence == "close":
         print(usage)
         return 2
     if sentence == "done":
