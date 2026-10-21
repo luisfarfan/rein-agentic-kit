@@ -48,7 +48,15 @@ def _base_name(repo: Optional[dict], git: Callable[..., tuple], path: str) -> st
 
 IGNORED_OK = ("node_modules", ".rein", "dist", "build", ".angular", "__pycache__", ".venv", "coverage",
               ".claude", ".codegraph", ".ruff_cache", ".pytest_cache", ".mypy_cache", ".cursor", ".turbo",
-              ".nx", ".next", ".parcel-cache", ".mcp.json")
+              ".nx", ".next", ".parcel-cache", ".mcp.json",
+              # operating-system junk
+              ".DS_Store", ".AppleDouble", ".Spotlight-V100", ".Trashes", ".fseventsd", ".TemporaryItems",
+              "Thumbs.db", "ehthumbs.db", "Desktop.ini", "desktop.ini", "$RECYCLE.BIN", ".directory")
+
+
+def _is_junk(name: str) -> bool:
+    parts = name.strip("/").split("/")
+    return any(part in IGNORED_OK for part in parts) or parts[-1].startswith("._")
 
 
 def _short_branch(name: str) -> str:
@@ -105,14 +113,15 @@ def _same_as_main(main: str, path: str, name: str) -> bool:
 
 
 def _ignored_files(path: str, git: Callable[..., tuple]) -> list:
-    code, out = git(path, "status", "--porcelain", "--ignored", "--untracked-files=all")
+    # -z: names come back verbatim (no C-quoting of spaces or non-ASCII bytes)
+    code, out = git(path, "status", "--porcelain", "-z", "--ignored", "--untracked-files=all")
     main = _main_checkout(path, git)
     found = []
-    for line in out.splitlines() if code == 0 else []:
-        if not line.startswith("!! "):
+    for entry in out.split("\0") if code == 0 else []:
+        if not entry.startswith("!! "):
             continue
-        name = line[3:].strip().strip('"')
-        if any(part in IGNORED_OK for part in name.strip("/").split("/")) or _same_as_main(main, path, name):
+        name = entry[3:]
+        if _is_junk(name) or _same_as_main(main, path, name):
             continue
         found.append(name)
     return found
@@ -141,7 +150,8 @@ def check_worktree(path: str, base: str, git: Callable[..., tuple], fetch: Calla
 
     Both HEAD and `branch` (the one Orca deletes with the worktree) must be integrated; a
     detached HEAD with no known branch cannot be vouched for. Gitignored files that would be
-    lost (`.env` ...) are appended to `warnings`, they do not block by themselves.
+    lost (`.env` ...) are appended to `warnings` -- only for an integrated worktree, since a
+    kept one loses nothing; pass `warnings=None` when the checkout will not be removed.
     """
     code, porcelain = git(path, "status", "--porcelain", "--untracked-files=all")
     if code != 0:
@@ -150,8 +160,6 @@ def check_worktree(path: str, base: str, git: Callable[..., tuple], fetch: Calla
         return "uncommitted changes"
     if not branch:
         return "detached HEAD and no known branch: cannot tell what would be lost"
-    if warnings is not None:
-        warnings.extend((path, name) for name in _ignored_files(path, git))
     base, why = _resolve_base(path, base, git, fetch, fallback, notes if notes is not None else [])
     if not base:
         return why
@@ -159,11 +167,17 @@ def check_worktree(path: str, base: str, git: Callable[..., tuple], fetch: Calla
         tips = {git(path, "rev-parse", "--verify", "--quiet", ref)[1].strip()
                 for ref in ("HEAD", "refs/heads/" + branch)}
         if tips == {base_sha}:
-            return ""
+            return _integrated(path, git, warnings)
     for ref in ("HEAD", "refs/heads/" + branch):
         why = integration_gap(path, "origin/" + base, ref, git)
         if why:
             return why
+    return _integrated(path, git, warnings)
+
+
+def _integrated(path: str, git: Callable[..., tuple], warnings: Optional[list]) -> str:
+    if warnings is not None:
+        warnings.extend((path, name) for name in _ignored_files(path, git))
     return ""
 
 
@@ -427,7 +441,7 @@ def run_quick_close(arg: str, client: OrcaClient, *, cwd: str = ".", dry_run: bo
             return 0
 
     blocked = errors = closed = 0
-    plan, warnings = [], []
+    plan, warned = [], []
     for path in targets:
         record, why = qd._load_record(path)
         if record is None:
@@ -437,6 +451,9 @@ def run_quick_close(arg: str, client: OrcaClient, *, cwd: str = ".", dry_run: bo
         row = rows.get(os.path.realpath(path))
         base = str(record.get("base") or DEFAULT_BASE)
         branch, notes = branch_of(path, row, git), []
+        # only a removed worktree can lose gitignored files; a kept checkout just loses its record
+        removable = not is_main_worktree(path, row, git) and "quick-" in branch
+        warnings: Optional[list] = [] if removable else None
         reason = check_worktree(path, base, git, fetch, base_sha=str(record.get("base_sha") or ""),
                                 branch=branch, warnings=warnings,
                                 fallback=True, notes=notes)
@@ -446,13 +463,17 @@ def run_quick_close(arg: str, client: OrcaClient, *, cwd: str = ".", dry_run: bo
             blocked += 1
             say("kept: %s: %s" % (path, reason))
             continue
-        removable = not is_main_worktree(path, row, git) and "quick-" in branch
+        if warnings and not yes:
+            blocked += 1
+            warned += warnings
+            say("kept: %s: gitignored files would be lost (listed below)" % path)
+            continue
+        if warnings:
+            _warn(warnings, say)
         plan.append((path, removable))
-    if warnings:
-        _warn(warnings, say)
-        if not yes:
-            say("nothing was removed; re-run with --yes only if losing them is fine")
-            return 1
+    if warned:
+        _warn(warned, say)
+        say("those were kept; re-run with --yes only if losing them is fine")
     for path, removable in plan:
         if dry_run:
             say("would %s" % ("remove worktree %s" % path if removable else "delete the record in %s" % path))

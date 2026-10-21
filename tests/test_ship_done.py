@@ -303,7 +303,7 @@ class DoneTests(Env):
         self.assertEqual(code, 0, self.text())
 
 
-class QuickCloseTests(Env):
+class QuickCloseBase(Env):
     def record(self, workspace, base="develop", at_base=True):
         sha = git(workspace, "rev-parse", "HEAD").strip()
         os.makedirs(os.path.join(workspace, ".rein"), exist_ok=True)
@@ -329,6 +329,8 @@ class QuickCloseTests(Env):
         git(main, "worktree", "add", "-q", "-b", "quick-" + name, path, "origin/develop")
         return path, main
 
+
+class QuickCloseTests(QuickCloseBase):
     def test_clean_integrated_removed_and_record_deleted(self):
         path, _ = self.linked("fix")
         self.record(path)
@@ -793,7 +795,82 @@ class MergeIntegrationTests(Env):
         self.assertIn("merge", why)
 
 
-class QuickCloseSafetyTests(QuickCloseTests):
+class WarningScopeTests(QuickCloseBase):
+    def exclude(self, path, *patterns):
+        excl = git(path, "rev-parse", "--git-path", "info/exclude").strip()
+        excl = excl if os.path.isabs(excl) else os.path.join(path, excl)
+        os.makedirs(os.path.dirname(excl), exist_ok=True)
+        with open(excl, "a") as fh:
+            fh.write("".join(p + "\n" for p in patterns))
+
+    def put(self, path, name, text="S=1"):
+        with open(os.path.join(path, name), "w") as fh:
+            fh.write(text)
+
+    def test_here_record_with_ignored_env_needs_no_yes(self):
+        main = os.path.join(self.tmp, "main")
+        self.clone(self.origin, main)
+        git(main, "checkout", "-q", "develop")
+        self.record(main)
+        self.exclude(main, ".env", ".rein/")
+        self.put(main, ".env")
+        code, orca = self.close(arg=main)
+        self.assertEqual(code, 0, self.text())
+        self.assertNotIn("WARNING", self.text())
+        self.assertFalse(os.path.exists(os.path.join(main, ".rein", "quick.json")))
+        self.assertTrue(os.path.isfile(os.path.join(main, ".env")))
+
+    def test_warnings_of_a_kept_target_do_not_block_others(self):
+        a, _ = self.linked("a")
+        c, _ = self.linked("c")
+        for p in (a, c):
+            self.record(p)
+        commit_file(a, "new.txt")  # a is not integrated
+        self.exclude(a, ".env")
+        self.put(a, ".env")
+        orca = FakeOrca(worktrees=[{"path": a}, {"path": c}])
+        code, orca = self.close(orca=orca)
+        self.assertEqual(code, 1, self.text())
+        self.assertEqual(orca.rm_paths(), [c])
+        self.assertNotIn("WARNING", self.text())
+
+    def test_a_target_with_ignored_files_is_kept_without_yes_others_close(self):
+        a, _ = self.linked("a")
+        c, _ = self.linked("c")
+        for p in (a, c):
+            self.record(p)
+        self.exclude(a, ".env")
+        self.put(a, ".env")
+        orca = FakeOrca(worktrees=[{"path": a}, {"path": c}])
+        code, orca = self.close(orca=orca)
+        self.assertEqual(code, 1, self.text())
+        self.assertEqual(orca.rm_paths(), [c])
+        self.assertIn("WARNING", self.text())
+        self.assertIn("--yes", self.text())
+        self.assertTrue(os.path.isfile(os.path.join(a, ".rein", "quick.json")))
+
+    def test_os_junk_is_not_warned(self):
+        a, _ = self.linked("a")
+        self.record(a)
+        self.exclude(a, ".DS_Store", "Thumbs.db", "desktop.ini")
+        for name in (".DS_Store", "Thumbs.db", "desktop.ini"):
+            self.put(a, name, "junk")
+        code, orca = self.close(arg=a)
+        self.assertEqual(code, 0, self.text())
+        self.assertNotIn("WARNING", self.text())
+
+    def test_non_ascii_copy_in_main_checkout_is_not_warned(self):
+        a, main = self.linked("a")
+        self.record(a)
+        self.exclude(a, "*.env")
+        self.put(a, "caf\u00e9.env")
+        self.put(main, "caf\u00e9.env")
+        code, orca = self.close(arg=a)
+        self.assertEqual(code, 0, self.text())
+        self.assertNotIn("WARNING", self.text())
+
+
+class QuickCloseSafetyTests(QuickCloseBase):
     def test_non_quick_linked_worktree_only_loses_its_record(self):
         main = os.path.join(self.tmp, "m")
         self.clone(self.origin, main)

@@ -67,7 +67,8 @@ Subcommands:
   rein quick close [<workspace path or quick-<slug> name>] [--dry-run] [--yes]
                       remove the worktrees of finished quick tasks (all of them when
                       no argument) and their records, only when clean and integrated
-                      into origin/<base>; blocked ones are listed and kept. A --here
+                      into origin/<base>; blocked ones are listed and kept (also one
+                      whose gitignored files would be lost, until --yes). A --here
                       task only loses its record. Exit 0 closed / 1 blockers / 126 Orca
   rein migrate-config [root] [--write]
                       v1 -> v2 flow.config.json: drop models/limits/worktree, add the
