@@ -186,7 +186,9 @@ rein context     # detect + plan in ONE round-trip
 rein verify      # actually RUN each resolved command and report the truth — an inference is not a fact
 rein gate        # ✅ did they PASS — 0 green · 1 the code is wrong · 126 the environment could not run them
                  # runs only lint, typecheck, build, test (never testOne or custom slots), cheap
-                 # first; the first slot that does not pass stops it, the rest report `skipped`
+                 # first; the first slot that does not pass stops it, the rest report `skipped`.
+                 # An optional `testIntegration` command (integration/e2e suite) runs last;
+                 # --unit-only leaves it out and drops the browser-render demand
                  # --plan: run each TASK's own Verification before implementers are paid.
                  # Failing is fine (the work does not exist yet); proving NOTHING is not —
                  # a missing test module or a selector matching zero tests exits non-zero

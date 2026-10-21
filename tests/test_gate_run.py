@@ -109,3 +109,26 @@ class TestPlanSlots(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestUnitOnlyNarrows(GateRunCase):
+    """`--unit-only` used to switch off only the render demand and still ran everything."""
+
+    def test_integration_slot_runs_last_in_a_full_gate(self):
+        self.config({"test": _log("test"), "testIntegration": _log("testIntegration"), "lint": _log("lint")})
+        code, payload = self.gate()
+        self.assertEqual(code, 0, payload)
+        self.assertEqual(self.order(), ["lint", "test", "testIntegration"])
+
+    def test_unit_only_leaves_the_integration_slot_out(self):
+        self.config({"test": _log("test"), "testIntegration": _log("testIntegration")})
+        code, payload = self.gate("--unit-only")
+        self.assertEqual(code, 0, payload)
+        self.assertEqual(self.order(), ["test"])
+        self.assertNotIn("testIntegration", payload["report"]["results"])
+
+    def test_a_red_integration_suite_is_red(self):
+        self.config({"test": _log("test"), "testIntegration": _log("testIntegration", 1)})
+        code, payload = self.gate()
+        self.assertEqual(code, 1, payload)
+        self.assertIn("testIntegration", payload["decision"]["reason"])

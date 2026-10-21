@@ -14,8 +14,8 @@ Subcommands:
                       first, stopping at the first that fails (the rest: skipped).
                       Exits 0 passed / 1 the code is wrong / 126 the environment
                       could not run the checks. --require-review also demands a
-                      current APPROVED review episode. --unit-only forces unit mode
-                      (no browser-render demand) for per-task gates in frontend repos.
+                      current APPROVED review episode. --unit-only runs the unit slots
+                      only (no testIntegration) with no browser-render demand.
                       gate.env from flow.config.json is applied ([--repo] [--env-root])
   rein env [root]     `export` lines for the worktree's gate.env (flow.config.json):
                       the per-worktree environment Rein's gates use there.
@@ -271,7 +271,7 @@ def cmd_gate(argv: list[str]) -> int:
     # Only the gate slots, cheap first, stopping at the first that does not pass (gate_run).
     commands = resolved.get("commands") or {}
     steps = [(slot, commands[slot], commands[slot])
-             for slot in _gate_run.gate_slots(commands, only, integration=False)]
+             for slot in _gate_run.gate_slots(commands, only, integration="--unit-only" not in argv)]
     report = _gate_run.run_steps(resolved["root"], steps, lambda _slot: timeout, env=env)
     report["env"] = sorted(env)  # names only: the values are the repo's business
     _verify.write_state(resolved["root"], report)
@@ -298,6 +298,7 @@ def cmd_gate(argv: list[str]) -> int:
     if "--unit-only" in argv:
         # A per-task gate asks "do the commands pass", not "was the UI
         # rendered": render evidence belongs to `Type: verification` tasks.
+        # It also narrows the run to the unit slots: no `testIntegration`.
         policy["mode"] = "unit"
     if tools_raw:
         policy["tools"] = [t.strip() for t in tools_raw.split(",") if t.strip()]

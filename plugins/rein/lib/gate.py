@@ -309,7 +309,8 @@ EXIT_SETUP = 126
 # no suite owns (verify's OUTCOME_INCONCLUSIVE exists for exactly that), and
 # `serve` is a dev server that never runs to completion -- neither proves
 # anything about a change, so neither can hold the gate open or shut.
-GATE_SLOTS = ("test", "lint", "typecheck", "build")
+# testIntegration: an integration/e2e suite, run by a full gate only (`--unit-only` leaves it out).
+GATE_SLOTS = ("test", "lint", "typecheck", "build", "testIntegration")
 
 # Outcomes that mean the environment failed, not the code. Kept as names rather
 # than imported from verify so this module stays free of that dependency (it is
