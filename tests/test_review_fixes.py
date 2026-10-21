@@ -20,6 +20,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(HERE), "plugins", "rein", "lib")
 import ship  # noqa: E402
 import ship_state  # noqa: E402
 import ship_watch as sw  # noqa: E402
+import verify  # noqa: E402
 from test_ship import PLAN, FailEnvelope, FakeOrca, ShipCase, _flag, scripted_gate  # noqa: E402
 
 
@@ -238,6 +239,46 @@ class DriverPidLiveness(ShipCase):
         proc = self.spawn("sleep", "30")
         self.put_pid(proc.pid)
         self.assertFalse(sw.driver_alive("demo", ps=lambda: [], own_pid=1, root=self.root))
+
+
+PASSING = "\n".join("tests/test_m%d.py::test_case_%d PASSED" % (i, i) for i in range(300))
+
+
+class M4FailureLinesEdges(unittest.TestCase):
+    def test_a_failure_ending_in_ok_is_kept(self):
+        out = verify.failure_lines(PASSING + "\nAssertionError: response was not ok\n" + PASSING)
+        self.assertIn("AssertionError: response was not ok", out)
+
+    def test_a_failure_mentioning_passed_is_kept(self):
+        out = verify.failure_lines(PASSING + "\nE   AssertionError: expected PASSED, got FAILED\n" + PASSING)
+        self.assertIn("E   AssertionError: expected PASSED, got FAILED", out)
+
+    def test_real_passing_lines_are_still_dropped(self):
+        noise = "\n".join(["test_a (t.T) ... ok", "\u2713 renders (3 ms)", "PASS src/a.test.js",
+                            "tests/t.py::test_x PASSED [ 10%]"] * 80)
+        out = verify.failure_lines(noise + "\nFAILED tests/t.py::test_y - boom")
+        self.assertIn("FAILED tests/t.py::test_y - boom", out)
+        self.assertFalse(any("... ok" in x or "PASSED [" in x or x.startswith("PASS ") for x in out), out)
+
+    def test_eslint_errors_keep_their_file_path(self):
+        text = ""
+        for f in range(10):
+            text += "\n/repo/src/file%d.js\n" % f + "\n".join(
+                "  %d:5  error  'x%d' is not defined  no-undef" % (n, n) for n in range(1, 12)) + "\n"
+        text += "\n\u2716 110 problems (110 errors, 0 warnings)\n"
+        out = verify.failure_lines(text)
+        self.assertIn("/repo/src/file9.js", out)
+        last_error = max(i for i, x in enumerate(out) if " error " in x)
+        headers = [i for i, x in enumerate(out) if x.startswith("/repo/")]
+        for i, line in enumerate(out):
+            if " error " in line:
+                self.assertTrue(any(h < i for h in headers), "error line without its file: %r" % line)
+        self.assertLess(max(headers), last_error)
+
+    def test_an_oversized_last_strong_line_does_not_starve_the_rest(self):
+        text = PASSING + "\nAssertionError: short one\n" + "FAILED " + "x" * 400
+        out = verify.failure_lines(text, cap=10 ** 6, max_chars=120)
+        self.assertIn("AssertionError: short one", out)
 
 
 if __name__ == "__main__":

@@ -216,12 +216,16 @@ _STRONG_RE = re.compile(
     r"|^\s*[-+]?\s*(?:Expected|Received)\b"            # jest/vitest diff header
     r"|[\w./\\-]+\.\w+(?::\d+){1,2}\b|\.\w+\(\d+,\d+\)"  # file:line[:col], tsc file(l,c)
     r"|\b\d+ (?:failed|errors?)\b|\bTests?\b.*\bfailed\b"  # runner summaries
+    r"|^\s+\d+:\d+\s+error\b"                          # eslint stylish: under its file's line
 )
 # Opens an assertion block whose explanation (diff, location, code frame) follows it.
 _BLOCK_RE = re.compile(r"^\s*FAIL\b|AssertionError|^\s*\w*Error:|^_{3,} .* _{3,}$")
 _BLOCK_AFTER = 12
-# A passing test is never failure evidence, whatever its name says.
-_PASSING_RE = re.compile(r"\u2713|\u2714|\bPASS(?:ED)?\b|\.\.\. ok$|\bok$")
+# A passing test is never failure evidence, whatever its name says. Anchored to where runners
+# print the verdict, so a failure message that merely ends in "ok" or mentions PASSED still counts.
+_PASSING_RE = re.compile(r"\u2713|\u2714|^\s*PASS\s|\sPASSED(?:\s+\[\s*\d+%\])?\s*$|\.\.\. ok$|^ok\s")
+# eslint's stylish format names the file once, unindented, above its indented `line:col  error` lines.
+_ESLINT_ITEM_RE = re.compile(r"^\s+\d+:\d+\s+(?:error|warning)\b")
 _SUMMARY_TAIL = 3  # the last non-blank lines: where a runner prints its summary
 
 
@@ -262,14 +266,29 @@ def failure_lines(text: str, cap: int = FAILURE_LINES_CAP, max_chars: int = FAIL
     strong = {i for i in strong if not _PASSING_RE.search(lines[i])}
     weak = {i for i in weak - strong if not _PASSING_RE.search(lines[i])}
 
+    def owner(i):
+        """The file line an eslint item belongs to, or None."""
+        if not _ESLINT_ITEM_RE.search(lines[i]):
+            return None
+        for k in range(i - 1, -1, -1):
+            if lines[k].strip() and not lines[k][0].isspace():
+                return k
+        return None
+
     chosen, used, chars = set(), 0, 0
     for pool in (strong, weak):
         for i in sorted(pool, reverse=True):  # the tail first
-            cost = 1 if lines[i].strip() else 0
-            if used + cost > cap or chars + len(lines[i]) + 1 > max_chars:
+            if i in chosen:
+                continue
+            extra = [i] + [k for k in (owner(i),) if k is not None and k not in chosen]
+            cost = sum(1 for k in extra if lines[k].strip())
+            size = sum(len(lines[k]) + 1 for k in extra)
+            if used + cost > cap:
                 break
-            chosen.add(i)
-            used, chars = used + cost, chars + len(lines[i]) + 1
+            if chars + size > max_chars:
+                continue  # one oversized line must not starve the smaller evidence before it
+            chosen.update(extra)
+            used, chars = used + cost, chars + size
     picked = sorted(chosen)
     while picked and not lines[picked[0]].strip():
         picked.pop(0)
