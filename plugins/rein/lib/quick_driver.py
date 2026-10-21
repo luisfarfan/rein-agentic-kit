@@ -699,7 +699,8 @@ def done_quick(*, cwd: str = ".", client: OrcaClient, run=verify.run_one,
     def budget(slot, configured):
         return _gate_run.step_budget(history, slot, configured, commands, cfg.gate_timeout_seconds)
     report = _gate_run.run_steps(workspace, steps, budget, env=gate_vars or None, run=run, cache=True,
-                                 history_repo=history, skipped=skipped)
+                                 history_repo=history, skipped=skipped,
+                                 prepare=_gate_env.prepare_command(resolved, workspace, repo))
     results = [_Slot(e) for e in report["results"].values()]
     outputs = {e["slot"]: "\n".join(e.get("errorLines") or []) for e in report["results"].values()}
     outcome = quick.verdict(results)

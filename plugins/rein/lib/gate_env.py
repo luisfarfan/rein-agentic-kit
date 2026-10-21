@@ -124,6 +124,15 @@ def cleanup_command(root: str, repo: str = "", env_root: str = "") -> str:
     return ""
 
 
+def prepare_command(resolved: dict, worktree: str, repo: str = "") -> str:
+    """`gate.prepare` of a resolved config, placeholders filled; "" when none."""
+    block = (resolved or {}).get("gate")
+    command = block.get("prepare") if isinstance(block, dict) else None
+    if not isinstance(command, str) or not command.strip():
+        return ""
+    return expand_command(command.strip(), worktree, repo or repo_name_of(worktree))
+
+
 def run_cleanup(command: str, cwd: str, env: dict = None, timeout: float = CLEANUP_TIMEOUT) -> tuple:
     """`(exit code, last output line)` of the cleanup command; it never raises."""
     try:

@@ -135,7 +135,7 @@ def _skipped(slot: str, command: str, why: str) -> dict:
 
 def run_steps(root: str, steps: list, timeout_for: Callable[[str, str], float], env: dict = None,
               run: Callable = _verify.run_one, fail_fast: bool = True, cache: bool = False,
-              history_repo: str = "", skipped: dict = None) -> dict:
+              history_repo: str = "", skipped: dict = None, prepare: str = "") -> dict:
     """Run `[(slot, command, configured)]` in order; after the first slot that is not ok, skip the rest.
 
     `timeout_for(slot, configured)` is each slot's budget. A slot whose outcome is anything but
@@ -143,9 +143,14 @@ def run_steps(root: str, steps: list, timeout_for: Callable[[str, str], float], 
     `skipped`, naming the slot that stopped it. With `cache`, a slot that passed on
     this exact tree state, command and env is reused (`"cached": true`) instead of run,
     and a new pass is stored (gate_cache); nothing else is ever stored. With
-    `history_repo`, each pass's duration is recorded for the slot's next budget."""
+    `history_repo`, each pass's duration is recorded for the slot's next budget.
+
+    `prepare` (gate.prepare: generated code, a schema) runs once, before the first slot that is
+    not answered from the cache; when it fails, every slot left is `not_invocable` -- the
+    environment could not run the checks, which says nothing about the code."""
     results: dict = {}
     stopped_by = ""
+    unprepared = ""  # why gate.prepare failed, once it did
     for slot, command, configured in steps:
         if stopped_by:
             results[slot] = _skipped(slot, configured, "skipped: %s did not pass first" % stopped_by)
@@ -159,6 +164,18 @@ def run_steps(root: str, steps: list, timeout_for: Callable[[str, str], float], 
                 hit.pop("storedAt", None)
                 results[slot] = {**hit, "cached": True}
                 continue
+        if prepare and "prepare" not in results:
+            pres = call_with(run, "prepare", prepare, root, timeout_for("prepare", prepare), configured=prepare,
+                             env=env or None)
+            results["prepare"] = pres.to_dict()
+            if pres.outcome != _verify.OUTCOME_OK:
+                results["prepare"]["errorLines"] = _verify.failure_lines(pres.output)
+                lines = results["prepare"]["errorLines"] or [pres.error or "exit %s" % pres.exit_code]
+                unprepared = "gate.prepare failed ($ %s): %s" % (prepare, " | ".join(lines)[-500:])
+        if unprepared:
+            results[slot] = _verify.CommandResult(slot, configured, False, _verify.OUTCOME_NOT_INVOCABLE, None,
+                                                  [], 0, error=unprepared).to_dict()
+            continue
         budget = timeout_for(slot, configured)
         res = call_with(run, slot, command, root, budget, configured=configured, env=env or None)
         entry = res.to_dict()

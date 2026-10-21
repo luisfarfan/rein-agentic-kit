@@ -49,6 +49,8 @@
     "affectedMax": 40,
     "$regenerable": "Gitignored files a worktree's setup regenerates (globs, repo-relative; a trailing / covers a folder): `rein done` and `rein quick close` do not count them as lost and need no --yes for them.",
     "regenerable": ["public/config.json"],
+    "$prepare": "A command run in the worktree before the first check of a gate that is not answered from the cache (rein gate, ship's task and repo gates, rein quick done): what the checks need that the worktree's setup does not produce, e.g. generated API clients before typecheck. {worktree}, {repo}, {path} as in cleanup. Its failure is a setup problem (exit 126), not a red gate. Unset: nothing runs.",
+    "prepare": "",
     "$cleanup": "A command run once per worktree after `rein done` / `rein quick close` removed it, from the repo's main checkout, with the worktree's gate.env: drop what the gates created outside the tree. {worktree} is the same slug gate.env uses, {repo} the repo's name, {path} the removed worktree's path (shell-quoted). A failure is reported, never undoes the close. Unset: nothing runs.",
     "cleanup": "dropdb --if-exists app_test_{worktree}",
     "$protected": "Globs of files a task may not change unless its own text names them (Rein checks it when a task ends and fails the task with the reason). flow.config.json is always protected, and so is the config of every task runner (mise.toml, Makefile, justfile, Taskfile.yml) a gate command comes from or calls, as resolved at the change's base and now: deleting or swapping that runner is caught, a runner no gate command uses may change. Each commit of the task must also pass the repo's own commit-msg hook, re-run by Rein with the bypass variables (LEFTHOOK_EXCLUDE, SKIP, HUSKY ...) removed.",

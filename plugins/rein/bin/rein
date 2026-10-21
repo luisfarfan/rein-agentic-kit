@@ -16,7 +16,8 @@ Subcommands:
                       could not run the checks. --require-review also demands a
                       current APPROVED review episode. --unit-only runs the unit slots
                       only (no testIntegration) with no browser-render demand.
-                      gate.env from flow.config.json is applied ([--repo] [--env-root]).
+                      gate.env from flow.config.json is applied ([--repo] [--env-root]);
+                      gate.prepare runs first when a slot is not cached (failure: 126).
                       A slot that passed on the same tree state, command and env is
                       reused and printed "cached" (--no-cache runs it anyway). Each
                       slot's timeout is 2x its slowest recent pass (2-30 min); without
@@ -335,9 +336,10 @@ def cmd_gate(argv: list[str]) -> int:
 
     def budget(slot, configured):
         return _gate_run.step_budget(history_repo, slot, configured, resolved.get("commands") or {}, timeout)
+    prepare = _gate_env.prepare_command(resolved, resolved["root"], history_repo or _opt(argv, "repo"))
     report = _gate_run.run_steps(resolved["root"], planned["steps"], budget, env=env,
                                  cache="--no-cache" not in argv, history_repo=history_repo,
-                                 skipped=planned["skipped"])
+                                 skipped=planned["skipped"], prepare=prepare)
     report["env"] = sorted(env)  # names only: the values are the repo's business
     report["tier"] = tier or "default"
     if planned["affected"] is not None:
@@ -381,6 +383,10 @@ def cmd_gate(argv: list[str]) -> int:
     decision = _gate.decide_gate(report, review=review, require_review=require_review,
                                  verify_policy=policy, serve=serve, render=render,
                                  allow_empty=tier == "task")
+    unprepared = next((r.get("error") for r in report["results"].values()
+                       if str(r.get("error") or "").startswith("gate.prepare failed")), "")
+    if unprepared and decision["decision"] == _gate.GATE_SETUP:
+        decision["reason"] = "%s -- %s" % (unprepared, decision["reason"])
     # Kept per checkout, readable afterwards with `rein gate-log --path <root>`.
     _gate_log.append(_gate_log.root_log_path(resolved["root"]), dict(
         _gate_log.summarize({"decision": decision, "report": report}), kind="gate", repo=history_repo,
