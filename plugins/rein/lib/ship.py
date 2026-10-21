@@ -44,7 +44,7 @@ BIN = os.path.join(PLUGIN, "bin", "rein")
 CONTRACT = "orchestration.contract.v1"
 DEFAULT_BASE_REF = "origin/develop"
 WAIT_MS = 15000      # bounded: gate-resolve sends no inbox message, so a wait must wake to poll (and to apply queued answers)
-GATE_WAIT_MS = 3000  # the Orca wait while a gate runs in the background, so its verdict is fed soon after it lands
+GATE_WAIT_MS = 5000  # the Orca wait while a gate runs in the background, so its verdict is fed soon after it lands
 GATE_POLL_SECONDS = 1.0
 IDLE_POLLS = 3       # empty waits in a row before asking worker-list what needs doing
 SAFE_NEXT_ACTIONS = ("release", "retain")
@@ -242,10 +242,10 @@ def gate_outer_bound(path: str, unit_only: bool, timeout: float, repo: str = "",
         slots = [s for s in slots if s in _gate_run.TASK_SLOTS or s == "test"]
     total = 0.0
     for slot in slots:
-        budget = _gate_run.slot_budget(repo, slot, commands[slot], timeout)
-        if tier == "task" and slot == "test" and commands.get("testOne"):  # the affected run
-            budget = max(budget, _gate_run.slot_budget(repo, slot, commands["testOne"], timeout))
-        total += budget
+        configured = commands[slot]
+        if tier == "task" and slot == "test" and commands.get("testOne"):
+            configured = commands["testOne"]  # the affected run (step_budget: at least the suite's)
+        total += _gate_run.step_budget(repo, slot, configured, commands, timeout)
     return max(total, timeout)
 
 

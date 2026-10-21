@@ -623,7 +623,7 @@ def done_quick(*, cwd: str = ".", client: OrcaClient, run=verify.run_one,
     history = repo if _gate_cache.is_git(workspace) else ""
 
     def budget(slot, configured):
-        return _gate_run.slot_budget(history, slot, configured, cfg.gate_timeout_seconds)
+        return _gate_run.step_budget(history, slot, configured, commands, cfg.gate_timeout_seconds)
     report = _gate_run.run_steps(workspace, steps, budget, env=gate_vars or None, run=run, cache=True,
                                  history_repo=history, skipped=skipped)
     results = [_Slot(e) for e in report["results"].values()]

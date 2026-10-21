@@ -105,3 +105,15 @@ class TestTheDriversOuterBound(CacheDirCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestAffectedRunsAreNotStarved(CacheDirCase):
+    """An affected run's own history may come from a one-file run; a forty-file run must not
+    time out on it. The full suite's budget bounds any subset of it."""
+
+    def test_the_affected_test_step_gets_at_least_the_full_suites_budget(self):
+        gate_cache.record_pass("api", "test", "pytest -q {target}", 5)      # a tiny affected run
+        gate_cache.record_pass("api", "test", "pytest -q tests/unit", 400)  # the whole suite
+        commands = {"test": "pytest -q tests/unit", "testOne": "pytest -q {target}"}
+        self.assertEqual(gate_run.step_budget("api", "test", "pytest -q {target}", commands, 900), 800)
+        self.assertEqual(gate_run.step_budget("api", "lint", "ruff", {"lint": "ruff"}, 900), 900)

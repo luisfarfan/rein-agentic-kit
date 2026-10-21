@@ -118,6 +118,16 @@ def plan(root: str, resolved: dict, tier: str = "", only=None, unit_only: bool =
     return {"steps": steps, "affected": info, "skipped": skipped}
 
 
+def step_budget(repo: str, slot: str, configured: str, commands: dict, fallback: float) -> float:
+    """`slot_budget` of one step. A `test` step that runs a subset (the affected tests) gets at
+    least the full suite's budget: its own history may come from a much smaller subset."""
+    budget = slot_budget(repo, slot, configured, fallback)
+    full = (commands or {}).get(slot) or ""
+    if slot == "test" and full and configured != full:
+        budget = max(budget, slot_budget(repo, slot, full, fallback))
+    return budget
+
+
 def _skipped(slot: str, command: str, why: str) -> dict:
     return _verify.CommandResult(slot, command, True, _verify.OUTCOME_SKIPPED, None, [], 0,
                                  error=why).to_dict()

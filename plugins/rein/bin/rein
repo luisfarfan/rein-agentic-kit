@@ -305,7 +305,7 @@ def cmd_gate(argv: list[str]) -> int:
         if _gate_cache.is_git(resolved["root"]) else ""
 
     def budget(slot, configured):
-        return _gate_run.slot_budget(history_repo, slot, configured, timeout)
+        return _gate_run.step_budget(history_repo, slot, configured, resolved.get("commands") or {}, timeout)
     report = _gate_run.run_steps(resolved["root"], planned["steps"], budget, env=env,
                                  cache="--no-cache" not in argv, history_repo=history_repo,
                                  skipped=planned["skipped"])
