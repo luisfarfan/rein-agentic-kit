@@ -9,8 +9,10 @@ Subcommands:
   rein verify         actually RUN each resolved command and report the truth --
                       "could these be INVOKED", exit 0 when they all could, even
                       if a suite ran and failed
-  rein gate           the other question: did they PASS. Runs the same commands and
-                      exits 0 passed / 1 the code is wrong / 126 the environment
+  rein gate           the other question: did they PASS. Runs the gate slots (lint,
+                      typecheck, build, test; never testOne or custom slots), cheap
+                      first, stopping at the first that fails (the rest: skipped).
+                      Exits 0 passed / 1 the code is wrong / 126 the environment
                       could not run the checks. --require-review also demands a
                       current APPROVED review episode. --unit-only forces unit mode
                       (no browser-render demand) for per-task gates in frontend repos.
@@ -101,6 +103,7 @@ sys.path.insert(0, os.path.join(PLUGIN_ROOT, "lib"))
 import detect as _detect  # noqa: E402
 import gate as _gate  # noqa: E402
 import gate_env as _gate_env  # noqa: E402
+import gate_run as _gate_run  # noqa: E402
 import migrate_config as _migrate_config  # noqa: E402
 import plan as _plan  # noqa: E402
 import plan_check as _plan_check  # noqa: E402
@@ -265,7 +268,11 @@ def cmd_gate(argv: list[str]) -> int:
     resolved = _detect.resolve(root)
     env = _gate_env.for_worktree(resolved["root"], repo=_opt(argv, "repo"),
                                  env_root=_opt(argv, "env-root"), resolved=resolved)
-    report = _verify.verify_commands(resolved, timeout, only=only, env=env)
+    # Only the gate slots, cheap first, stopping at the first that does not pass (gate_run).
+    commands = resolved.get("commands") or {}
+    steps = [(slot, commands[slot], commands[slot])
+             for slot in _gate_run.gate_slots(commands, only, integration=False)]
+    report = _gate_run.run_steps(resolved["root"], steps, lambda _slot: timeout, env=env)
     report["env"] = sorted(env)  # names only: the values are the repo's business
     _verify.write_state(resolved["root"], report)
 
