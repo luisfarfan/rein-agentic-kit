@@ -2,8 +2,8 @@
 
 The rule above all: a worktree is removed only when it is clean AND everything it has beyond
 `origin/<base>` is already in there: merging its tip into `origin/<base>` changes nothing
-(so merge commits, squash merges and rebases are judged by content), or, for a history
-without merge commits, every commit is patch-equivalent to one upstream. Any doubt -- a dirty tree, an unmerged commit, a base that cannot be
+(so merge commits, squash merges and rebases are judged by content), or, only when git has no
+merge-tree, every commit of a merge-free history is exactly one upstream. Any doubt -- a dirty tree, an unmerged commit, a base that cannot be
 fetched -- blocks the WHOLE operation: nothing is removed and the reasons are printed.
 """
 
@@ -14,6 +14,7 @@ import filecmp
 import json
 import os
 import shutil
+import subprocess
 from typing import Callable, Optional
 
 import detect as _detect
@@ -187,35 +188,74 @@ def integration_gap(path: str, upstream: str, ref: str, git: Callable[..., tuple
     The rule is about content, so merge commits (which `git cherry` never looks at), squash
     merges and a base merged into the branch are all judged alike: `ref` is integrated when
     merging it into `upstream` would leave `upstream`'s tree exactly as it is
-    (`git merge-tree --write-tree`, git >= 2.38). A history with no merge commits is also
-    accepted when every commit is patch-equivalent to one in `upstream` (`git cherry`), so a
-    change that landed and was later reverted upstream still counts as integrated. Without
-    merge-tree, a history with merge commits cannot be vouched for and blocks.
+    (`git merge-tree --write-tree`, git >= 2.38). When merge-tree can answer, its answer is
+    final. Without it, a history with merge commits blocks, and a plain history is accepted only
+    when every commit is EXACTLY (`patch-id --verbatim`, whitespace included) one upstream.
     """
     code, out = git(path, "rev-list", "--merges", "--count", "%s..%s" % (upstream, ref))
     if code != 0:
         return "cannot compare %s with %s" % (ref, upstream)
     merges = int(out.strip() or "0")
     code, out = git(path, "merge-tree", "--write-tree", "--no-messages", upstream, ref)
-    tree_ok = code in (0, 1)
-    if code == 0:
-        lines = out.split()
+    if code in (0, 1):
+        tree = out.split()[0] if code == 0 and out.split() else ""
         code2, base_tree = git(path, "rev-parse", "--verify", "--quiet", upstream + "^{tree}")
-        if code2 == 0 and lines and lines[0] == base_tree.strip():
+        if code2 == 0 and tree and tree == base_tree.strip():
             return ""
+        return _content_differs(path, upstream, ref, tree, git)
     if merges:
-        if not tree_ok:
-            return ("cannot verify the %d merge commit(s) of %s against %s: `git merge-tree "
-                    "--write-tree` failed (it needs git >= 2.38)" % (merges, ref, upstream))
-        return "not integrated: merging %s into %s would change it (its history has %d merge commit(s))" % (
-            ref, upstream, merges)
+        return ("cannot verify the %d merge commit(s) of %s against %s: `git merge-tree "
+                "--write-tree` failed (it needs git >= 2.38)" % (merges, ref, upstream))
     code, out = git(path, "cherry", upstream, ref)
     if code != 0:
         return "cannot compare %s with %s" % (ref, upstream)
     unmerged = [ln for ln in out.splitlines() if ln.startswith("+")]
     if unmerged:
         return "not integrated: %d commit(s) of %s are not in %s" % (len(unmerged), ref, upstream)
+    equivalent = [ln.split()[1] for ln in out.splitlines() if ln.startswith("-") and len(ln.split()) > 1]
+    if equivalent and not _verbatim_in(path, upstream, ref, equivalent, git):
+        return ("not integrated: %d commit(s) of %s match %s only up to whitespace (or that cannot be "
+                "checked exactly on this git)" % (len(equivalent), ref, upstream))
     return ""
+
+
+DIFFSTAT_LINES = 12
+
+
+def _content_differs(path: str, upstream: str, ref: str, merged_tree: str, git: Callable[..., tuple]) -> str:
+    """The merge-tree verdict, with what differs: a squash merge edited upstream afterwards lands
+    here too, and only the owner can tell that apart from lost work."""
+    if merged_tree:  # what merging would change in upstream
+        code, stat = git(path, "diff", "--stat", upstream + "^{tree}", merged_tree)
+    else:  # the merge conflicts: what the branch changed since it forked
+        code, stat = git(path, "diff", "--stat", "%s...%s" % (upstream, ref))
+    lines = [ln.rstrip() for ln in stat.splitlines() if ln.strip()] if code == 0 else []
+    if len(lines) > DIFFSTAT_LINES:
+        lines = lines[:DIFFSTAT_LINES - 1] + ["... %d more" % (len(lines) - DIFFSTAT_LINES + 1), lines[-1]]
+    why = "not integrated: content differs from %s: merging %s would change it%s; verify by hand: if that work already landed another way (a squash edited later), remove the worktree yourself" % (
+        upstream, ref, " (merge conflicts)" if not merged_tree else "")
+    return why + "".join("\n      " + ln for ln in lines)
+
+
+def _verbatim_ids(path: str, log_text: str) -> dict:
+    """`{commit: verbatim patch id}`; empty when this git cannot say (`--verbatim` is git >= 2.39)."""
+    try:
+        proc = subprocess.run(["git", "-C", path, "patch-id", "--verbatim"], input=log_text,
+                              capture_output=True, text=True)
+    except OSError:
+        return {}
+    if proc.returncode != 0:
+        return {}
+    return {parts[1]: parts[0] for parts in (ln.split() for ln in proc.stdout.splitlines()) if len(parts) == 2}
+
+
+def _verbatim_in(path: str, upstream: str, ref: str, commits: list, git: Callable[..., tuple]) -> bool:
+    code1, mine = git(path, "log", "-p", "--no-merges", "--no-color", "--no-ext-diff", "%s..%s" % (upstream, ref))
+    code2, theirs = git(path, "log", "-p", "--no-merges", "--no-color", "--no-ext-diff", "%s..%s" % (ref, upstream))
+    if code1 != 0 or code2 != 0:
+        return False
+    mine_ids, their_ids = _verbatim_ids(path, mine), set(_verbatim_ids(path, theirs).values())
+    return all(mine_ids.get(c) in their_ids for c in commits) if mine_ids else False
 
 
 def _warn(warnings: list, say: Callable[[str], None]) -> None:

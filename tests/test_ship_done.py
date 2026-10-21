@@ -807,6 +807,60 @@ class MergeIntegrationTests(Env):
         self.assertIn("merge", why)
 
 
+    def write(self, path, name, text):
+        with open(os.path.join(path, name), "w", encoding="utf-8") as fh:
+            fh.write(text)
+
+    def indent_twin(self):
+        """Review I2: upstream holds the same patch as the branch except its indentation."""
+        wt = self.worktree()
+        self.write(self.seed, "p.py", "def f():\n    return 1\n")
+        git(self.seed, "add", "p.py")
+        git(self.seed, "commit", "-q", "-m", "p")
+        git(self.seed, "push", "-q", "origin", "develop")
+        git(wt, "fetch", "-q", "origin")
+        git(wt, "merge", "-q", "--ff-only", "origin/develop")
+        self.write(wt, "p.py", "def f():\n    if x:\n        return 2\n    return 1\n")
+        git(wt, "commit", "-q", "-am", "good")
+        self.write(self.seed, "p.py", "def f():\n    if x:\n    return 2\n    return 1\n")
+        git(self.seed, "commit", "-q", "-am", "bad indent")
+        git(self.seed, "push", "-q", "origin", "develop")
+        git(wt, "fetch", "-q", "origin")
+        self.assertTrue(git(wt, "cherry", "origin/develop", "HEAD").startswith("-"))  # cherry says "in there"
+        return wt
+
+    def test_merge_tree_differs_is_never_overridden_by_cherry(self):
+        wt = self.indent_twin()
+        why = ship_done.check_worktree(wt, "develop", ship_done.qd.run_git, ship_done.qd.run_fetch, branch="feature")
+        self.assertIn("content differs", why)
+
+    def test_without_merge_tree_cherry_equivalence_must_be_verbatim(self):
+        wt = self.indent_twin()
+        why = ship_done.check_worktree(wt, "develop", self.no_merge_tree, ship_done.qd.run_fetch, branch="feature")
+        self.assertIn("not integrated", why)
+
+    def test_squash_then_upstream_edit_reports_content_differs_with_diffstat(self):
+        # Review M2: safe to block, but say why and what differs so the owner can decide.
+        root = self.plan_repo()
+        wt = self.worktree()
+        commit_file(wt, "c.txt", "c1\n", "c1")
+        commit_file(wt, "c.txt", "c2\n", "c2")
+        git(wt, "push", "-q", "origin", "feature")
+        git(self.seed, "fetch", "-q", "origin")
+        git(self.seed, "merge", "-q", "--squash", "origin/feature")
+        git(self.seed, "commit", "-q", "-m", "squash feature")
+        self.write(self.seed, "c.txt", "c1-edited\nc2\n")
+        git(self.seed, "commit", "-q", "-am", "edit")
+        git(self.seed, "push", "-q", "origin", "develop")
+        self.state(root, {"api": wt})
+        code, orca = self.run_done(root)
+        self.assertEqual(code, 1, self.text())
+        self.assertEqual(orca.rm_paths(), [])
+        self.assertIn("content differs from origin/develop", self.text())
+        self.assertIn("c.txt", self.text())
+        self.assertIn("verify by hand", self.text())
+
+
 class WarningScopeTests(QuickCloseBase):
     def exclude(self, path, *patterns):
         excl = git(path, "rev-parse", "--git-path", "info/exclude").strip()
