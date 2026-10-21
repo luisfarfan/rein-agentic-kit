@@ -13,6 +13,7 @@ import datetime
 import filecmp
 import json
 import os
+import shlex
 import shutil
 import subprocess
 from typing import Callable, Optional
@@ -464,6 +465,21 @@ def _toplevel(cwd: str, git: Callable[..., tuple]) -> str:
     return out.strip() if code == 0 else ""
 
 
+def _inside(cwd: str, path: str) -> bool:
+    here, target = os.path.realpath(cwd or "."), os.path.realpath(path)
+    return here == target or here.startswith(target.rstrip(os.sep) + os.sep)
+
+
+def _restore(record_path: str, data: bytes, say: Callable[[str], None]) -> None:
+    """Put the record back after a failed remove: the task is still open."""
+    try:
+        os.makedirs(os.path.dirname(record_path), exist_ok=True)
+        with open(record_path, "wb") as fh:
+            fh.write(data)
+    except OSError as exc:
+        say("could not restore %s: %s" % (record_path, exc))
+
+
 def run_quick_close(arg: str, client: OrcaClient, *, cwd: str = ".", dry_run: bool = False, yes: bool = False,
                     git: Callable[..., tuple] = qd.run_git, fetch: Callable[[str, str], tuple] = qd.run_fetch,
                     say: Callable[[str], None] = print) -> int:
@@ -528,6 +544,13 @@ def run_quick_close(arg: str, client: OrcaClient, *, cwd: str = ".", dry_run: bo
             warned += warnings
             say("kept: %s: gitignored files would be lost (listed below)" % path)
             continue
+        if removable and _inside(cwd, path):
+            blocked += 1
+            say("kept: %s: this `rein quick close` runs inside the worktree it would remove; the "
+                "orchestrator closes it from outside: cd %s && rein quick close %s"
+                % (path, shlex.quote(_main_checkout(path, git) or os.path.dirname(path)),
+                   shlex.quote(os.path.basename(path.rstrip("/")))))
+            continue
         if warnings:
             _warn(warnings, say)
         plan.append((path, removable))
@@ -539,20 +562,27 @@ def run_quick_close(arg: str, client: OrcaClient, *, cwd: str = ".", dry_run: bo
             say("would %s" % ("remove worktree %s" % path if removable else "delete the record in %s" % path))
             closed += 1
             continue
+        # The record first: Orca refuses a worktree with an untracked file, and the record is one
+        # wherever `.rein/` is not ignored. Only that file: `.rein/` may hold tracked files.
+        record_path = os.path.join(path, quick.RECORD)
+        try:
+            with open(record_path, "rb") as fh:
+                kept = fh.read()
+            os.unlink(record_path)
+        except OSError:
+            kept = None
         if removable:
             try:
                 client.worktree_rm("path:" + path)
             except OrcaError as exc:
                 errors += 1
                 say("orca could not remove %s: %s" % (path, exc.message))
+                if kept is not None:
+                    _restore(record_path, kept, say)
                 continue
             say("removed worktree %s" % path)
         else:
             say("kept the checkout %s (main checkout or not a quick-* branch); deleted its quick record" % path)
-        try:
-            os.unlink(os.path.join(path, quick.RECORD))
-        except OSError:
-            pass
         closed += 1
     say("closed %d, kept %d" % (closed, blocked))
     return 126 if errors else (1 if blocked else 0)

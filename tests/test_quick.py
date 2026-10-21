@@ -102,9 +102,13 @@ class BriefTests(unittest.TestCase):
         for bug in (False, True):
             for linear in ("", "PPR-123"):
                 brief = quick.build_brief(sentence, linear=linear, bug=bug, bin_path=BIN)
-                self.assertLessEqual(len(brief.split()), 170)
+                # 170 plus the line that leaves `rein quick close` to the orchestrator.
+                self.assertLessEqual(len(brief.split()), 180)
                 self.assertIn(sentence, brief)
 
+
+    def test_brief_leaves_quick_close_to_the_orchestrator(self):
+        self.assertIn("`rein quick close` no es tuyo", quick.build_brief("x"))
 
     def test_brief_names_the_fallback_only_when_given_a_path(self):
         self.assertNotIn("python3", quick.build_brief("x"))

@@ -77,6 +77,7 @@ def build_brief(sentence: str, linear: str = "", bug: bool = False, bin_path: st
     else:
         lines.append("Commit convencional sin ID de issue: no inventes uno ni lo preguntes.")
     lines.append("No incluyas `.rein/` en ningún commit.")
+    lines.append("`rein quick close` no es tuyo: lo corre el orquestador desde fuera.")
     lines.append("No leas `.env*` ni credenciales.")
     return "\n".join(lines)
 

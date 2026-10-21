@@ -84,7 +84,9 @@ Subcommands:
                       no argument) and their records, only when clean and integrated
                       into origin/<base>; blocked ones are listed and kept (also one
                       whose gitignored files would be lost, until --yes). A --here
-                      task only loses its record. Exit 0 closed / 1 blockers / 126 Orca
+                      task only loses its record. The record is deleted before Orca
+                      removes the worktree (only that file, never .rein/). Run it from
+                      outside the worktree. Exit 0 closed / 1 blockers / 126 Orca
   rein migrate-config [root] [--write]
                       v1 -> v2 flow.config.json: drop models/limits/worktree, add the
                       ship block. Prints a diff; writes only with --write
