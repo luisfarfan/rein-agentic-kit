@@ -60,6 +60,8 @@ class ShipState:
     audit_rounds: int = 0
     audit_dispatch: str = ""
     implementer_agents: list = field(default_factory=list)
+    # The agents Orca actually launched for implementation workers (it may swap the requested one).
+    launched_agents: list = field(default_factory=list)
     forced_implementer: list = field(default_factory=list)
     changed_files: list = field(default_factory=list)
     # Stamped by the first Tick after StartAudit; 0.0 = not started / reset.

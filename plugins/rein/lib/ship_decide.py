@@ -241,20 +241,37 @@ def touches_risky(files: list, patterns: list) -> bool:
     return any(_matches(f, p) for f in files for p in patterns)
 
 
+def _claude_usable(limits: dict) -> bool:
+    """Claude may review: its usage is under the brake and, when it was read at all, known.
+
+    Unknown usage (Orca could not say) never routes work onto Claude. A caller that
+    passes no limits at all gets the routing without any quota check."""
+    if "claude" in limits and (limits.get("claude") or {}).get("weekly") is None:
+        return False
+    return not quota.brake_reason(limits, "claude")
+
+
 def audit_model(changed_files: list, implementer_agents: list, cfg: ShipConfig,
                 limits: dict | None = None, reaudit: bool = False) -> tuple:
     """Opus for risky or large changes; otherwise a reviewer under the brake, preferring
     a provider that did not implement. A re-audit (after a fix round) is never Opus: it
-    only verifies the earlier findings."""
-    if not reaudit:
+    only verifies the earlier findings. Opus obeys the brake like any reviewer, and Claude is
+    never picked on unknown usage. When every reviewer is braked, the first one, so the
+    caller can see the brake and ask the owner."""
+    limits = limits or {}
+    claude = _claude_usable(limits)
+    if not reaudit and claude:
         if len(changed_files) > cfg.large_change_files:
             return quota.OPUS
         if touches_risky(changed_files, cfg.risky_paths):
             return quota.OPUS
+    pool = [m for m in (quota.SONNET, quota.CODEX) if m[0] != "claude" or claude]
     used = set(implementer_agents)
-    fresh = [m for m in (quota.SONNET, quota.CODEX) if m[0] not in used]
-    choices = fresh + [m for m in (quota.SONNET, quota.CODEX) if m not in fresh]
-    return quota.first_unbraked(choices, limits or {})
+    if (limits.get("antigravity") or {}).get("weekly") is not None and quota.ANTIGRAVITY[0] not in used:
+        pool.append(quota.ANTIGRAVITY)  # a last resort, never reviewing its own work
+    fresh = [m for m in pool if m[0] not in used]
+    choices = fresh + [m for m in pool if m not in fresh]
+    return quota.first_unbraked(choices, limits)
 
 
 # --- helpers ----------------------------------------------------------------
@@ -818,8 +835,17 @@ def _on_changes_computed(state: ShipState, event: ChangesComputed, cfg: ShipConf
     if state.audit_dispatch or _owner_gate_open(state, *AUDIT_HOLDS):
         return  # an audit is running, or the owner has not yet decided about the last one
     state.changed_files = list(event.changed_files)
-    actions.append(StartAudit(*audit_model(state.changed_files, state.implementer_agents, cfg, event.limits,
-                                           reaudit=state.audit_rounds > 0)))
+    implementers = state.launched_agents or state.implementer_agents  # what Orca ran, not what was asked
+    agent, model = audit_model(state.changed_files, implementers, cfg, event.limits,
+                               reaudit=state.audit_rounds > 0)
+    braked = quota.brake_reason(event.limits, agent)
+    if braked:
+        _open(state, actions, None,
+              "Every reviewer is over the quota brake (%s), so the audit cannot start. Retry once quota "
+              "frees up, or skip the audit (the change stays unapproved)?" % braked,
+              ["retry", "skip"], "setup")
+        return
+    actions.append(StartAudit(agent, model))
 
 
 def _on_changes_failed(state: ShipState, event: ChangesFailed, actions: list) -> None:

@@ -596,6 +596,8 @@ class _Driver:
         if launch.get("agent") and (launch["agent"], launch.get("model")) != (a.agent, a.model):
             self.say("Orca launched %s/%s for %s, not %s/%s" % (launch["agent"], launch.get("model"), task.id, a.agent, a.model))
             task.agent, task.model = launch["agent"], launch.get("model") or a.model
+        if task.agent and task.agent not in self.state.launched_agents:
+            self.state.launched_agents.append(task.agent)  # the audit avoids the provider that really ran
         self.save()
         self.say("%s dispatched to %s/%s (%s)" % (task.id, task.agent, task.model, task.dispatch_id))
 
@@ -874,6 +876,9 @@ class _Driver:
 
     # -- start, resume, loop, finish
     def setup(self):
+        if not self.state.launched_agents and self.state.implementer_agents:
+            # A state from before launched agents were recorded: what was asked is all it knows.
+            self.state.launched_agents = list(self.state.implementer_agents)
         if self.state.run_id:
             self.client.run_use(self.state.run_id)
         else:

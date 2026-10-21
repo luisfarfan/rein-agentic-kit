@@ -194,5 +194,67 @@ class AuditBriefNeedsNoClaudeSkill(unittest.TestCase):
         self.assertNotIn("Do not reimplement this inline", step3)
 
 
+class AuditRespectsQuota(unittest.TestCase):
+    hot = {"session": 95.0, "weekly": 97.0}
+    cool = {"session": 10.0, "weekly": 10.0}
+    unknown = {"session": None, "weekly": None}
+
+    def test_opus_falls_back_when_claude_is_braked(self):
+        limits = {"claude": self.hot, "codex": self.cool}
+        self.assertEqual(sd.audit_model(["a/auth/x.py"], ["codex"], CFG, limits), sd.quota.CODEX)
+        self.assertEqual(sd.audit_model(["f%d" % i for i in range(30)], ["codex"], CFG, limits), sd.quota.CODEX)
+
+    def test_unknown_claude_usage_never_routes_the_audit_to_claude(self):
+        limits = {"claude": self.unknown, "codex": self.unknown}
+        self.assertEqual(sd.audit_model(["src/x.py"], ["codex"], CFG, limits), sd.quota.CODEX)
+        self.assertEqual(sd.audit_model(["a/auth/x.py"], ["codex"], CFG, limits), sd.quota.CODEX)
+
+    def test_every_reviewer_braked_asks_the_owner(self):
+        st = state_of(task("T1", status="done"), phase="auditing", implementer_agents=["codex"])
+        st, actions = sd.decide(st, sd.ChangesComputed(["a/x.py"], {"claude": self.hot, "codex": self.hot}), CFG)
+        self.assertFalse([a for a in actions if isinstance(a, sd.StartAudit)])
+        gate = opened(st, "setup")
+        self.assertEqual(len(gate), 1)
+        self.assertIsNone(gate[0]["task_id"])
+        self.assertIn("quota", gate[0]["question"])
+        st.gates["g"] = st.pending_gates.pop()
+        retried, actions = sd.decide(st, sd.GateResolved("g", "retry"), CFG)
+        self.assertEqual(actions, [sd.ComputeChanges()])
+        skipped, actions = sd.decide(st, sd.GateResolved("g", "skip"), CFG)
+        self.assertEqual((skipped.phase, skipped.audit_result), ("done", "skipped"))
+
+    def test_antigravity_reviews_when_the_others_are_braked_and_it_did_not_implement(self):
+        limits = {"claude": self.hot, "codex": self.hot, "antigravity": self.cool}
+        self.assertEqual(sd.audit_model(["src/x.py"], ["codex"], CFG, limits), sd.quota.ANTIGRAVITY)
+        self.assertEqual(sd.audit_model(["src/x.py"], ["antigravity"], CFG, limits), sd.quota.CODEX)
+
+    def test_the_audit_avoids_the_provider_orca_actually_launched(self):
+        # codex was asked for, Orca launched claude: claude implemented, so codex audits
+        st = state_of(task("T1", status="done"), phase="auditing",
+                      implementer_agents=["codex"], launched_agents=["claude"])
+        _, actions = sd.decide(st, sd.ChangesComputed(["a/x.py"], {"claude": self.cool, "codex": self.cool}), CFG)
+        self.assertEqual(actions, [sd.StartAudit(*sd.quota.CODEX)])
+
+
+class DriverRecordsTheLaunchedAgent(ShipCase):
+    def test_a_swapped_implementer_is_recorded_as_launched(self):
+        self.write_plan(PLAN.split("- [ ] T002")[0])
+
+        class Swap(FakeOrca):
+            def _answer(self, a):
+                r = super()._answer(a)
+                if a[:2] == ["orchestration", "worker-start"] and "audit" not in self.tasks[_flag(a, "--task")]["title"]:
+                    r["launch"]["effective"] = {"agent": "claude", "model": "sonnet"}
+                return r
+        fake = Swap(self.root)
+        fake.on_audit = self.approve_audit()
+        self.run_ship(fake, scripted_gate())
+        with open(self.state_file, encoding="utf-8") as fh:
+            st = json.load(fh)
+        self.assertIn("claude", st["launched_agents"])
+        audit = [s for s in fake.starts() if "audit" in fake.tasks[_flag(s, "--task")]["title"]][0]
+        self.assertNotEqual(_flag(audit, "--agent"), "claude", self.out)
+
+
 if __name__ == "__main__":
     unittest.main()

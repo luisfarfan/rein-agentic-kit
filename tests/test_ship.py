@@ -1628,13 +1628,16 @@ class TestQuotaMeasurement(ShipCase):
                 limits["antigravity"] = {"status": "ok", "session": {"usedPercent": 0.0}, "weekly": {"usedPercent": 2.0}}
             return result
         fake._answer = answer
-        self.assertEqual(self.run_ship(fake, scripted_gate()), 0, self.out)
-        launched = [(_flag(c, "--agent"), _flag(c, "--model")) for c in fake.starts()]
-        *workers, audit = launched
+        fake.auto_resolve = "skip"
+        self.assertEqual(self.run_ship(fake, scripted_gate()), 1, self.out)
+        workers = [(_flag(c, "--agent"), _flag(c, "--model")) for c in fake.starts()]
         self.assertTrue(workers)
-        self.assertEqual(set(workers), {("antigravity", "gemini-4-argon-medium")})
-        self.assertEqual(audit, ("claude", "sonnet"), "every reviewer is braked: the usual one")
-        self.assertIn("antigravity", ship_state.load(self.state_file).implementer_agents)
+        self.assertEqual(set(workers), {("antigravity", "gemini-4-argon-medium")},
+                         "every reviewer is braked and antigravity implemented: no audit starts")
+        self.assertTrue(any("quota brake" in g["question"] for g in fake.gates))
+        state = ship_state.load(self.state_file)
+        self.assertIn("antigravity", state.implementer_agents)
+        self.assertEqual(state.audit_result, "skipped")
 
     def test_the_snapshot_survives_a_resume(self):
         self.write_plan(PLAN.split("- [ ] T002")[0])

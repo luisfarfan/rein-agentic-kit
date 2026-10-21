@@ -754,10 +754,10 @@ class Audit(unittest.TestCase):
                             {"claude": cool, "codex": hot}), quota.SONNET)
         self.assertEqual(am(["src/x.py"], ["antigravity"], CFG,
                             {"claude": {"session": 1.0, "weekly": 97.0}, "codex": cool}), quota.CODEX)
-        self.assertEqual(am(["src/x.py"], ["codex"], CFG, {"claude": hot, "codex": hot}), quota.SONNET,
-                         "all braked: the usual reviewer, so the audit gates handle it")
-        self.assertEqual(am(["src/auth/x.py"], ["codex"], CFG, {"claude": hot}), quota.OPUS,
-                         "risky changes still go to Opus")
+        self.assertEqual(am(["src/x.py"], ["codex"], CFG, {"claude": hot, "codex": hot}), quota.CODEX,
+                         "all braked: a braked reviewer, so decide asks the owner")
+        self.assertEqual(am(["src/auth/x.py"], ["codex"], CFG, {"claude": hot}), quota.CODEX,
+                         "Opus obeys the brake too")
 
     def test_the_audit_reads_the_limits_carried_by_changes_computed(self):
         state = ship(task("1", "a", status="done"), phase="auditing", implementer_agents=["claude"])
