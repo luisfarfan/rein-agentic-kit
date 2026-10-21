@@ -13,7 +13,11 @@ Subcommands:
                       exits 0 passed / 1 the code is wrong / 126 the environment
                       could not run the checks. --require-review also demands a
                       current APPROVED review episode. --unit-only forces unit mode
-                      (no browser-render demand) for per-task gates in frontend repos
+                      (no browser-render demand) for per-task gates in frontend repos.
+                      gate.env from flow.config.json is applied ([--repo] [--env-root])
+  rein env [root]     `export` lines for the worktree's gate.env (flow.config.json):
+                      the per-worktree environment Rein's gates use there.
+                      [--repo <name>] [--env-root <plan repo>]
   rein role <name>    one role's operating profile (planner|implementer|reviewer)
                       as plain markdown -- the same section Claude Code reads via
                       /rein:rein-role, for any agent that cannot invoke a skill
@@ -96,6 +100,7 @@ sys.path.insert(0, os.path.join(PLUGIN_ROOT, "lib"))
 
 import detect as _detect  # noqa: E402
 import gate as _gate  # noqa: E402
+import gate_env as _gate_env  # noqa: E402
 import migrate_config as _migrate_config  # noqa: E402
 import plan as _plan  # noqa: E402
 import plan_check as _plan_check  # noqa: E402
@@ -258,7 +263,10 @@ def cmd_gate(argv: list[str]) -> int:
     require_review = "--require-review" in argv
 
     resolved = _detect.resolve(root)
-    report = _verify.verify_commands(resolved, timeout, only=only)
+    env = _gate_env.for_worktree(resolved["root"], repo=_opt(argv, "repo"),
+                                 env_root=_opt(argv, "env-root"), resolved=resolved)
+    report = _verify.verify_commands(resolved, timeout, only=only, env=env)
+    report["env"] = sorted(env)  # names only: the values are the repo's business
     _verify.write_state(resolved["root"], report)
 
     review = _gate.check_review(resolved["root"], _opt(argv, "change")) if require_review else None
@@ -307,6 +315,19 @@ def cmd_gate(argv: list[str]) -> int:
     if decision["decision"] == _gate.GATE_SETUP:
         print("  fix the environment and run again -- this is not a verdict on the code")
     return decision["exit"]
+
+
+def cmd_env(argv: list[str]) -> int:
+    """`export` lines for a worktree's `gate.env` (flow.config.json), placeholders filled.
+
+    `eval "$(rein env)"` in a worktree gives a shell the environment Rein's gates
+    use there -- the same test database, never another worktree's.
+    """
+    root = _positional(argv) or "."
+    env = _gate_env.for_worktree(root, repo=_opt(argv, "repo"), env_root=_opt(argv, "env-root"))
+    for line in _gate_env.export_lines(env):
+        print(line)
+    return 0
 
 
 def cmd_role(argv: list[str]) -> int:
@@ -1055,6 +1076,7 @@ COMMANDS = {
     "detect": cmd_detect,
     "verify": cmd_verify,
     "gate": cmd_gate,
+    "env": cmd_env,
     "role": cmd_role,
     "tasks": cmd_tasks,
     "plan-check": cmd_plan_check,

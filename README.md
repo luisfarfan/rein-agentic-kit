@@ -188,6 +188,8 @@ rein gate        # ✅ did they PASS — 0 green · 1 the code is wrong · 126 t
                  # --plan: run each TASK's own Verification before implementers are paid.
                  # Failing is fine (the work does not exist yet); proving NOTHING is not —
                  # a missing test module or a selector matching zero tests exits non-zero
+rein env [root]  # `export` lines of the worktree's gate.env with its placeholders filled:
+                 # `eval "$(rein env)"` gives a shell the env Rein's gates use there
 rein plan-check  # mechanical findings on a drafted plan's own text. Always exits 0 (it runs
                  # inside the planning skill); `--gate` exits 1 on a BLOCKING finding, which
                  # is how `rein ship` refuses a bad plan. `--tasks T001,T002` scopes it
@@ -263,6 +265,24 @@ fresh worker, `maxAuditRounds` bounds audit and fix rounds (when it runs out wit
 instead of waiting forever, `gateTimeoutSeconds` is the per-command timeout of each task's gate
 (raise it for a slow suite), and a change that touches `riskyPaths` or more than `largeChangeFiles`
 files gets an Opus audit.
+
+### Per-worktree environment (`gate.env`)
+
+Worktrees of one repo share whatever their tests reach outside the tree — usually a test
+database — and two suites resetting the same schema at once fail each other. Declare the
+variables once, in the repo's `flow.config.json` or in the plan root's (it then applies to every
+repo of the change; a repo's own value wins):
+
+```json
+{ "gate": { "env": { "APP_TEST_DB": "app_test_{worktree}" } } }
+```
+
+`{worktree}` is a slug of the worktree's directory name (lowercase, `[a-z0-9_]`, at most 40
+characters, the same on every run) and `{repo}` the repo's name. Rein applies the expanded values
+to every gate and Verification it runs in that worktree, to `rein quick done`, and — Orca cannot
+pass an environment to an agent — writes them as an `export` line at the top of the worker's and
+the auditor's brief so their own test runs use the same database. Without `gate.env` nothing
+changes. Creating the database on first use is the repo's job (its test setup).
 
 **Precedence:** `flow.config.json` › task runner (`justfile` / `Makefile` / `Taskfile` / `mise`) ›
 autodetection. A project that already declares how it is built is never second-guessed.

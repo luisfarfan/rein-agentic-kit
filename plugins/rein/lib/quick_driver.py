@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import signal
 import subprocess
 import time
@@ -23,6 +24,7 @@ from typing import Callable
 
 import detect as _detect
 import gate as _gate
+import gate_env as _gate_env
 import orca_client as oc
 import quick
 import quota
@@ -240,7 +242,14 @@ def start_quick(
             say("every provider is braked: nothing was launched")
             return 1
 
-    brief = quick.build_brief(sentence, linear, quick.looks_like_bug(sentence), ship.BIN)
+    # gate.env: the literal values when the workspace is known (--here), else a `rein env` the agent
+    # evaluates in the worktree Orca is about to create (its name is not known yet).
+    env_lines = []
+    if here:
+        env_lines = _gate_env.export_lines(_gate_env.for_worktree(here_path, repo=repo_name))
+    elif _gate_env.for_worktree(repo_path, repo=repo_name):
+        env_lines = ['eval "$(python3 %s env --repo %s)"' % (shlex.quote(ship.BIN), shlex.quote(repo_name))]
+    brief = quick.build_brief(sentence, linear, quick.looks_like_bug(sentence), ship.BIN, env_lines)
 
     # 4. Placement
     handle = ""
@@ -575,11 +584,13 @@ def done_quick(*, cwd: str = ".", client: OrcaClient, run=verify.run_one,
     # 3. Light gate
     resolved = _detect.resolve(workspace)
     cfg = ship_decide.ShipConfig.from_flow_config(resolved)
+    gate_vars = _gate_env.for_worktree(workspace, repo=str(record.get("repo") or ""), resolved=resolved)
     related = quick.related_tests(changed, lambda rel: os.path.isfile(os.path.join(workspace, rel)))
     steps = quick.gate_steps(resolved.get("commands") or {}, related)
     results, outputs = [], {}
     for slot, command, configured in steps:
-        result = run(slot, command, workspace, cfg.gate_timeout_seconds, configured=configured)
+        result = ship.call_with(run, slot, command, workspace, cfg.gate_timeout_seconds,
+                                configured=configured, env=gate_vars or None)
         results.append(result)
         outputs[slot] = getattr(result, "output", "")
     outcome = quick.verdict(results)

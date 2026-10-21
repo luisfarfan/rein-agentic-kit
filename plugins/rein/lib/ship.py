@@ -21,8 +21,11 @@ import sys
 import time
 from typing import Callable
 
+import inspect
+
 import detect as _detect
 import gate as _gate
+import gate_env as _gate_env
 import orca_client as oc
 import plan as _plan
 import plan_check as _plan_check
@@ -80,9 +83,19 @@ def _decisions_block(decisions: list) -> str:
     return "\n".join(out)
 
 
-def build_task_spec(task: ss.TaskState, plan: dict) -> str:
+def env_instruction(env_lines: list) -> str:
+    """The brief's first line when the repo declares `gate.env`: Orca cannot pass an environment."""
+    if not env_lines:
+        return ""
+    return ("Test environment: run `%s` in your shell before any test command (in the same command "
+            "when your shell does not keep variables); every test you run must use it." % " && ".join(env_lines))
+
+
+def build_task_spec(task: ss.TaskState, plan: dict, env_lines: list = ()) -> str:
     entry = next((t for t in plan.get("tasks") or [] if t.get("id") == task.id), {})
     lines = [WORKER_PREAMBLE, "", "Task %s: %s" % (task.id, entry.get("title") or task.id)]
+    if env_lines:
+        lines = [env_instruction(list(env_lines)), ""] + lines
     if entry.get("acceptance"):
         lines += ["Acceptance criteria:"] + ["- %s" % c for c in entry["acceptance"]]
     if task.verification:
@@ -127,7 +140,7 @@ INLINE_REVIEW = ("If you cannot launch the code-reviewer agent (Codex, Antigravi
 
 def build_audit_spec(plan: dict, changed: dict, reviewer_profile: str,
                      audit_root: str = "", change: str = "", previous_blocking: list = (),
-                     fix_commits: dict = None) -> str:
+                     fix_commits: dict = None, env_lines: dict = None) -> str:
     """The auditor's brief. The verdict is recorded in the audit worktree, never the plan repo.
 
     With `previous_blocking` it is a re-audit: only those findings are verified."""
@@ -148,6 +161,8 @@ def build_audit_spec(plan: dict, changed: dict, reviewer_profile: str,
     lines.append("Audit worktree (your working directory): %s" % audit_root)
     for path, files in changed.items():
         lines.append("Run the rein-audit skill on %s" % path)
+        if (env_lines or {}).get(path):
+            lines.append("  " + env_instruction(env_lines[path]))
         # Files outside the audit worktree are listed absolute, so --files can name them.
         lines += ["  changed: %s" % (f if path == audit_root else os.path.join(path, f)) for f in files[:50]]
     lines += ["Record the verdict with exactly this command, run in the audit worktree:",
@@ -272,14 +287,20 @@ def failure_detail(out: str) -> str:
     return _fit_blocks(blocks, _FAILURE_CAP)
 
 
-def default_gate_runner(path: str, unit_only: bool, timeout: float = 900.0) -> tuple:
+def default_gate_runner(path: str, unit_only: bool, timeout: float = 900.0, *,
+                        repo: str = "", env_root: str = "") -> tuple:
     """`rein gate <path> --json [--unit-only] --timeout <s>`, with this process's Python and this checkout's bin.
 
     `timeout` is the per-command budget `rein gate` gives each configured command;
     the subprocess itself gets an outer bound so a hung gate cannot hang the driver.
+    `repo` and `env_root` (the plan root) let it expand the worktree's `gate.env`.
     """
     argv = ([sys.executable, BIN, "gate", path, "--json"] + (["--unit-only"] if unit_only else [])
             + ["--timeout", "%g" % timeout])
+    if repo:
+        argv += ["--repo", repo]
+    if env_root:
+        argv += ["--env-root", env_root]
     outer = timeout * _GATE_COMMANDS_BOUND + 60
     try:
         proc = subprocess.run(argv, capture_output=True, text=True, timeout=outer)
@@ -350,10 +371,22 @@ def task_verification_command(field: str) -> tuple:
     return command, ""
 
 
-def run_task_verification(command: str, path: str, timeout: float) -> tuple:
+def call_with(fn: Callable, *args, **kw):
+    """`fn(*args, **kw)` passing only the keywords `fn` accepts: older gate runners take three arguments."""
+    try:
+        params = inspect.signature(fn).parameters.values()
+    except (TypeError, ValueError):
+        return fn(*args)
+    if any(p.kind == p.VAR_KEYWORD for p in params):
+        return fn(*args, **kw)
+    names = {p.name for p in params}
+    return fn(*args, **{k: v for k, v in kw.items() if k in names})
+
+
+def run_task_verification(command: str, path: str, timeout: float, env: dict = None) -> tuple:
     """Run a task's own Verification command in its worktree: `(0, "")` when it passed,
     `(1, decisive lines)` when it failed or timed out, `(126, why)` when it could not run."""
-    res = _verify.run_one("verification", command, path, timeout=timeout)
+    res = _verify.run_one("verification", command, path, timeout=timeout, env=env or None)
     if res.outcome == _verify.OUTCOME_OK:
         return 0, ""
     if res.outcome == _verify.OUTCOME_NOT_INVOCABLE:
@@ -628,8 +661,27 @@ class _Driver:
         return [self.state.tasks[d].orca_task_id for d in task.deps
                 if d in self.state.tasks and self.state.tasks[d].orca_task_id]
 
+    def worktree_env(self, repo: str, path: str) -> dict:
+        """The worktree's expanded `gate.env` (the plan root's declaration, the repo's on top)."""
+        if not path:
+            return {}
+        return _gate_env.for_worktree(path, repo=repo, env_root=getattr(self, "root", ""))
+
+    def env_lines(self, repo: str) -> list:
+        """What the worker's brief exports: the literal values once the worktree exists, else a
+        `rein env` the worker evaluates in its new worktree; [] when nothing is declared."""
+        path = self.state.worktree_paths.get(repo, "")
+        if path:
+            return _gate_env.export_lines(self.worktree_env(repo, path))
+        repo_path = str((self.ctx.get("repos", {}).get(repo) or {}).get("path") or "")
+        declared = _gate_env.for_worktree(repo_path or self.root, repo=repo, env_root=self.root)
+        if not declared:
+            return []
+        return ['eval "$(python3 %s env --repo %s --env-root %s)"'
+                % (shlex.quote(BIN), shlex.quote(repo), shlex.quote(self.root))]
+
     def create_task(self, task):
-        spec = build_task_spec(task, self.plan)
+        spec = build_task_spec(task, self.plan, self.env_lines(task.repo))
         entry = next((t for t in self.plan.get("tasks") or [] if t["id"] == task.id), {})
         deps = self.orca_deps(task)
         task.orca_task_id = oc.task_id_of(self.client.task_create(
@@ -793,8 +845,10 @@ class _Driver:
         path = self.state.worktree_paths.get(task.repo, "")
         if not path:
             return sd.GateVerdict(a.task_id, 126, "no worktree is recorded for %s" % task.repo)
+        env = self.worktree_env(task.repo, path)
         try:
-            code, out = self.gate_runner(path, a.unit_only, self.cfg.gate_timeout_seconds)
+            code, out = call_with(self.gate_runner, path, a.unit_only, self.cfg.gate_timeout_seconds,
+                                  repo=task.repo, env_root=getattr(self, "root", ""))
         except OSError as exc:
             code, out = 126, "gate could not run: %s" % exc
         self.say("%s gate exit %s" % (task.id, code))
@@ -806,7 +860,8 @@ class _Driver:
         elif runnable:
             # The task's own check, not only the project's: done needs both.
             try:
-                vcode, vtext = run_task_verification(command, path, self.cfg.gate_timeout_seconds)
+                vcode, vtext = call_with(run_task_verification, command, path,
+                                         self.cfg.gate_timeout_seconds, env=env)
             except OSError as exc:
                 vcode, vtext = 126, "could not run: %s" % exc
             self.say("%s verification exit %s" % (task.id, vcode))
@@ -873,8 +928,12 @@ class _Driver:
                 base = self.state.fix_round_base.get(r)
                 if base:
                     fix_commits[p] = {"base": base, "log": fix_log(p, base)}
+        repo_of = {p: r for r, p in self.state.worktree_paths.items()}
+        env_lines = {p: _gate_env.export_lines(self.worktree_env(repo_of.get(p, ""), p))
+                     for p in self.changed_by_wt}
         spec = build_audit_spec(self.plan, self.changed_by_wt, self.ctx["reviewer_profile"],
-                                audit_root, self.change, self.state.previous_blocking, fix_commits)
+                                audit_root, self.change, self.state.previous_blocking, fix_commits,
+                                env_lines)
         try:
             task_id = oc.task_id_of(self.client.task_create(
                 spec, "%s audit round %d" % (self.change, self.state.audit_rounds + 1), []))

@@ -305,7 +305,8 @@ def _kill_group(proc: subprocess.Popen) -> None:
 
 
 def run_one(
-    slot: str, command: str, cwd: str, timeout: float = DEFAULT_TIMEOUT, configured: str | None = None
+    slot: str, command: str, cwd: str, timeout: float = DEFAULT_TIMEOUT, configured: str | None = None,
+    env: dict | None = None,
 ) -> CommandResult:
     """Actually invoke `command` in `cwd` via the shell, once, with a hard timeout.
 
@@ -319,6 +320,9 @@ def run_one(
     timeout can kill the whole group -- a compound command (`a && b`) forks a
     real child process for each part, and killing only the shell's own pid
     would leave that child running past the timeout this function promised.
+
+    `env`, when given, is laid over this process's environment (a worktree's
+    `gate.env`, see gate_env); without it the command inherits it unchanged.
     """
     configured_cmd = command if configured is None else configured
     started = time.monotonic()
@@ -330,6 +334,7 @@ def run_one(
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             start_new_session=True,
+            env=None if env is None else {**os.environ, **env},
         )
     except OSError as exc:
         # The shell itself could not be spawned -- as clear a SETUP problem as
@@ -408,7 +413,8 @@ def _cheap_target() -> str:
     return path
 
 
-def verify_commands(resolved: dict, timeout: float = DEFAULT_TIMEOUT, only: set[str] | None = None) -> dict:
+def verify_commands(resolved: dict, timeout: float = DEFAULT_TIMEOUT, only: set[str] | None = None,
+                    env: dict | None = None) -> dict:
     """Run every resolved command slot for real and report per-slot outcome.
 
     This function itself never repairs, installs, or writes anything -- it
@@ -451,7 +457,7 @@ def verify_commands(resolved: dict, timeout: float = DEFAULT_TIMEOUT, only: set[
                 if tmp_target is None:
                     tmp_target = _cheap_target()
                 actual_cmd = cmd.replace("{target}", shlex.quote(tmp_target))
-            result = run_one(slot, actual_cmd, root, timeout, configured=cmd)
+            result = run_one(slot, actual_cmd, root, timeout, configured=cmd, env=env)
             if (
                 used_synthetic_target
                 and result.outcome == OUTCOME_FAILED

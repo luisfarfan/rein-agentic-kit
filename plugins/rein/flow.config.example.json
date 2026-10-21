@@ -38,6 +38,11 @@
     "riskyPaths": ["**/auth/**", "**/payments/**", "**/migrations/**"]
   },
 
+  "gate": {
+    "$comment": "How Rein runs the checks (all optional). env: variables set for every gate and Verification Rein runs in a worktree, and exported at the top of the worker's and auditor's brief; {worktree} is a slug of the worktree's directory name ([a-z0-9_], <= 40 chars, stable), {repo} the repo's name. Declared in a repo or in the plan root (applies to every repo; a repo's own value wins).",
+    "env": {"APP_TEST_DB": "app_test_{worktree}"}
+  },
+
   "retrieval": {
     "$comment": "auto = use codegraph if an index exists, otherwise plain search. Presence is probed; a missing tool degrades the flow, never breaks it.",
     "codegraph": "auto"

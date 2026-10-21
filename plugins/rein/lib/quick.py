@@ -46,11 +46,17 @@ def looks_like_bug(sentence: str) -> bool:
     return any(word in low for word in _BUG_WORDS)
 
 
-def build_brief(sentence: str, linear: str = "", bug: bool = False, bin_path: str = "") -> str:
+def build_brief(sentence: str, linear: str = "", bug: bool = False, bin_path: str = "",
+                env_lines: list = ()) -> str:
     """The agent's first message, in Spanish (spec section 4).
 
-    `bin_path` is this checkout's `bin/rein`, named as the fallback when `rein` is not on PATH."""
-    lines = [
+    `bin_path` is this checkout's `bin/rein`, named as the fallback when `rein` is not on PATH.
+    `env_lines` (the repo's `gate.env`) open it: Orca cannot pass an environment to the agent."""
+    lines = []
+    if env_lines:
+        lines.append("Entorno de tests: ejecuta `%s` antes de cualquier comando de test (en el mismo "
+                     "comando si tu shell no conserva variables)." % " && ".join(env_lines))
+    lines += [
         sentence,
         "Iteramos juntos: propón, aplica, y espera mi visto bueno antes de seguir.",
     ]

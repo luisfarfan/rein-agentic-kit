@@ -1024,6 +1024,8 @@ def resolve(root: str = ".") -> dict:
         "limits": limits,
         "worktree": worktree,
         "ship": cfg.get("ship") if isinstance(cfg.get("ship"), dict) else {},
+        # Gate tuning (env per worktree, affected tests, ...): read by gate_env / gate_run.
+        "gate": cfg.get("gate") if isinstance(cfg.get("gate"), dict) else {},
         "capabilities": _capabilities(root),
         "verifyPolicy": verify_policy,
     }
