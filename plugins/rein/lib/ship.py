@@ -69,6 +69,8 @@ WORKER_PREAMBLE = (
 
 
 DECISIONS_LIMIT = 1500
+DECISION_QUESTION_CAP = 600  # how much of a gate's question the audit brief quotes
+OWNER_DECISIONS_LIMIT = 3000
 
 
 def _decisions_block(decisions: list) -> str:
@@ -86,6 +88,26 @@ def _decisions_block(decisions: list) -> str:
         out.append(line)
         size += len(line) + (1 if len(out) > 1 else 0)
     return "\n".join(out)
+
+
+def owner_decisions_block(decisions: list) -> list:
+    """The audit brief's lines for the owner's answers to this run's gates; [] when there are none.
+
+    Newest last; when they do not fit OWNER_DECISIONS_LIMIT, the oldest are dropped first."""
+    lines = []
+    for d in decisions or []:
+        if not isinstance(d, dict):
+            continue
+        who = "task %s" % d["task_id"] if d.get("task_id") else "the run"
+        question = " ".join(str(d.get("question") or "").split())[:DECISION_QUESTION_CAP]
+        lines.append("- %s (%s gate): %s%s" % (who, d.get("kind") or "?", "asked: %s -> " % question if question else "",
+                                                "answered: %s" % " ".join(str(d.get("answer") or "").split())))
+    while lines and sum(len(x) + 1 for x in lines) > OWNER_DECISIONS_LIMIT:
+        lines.pop(0)
+    if not lines:
+        return []
+    return ["Owner decisions during this run (binding: the owner already chose these; do not ask again, "
+            "and do not report following them as a finding):"] + lines
 
 
 def env_instruction(env_lines: list) -> str:
@@ -149,7 +171,8 @@ INLINE_REVIEW = ("If you cannot launch the code-reviewer agent (Codex, Antigravi
 
 def build_audit_spec(plan: dict, changed: dict, reviewer_profile: str,
                      audit_root: str = "", change: str = "", previous_blocking: list = (),
-                     fix_commits: dict = None, env_lines: dict = None, gate_commands: dict = None) -> str:
+                     fix_commits: dict = None, env_lines: dict = None, gate_commands: dict = None,
+                     owner_decisions: list = ()) -> str:
     """The auditor's brief. The verdict is recorded in the audit worktree, never the plan repo.
 
     With `previous_blocking` it is a re-audit: only those findings are verified."""
@@ -163,6 +186,7 @@ def build_audit_spec(plan: dict, changed: dict, reviewer_profile: str,
         lines.append("Audit the change as a whole; you wrote none of it.")
     if plan.get("why"):
         lines.append("Why: %s" % plan["why"])
+    lines += owner_decisions_block(list(owner_decisions or []))
     lines.append(INLINE_REVIEW)
     # Not every auditor has Claude's skill loader (Codex, Antigravity): the skill is a plain file.
     lines.append("The rein-audit skill is the file %s: read it and follow its steps "
@@ -1004,7 +1028,9 @@ class _Driver:
                 continue
             self.state.gates[gate_id] = {"task_id": task_id, "kind": kind,
                                          "message_id": entry.get("message_id", ""), "audit": entry.get("audit", ""),
-                                         "holder_task": entry["holder_task"]}
+                                         "holder_task": entry["holder_task"],
+                                         # kept for the auditor once the owner answers (owner_decisions)
+                                         "question": str(entry.get("question") or "")[:DECISION_QUESTION_CAP]}
             for extra in ("repo", "reason"):  # a repo gate's repo, and a red one's failure
                 if entry.get(extra):
                     self.state.gates[gate_id][extra] = entry[extra]
@@ -1195,7 +1221,7 @@ class _Driver:
         gate_commands = {p: audit_gate_command(p, repo_of.get(p, ""), self.root) for p in self.changed_by_wt}
         spec = build_audit_spec(self.plan, self.changed_by_wt, self.ctx["reviewer_profile"],
                                 audit_root, self.change, self.state.previous_blocking, fix_commits,
-                                env_lines, gate_commands)
+                                env_lines, gate_commands, owner_decisions=self.state.owner_decisions)
         try:
             task_id = oc.task_id_of(self.client.task_create(
                 spec, "%s audit round %d" % (self.change, self.state.audit_rounds + 1), []))

@@ -103,6 +103,9 @@ class ShipState:
     repo_gates: dict = field(default_factory=dict)
     # Red full gates per repo in this run: past maxRetries the owner decides.
     repo_gate_fails: dict = field(default_factory=dict)
+    # Every gate the owner resolved: `{gate, kind, task_id, question, answer}`. The auditor reads
+    # them as binding, so it never asks the owner again what they already decided.
+    owner_decisions: list = field(default_factory=list)
 
 
 def state_path(repo_root: str, change: str) -> str:
