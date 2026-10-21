@@ -20,6 +20,7 @@ import subprocess
 from typing import Callable, Optional
 
 import detect as _detect
+import gate_env as _gate_env
 import orca_client as oc
 import quick
 import quick_driver as qd
@@ -285,6 +286,30 @@ def _verbatim_in(path: str, upstream: str, ref: str, commits: list, git: Callabl
     return all(mine_ids.get(c) in their_ids for c in commits) if mine_ids else False
 
 
+def _cleanup_of(path: str, repo: str, git: Callable[..., tuple], env_root: str = "") -> tuple:
+    """`(command, cwd, env)` of the worktree's `gate.cleanup`, captured while it still exists;
+    `("", "", {})` when none is configured. It runs from the repo's main checkout."""
+    command = _gate_env.cleanup_command(path, repo=repo, env_root=env_root)
+    if not command:
+        return "", "", {}
+    cwd = _main_checkout(path, git) or os.path.dirname(os.path.abspath(path))
+    return command, cwd, _gate_env.for_worktree(path, repo=repo, env_root=env_root)
+
+
+def _run_cleanup(path: str, cleanup: tuple, say: Callable[[str], None], dry_run: bool = False) -> None:
+    command, cwd, env = cleanup
+    if not command:
+        return
+    if dry_run:
+        say("would run cleanup for %s: %s" % (path, command))
+        return
+    code, last = _gate_env.run_cleanup(command, cwd, env)
+    if code == 0:
+        say("cleanup for %s: ok ($ %s)" % (path, command))
+    else:
+        say("WARNING: cleanup for %s failed (exit %s): %s ($ %s)" % (path, code, last or "no output", command))
+
+
 def _warn(warnings: list, say: Callable[[str], None]) -> None:
     say("WARNING: these gitignored files would be lost:")
     for path, name in warnings:
@@ -422,8 +447,11 @@ def run_done(root: str, change: str, client: OrcaClient, *, dry_run: bool = Fals
             return 1
 
     prefix = "would " if dry_run else ""
+    cleanups = {path: _cleanup_of(path, repo, git, env_root=root) for repo, path in present}
     for repo, path in present:
         say("%sremove worktree %s (%s)" % (prefix, repo, path))
+        if dry_run:
+            _run_cleanup(path, cleanups[path], say, dry_run=True)
     for repo, path in gone:
         say("already gone: %s (%s)" % (repo, path))
     if archive:
@@ -443,6 +471,8 @@ def run_done(root: str, change: str, client: OrcaClient, *, dry_run: bool = Fals
         except OrcaError as exc:
             failed += 1
             say("orca could not remove %s (%s): %s" % (repo, path, exc.message))
+            continue
+        _run_cleanup(path, cleanups[path], say)
     if failed:
         say("state and mailbox kept: fix the above and run `rein done %s` again" % change)
         return 126
@@ -581,13 +611,15 @@ def run_quick_close(arg: str, client: OrcaClient, *, cwd: str = ".", dry_run: bo
             continue
         if warnings:
             _warn(warnings, say)
-        plan.append((path, removable))
+        cleanup = _cleanup_of(path, str(record.get("repo") or ""), git) if removable else ("", "", {})
+        plan.append((path, removable, cleanup))
     if warned:
         _warn(warned, say)
         say("those were kept; re-run with --yes only if losing them is fine")
-    for path, removable in plan:
+    for path, removable, cleanup in plan:
         if dry_run:
             say("would %s" % ("remove worktree %s" % path if removable else "delete the record in %s" % path))
+            _run_cleanup(path, cleanup, say, dry_run=True)
             closed += 1
             continue
         # The record first: Orca refuses a worktree with an untracked file, and the record is one
@@ -609,6 +641,7 @@ def run_quick_close(arg: str, client: OrcaClient, *, cwd: str = ".", dry_run: bo
                     _restore(record_path, kept, say)
                 continue
             say("removed worktree %s" % path)
+            _run_cleanup(path, cleanup, say)
         else:
             say("kept the checkout %s (main checkout or not a quick-* branch); deleted its quick record" % path)
         closed += 1

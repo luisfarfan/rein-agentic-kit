@@ -78,7 +78,8 @@ Subcommands:
                       branch, never pushed; its folder must be committed). Removes
                       NOTHING if any worktree is dirty, a main checkout or not integrated
                       (HEAD and branch) into origin/<base>; gitignored files that would be
-                      lost (.env ...) are listed and need --yes, except gate.regenerable ones. Exit 0 closed / 1 blockers / 2 usage / 126 Orca error
+                      lost (.env ...) are listed and need --yes, except gate.regenerable ones.
+                      Each removed worktree then runs gate.cleanup (also in quick close). Exit 0 closed / 1 blockers / 2 usage / 126 Orca error
   rein quick close [<workspace path or quick-<slug> name>] [--dry-run] [--yes]
                       remove the worktrees of finished quick tasks (all of them when
                       no argument) and their records, only when clean and integrated

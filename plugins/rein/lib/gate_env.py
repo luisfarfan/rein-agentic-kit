@@ -11,6 +11,10 @@ fail each other, and every false red costs a retry. A repo's flow.config.json
 at most 40 characters, the same every time) and `{repo}` the repo's name.
 Rein expands them for every gate and verification it runs in that worktree and
 names them to the worker and the auditor. Nothing configured, nothing changes.
+
+`gate.cleanup` is the other half: a command that drops what those variables named
+(`dropdb --if-exists app_test_{worktree}`), run by `rein done` and `rein quick close`
+once the worktree is removed. `{path}` is the removed worktree's path, shell-quoted.
 """
 
 from __future__ import annotations
@@ -95,3 +99,40 @@ def merged(env: dict) -> dict:
     out = dict(os.environ)
     out.update(env or {})
     return out
+
+
+CLEANUP_TIMEOUT = 300
+
+
+def expand_command(command: str, worktree: str, repo: str) -> str:
+    """`gate.cleanup` with `{worktree}` (the slug), `{repo}` and `{path}` (shell-quoted) filled."""
+    return (command.replace("{worktree}", worktree_slug(worktree)).replace("{repo}", repo or "")
+            .replace("{path}", shlex.quote(os.path.abspath(worktree))))
+
+
+def cleanup_command(root: str, repo: str = "", env_root: str = "") -> str:
+    """The worktree's expanded `gate.cleanup`: the repo's own, else the plan root's; "" when none."""
+    root = os.path.abspath(root)
+    repo = repo or repo_name_of(root)
+    for where in (root, env_root):
+        if not where:
+            continue
+        block = _detect.resolve(where).get("gate")
+        command = block.get("cleanup") if isinstance(block, dict) else None
+        if isinstance(command, str) and command.strip():
+            return expand_command(command.strip(), root, repo)
+    return ""
+
+
+def run_cleanup(command: str, cwd: str, env: dict = None, timeout: float = CLEANUP_TIMEOUT) -> tuple:
+    """`(exit code, last output line)` of the cleanup command; it never raises."""
+    try:
+        proc = subprocess.run(command, shell=True, cwd=cwd if os.path.isdir(cwd or "") else None,
+                              capture_output=True, text=True, timeout=timeout, env=merged(env),
+                              stdin=subprocess.DEVNULL)
+    except subprocess.TimeoutExpired:
+        return 124, "timed out after %gs" % timeout
+    except OSError as exc:
+        return 127, str(exc)
+    lines = [ln for ln in ((proc.stdout or "") + (proc.stderr or "")).splitlines() if ln.strip()]
+    return proc.returncode, (lines[-1].strip()[:300] if lines else "")

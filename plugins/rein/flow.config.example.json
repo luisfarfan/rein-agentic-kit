@@ -45,7 +45,9 @@
     "affected": {"python": "pytest"},
     "affectedMax": 40,
     "$regenerable": "Gitignored files a worktree's setup regenerates (globs, repo-relative; a trailing / covers a folder): `rein done` and `rein quick close` do not count them as lost and need no --yes for them.",
-    "regenerable": ["public/config.json"]
+    "regenerable": ["public/config.json"],
+    "$cleanup": "A command run once per worktree after `rein done` / `rein quick close` removed it, from the repo's main checkout, with the worktree's gate.env: drop what the gates created outside the tree. {worktree} is the same slug gate.env uses, {repo} the repo's name, {path} the removed worktree's path (shell-quoted). A failure is reported, never undoes the close. Unset: nothing runs.",
+    "cleanup": "dropdb --if-exists app_test_{worktree}"
   },
 
   "retrieval": {
