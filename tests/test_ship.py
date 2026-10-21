@@ -290,10 +290,18 @@ class ShipCase(unittest.TestCase):
             return 0, ""
         ship.run_task_verification = verified
         self.addCleanup(self._restore)
+        # Most driver tests give workers worktrees that are names or plain folders, never git checkouts.
+        # The guard fails closed on a path git cannot read, so it is left out there; the guard's own
+        # driver tests use real repos.
+        real_check = ship._guard.check
+        self._real_guard_check = real_check
+        ship._guard.check = lambda path, *a, **kw: (real_check(path, *a, **kw)
+                                                    if os.path.exists(os.path.join(path, ".git")) else [])
         self.clock_value = 1000.0
 
     def _restore(self):
         ship._tr.PROJECTS, ship._tr.LEDGER_PATH, ship.changed_files, ship.run_task_verification = self._saved
+        ship._guard.check = self._real_guard_check
 
     def write_plan(self, text):
         with open(os.path.join(self.root, "tasks.md"), "w", encoding="utf-8") as fh:

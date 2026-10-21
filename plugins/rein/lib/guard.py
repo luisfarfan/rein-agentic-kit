@@ -19,8 +19,12 @@ commands and `gate.affected`), and another skipped the repo's commit-msg hook wi
   in them by the time its task ends. This is detection, not prevention: a sandbox the agent
   cannot write out of is the agent's (or Orca's) to provide.
 
-Each problem is one line saying what and why; none means the change is clean. A checkout
-git cannot read is not this module's verdict to give (the gate's is): it yields nothing.
+Each problem is one line saying what and why; none means the change is clean.
+
+The guard FAILS CLOSED. Whatever it cannot establish -- git failing, the base's config not
+extracted or written, a file that cannot be read, a snapshot it cannot use -- raises
+`GuardError` (callers go through `run_guard`, which makes it "guard could not run", exit 126),
+never "no change": an incomplete look is not a clean one.
 """
 
 from __future__ import annotations
@@ -30,11 +34,14 @@ import os
 import re
 import shutil
 import subprocess
+import hashlib
 import tempfile
 
-import hashlib
-
 import detect as _detect
+
+
+class GuardError(RuntimeError):
+    """The guard could not establish a fact it needs: the environment's problem, never a pass."""
 
 
 # Environment variables that switch a repo's hooks off (lefthook, husky, pre-commit).
@@ -88,15 +95,15 @@ def protected_patterns(*resolutions: dict) -> list:
 
 def resolve_at(path: str, base: str):
     """`detect.resolve` of the tree at the merge base of `base` and HEAD: its root files (and the
-    nested mise configs and the chosen sub-project's files) written to a temp dir. None when git
-    cannot say."""
+    nested mise configs and the chosen sub-project's files) written to a temp dir. GuardError when
+    any of it cannot be done: a partial base would protect less than the real one."""
     code, sha = _git(path, "merge-base", base, "HEAD")
     sha = sha.strip()
     if code != 0 or not sha:
-        return None
+        raise GuardError("no merge base of %s and HEAD in %s, so the base's config is unknown" % (base, path))
     code, listing = _git(path, "ls-tree", "-r", "--name-only", sha)
     if code != 0:
-        return None
+        raise GuardError("cannot list the base tree %s in %s" % (sha[:12], path))
     # What detect reads to resolve the commands: every root file, and the manifests, lockfiles and
     # runner configs a few levels down -- a sub-project must be visible BEFORE detect picks it.
     names = [n for n in listing.splitlines() if n and ("/" not in n or _resolution_input(n))]
@@ -108,7 +115,9 @@ def resolve_at(path: str, base: str):
         if sub:
             # The sub-project's own files: blobs only (a tree is a folder, never a file to write).
             code, listing = _git(path, "ls-tree", sha, sub + "/")
-            for line in listing.splitlines() if code == 0 else []:
+            if code != 0:
+                raise GuardError("cannot list the base's sub-project %s in %s" % (sub, path))
+            for line in listing.splitlines():
                 meta, _, name = line.partition("\t")
                 if name and meta.split()[1:2] == ["blob"]:
                     _extract(path, sha, name, tmp)
@@ -137,21 +146,21 @@ def _resolution_input(name: str) -> bool:
 
 
 def _extract(path: str, sha: str, name: str, into: str) -> None:
+    """Write the base's blob `name` under `into`; GuardError when it cannot be read or written."""
     try:
         proc = subprocess.run(["git", "-C", path, "show", "%s:%s" % (sha, name)], capture_output=True, timeout=60)
-    except (OSError, subprocess.SubprocessError):
-        return
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise GuardError("cannot read %s from the base %s: %s" % (name, sha[:12], exc))
     if proc.returncode != 0:
-        return
+        raise GuardError("cannot read %s from the base %s: %s" % (
+            name, sha[:12], (proc.stderr or b"").decode("utf-8", "replace").strip()[:200] or "git show failed"))
     target = os.path.join(into, name)
-    if os.path.isdir(target):
-        return  # a folder already made for a file below it: never write a listing over it
     try:
         os.makedirs(os.path.dirname(target), exist_ok=True)
-        with open(target, "wb") as fh:
+        with open(target, "wb") as fh:  # a folder here (never a blob's path) raises too
             fh.write(proc.stdout)
-    except OSError:
-        pass  # one unwritable input only makes the base resolution less complete
+    except OSError as exc:
+        raise GuardError("cannot rebuild the base's %s: %s" % (name, exc))
 
 
 def config_changes(changed: list, patterns: list, allowed=()) -> list:
@@ -223,14 +232,16 @@ def _git_runs_hooks(path: str) -> bool:
 
 def _hook_installed(path: str, name: str) -> bool:
     """A `name` hook exists for the checkout (core.hooksPath, else the git dir's hooks)."""
-    code, configured = _git(path, "config", "core.hooksPath")
+    code, configured = _git(path, "config", "core.hooksPath")  # exit 1 = unset, not an error
     if code == 0 and configured.strip():
         folder = os.path.join(path, os.path.expanduser(configured.strip()))
     else:
         code, folder = _git(path, "rev-parse", "--git-path", "hooks")
-        folder = os.path.join(path, folder.strip()) if code == 0 else ""
-    hook = os.path.join(folder, name) if folder else ""
-    return bool(hook) and os.path.isfile(hook) and os.access(hook, os.X_OK)
+        if code != 0 or not folder.strip():
+            raise GuardError("cannot find the hooks folder of %s" % path)
+        folder = os.path.join(path, folder.strip())
+    hook = os.path.join(folder, name)
+    return os.path.isfile(hook) and os.access(hook, os.X_OK)
 
 
 def _has_commit_msg_hook(path: str) -> bool:
@@ -248,7 +259,7 @@ def commit_msg_failures(path: str, base: str, env=None) -> list:
     while one is installed is a problem of its own: the messages cannot be checked."""
     code, out = _git(path, "rev-list", "--no-merges", "%s..HEAD" % base)  # newest first
     if code != 0:
-        return []
+        raise GuardError("cannot list the commits since %s in %s" % (base, path))
     if not _git_runs_hooks(path):
         if out.split() and _hook_installed(path, "commit-msg"):
             return ["the repo has a commit-msg hook but this git cannot run it again (`git hook` needs "
@@ -264,7 +275,7 @@ def commit_msg_failures(path: str, base: str, env=None) -> list:
     for sha in commits:
         code, message = _git(path, "log", "-1", "--format=%B", sha)
         if code != 0:
-            continue
+            raise GuardError("cannot read the message of commit %s in %s" % (sha[:8], path))
         fd, msg_file = tempfile.mkstemp(prefix="rein-commit-msg-", suffix=".txt")
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
@@ -277,8 +288,8 @@ def commit_msg_failures(path: str, base: str, env=None) -> list:
                 problems.append("commit %s: the repo's commit-msg hook did not finish in %ds"
                                 % (sha[:8], HOOK_TIMEOUT))
                 continue
-            except OSError:
-                return problems
+            except OSError as exc:
+                raise GuardError("cannot run the commit-msg hook in %s: %s" % (path, exc))
         finally:
             try:
                 os.unlink(msg_file)
@@ -301,14 +312,17 @@ def _dirty_paths(path: str) -> list:
     """Repo-relative paths git reports changed or untracked (renames as both ends), Rein's `.rein/` aside."""
     code, out = _git(path, "status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames")
     if code != 0:
-        return []
+        raise GuardError("cannot read the git status of %s" % path)
     found = [entry[3:] for entry in out.split("\0") if len(entry) > 3]
     return [p for p in found if p and not (p == ".rein" or p.startswith(".rein/"))]
 
 
 def _fingerprint(path: str, rel: str) -> str:
-    """What `rel` is now: a content digest, "missing", or "dir"."""
+    """What `rel` is now: a content digest, "missing", or "dir"; GuardError when it exists but
+    cannot be read (two unreadable states would otherwise compare equal)."""
     full = os.path.join(path, rel)
+    if not os.path.lexists(full):
+        return "missing"
     if os.path.isdir(full) and not os.path.islink(full):
         return "dir"
     try:
@@ -319,22 +333,30 @@ def _fingerprint(path: str, rel: str) -> str:
             for chunk in iter(lambda: fh.read(1 << 20), b""):
                 digest.update(chunk)
         return digest.hexdigest()
-    except OSError:
-        return "missing"
+    except OSError as exc:
+        raise GuardError("cannot read %s: %s" % (full, exc))
 
 
 def outside_snapshot(paths) -> dict:
     """`{realpath: {head, paths: {rel: fingerprint}}}` of the git checkouts in `paths`: HEAD, and the
-    content of every path that is dirty or untracked there (a clean tracked path is HEAD's)."""
+    content of every path that is dirty or untracked there (a clean tracked path is HEAD's).
+
+    A path that does not exist has nothing to protect and is left out. One that exists but cannot
+    be read is kept as `{"error": why}`: taken at launch, the snapshot must not raise (nothing is
+    decided yet), and `outside_changes` fails closed on it at the end."""
     snap = {}
     for path in paths or ():
         if not path or not os.path.isdir(path):
             continue
-        code, head = _git(path, "rev-parse", "HEAD")
-        if code != 0:
-            continue
-        snap[os.path.realpath(path)] = {"head": head.strip(), "paths": {
-            rel: _fingerprint(path, rel) for rel in _dirty_paths(path)[:OUTSIDE_PATH_CAP]}}
+        real = os.path.realpath(path)
+        try:
+            code, head = _git(path, "rev-parse", "HEAD")
+            if code != 0:
+                raise GuardError("git cannot read %s" % path)
+            snap[real] = {"head": head.strip(), "paths": {
+                rel: _fingerprint(path, rel) for rel in _dirty_paths(path)[:OUTSIDE_PATH_CAP]}}
+        except GuardError as exc:
+            snap[real] = {"error": str(exc)}
     return snap
 
 
@@ -345,13 +367,21 @@ def outside_changes(before: dict, ignore=()) -> list:
     the comparison itself, so they never make another path look changed."""
     skip = {os.path.realpath(p) for p in ignore or ()}
     problems = []
-    for path, was in sorted((before or {}).items()):
-        if not os.path.isdir(path) or not isinstance(was, dict):
+    if not isinstance(before, dict):
+        raise GuardError("the launch snapshot of the other checkouts is unreadable")
+    for path, was in sorted(before.items()):
+        if not isinstance(was, dict) or (not was.get("error") and not isinstance(was.get("paths"), dict)):
+            raise GuardError("the launch snapshot of %s is unreadable" % path)
+        if was.get("error"):
+            raise GuardError("%s could not be read when the worker was launched (%s), so what it wrote there "
+                             "cannot be known" % (path, was["error"]))
+        if not os.path.isdir(path):
+            problems.append("it wrote outside its worktree: the checkout %s no longer exists" % path)
             continue
         code, head = _git(path, "rev-parse", "HEAD")
         if code != 0:
-            continue
-        old = was.get("paths") if isinstance(was.get("paths"), dict) else {}
+            raise GuardError("git cannot read %s" % path)
+        old = was["paths"]
         now = {rel: _fingerprint(path, rel) for rel in _dirty_paths(path)[:OUTSIDE_PATH_CAP]}
         changed = [rel for rel in sorted(set(old) | set(now))
                    if os.path.realpath(os.path.join(path, rel)) not in skip
@@ -378,14 +408,15 @@ def run_guard(fn, *args, **kw) -> tuple:
 
 
 def check(path: str, base: str, resolved: dict, allowed=(), env=None) -> list:
-    """Every rule the change since `base` breaks, one line each; [] when it breaks none."""
+    """Every rule the change since `base` breaks, one line each; [] when it breaks none. GuardError
+    when it cannot tell."""
     if not base:
-        return []
+        raise GuardError("no base to compare the change against")
     try:
         changed = changed_paths(path, base)
-    except (RuntimeError, OSError):
-        return []
-    patterns = protected_patterns(resolved, resolve_at(path, base) or {})
+    except (RuntimeError, OSError) as exc:
+        raise GuardError("cannot list the changes since %s in %s: %s" % (base, path, exc))
+    patterns = protected_patterns(resolved, resolve_at(path, base))
     problems = ["it changes %s, the configuration Rein gates it with; revert that change (only a task "
                 "that declares the file -- a plan task's `Gate config:` field, `rein quick "
                 "--allow-config` -- may change it)" % f

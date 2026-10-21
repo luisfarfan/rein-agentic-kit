@@ -121,9 +121,10 @@ class Guard(unittest.TestCase):
         commit(self.repo, "app.py", "x = 2\n", "anything")
         self.assertEqual(guard.check(self.repo, base, {}), [])
 
-    def test_not_a_git_checkout_yields_nothing(self):
+    def test_not_a_git_checkout_fails_closed(self):
         os.makedirs(self.repo)
-        self.assertEqual(guard.check(self.repo, "origin/develop", {}), [])
+        with self.assertRaises(guard.GuardError):  # never "no change" (N2)
+            guard.check(self.repo, "origin/develop", {})
 
 
 class Briefs(unittest.TestCase):

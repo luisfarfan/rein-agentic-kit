@@ -70,10 +70,10 @@ class Snapshot(unittest.TestCase):
         write(self.qa, "tasks.md", "- [x] T001\n")
         self.assertEqual(guard.outside_changes(before, ignore=[os.path.join(self.qa, "tasks.md")]), [])
 
-    def test_a_vanished_checkout_is_not_a_crash(self):
+    def test_a_vanished_checkout_is_reported_not_a_crash(self):
         before = guard.outside_snapshot([self.qa])
         shutil.rmtree(self.qa)
-        self.assertEqual(guard.outside_changes(before), [])
+        self.assertEqual(len(guard.outside_changes(before)), 1)  # deleting a checkout is a write (N2)
 
 
 class Quick(DoneCase):
