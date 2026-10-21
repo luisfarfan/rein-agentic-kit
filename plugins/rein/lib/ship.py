@@ -643,19 +643,22 @@ class _Driver:
         rows = self.rows() if rows is None else rows
         return next((r for r in rows if str(r.get("taskId") or "") == orca_task_id and r.get("dispatchId")), None)
 
-    def adopt_started(self, task, rows=None) -> bool:
+    def adopt_started(self, task, rows=None, keep: bool = False) -> bool:
         """A worker-start whose answer was lost (a kill, a dropped connection): if Orca did start
         the worker, supervise it rather than starting a second one in a second worktree.
 
-        True when adopted. When Orca lists no such worker the intent is cleared; when
-        Orca cannot be asked (OrcaError) it stays, for the next dispatch or resume."""
+        True when adopted. When Orca lists no such worker the intent is cleared -- unless `keep`:
+        right after the error Orca may not list it YET, so only a later look may give up on it.
+        When Orca cannot be asked (OrcaError) it stays, for the next dispatch or resume."""
         if not task.starting:
             return False
         row = self._started_row(task.starting, rows)
-        task.starting = ""
         if row is None:
-            self.save()
+            if not keep:
+                task.starting = ""
+                self.save()
             return False
+        task.starting = ""
         task.dispatch_id, task.status = str(row["dispatchId"]), "running"
         wt = self._row_worktree(row)
         if wt and task.repo not in self.state.worktrees:
@@ -705,8 +708,8 @@ class _Driver:
                 name=self.change if fresh else "", setup="run" if fresh else "",
                 timeout=START_TIMEOUT_SECONDS)
         except OrcaError as exc:
-            try:  # Orca may have started it and lost only the answer
-                if self.adopt_started(task):
+            try:  # Orca may have started it and lost only the answer; it may also list it only later
+                if self.adopt_started(task, keep=True):
                     return
             except OrcaError:
                 pass  # `starting` stays set: the retry or the resume asks again
@@ -844,6 +847,20 @@ class _Driver:
                 self.say("no worktree was used; nothing to audit")
                 self.state.phase, self.finished = "done", True
             return
+        if self.state.audit_starting:  # an earlier audit start's answer was lost: look again first
+            try:
+                if self.adopt_audit():
+                    return
+            except OrcaError as exc:
+                if is_transient(exc):
+                    raise
+                self.state.pending_gates.append({
+                    "task_id": None, "kind": "setup", "message_id": "", "audit": "", "options": ["retry", "skip"],
+                    "question": "Rein cannot tell whether Orca started the earlier auditor (%s). Check Orca, "
+                                "then retry or skip." % exc})
+                self.save()
+                self.open_pending()
+                return
         repo, first = next(iter(self.state.worktrees.items()))
         audit_root = self.state.worktree_paths.get(repo) or oc.worktree_path_of(first)
         fix_commits = {}
@@ -867,14 +884,13 @@ class _Driver:
                                            timeout=START_TIMEOUT_SECONDS)
         except OrcaError as exc:
             if self.state.audit_starting:
-                try:
-                    if self.adopt_audit():
+                try:  # kept when not listed yet: the resume or the owner's retry looks again
+                    if self.adopt_audit(keep=True):
                         return
                 except OrcaError:
                     pass
             if is_transient(exc):
                 raise  # Orca is restarting: run_ship waits, and the resume adopts or restarts the audit
-            self.state.audit_starting = ""
             if a.agent not in self.state.audit_excluded:
                 self.state.audit_excluded.append(a.agent)
             self.state.pending_gates.append({
@@ -897,9 +913,12 @@ class _Driver:
         self.save()
         self.say("audit started on %s/%s in %s (%s)" % (agent, model, audit_root, self.state.audit_dispatch))
 
-    def adopt_audit(self, rows=None) -> bool:
-        """The audit's worker-start answer was lost: supervise the auditor Orca did start, if any."""
+    def adopt_audit(self, rows=None, keep: bool = False) -> bool:
+        """The audit's worker-start answer was lost: supervise the auditor Orca did start, if any.
+        `keep`: as for `adopt_started`, a miss right after the error does not give up the intent."""
         row = self._started_row(self.state.audit_starting, rows)
+        if row is None and keep:
+            return False
         self.state.audit_starting = ""
         if row is not None:
             self.state.audit_dispatch = str(row["dispatchId"])

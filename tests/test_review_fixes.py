@@ -15,7 +15,7 @@ sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "plugins", "rein", "lib"))
 
 import ship  # noqa: E402
-from test_ship import FakeOrca, ShipCase, scripted_gate  # noqa: E402
+from test_ship import PLAN, FailEnvelope, FakeOrca, ShipCase, _flag, scripted_gate  # noqa: E402
 
 
 def one_task_plan(verification, type_=""):
@@ -118,6 +118,54 @@ class B1RealVerificationInTheDriver(ShipCase):
         self.assertEqual(len(workers), 1, self.out)
         self.assertIn("could not run", self.out)
         self.assertEqual(fake.gates, [])
+
+
+class LateStartAnswer(FakeOrca):
+    """worker-start fails with a lost answer, yet Orca does start the worker -- and lists it only
+    from the SECOND worker-list on (Orca answered late)."""
+
+    def __init__(self, root, title="T001", **kw):
+        super().__init__(root, **kw)
+        self.late_title, self.hidden, self.lists = title, None, 0
+
+    def _answer(self, a):
+        if a[:2] == ["orchestration", "worker-list"]:
+            self.lists += 1
+            out = super()._answer(a)
+            if self.hidden and self.lists <= self.hidden[1]:
+                out = {"workers": [r for r in out["workers"] if r["dispatchId"] != self.hidden[0]]}
+            return out
+        r = super()._answer(a)
+        if (a[:2] == ["orchestration", "worker-start"] and self.late_title
+                and self.tasks[_flag(a, "--task")]["title"].startswith(self.late_title)):
+            self.late_title = ""
+            self.hidden = (r["dispatchId"], self.lists + 1)  # the very next list misses it
+            raise FailEnvelope({"ok": False, "error": {"code": "runtime_unavailable", "message": "connection closed"}})
+        return r
+
+
+class M1LateWorkerStartAnswer(ShipCase):
+    def setUp(self):
+        super().setUp()
+        self.write_plan(PLAN.split("- [ ] T002")[0])
+
+    def starts(self, fake, audit):
+        return [s for s in fake.starts() if ("audit" in fake.tasks[_flag(s, "--task")]["title"]) == audit]
+
+    def test_a_worker_listed_late_is_adopted_on_the_retry_not_started_twice(self):
+        fake = LateStartAnswer(self.root)
+        fake.auto_resolve = "retry"
+        fake.on_audit = self.approve_audit()
+        self.assertEqual(self.run_ship(fake, scripted_gate(), sleep=lambda s: None), 0, self.out)
+        self.assertEqual(len(self.starts(fake, audit=False)), 1, self.out)
+        self.assertIn("adopted", self.out)
+
+    def test_an_auditor_listed_late_is_adopted_on_resume_not_started_twice(self):
+        fake = LateStartAnswer(self.root, title="demo audit")
+        fake.auto_resolve = "retry"
+        fake.on_audit = self.approve_audit()
+        self.assertEqual(self.run_ship(fake, scripted_gate(), sleep=lambda s: None), 0, self.out)
+        self.assertEqual(len(self.starts(fake, audit=True)), 1, self.out)
 
 
 if __name__ == "__main__":
