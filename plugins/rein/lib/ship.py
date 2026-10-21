@@ -190,13 +190,14 @@ def build_audit_spec(plan: dict, changed: dict, reviewer_profile: str,
 
 
 def audit_gate_command(path: str, repo: str = "", env_root: str = "") -> str:
-    """The `rein gate` an auditor runs on a worktree: the same env (and so the same cache) as Rein's."""
+    """The `rein gate` an auditor runs on a worktree: the same slots and env as Rein's own full gate
+    before the audit, so every slot that passed there is a cache hit."""
     argv = ["rein", "gate", path]
     if repo:
         argv += ["--repo", repo]
     if env_root:
         argv += ["--env-root", env_root]
-    return shlex.join(argv)
+    return shlex.join(argv + ["--tier", "full"])
 
 
 def head_sha(path: str) -> str:

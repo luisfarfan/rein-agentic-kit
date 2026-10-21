@@ -133,3 +133,14 @@ class TestGateCliEnv(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestVerifyEnv(unittest.TestCase):
+    def test_rein_verify_runs_with_the_worktree_env_too(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = os.path.join(tmp, "Feature-WT")
+            _write_config(root, {"stack": "python", "gate": {"env": {"REIN_T_DB": "t_{worktree}"}},
+                                 "commands": {"test": 'test "$REIN_T_DB" = t_feature_wt'}})
+            res = subprocess.run([sys.executable, REIN, "verify", root, "--json"], capture_output=True, text=True,
+                                 env=dict(os.environ, HOME=tmp))
+            self.assertEqual(json.loads(res.stdout)["results"]["test"]["outcome"], "ok", res.stdout)

@@ -190,7 +190,8 @@ def cmd_verify(argv: list[str]) -> int:
             timeout = _verify.DEFAULT_TIMEOUT
         resolved_root = os.path.abspath(root)
         plan_doc = _plan.read_plan(resolved_root, _opt(argv, "change", ""))
-        report = _verify.verify_plan(resolved_root, plan_doc.get("tasks") or [], timeout=timeout)
+        report = _verify.verify_plan(resolved_root, plan_doc.get("tasks") or [], timeout=timeout,
+                                     env=_gate_env.for_worktree(resolved_root, repo=_opt(argv, "repo")))
         if "--json" in argv:
             print(json.dumps(report, indent=2))
         else:
@@ -220,7 +221,8 @@ def cmd_verify(argv: list[str]) -> int:
     only = {s.strip() for s in only_raw.split(",") if s.strip()} if only_raw else None
 
     resolved = _detect.resolve(root)
-    report = _verify.verify_commands(resolved, timeout, only=only)
+    env = _gate_env.for_worktree(resolved["root"], repo=_opt(argv, "repo"), resolved=resolved)
+    report = _verify.verify_commands(resolved, timeout, only=only, env=env or None)
     _verify.write_state(resolved["root"], report)
 
     if "--json" in argv:

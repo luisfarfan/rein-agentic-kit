@@ -192,3 +192,20 @@ class TestTheAuditorUsesTheGate(unittest.TestCase):
         self.assertIn("rein gate", step2)
         self.assertIn("--timeout", step2)
         self.assertIn("cached", step2)
+
+
+class TestTheAuditorHitsReinsGate(CacheCase):
+    def test_the_auditors_command_reuses_the_drivers_full_gate(self):
+        import shlex
+        import ship
+        self.init()
+        code, _ = self.gate("--tier", "full", "--repo", "proj")
+        self.assertEqual(code, 0)
+        argv = shlex.split(ship.audit_gate_command(self.root, "proj"))
+        self.assertEqual(argv[:2], ["rein", "gate"])
+        res = subprocess.run([sys.executable, REIN] + argv[1:] + ["--json"], capture_output=True, text=True,
+                             env=self.env)
+        payload = json.loads(res.stdout)
+        self.assertEqual(res.returncode, 0, payload)
+        self.assertTrue(all(r.get("cached") for r in payload["report"]["results"].values()))
+        self.assertEqual(self.runs(), ["lint", "test"])

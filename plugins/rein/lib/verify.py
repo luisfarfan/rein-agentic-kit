@@ -574,7 +574,7 @@ def unbacked_verifications(root: str, tasks: list) -> list:
     return out
 
 
-def verify_plan(root: str, tasks: list, timeout: float = DEFAULT_TIMEOUT) -> dict:
+def verify_plan(root: str, tasks: list, timeout: float = DEFAULT_TIMEOUT, env: dict | None = None) -> dict:
     """Run each task's own Verification command and report what it can prove.
 
     The outcome that matters is not pass/fail -- a plan's verification is
@@ -604,7 +604,7 @@ def verify_plan(root: str, tasks: list, timeout: float = DEFAULT_TIMEOUT) -> dic
                            else "not run: %s" % why),
             }
             continue
-        res = run_one(tid, cmd, root, timeout=timeout)
+        res = run_one(tid, cmd, root, timeout=timeout, env=env or None)
         text = "\n".join(res.output_head)
         # Ran, but selected nothing: the one state that makes a green
         # verification meaningless.
