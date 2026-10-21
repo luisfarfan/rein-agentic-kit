@@ -100,6 +100,11 @@ class Decide(unittest.TestCase):
         new, _ = tick(state(), now=NOW + 99 * 60, cfg=sd.ShipConfig(stall_minutes=0))
         self.assertEqual(stalled_gates(new), [])
 
+    def test_zero_minutes_also_turns_off_the_immediate_agent_wait_alert(self):
+        new, _ = sd.decide(state(), sd.WorkerActivity("d1", False, "Hooks need review"),
+                           sd.ShipConfig(stall_minutes=0))
+        self.assertEqual(stalled_gates(new), [])
+
     def test_the_setting_is_read_from_the_ship_block(self):
         self.assertEqual(sd.ShipConfig.from_flow_config({"ship": {"stallMinutes": 4}}).stall_minutes, 4)
         self.assertEqual(sd.ShipConfig.from_flow_config({"ship": {"stallMinutes": "x"}}).stall_minutes, 10)

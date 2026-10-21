@@ -561,7 +561,7 @@ def decide(state: ShipState, event, cfg: ShipConfig) -> tuple:
     elif isinstance(event, AuditVerdict):
         _on_audit_verdict(state, event, cfg, actions)
     elif isinstance(event, WorkerActivity):
-        _on_worker_activity(state, event, actions)
+        _on_worker_activity(state, event, cfg, actions)
     return state, actions
 
 
@@ -592,14 +592,14 @@ def _stall_clock(state: ShipState, now: float, cfg: ShipConfig, actions: list) -
                          % cfg.stall_minutes)
 
 
-def _on_worker_activity(state: ShipState, event: WorkerActivity, actions: list) -> None:
+def _on_worker_activity(state: ShipState, event: WorkerActivity, cfg: ShipConfig, actions: list) -> None:
     task = _holder(state, event.dispatch_id)
     if task is None or task.status != "running":
         return
     if event.active:
         task.active = True
         _drop_task_gate(state, task.id, "stalled")  # it started after all: nothing to decide
-    elif event.waiting and task.stall_answered != task.dispatch_id:
+    elif event.waiting and cfg.stall_minutes > 0 and task.stall_answered != task.dispatch_id:
         _ask_stalled(state, task, actions, "is waiting on a prompt only a person can answer (Orca: %s)"
                      % event.waiting[:300])
 
