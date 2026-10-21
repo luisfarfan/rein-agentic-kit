@@ -28,6 +28,7 @@ GATE_FAILURE_CAP = 6000  # a failed gate's detail: the real error lines, not a 2
 QUESTION_DETAIL = 1200   # how much of a failure an owner question quotes (Orca takes 2000)
 _BUSY = ("running", "gating", "gated")  # statuses that hold a repo's worktree
 _FIX_PREFIX = "AUDIT"
+_GATE_FIX_PREFIX = "GATE"  # a fix task for a repo whose full gate was red before the audit
 # Task-less owner gates that hold the audit: no audit may start behind one.
 AUDIT_HOLDS = ("audit_failed", "audit_timeout", "audit_exhausted", "setup")
 
@@ -113,6 +114,14 @@ class GateResolved:
 
 
 @dataclass
+class RepoGateVerdict:
+    """The full gate of one repo (every gate slot, the whole suite) before the audit."""
+    repo: str
+    exit_code: int
+    reason: str
+
+
+@dataclass
 class ChangesComputed:
     changed_files: list
     limits: dict = field(default_factory=dict)  # live quota, so the audit avoids a braked reviewer
@@ -160,6 +169,12 @@ class Dispatch:
 class RunGate:
     task_id: str
     unit_only: bool
+
+
+@dataclass
+class RunRepoGate:
+    """Run the full gate of `repo`'s worktree and answer with RepoGateVerdict."""
+    repo: str
 
 
 @dataclass
@@ -303,6 +318,15 @@ def _is_fix(task: TaskState) -> bool:
     return task.id.startswith(_FIX_PREFIX)
 
 
+def _is_synthetic(task: TaskState) -> bool:
+    """A task Rein made (an audit or full-gate fix): it has no checkbox in the plan."""
+    return task.id.startswith((_FIX_PREFIX, _GATE_FIX_PREFIX))
+
+
+def is_gate_fix(task: TaskState) -> bool:
+    return task.id.startswith(_GATE_FIX_PREFIX)
+
+
 def skipped_fix_tasks(state: ShipState) -> list:
     """Audit-fix tasks the owner skipped (a fix task only fails through the owner's skip)."""
     return [t for t in state.tasks.values() if _is_fix(t) and t.status == "failed"]
@@ -392,11 +416,7 @@ def _settle(state: ShipState, actions: list) -> None:
     if _all_done(state):
         if state.paused:
             return  # the owner paused the run; the audit starts on the next one
-        state.phase = "auditing"
-        state.changed_files = []
-        # The diff is I/O: the driver computes it and answers with ChangesComputed,
-        # which picks the auditor (risky or large changes go to Opus).
-        actions.append(ComputeChanges())
+        _verify_repos(state, actions)
         return
     if not any(t.status == "failed" for t in state.tasks.values()):
         return
@@ -411,14 +431,83 @@ def _settle(state: ShipState, actions: list) -> None:
         # runs and reports them, so the run never ends "done" without a verdict.
         if state.paused:
             return
-        state.phase = "auditing"
-        state.changed_files = []
-        actions.append(ComputeChanges())
+        _verify_repos(state, actions)
         return
     state.phase = "done"
     if not state.audit_result:
         state.audit_result = "unapproved"  # a task failed, so no audit could approve the change
     actions.append(Finish())
+
+
+def _start_audit(state: ShipState, actions: list) -> None:
+    state.phase = "auditing"
+    state.changed_files = []
+    # The diff is I/O: the driver computes it and answers with ChangesComputed,
+    # which picks the auditor (risky or large changes go to Opus).
+    actions.append(ComputeChanges())
+
+
+def _verify_repos(state: ShipState, actions: list) -> None:
+    """Every task is settled: run each repo's full gate once, then the audit.
+
+    The full suite is the authoritative gate; a task's own gate only ran the tests its
+    change reaches. A repo whose code did not change since its last pass costs nothing
+    (the gate cache). No worktree means nothing was built here: straight to the audit."""
+    repos = list(state.worktrees)
+    if not repos:
+        _start_audit(state, actions)
+        return
+    state.phase = "verifying"
+    state.repo_gates = {r: "running" for r in repos}
+    for repo in repos:
+        actions.append(RunRepoGate(repo))
+
+
+def _after_repo_gates(state: ShipState, actions: list) -> None:
+    if state.phase != "verifying":
+        return
+    if all(v in ("passed", "skipped") for v in state.repo_gates.values()):
+        _start_audit(state, actions)
+
+
+def _gate_fix_task(state: ShipState, repo: str, reason: str) -> None:
+    n = 1
+    while "%s%d-%s" % (_GATE_FIX_PREFIX, n, repo) in state.tasks:
+        n += 1
+    fix_id = "%s%d-%s" % (_GATE_FIX_PREFIX, n, repo)
+    state.tasks[fix_id] = TaskState(id=fix_id, repo=repo, deps=[], human_review=False, verification="",
+                                    type="implementation", last_failure=reason[:GATE_FAILURE_CAP])
+    state.repo_gates[repo] = "failed"
+    if state.phase == "verifying":
+        state.phase = "fixing" if state.audit_rounds > 0 else "running"
+
+
+def _on_repo_gate_verdict(state: ShipState, event: RepoGateVerdict, cfg: ShipConfig, actions: list) -> None:
+    repo = event.repo
+    if state.repo_gates.get(repo) != "running":
+        return  # nobody is waiting for this one
+    if event.exit_code == 0:
+        state.repo_gates[repo] = "passed"
+        _after_repo_gates(state, actions)
+    elif event.exit_code == 126:
+        state.repo_gates[repo] = "setup"
+        _open(state, actions, None,
+              "The full gate of %s could not run before the audit: %s. Retry it, or skip it (the audit "
+              "starts without it)?" % (repo, event.reason[:QUESTION_DETAIL]), ["retry", "skip"], "repo_gate")
+        state.pending_gates[-1]["repo"] = repo
+    else:
+        fails = state.repo_gate_fails.get(repo, 0) + 1
+        state.repo_gate_fails[repo] = fails
+        if fails <= cfg.max_retries:
+            _gate_fix_task(state, repo, event.reason)
+            return
+        state.repo_gates[repo] = "red"
+        _open(state, actions, None,
+              "The full gate of %s is still red after %d fix task(s): %s. Retry (one more fix task), or skip "
+              "it (the audit starts without it)?" % (repo, fails - 1, event.reason[:QUESTION_DETAIL]),
+              ["retry", "skip"], "repo_gate_red")
+        state.pending_gates[-1]["repo"] = repo
+        state.pending_gates[-1]["reason"] = event.reason[:GATE_FAILURE_CAP]
 
 
 # --- decide -----------------------------------------------------------------
@@ -437,6 +526,8 @@ def decide(state: ShipState, event, cfg: ShipConfig) -> tuple:
         _on_question(state, event, actions)
     elif isinstance(event, GateResolved):
         _on_gate_resolved(state, event, cfg, actions)
+    elif isinstance(event, RepoGateVerdict):
+        _on_repo_gate_verdict(state, event, cfg, actions)
     elif isinstance(event, ChangesComputed):
         _on_changes_computed(state, event, cfg, actions)
     elif isinstance(event, ChangesFailed):
@@ -585,7 +676,7 @@ def _on_gate_verdict(state: ShipState, event: GateVerdict, cfg: ShipConfig, acti
                   "Task %s passed its gate. Approve it to close it, or reject it." % task.id,
                   ["approve", "reject"], "human_review")
             return
-        if not _is_fix(task):  # synthetic fix tasks have no checkbox in the plan
+        if not _is_synthetic(task):  # synthetic fix tasks have no checkbox in the plan
             actions.append(CloseTask(task.id))
         _release_held(task, actions)
         task.status = "done"
@@ -623,6 +714,8 @@ _RESOLUTIONS = {
     "audit_exhausted": ("fix", "accept", "reject"),
     "audit_timeout": ("retry", "skip"),
     "audit_failed": ("retry-audit", "accept", "reject"),
+    "repo_gate": ("retry", "skip"),
+    "repo_gate_red": ("retry", "skip"),
 }
 
 
@@ -703,6 +796,18 @@ def _on_gate_resolved(state: ShipState, event: GateResolved, cfg: ShipConfig, ac
                 state.pending_findings, state.pending_changed_files = [], []
             else:
                 _end_audit(state, actions, "approved" if resolution == "accept" else "rejected")
+    elif kind in ("repo_gate", "repo_gate_red"):
+        repo = gate.get("repo") or ""
+        if state.repo_gates.get(repo) not in ("setup", "red"):
+            return  # already moved on
+        if resolution == "skip":
+            state.repo_gates[repo] = "skipped"
+            _after_repo_gates(state, actions)
+        elif kind == "repo_gate":
+            state.repo_gates[repo] = "running"
+            actions.append(RunRepoGate(repo))
+        else:
+            _gate_fix_task(state, repo, gate.get("reason") or "the full gate of %s was red" % repo)
     elif kind in ("audit_timeout", "audit_failed") and state.phase != "auditing":
         pass  # the audit moved on while the owner was deciding
     elif kind == "audit_timeout" and gate.get("audit") != state.audit_dispatch:

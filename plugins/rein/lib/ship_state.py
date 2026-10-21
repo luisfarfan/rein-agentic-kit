@@ -98,6 +98,11 @@ class ShipState:
     audit_excluded: list = field(default_factory=list)
     # The pid of the `rein ship` process that last ran this change: exact liveness for `rein watch`.
     driver_pid: int = 0
+    # The full gate of each repo before an audit (phase "verifying"): "running", "passed",
+    # "failed" (a GATE fix task is on it), "setup" (the owner is asked) or "skipped" (by the owner).
+    repo_gates: dict = field(default_factory=dict)
+    # Red full gates per repo in this run: past maxRetries the owner decides.
+    repo_gate_fails: dict = field(default_factory=dict)
 
 
 def state_path(repo_root: str, change: str) -> str:

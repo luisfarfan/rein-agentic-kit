@@ -441,8 +441,11 @@ class TaskVerificationRuns(ShipCase):
         self.assertEqual(self.verifications, [])
 
     def test_the_worker_is_told_it_is_judged_on_both(self):
+        # Its Verification and the affected tests; the driver's gate (lint, typecheck, affected
+        # tests) follows, and the full suite runs once per repo before the audit.
         self.assertIn("gate", ship.WORKER_PREAMBLE)
-        self.assertIn("test, lint, typecheck and build", ship.WORKER_PREAMBLE)
+        self.assertIn("Verification command and the tests affected", ship.WORKER_PREAMBLE)
+        self.assertIn("lint, typecheck and the affected tests", ship.WORKER_PREAMBLE)
 
 
 class RealTaskVerification(unittest.TestCase):

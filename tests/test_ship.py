@@ -244,17 +244,25 @@ class FakeOrca:
         raise Drained()
 
 
-def scripted_gate(*codes):
+def scripted_gate(*codes, full=()):
+    """Task gates answer `codes` in order (then 0); a repo's full gate before the audit
+    answers `full` in order (then 0) and is recorded apart, in `full_calls`."""
     calls = []
     queue = list(codes)
+    full_queue = list(full)
 
-    def run(path, unit_only, timeout=None):
+    def run(path, unit_only, timeout=None, tier="", **_kw):
+        if tier == "full":
+            run.full_calls.append(path)
+            code = full_queue.pop(0) if full_queue else 0
+            return code, "full gate output: exit %d" % code
         calls.append((path, unit_only))
         run.timeouts.append(timeout)
         code = queue.pop(0) if queue else 0
         return code, "gate output: exit %d" % code
 
     run.calls = calls
+    run.full_calls = []
     run.timeouts = []
     return run
 

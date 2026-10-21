@@ -58,9 +58,10 @@ _FAILURE_CAP = sd.GATE_FAILURE_CAP
 WORKER_PREAMBLE = (
     "You are a Rein ship worker with exactly one task. The driver runs the gate, retries and "
     "closes the task: do not run `rein gate`, `rein close` or tick the plan. Run the task's "
-    "Verification command, fix what it reports, then commit as instructed below. The task is "
-    "done only when both its Verification command and the project's gate (its configured "
-    "test, lint, typecheck and build) pass in this worktree. "
+    "Verification command and the tests affected by what you touched (the tests of the modules "
+    "you changed and of the code that imports them), fix what they report, then commit as "
+    "instructed below. Do not run the project's full test suite: after you, the driver runs lint, "
+    "typecheck and the affected tests, and the full suite once per repo before the audit. "
     "If you are blocked, ask the owner with `orca orchestration ask --question <text>`."
 )
 
@@ -115,7 +116,11 @@ def build_task_spec(task: ss.TaskState, plan: dict, env_lines: list = ()) -> str
     if findings:
         lines += ["", "The audit found these blocking problems; fix them (a finding that is not about "
                   "the %s repository belongs to another repository's fix task):" % task.repo, findings]
-    if task.last_failure and task.last_failure != findings:
+    if sd.is_gate_fix(task) and task.last_failure:
+        lines += ["", "The full test suite of %s (run once every task was done, before the audit) failed; "
+                  "fix it -- the failing tests may be outside what the change touched:" % task.repo,
+                  task.last_failure]
+    elif task.last_failure and task.last_failure != findings:
         # Also after the owner's "retry", which resets the attempts: a fresh worker must not start blind.
         lines += ["", "The previous attempt failed this check; fix it:", task.last_failure]
     lines += ["", "Edit only the %s repository." % task.repo,
@@ -224,13 +229,20 @@ def changed_files(worktree_path: str, base_ref: str) -> list:
     return _affected.changed_files(worktree_path, base_ref)
 
 
-def gate_outer_bound(path: str, unit_only: bool, timeout: float, repo: str = "") -> float:
+def gate_outer_bound(path: str, unit_only: bool, timeout: float, repo: str = "", tier: str = "") -> float:
     """What one `rein gate` may take at most: the sum of the budgets of the slots it will run
     (gate_run.slot_budget), never less than one `timeout`."""
     commands = _detect.resolve(path).get("commands") or {}
     repo = repo or _gate_env.repo_name_of(path)
-    total = sum(_gate_run.slot_budget(repo, slot, commands[slot], timeout)
-                for slot in _gate_run.gate_slots(commands, integration=not unit_only))
+    slots = _gate_run.gate_slots(commands, integration=tier == "full" or (not tier and not unit_only))
+    if tier == "task":
+        slots = [s for s in slots if s in _gate_run.TASK_SLOTS or s == "test"]
+    total = 0.0
+    for slot in slots:
+        budget = _gate_run.slot_budget(repo, slot, commands[slot], timeout)
+        if tier == "task" and slot == "test" and commands.get("testOne"):  # the affected run
+            budget = max(budget, _gate_run.slot_budget(repo, slot, commands["testOne"], timeout))
+        total += budget
     return max(total, timeout)
 
 
@@ -308,12 +320,14 @@ def failure_detail(out: str) -> str:
 
 
 def default_gate_runner(path: str, unit_only: bool, timeout: float = 900.0, *,
-                        repo: str = "", env_root: str = "") -> tuple:
+                        repo: str = "", env_root: str = "", tier: str = "", base: str = "") -> tuple:
     """`rein gate <path> --json [--unit-only] --timeout <s>`, with this process's Python and this checkout's bin.
 
     `timeout` is the per-command budget `rein gate` gives each configured command;
     the subprocess itself gets an outer bound so a hung gate cannot hang the driver.
-    `repo` and `env_root` (the plan root) let it expand the worktree's `gate.env`.
+    `repo` and `env_root` (the plan root) let it expand the worktree's `gate.env`. `tier`
+    "task" (with the change's `base`) runs lint, typecheck and the affected tests; "full"
+    runs every gate slot, the repo's pre-audit gate.
     """
     argv = ([sys.executable, BIN, "gate", path, "--json"] + (["--unit-only"] if unit_only else [])
             + ["--timeout", "%g" % timeout])
@@ -321,7 +335,11 @@ def default_gate_runner(path: str, unit_only: bool, timeout: float = 900.0, *,
         argv += ["--repo", repo]
     if env_root:
         argv += ["--env-root", env_root]
-    outer = gate_outer_bound(path, unit_only, timeout, repo) + 60
+    if tier:
+        argv += ["--tier", tier]
+    if base:
+        argv += ["--base", base]
+    outer = gate_outer_bound(path, unit_only, timeout, repo, tier) + 60
     try:
         proc = subprocess.run(argv, capture_output=True, text=True, timeout=outer)
     except subprocess.TimeoutExpired:
@@ -635,6 +653,8 @@ class _Driver:
             self.dispatch(a)
         elif isinstance(a, sd.RunGate):
             return self.run_gate(a)
+        elif isinstance(a, sd.RunRepoGate):
+            return self.run_repo_gate(a)
         elif isinstance(a, sd.CloseTask):
             if not _plan.close_task(self.state.plan_path, a.task_id):
                 self.say("could not tick %s in %s" % (a.task_id, self.state.plan_path))
@@ -856,9 +876,39 @@ class _Driver:
             self.state.gates[gate_id] = {"task_id": task_id, "kind": kind,
                                          "message_id": entry.get("message_id", ""), "audit": entry.get("audit", ""),
                                          "holder_task": entry["holder_task"]}
+            for extra in ("repo", "reason"):  # a repo gate's repo, and a red one's failure
+                if entry.get(extra):
+                    self.state.gates[gate_id][extra] = entry[extra]
             self.state.pending_gates.remove(entry)
             self.save()
             self.ring("waiting for the owner (%s): %s" % (kind, str(entry.get("question"))[:200]))
+
+    def base_ref(self, repo: str) -> str:
+        """What the repo's worktree branched from: Orca's worktreeBaseRef, else origin/develop."""
+        ctx = getattr(self, "ctx", None) or {}
+        return (ctx.get("repos", {}).get(repo) or {}).get("worktreeBaseRef") or DEFAULT_BASE_REF
+
+    def task_base(self, task) -> str:
+        """The ref a task's affected tests are computed from: an audit-fix task's own round start
+        (only what the fix touched), else the change's base."""
+        if sd._is_fix(task):
+            base = (getattr(self.state, "fix_round_base", None) or {}).get(task.repo)
+            if base:
+                return base
+        return self.base_ref(task.repo)
+
+    def run_repo_gate(self, a):
+        """The repo's full gate before the audit: every gate slot, the whole suite."""
+        path = self.state.worktree_paths.get(a.repo, "")
+        if not path:
+            return sd.RepoGateVerdict(a.repo, 126, "no worktree is recorded for %s" % a.repo)
+        try:
+            code, out = call_with(self.gate_runner, path, True, self.cfg.gate_timeout_seconds,
+                                  repo=a.repo, env_root=getattr(self, "root", ""), tier="full")
+        except OSError as exc:
+            code, out = 126, "gate could not run: %s" % exc
+        self.say("%s full gate exit %s" % (a.repo, code))
+        return sd.RepoGateVerdict(a.repo, code, failure_detail(out) if code else "")
 
     def run_gate(self, a):
         task = self.state.tasks[a.task_id]
@@ -866,9 +916,12 @@ class _Driver:
         if not path:
             return sd.GateVerdict(a.task_id, 126, "no worktree is recorded for %s" % task.repo)
         env = self.worktree_env(task.repo, path)
+        # A task's gate: lint, typecheck and the tests its change reaches (the full suite runs once
+        # per repo before the audit). A verification-type task keeps the default, render-aware gate.
+        tier = {"tier": "task", "base": self.task_base(task)} if a.unit_only else {}
         try:
             code, out = call_with(self.gate_runner, path, a.unit_only, self.cfg.gate_timeout_seconds,
-                                  repo=task.repo, env_root=getattr(self, "root", ""))
+                                  repo=task.repo, env_root=getattr(self, "root", ""), **tier)
         except OSError as exc:
             code, out = 126, "gate could not run: %s" % exc
         self.say("%s gate exit %s" % (task.id, code))
@@ -1268,6 +1321,9 @@ class _Driver:
                 self.feed_gate(e)
             else:
                 self.feed(e)
+        for repo, status in list(self.state.repo_gates.items()):
+            if self.state.phase in ("verifying", "running", "fixing") and status == "running":
+                self.feed(self.run_repo_gate(sd.RunRepoGate(repo)))  # interrupted mid-gate: run it again
         if self.state.phase == "auditing" and self.state.audit_starting and not self.state.audit_dispatch:
             self.adopt_audit(listed)
         if self.state.phase == "auditing":

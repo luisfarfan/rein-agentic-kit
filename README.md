@@ -133,6 +133,9 @@ Coming from v1? `rein migrate-config` rewrites `flow.config.json` (drops `models
 ```bash
 rein ship <change> [--root <plan repo>] [--agent <id> [--model <m>]] [--dry-run | --detach]
                  # drive a plan through Orca workers: dispatch, gate each task, audit.
+                 # A task's gate: lint, typecheck, the affected tests and its Verification;
+                 # each repo's full gate (whole suite) runs once, after its tasks, before the
+                 # audit and the re-audit. A red full gate becomes a GATE<n>-<repo> fix task.
                  # Resumes from .rein/ship/<change>.json. --dry-run prints every orca call and
                  # runs nothing. Never pushes, merges or deploys.
                  # Exit: 0 shipped and approved · 1 failed tasks or rejected audit

@@ -839,6 +839,11 @@ class Audit(unittest.TestCase):
             new.tasks[tid].status = "done"
         new.implementer_agents = ["codex"]
         new, actions = tick(new)
+        # each repo's full gate runs once before the re-audit
+        self.assertEqual(actions, [sd.RunRepoGate("a"), sd.RunRepoGate("b")])
+        self.assertEqual(new.phase, "verifying")
+        new, actions = sd.decide(new, sd.RepoGateVerdict("a", 0, ""), CFG)
+        new, actions = sd.decide(new, sd.RepoGateVerdict("b", 0, ""), CFG)
         self.assertEqual(actions, [sd.ComputeChanges()])
         self.assertEqual(new.phase, "auditing")
 
