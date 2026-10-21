@@ -316,6 +316,11 @@ def start_quick(
     elif _gate_env.for_worktree(repo_path, repo=repo_name):
         env_lines = ['eval "$(python3 %s env --repo %s)"' % (shlex.quote(ship.BIN), shlex.quote(repo_name))]
     brief = quick.build_brief(sentence, linear, quick.looks_like_bug(sentence), ship.BIN, env_lines)
+    # The other checkouts Orca knows, BEFORE the agent exists: `done` names what changed there
+    # (guard.outside_changes). The workspace itself is not one of them (with --here it is a main checkout).
+    outside_before = _guard.outside_snapshot(
+        [str(r.get("path") or "") for r in repos
+         if r.get("path") and not (here and os.path.realpath(str(r["path"])) == os.path.realpath(here_path))])
 
     # 4. Placement
     handle = ""
@@ -377,10 +382,7 @@ def start_quick(
                               sentence, linear, now(), allow_config=_guard.declared_paths(allow_config))
     if handle:
         record["terminal"] = handle  # where `rein quick answer` types the owner's answers
-    # The other checkouts Orca knows: `done` names what changed there (guard.outside_changes).
-    record["outside_before"] = _guard.outside_snapshot(
-        [str(r.get("path") or "") for r in repos
-         if r.get("path") and os.path.realpath(str(r["path"])) != os.path.realpath(workspace)])
+    record["outside_before"] = {p: v for p, v in outside_before.items() if p != os.path.realpath(workspace)}
     record["brief"] = brief  # what `rein quick resend` types again when a startup dialog swallowed it
     try:
         with record_lock(workspace):

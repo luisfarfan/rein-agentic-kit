@@ -168,3 +168,26 @@ class UntrackedAndIgnored(unittest.TestCase):
             fh.write("- [x] T001\n")
         self.assertEqual(guard.outside_changes(before, ignore=[os.path.join(self.qa, "tasks.md")]), [])
 
+
+
+from test_quick_driver import DriverCase, _Git, _limits, _Orca  # noqa: E402
+
+
+class QuickBaselineBeforeLaunch(DriverCase):
+    """R5: the baseline of the other checkouts is taken before the agent is launched."""
+
+    def test_a_write_during_the_launch_is_caught(self):
+        qa = os.path.join(self.root, "proxima-qa")
+        make_repo(qa, hook=False)
+        self.repos.append({"id": "qa", "displayName": "proxima-qa", "path": qa})
+        orca = _Orca(self.repos, _limits(10, 10), self.worktree)
+        original = orca.__call__
+
+        def call(argv):
+            if argv[1:3] in (["worktree", "create"], ["agent", "launch"]):
+                write(qa, "CLAUDE.md", "@rules/new.md\n")  # the agent is already at work
+            return original(argv)
+        code, _, _ = self.run_quick(here=True, git=_Git(branch="feature/x"), orca=call)
+        self.assertEqual(code, 0, self.text())
+        problems = guard.outside_changes(self.record(self.repo_path)["outside_before"])
+        self.assertEqual(len(problems), 1, problems)
