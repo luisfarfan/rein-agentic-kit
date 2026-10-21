@@ -51,8 +51,6 @@ RUNNER_CONFIG = {
 }
 GATE_COMMANDS = ("lint", "typecheck", "build", "test", "testOne", "testIntegration")
 _RUNNER_CALL = re.compile(r"(?:^|[\s;&|()])(%s)(?=\s|$)" % "|".join(RUNNER_CONFIG))
-# Where a runner's files can sit beyond the root: the nested mise config folders.
-_NESTED_CONFIG = (".config/mise.toml", ".config/mise/config.toml", ".mise/config.toml")
 HOOK_TIMEOUT = 120
 MAX_COMMITS = 200  # hook runs per check; past it the newest are checked and the rest is reported
 
@@ -96,12 +94,12 @@ def resolve_at(path: str, base: str):
     sha = sha.strip()
     if code != 0 or not sha:
         return None
-    code, listing = _git(path, "ls-tree", sha)
+    code, listing = _git(path, "ls-tree", "-r", "--name-only", sha)
     if code != 0:
         return None
-    names = [line.split("\t", 1)[1] for line in listing.splitlines()
-             if "\t" in line and line.split()[1] == "blob"]
-    names += list(_NESTED_CONFIG)
+    # What detect reads to resolve the commands: every root file, and the manifests, lockfiles and
+    # runner configs a few levels down -- a sub-project must be visible BEFORE detect picks it.
+    names = [n for n in listing.splitlines() if n and ("/" not in n or _resolution_input(n))]
     tmp = tempfile.mkdtemp(prefix="rein-guard-base-")
     try:
         for name in names:
@@ -114,6 +112,25 @@ def resolve_at(path: str, base: str):
         return _detect.resolve(tmp)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+_MANIFESTS = ("pyproject.toml", "setup.py", "setup.cfg", "requirements.txt", "Cargo.toml", "go.mod", "package.json",
+              "package-lock.json", "pnpm-lock.yaml", "pnpm-workspace.yaml", "yarn.lock", "bun.lockb", "bun.lock",
+              "uv.lock", "poetry.lock", "Pipfile", "Pipfile.lock", "flow.config.json", "angular.json",
+              "nx.json", "turbo.json", "deno.json", "Gemfile", "pom.xml", "build.gradle")
+_RESOLUTION_DEPTH = 4  # path components: `apps/web/.config/mise.toml`
+
+
+def _resolution_input(name: str) -> bool:
+    """A nested file detect may need to resolve the commands: a manifest, a lockfile or a runner config."""
+    parts = name.split("/")
+    if len(parts) > _RESOLUTION_DEPTH:
+        return False
+    base = parts[-1]
+    if base in _MANIFESTS:
+        return True
+    return any(fnmatch.fnmatch(name, p) or fnmatch.fnmatch(name, "*/" + p)
+               for files in RUNNER_CONFIG.values() for p in files)
 
 
 def _extract(path: str, sha: str, name: str, into: str) -> None:

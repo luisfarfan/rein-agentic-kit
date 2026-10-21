@@ -433,3 +433,33 @@ class ManyCommits(unittest.TestCase):
         self.assertEqual(len(problems), 1, problems)
         self.assertIn("5 commits", problems[0])
         self.assertIn("2", problems[0])
+
+
+class SubprojectRunner(unittest.TestCase):
+    """R1: the base's runner is found inside a chosen sub-project too."""
+
+    def setUp(self):
+        self.tmp = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.repo = os.path.join(self.tmp, "repo")
+        os.makedirs(os.path.join(self.repo, "app"))
+        subprocess.run(["git", "init", "-q", self.repo], check=True)
+        files = {"flow.config.json": json.dumps({"subproject": "app"}), "app/package.json": "{}",
+                 "app/mise.toml": '[tasks.test]\nrun = "true"\n'}
+        for name, text in files.items():
+            with open(os.path.join(self.repo, name), "w") as fh:
+                fh.write(text)
+        run_git(self.repo, "add", "-A")
+        run_git(self.repo, "commit", "-q", "-m", "chore: base")
+        self.base = run_git(self.repo, "rev-parse", "HEAD").strip()
+
+    def test_the_base_resolution_sees_the_subprojects_runner(self):
+        self.assertEqual(guard.resolve_at(self.repo, self.base)["commands"].get("test"),
+                         detect.resolve(self.repo)["commands"].get("test"))
+
+    def test_deleting_the_subprojects_runner_is_caught(self):
+        run_git(self.repo, "rm", "-q", "app/mise.toml")
+        problems = guard.check(self.repo, self.base, detect.resolve(self.repo))
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("app/mise.toml", problems[0])
+
