@@ -368,6 +368,15 @@ def outside_changes(before: dict, ignore=()) -> list:
     return problems
 
 
+def run_guard(fn, *args, **kw) -> tuple:
+    """`(problems, "")`, or `([], why)` when the guard itself broke: a guard that cannot run
+    is the environment's problem (exit 126), never an exception that takes the gate down."""
+    try:
+        return list(fn(*args, **kw)), ""
+    except Exception as exc:  # noqa: BLE001 -- any failure of the check, reported, never raised
+        return [], "guard could not run: %s: %s" % (type(exc).__name__, exc)
+
+
 def check(path: str, base: str, resolved: dict, allowed=(), env=None) -> list:
     """Every rule the change since `base` breaks, one line each; [] when it breaks none."""
     if not base:

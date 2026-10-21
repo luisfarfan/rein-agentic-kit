@@ -61,5 +61,27 @@ class NestedSubproject(unittest.TestCase):
         self.assertIn("app/mise.toml", problems[0])
 
 
+class QuickDoneSurvivesTheGuard(DoneCase):
+    def test_a_guard_error_is_126_not_an_exception(self):
+        self.make_repo()
+        self.write("src/foo.ts", "v2\n")
+        with mock.patch.object(guard, "check", side_effect=IsADirectoryError(21, "Is a directory")):
+            code, _, _ = self.done()
+        self.assertEqual(code, 126, self.text())
+        self.assertIn("guard could not run", self.text())
+
+
+class ShipGateSurvivesTheGuard(ShipCase):
+    plan_one, driver = Driver.plan_one, Driver.driver  # the helpers, not Driver's own tests
+
+    def test_a_guard_error_makes_the_task_gate_setup_not_a_crash(self):
+        drv, _ = self.driver(FakeOrca(self.root, repos=("proxima-api",)))
+        drv.state.tasks["T001"].status = "gating"
+        with mock.patch.object(ship._guard, "check", side_effect=IsADirectoryError(21, "Is a directory")):
+            verdict = drv.task_gate_job(sd.RunGate("T001", True))()
+        self.assertEqual(verdict.exit_code, 126)
+        self.assertIn("guard could not run", verdict.reason)
+
+
 if __name__ == "__main__":
     unittest.main()

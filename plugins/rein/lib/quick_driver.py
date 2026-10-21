@@ -714,22 +714,29 @@ def done_quick(*, cwd: str = ".", client: OrcaClient, run=verify.run_one,
     say(quick.summary(results, outputs, notes, audit_pending=pending))
     # The guard: the gate config untouched (unless the task asked for it) and every commit through
     # the repo's commit-msg hook. A breach is red, with its reason.
-    problems = _guard.check(workspace, record["base_sha"], resolved,
-                            _guard.declared_paths(record.get("allow_config") or []))
-    problems += _guard.outside_changes(record.get("outside_before") or {})
+    problems, broken = _guard.run_guard(_guard.check, workspace, record["base_sha"], resolved,
+                                        _guard.declared_paths(record.get("allow_config") or []))
+    outside, broken2 = _guard.run_guard(_guard.outside_changes, record.get("outside_before") or {})
+    problems += outside
+    broken = broken or broken2
     for problem in problems:
         say("guard: %s" % problem)
+    if broken:
+        say("%s (not a verdict on the code: fix the environment and run `rein quick done` again)" % broken)
     # Logged once the guard has spoken: the line keeps the verdict `done` actually gives.
-    verdict_code = 126 if outcome == "setup" else (1 if outcome == "red" or problems else 0)
+    if outcome == "red" or (problems and outcome != "setup"):
+        verdict_code = 1
+    elif outcome == "setup" or broken:
+        verdict_code = 126
+    else:
+        verdict_code = 0
     entry = dict(_gate_log.summarize(report), kind="quick", repo=repo, tier="task+full-suite" if full_suite else "task",
                  env=sorted(gate_vars), affected=planned.get("affected"), base=record["base_sha"], exit=verdict_code)
-    if problems:
-        entry["guard"] = "; ".join(problems)[:600]
+    if problems or broken:
+        entry["guard"] = "; ".join(problems + ([broken] if broken else []))[:600]
     _gate_log.append(_gate_log.root_log_path(workspace), entry)
-    if outcome == "red" or (problems and outcome != "setup"):
-        return 1
-    if outcome == "setup":
-        return 126
+    if verdict_code:
+        return verdict_code
 
     # 4. Audit, only for risky changes
     if not risky:

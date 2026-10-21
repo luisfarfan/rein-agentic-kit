@@ -1261,8 +1261,18 @@ class _Driver:
                         detail = _fit_blocks([(block.split("\n", 1)[0], block.split("\n")[1:]),
                                               ("gate", detail.split("\n"))], _FAILURE_CAP)
             if code != 126:
-                problems = _guard.check(path, guard_base, _detect.resolve(path), allowed)
-                problems += _guard.outside_changes(outside_before, ignore=[plan_file] if plan_file else [])
+                problems, broken = _guard.run_guard(_guard.check, path, guard_base, _detect.resolve(path), allowed)
+                outside, broken2 = _guard.run_guard(_guard.outside_changes, outside_before,
+                                                    ignore=[plan_file] if plan_file else [])
+                problems += outside
+                broken = broken or broken2
+                if broken:  # the change cannot be vouched for: setup, never a crash of the gate job
+                    entry["guard"] = broken[:600]
+                    say("%s %s" % (task_id, broken[:300]))
+                    if code == 0:
+                        code, detail = 126, broken[:_FAILURE_CAP]
+                    else:
+                        detail = _fit_blocks([(broken, []), ("gate", detail.split("\n"))], _FAILURE_CAP)
                 if problems:
                     entry["guard"] = "; ".join(problems)[:600]
                     say("%s guard: %s" % (task_id, "; ".join(problems)[:300]))
