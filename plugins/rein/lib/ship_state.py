@@ -48,6 +48,15 @@ class TaskState:
     # The Orca task a worker-start was sent for and not yet answered: a kill or a lost answer
     # leaves it set, and the next dispatch or resume looks for that worker before starting another.
     starting: str = ""
+    # When the current worker was launched (0.0 = the next Tick stamps it), whether it has shown a
+    # sign of work since (a worktree change or a question), and its worktree's HEAD at launch.
+    # A worker with no sign for ship.stallMinutes opens a "stalled" gate.
+    launched_at: float = 0.0
+    active: bool = False
+    launch_head: str = ""
+    # The dispatch whose "stalled" gate the owner answered: Orca's "parked on a prompt" evidence no
+    # longer re-asks at once for it, only the stall window does.
+    stall_answered: str = ""
 
 
 @dataclass

@@ -18,6 +18,8 @@ Starts a small change with `rein quick`; a cheap agent does it and the owner tal
 4. Report the agent, workspace and tab. When the owner says "listo", that agent runs `rein quick done`.
    Then run `rein quick watch <workspace>` in the background: a QUESTION is the agent asking the
    owner; relay it, answer with `rein quick answer <workspace> "<their words>"`, watch again.
+   STALLED: the agent never started (a startup dialog); tell the owner, and once they cleared it,
+   `rein quick resend <workspace>`.
 5. Exit 2 (e.g. a dirty checkout with "aquí mismo"): ask the owner before re-running with `--dirty-ok`.
 6. Exit 1 or 126: show the output; never retry.
 7. After a passing `rein quick done`, once it is on develop ("está done"): offer `rein quick close <workspace>`, run it from outside that worktree on their yes ("ciérrala" is one); show blockers and stop. Add `--yes` for a lost-files WARNING only after the owner's yes.

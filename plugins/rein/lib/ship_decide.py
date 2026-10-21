@@ -49,6 +49,7 @@ class ShipConfig:
     task_timeout_minutes: float = 45
     gate_timeout_seconds: float = 900.0
     large_change_files: int = 25
+    stall_minutes: float = 10  # no sign of work this long after a launch asks the owner; 0 = never
     risky_paths: list = field(default_factory=lambda: list(_DEFAULT_RISKY))
     override: tuple | None = None
 
@@ -66,6 +67,7 @@ class ShipConfig:
             "taskTimeoutMinutes": "task_timeout_minutes",
             "gateTimeoutSeconds": "gate_timeout_seconds",
             "largeChangeFiles": "large_change_files",
+            "stallMinutes": "stall_minutes",
             "riskyPaths": "risky_paths",
         }
         kwargs = {}
@@ -75,6 +77,8 @@ class ShipConfig:
                 continue
             if attr == "gate_timeout_seconds" and not _positive_number(value):
                 continue  # a bad value keeps the default rather than crashing a run
+            if attr == "stall_minutes" and not (value == 0 or _positive_number(value)):
+                continue
             kwargs[attr] = list(value) if attr == "risky_paths" else value
         return cls(**kwargs)
 
@@ -122,6 +126,16 @@ class RepoGateVerdict:
     repo: str
     exit_code: int
     reason: str
+
+
+@dataclass
+class WorkerActivity:
+    """What the driver saw of a running worker that has not shown a sign of work yet: `active` when
+    its worktree changed; `waiting` is Orca's evidence that it is parked on a prompt only a person
+    can answer (a trust or hooks-review dialog), "" when there is none."""
+    dispatch_id: str
+    active: bool
+    waiting: str = ""
 
 
 @dataclass
@@ -216,6 +230,13 @@ class StopWorker:
 @dataclass
 class AbandonWorker:
     """Fence a worker whose exit Rein could not confirm, after the owner said they checked."""
+    task_id: str
+    dispatch_id: str
+
+
+@dataclass
+class ResendBrief:
+    """Type the task's brief into its worker's terminal again (a startup dialog swallowed it)."""
     task_id: str
     dispatch_id: str
 
@@ -539,7 +560,48 @@ def decide(state: ShipState, event, cfg: ShipConfig) -> tuple:
         _on_worker_stopped(state, event, actions)
     elif isinstance(event, AuditVerdict):
         _on_audit_verdict(state, event, cfg, actions)
+    elif isinstance(event, WorkerActivity):
+        _on_worker_activity(state, event, actions)
     return state, actions
+
+
+STALL_OPTIONS = ["wait", "resend", "retry"]
+
+
+def _ask_stalled(state: ShipState, task: TaskState, actions: list, why: str) -> None:
+    """Ask the owner about a worker that shows no sign of work; once per open question."""
+    if _task_gate_open(state, task.id, "stalled"):
+        return
+    _open(state, actions, task.id,
+          "Task %s's worker (%s/%s) %s. It may be stuck on a startup dialog (a trust or hooks-review "
+          "prompt) that swallowed its brief. Look at its tab, then answer: wait (ask again later), resend "
+          "(type the task's brief into it again) or retry (stop it and start a fresh worker)."
+          % (task.id, task.agent or "?", task.model or "?", why), list(STALL_OPTIONS), "stalled")
+    state.pending_gates[-1]["dispatch"] = task.dispatch_id
+
+
+def _stall_clock(state: ShipState, now: float, cfg: ShipConfig, actions: list) -> None:
+    for task in state.tasks.values():
+        if task.status != "running" or not task.dispatch_id or task.active:
+            continue
+        if not task.launched_at:
+            task.launched_at = now  # launched before this was tracked, or re-armed by "wait"
+        elif cfg.stall_minutes > 0 and now - task.launched_at > cfg.stall_minutes * 60:
+            _ask_stalled(state, task, actions, "has shown no sign of work for %g minutes since it was "
+                                               "launched: no change in its worktree and no question"
+                         % cfg.stall_minutes)
+
+
+def _on_worker_activity(state: ShipState, event: WorkerActivity, actions: list) -> None:
+    task = _holder(state, event.dispatch_id)
+    if task is None or task.status != "running":
+        return
+    if event.active:
+        task.active = True
+        _drop_task_gate(state, task.id, "stalled")  # it started after all: nothing to decide
+    elif event.waiting and task.stall_answered != task.dispatch_id:
+        _ask_stalled(state, task, actions, "is waiting on a prompt only a person can answer (Orca: %s)"
+                     % event.waiting[:300])
 
 
 def _audit_clock(state: ShipState, event: Tick, cfg: ShipConfig, actions: list) -> None:
@@ -580,6 +642,8 @@ def _on_tick(state: ShipState, event: Tick, cfg: ShipConfig, actions: list) -> N
                   "Task %s has run%s for more than %g minutes. Retry it, or skip it?"
                   % (task.id, " (and been gated)" if gating else "", cfg.task_timeout_minutes),
                   ["retry", "skip"], "timeout")
+
+    _stall_clock(state, now, cfg, actions)
 
     for task in state.tasks.values():
         if _direct_review(task) and _ready(state, task):
@@ -631,6 +695,7 @@ def _on_tick(state: ShipState, event: Tick, cfg: ShipConfig, actions: list) -> N
         task.status = "running"
         task.agent, task.model = agent, model
         task.started_at = now
+        task.launched_at, task.active, task.launch_head = now, False, ""
         _record_agent(state, agent)
 
 
@@ -662,6 +727,7 @@ def _on_worker_done(state: ShipState, event: WorkerDone, cfg: ShipConfig, action
             if _task_gate_open(state, task.id, kind):
                 _drop_task_gate(state, task.id, kind)
                 task.status = "running"
+    _drop_task_gate(state, task.id, "stalled")  # it finished: nothing left to decide about its start
     if task.status != "running":
         return
     if event.outcome == "succeeded":
@@ -708,6 +774,8 @@ def _on_question(state: ShipState, event: Question, actions: list) -> None:
     task = _holder(state, event.dispatch_id)
     if task is None or task.status != "running":
         return
+    task.active = True  # a worker that asks has started
+    _drop_task_gate(state, task.id, "stalled")
     if any(g.get("kind") == "question" and g.get("task_id") == task.id
            for g in list(state.gates.values()) + state.pending_gates):
         return
@@ -726,6 +794,7 @@ _RESOLUTIONS = {
     "audit_failed": ("retry-audit", "accept", "reject"),
     "repo_gate": ("retry", "skip"),
     "repo_gate_red": ("retry", "skip"),
+    "stalled": tuple(STALL_OPTIONS),
 }
 
 
@@ -744,7 +813,18 @@ def _on_gate_resolved(state: ShipState, event: GateResolved, cfg: ShipConfig, ac
                                   "question": str(gate.get("question") or ""), "answer": resolution})
     task = state.tasks.get(gate.get("task_id"))
 
-    if kind == "question":
+    if kind == "stalled":
+        if task is None or task.status != "running" or task.dispatch_id != gate.get("dispatch"):
+            return  # the worker finished, asked, or was replaced meanwhile: the answer is moot
+        task.stall_answered = task.dispatch_id
+        if resolution == "retry":
+            task.status = "gated"  # what a stop's WorkerStopped expects, as after a timeout
+            actions.append(StopWorker(task.id, task.dispatch_id, "retry"))
+            return
+        if resolution == "resend":
+            actions.append(ResendBrief(task.id, task.dispatch_id))
+        task.launched_at = 0.0  # the next Tick re-arms the window
+    elif kind == "question":
         if gate.get("task_id") is not None and (task is None or task.status != "gated"):
             return  # the worker already moved on (it finished, or was stopped): nobody is waiting for this answer
         actions.append(Relay(gate.get("message_id", ""), resolution))

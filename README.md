@@ -276,6 +276,7 @@ Everything is optional. Drop a `flow.config.json` at your project root to overri
     "maxRetries": 2,
     "maxAuditRounds": 2,
     "taskTimeoutMinutes": 45,
+    "stallMinutes": 10,
     "gateTimeoutSeconds": 900,
     "largeChangeFiles": 25,
     "riskyPaths": ["**/auth/**", "**/payments/**", "**/migrations/**"]
@@ -285,7 +286,11 @@ Everything is optional. Drop a `flow.config.json` at your project root to overri
 
 The `ship` block shows its defaults. `maxRetries` is how many times a red task is retried with a
 fresh worker, `maxAuditRounds` bounds audit and fix rounds (when it runs out with blocking findings, the gate offers `fix` for one more fix round and audit, `accept` or `reject`), `taskTimeoutMinutes` opens a gate
-instead of waiting forever (it counts the task's gating time too), `gateTimeoutSeconds` is a gate slot's timeout until that slot has passed in the repo
+instead of waiting forever (it counts the task's gating time too), `stallMinutes` opens a `stalled`
+gate (wait / resend the brief / retry) for a worker with no sign of work that long after its launch
+(no commit, no edit, no question) -- at once when Orca reports it parked on a prompt only a person can
+answer, like a trust or hooks-review dialog; `0` turns it off (`rein quick watch` says the same about
+a quick task, and `rein quick resend` types its brief again), `gateTimeoutSeconds` is a gate slot's timeout until that slot has passed in the repo
 (raise it for a slow suite); after that each slot gets twice its slowest of the last five passes,
 between 2 and 30 minutes, so a hung suite is stopped long before the old 6× bound, and a change that touches `riskyPaths` or more than `largeChangeFiles`
 files gets an Opus audit.

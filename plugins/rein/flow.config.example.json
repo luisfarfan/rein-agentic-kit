@@ -29,12 +29,13 @@
   },
 
   "ship": {
-    "$comment": "rein ship tuning (all optional; these are the defaults). claudeWeeklyThreshold: Claude weekly usage % above which workers go to Codex (or to Antigravity when Codex is at 90%). maxConcurrentWorkers: live workers at once. maxRetries: fresh retries of a red task. maxAuditRounds: fix-and-reaudit rounds before escalating. taskTimeoutMinutes: wall time per task before a gate opens. gateTimeoutSeconds: per-command timeout for the gate run on each task (raise it for a slow test suite). largeChangeFiles: changed-file count that routes the audit to Opus. riskyPaths: globs that also route the audit to Opus.",
+    "$comment": "rein ship tuning (all optional; these are the defaults). claudeWeeklyThreshold: Claude weekly usage % above which workers go to Codex (or to Antigravity when Codex is at 90%). maxConcurrentWorkers: live workers at once. maxRetries: fresh retries of a red task. maxAuditRounds: fix-and-reaudit rounds before escalating. taskTimeoutMinutes: wall time per task before a gate opens. stallMinutes: a worker (ship) or quick agent with no sign of work this long after its launch (no commit, no edit, no question) -- typically stuck on a startup dialog that swallowed its brief -- asks the owner: ship opens a `stalled` gate (wait | resend | retry), `rein quick watch` prints STALLED; 0 = never. gateTimeoutSeconds: per-command timeout for the gate run on each task (raise it for a slow test suite). largeChangeFiles: changed-file count that routes the audit to Opus. riskyPaths: globs that also route the audit to Opus.",
     "claudeWeeklyThreshold": 60,
     "maxConcurrentWorkers": 3,
     "maxRetries": 2,
     "maxAuditRounds": 2,
     "taskTimeoutMinutes": 45,
+    "stallMinutes": 10,
     "gateTimeoutSeconds": 900,
     "largeChangeFiles": 25,
     "riskyPaths": ["**/auth/**", "**/payments/**", "**/migrations/**"]

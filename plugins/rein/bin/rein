@@ -84,8 +84,9 @@ Subcommands:
                       record the owner's answer and type it into the agent's terminal.
                       Exit 0 sent / 1 no open question / 2 usage / 126 recorded, not sent
   rein quick watch [<path or quick-<slug>>] [--once]
-                      block until a quick task needs the owner (a question), print it,
-                      exit 0; --once exits 1 when nothing is pending
+                      block until a quick task needs the owner -- a question, or STALLED:
+                      no sign of work ship.stallMinutes after its launch (a startup
+                      dialog?) -- print it, exit 0; --once exits 1 when nothing is pending
   rein quick resend [<path or quick-<slug>>] [--terminal <handle>]
                       type the task's brief (kept in .rein/quick.json) into the agent's
                       terminal again, e.g. once a startup dialog that swallowed it is gone.

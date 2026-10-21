@@ -5,6 +5,11 @@ way the ship driver supervises a worker. So the agent asks through Rein, never o
 terminal: `rein quick ask` records the question in `.rein/quick.json` (the one file
 `rein quick close` deletes), the orchestrator's `rein quick watch` prints it, and
 `rein quick answer` records the owner's answer and types it into the agent's terminal.
+
+The watch also notices an agent that never started: no commit, no edit and no question
+`ship.stallMinutes` (10) after its launch -- typically a startup dialog (a trust or
+hooks-review prompt) that swallowed its brief. It says so once per window; `rein quick
+resend` types the brief again once the dialog is gone.
 """
 
 from __future__ import annotations
@@ -15,10 +20,12 @@ import tempfile
 import time
 from typing import Callable
 
+import detect as _detect
 import gate_env as _gate_env
 import orca_client as oc
 import quick
 import quick_driver as qd
+import ship_decide as _sd
 from orca_client import OrcaClient, OrcaError
 
 WATCH_POLL_SECONDS = 10
@@ -215,10 +222,43 @@ def _announce(workspace: str, q: dict) -> None:
     print('answer with: rein quick answer %s "<text>"' % workspace)
 
 
-def _poll(arg: str, client: OrcaClient, cwd: str, printed: set) -> bool:
+def stall(workspace: str, record: dict, now: float) -> str:
+    """The alert for an agent with no sign of work past the stall window, else "".
+
+    A sign of work (HEAD moved past the base, an edit, a question) marks the record `active`
+    for good; an alert is given once per window, counted from the launch, the last alert or
+    the last `rein quick resend`."""
+    if record.get("active"):
+        return ""
+    base = str(record.get("base_sha") or "")
+    code, head = qd.run_git(workspace, "rev-parse", "HEAD")
+    code2, porcelain = qd.run_git(workspace, "status", "--porcelain", "--untracked-files=all")
+    if (code == 0 and base and head.strip() != base) or (code2 == 0 and qd._is_dirty(porcelain)) \
+            or questions(record):
+        record["active"] = True
+        save(workspace, record)
+        return ""
+    minutes = _sd.ShipConfig.from_flow_config(_detect.resolve(workspace)).stall_minutes
+    since = max(float(record.get(k) or 0) for k in ("started_at", "stall_alerted_at", "resent_at"))
+    if not minutes or minutes <= 0 or now - since < minutes * 60:
+        return ""
+    record["stall_alerted_at"] = now
+    save(workspace, record)
+    return ("STALLED %s: the agent (%s/%s) has shown no sign of work for %g minutes (no commit, no edit, "
+            "no question). It may be stuck on a startup dialog (a trust or hooks-review prompt) that "
+            "swallowed its brief: look at its tab %s, clear the dialog, then: rein quick resend %s"
+            % (workspace, record.get("agent") or "?", record.get("model") or "?", minutes,
+               record.get("terminal") or "(unknown)", workspace))
+
+
+def _poll(arg: str, client: OrcaClient, cwd: str, printed: set, now: float = 0.0) -> bool:
     shown = False
     for workspace in targets(arg, client, cwd):
         record, _ = qd._load_record(workspace)
+        alert = stall(workspace, record, now) if record is not None and now else ""
+        if alert:
+            print(alert)
+            shown = True
         for q in open_questions(record or {}):
             key = (os.path.realpath(workspace), q.get("id"))
             if key in printed:
@@ -233,11 +273,12 @@ def watch(arg: str, client: OrcaClient, *, cwd: str = ".", once: bool = False,
           sleep: Callable[[float], None] = time.sleep, clock: Callable[[], float] = time.time) -> int:
     """`rein quick watch [<workspace>]`: block until a quick task needs the owner, print it, exit 0.
 
-    Every open question not yet printed by this watch is printed. `once` polls a single time
-    and exits 1 when nothing is pending."""
+    Every open question not yet printed by this watch is printed, and an agent that shows no sign
+    of work past the stall window (STALLED). `once` polls a single time and exits 1 when nothing
+    is pending."""
     printed = set()
     while True:
-        if _poll(arg, client, cwd, printed):
+        if _poll(arg, client, cwd, printed, clock()):
             return 0
         if once:
             return 1

@@ -263,6 +263,16 @@ def _git_lines(path: str, *args: str) -> list:
     return [line for line in proc.stdout.splitlines() if line.strip()]
 
 
+def _worktree_dirty(path: str) -> bool:
+    """Uncommitted edits or new files outside Rein's own `.rein/`."""
+    try:
+        lines = _git_lines(path, "status", "--porcelain", "--untracked-files=all")
+    except (RuntimeError, OSError):
+        return False
+    return any(ln[3:].strip().strip('"') and not ln[3:].strip().strip('"').startswith(".rein")
+               for ln in lines)
+
+
 def changed_files(worktree_path: str, base_ref: str) -> list:
     """Everything the workers changed: commits since the base, uncommitted edits and new files.
 
@@ -827,6 +837,8 @@ class _Driver:
                 self.say("%s: worker %s abandoned (owner confirmed it is gone)" % (a.task_id, a.dispatch_id))
         elif isinstance(a, sd.OpenGate):
             pass  # decide queued it in state.pending_gates; open_pending() creates it in Orca
+        elif isinstance(a, sd.ResendBrief):
+            self.resend_brief(a)
         elif isinstance(a, sd.Relay):
             try:
                 self.client.reply(a.message_id, a.body)
@@ -845,6 +857,51 @@ class _Driver:
         elif isinstance(a, sd.Finish):
             self.finished = True
         return None
+
+    def resend_brief(self, a) -> None:
+        """Type the task's brief into its worker's terminal again (Orca typed it at launch, into a
+        startup dialog that swallowed it)."""
+        task = self.state.tasks.get(a.task_id)
+        if task is None:
+            return
+        try:
+            handle = next((str(r.get("agentTerminalHandle") or "") for r in self.rows()
+                           if str(r.get("dispatchId") or "") == a.dispatch_id), "")
+            if not handle:
+                self.say("%s: Orca lists no terminal for worker %s; resend the brief by hand" % (task.id, a.dispatch_id))
+                return
+            self.client.terminal_send(handle, build_task_spec(task, self.plan, self.env_lines(task.repo)))
+        except OrcaError as exc:
+            self.say("%s: could not resend the brief to %s: %s" % (task.id, a.dispatch_id, exc))
+            return
+        self.say("%s: brief re-sent to %s (%s)" % (task.id, a.dispatch_id, handle))
+
+    def probe_activity(self) -> None:
+        """Look for a sign of work from each running worker that has shown none yet: its worktree
+        changed since launch (a commit or an edit), or Orca says it is parked on a prompt only a
+        person can answer. Fed to decide, which asks the owner about a worker that never started."""
+        for t in list(self.state.tasks.values()):
+            if t.status != "running" or not t.dispatch_id or t.active:
+                continue
+            path = self.state.worktree_paths.get(t.repo, "")
+            active = False
+            if path and os.path.isdir(path):
+                head = head_sha(path)
+                if not t.launch_head and head:
+                    t.launch_head = head  # first look: this is the baseline
+                    self.save()
+                active = bool(head and head != t.launch_head) or _worktree_dirty(path)
+            waiting = ""
+            if not active:
+                try:
+                    show = self.client.worker_show(t.dispatch_id)
+                except OrcaError:
+                    show = {}
+                found = ((show or {}).get("observation") or {}).get("agentWait")
+                if found:
+                    waiting = found if isinstance(found, str) else json.dumps(found, sort_keys=True)[:300]
+            if active or waiting:
+                self.feed(sd.WorkerActivity(t.dispatch_id, active, waiting))
 
     def tidy_setup_tabs(self, repo: str) -> None:
         """Close the idle "Setup" tab Orca's setup run left in `repo`'s worktree.
@@ -990,6 +1047,10 @@ class _Driver:
         if wt and a.repo not in self.state.worktrees:
             self.state.worktrees[a.repo] = wt
             self.state.worktree_paths[a.repo] = oc.worktree_path_of(wt)
+        # The stall window starts now, not when decide dispatched: a fresh worktree's setup ran first.
+        path = self.state.worktree_paths.get(a.repo, "")
+        task.launched_at = 0.0
+        task.launch_head = head_sha(path) if path and os.path.isdir(path) and not getattr(self, "dry_run", False) else ""
         launch = oc.effective_launch_of(res)
         if launch.get("agent") and (launch["agent"], launch.get("model")) != (a.agent, a.model):
             self.say("Orca launched %s/%s for %s, not %s/%s" % (launch["agent"], launch.get("model"), task.id, a.agent, a.model))
@@ -1047,7 +1108,7 @@ class _Driver:
                                          "holder_task": entry["holder_task"],
                                          # kept for the auditor once the owner answers (owner_decisions)
                                          "question": str(entry.get("question") or "")[:DECISION_QUESTION_CAP]}
-            for extra in ("repo", "reason"):  # a repo gate's repo, and a red one's failure
+            for extra in ("repo", "reason", "dispatch"):  # a repo gate's repo, a red one's failure, a stall's worker
                 if entry.get(extra):
                     self.state.gates[gate_id][extra] = entry[extra]
             self.state.pending_gates.remove(entry)
@@ -1497,6 +1558,7 @@ class _Driver:
                     self.say("could not %s %s: %s" % (kind, did, exc))
                     continue
                 self.say("%s %s" % (kind, did))
+        self.probe_activity()
         self.probe_audit()
 
     # -- start, resume, loop, finish
