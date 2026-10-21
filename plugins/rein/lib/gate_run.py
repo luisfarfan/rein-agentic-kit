@@ -20,6 +20,7 @@ from __future__ import annotations
 import time
 from typing import Callable
 
+import gate_cache as _cache
 import verify as _verify
 
 # Cheap first. testIntegration (an e2e/integration suite) is the slowest by nature.
@@ -46,24 +47,37 @@ def _skipped(slot: str, command: str, why: str) -> dict:
 
 
 def run_steps(root: str, steps: list, timeout_for: Callable[[str], float], env: dict = None,
-              run: Callable = _verify.run_one, fail_fast: bool = True) -> dict:
+              run: Callable = _verify.run_one, fail_fast: bool = True, cache: bool = False) -> dict:
     """Run `[(slot, command, configured)]` in order; after the first slot that is not ok, skip the rest.
 
     `timeout_for(slot)` is each slot's budget. A slot whose outcome is anything but
     `ok` (failed, timeout, not invocable) ends the run: what follows is reported
-    `skipped`, naming the slot that stopped it."""
+    `skipped`, naming the slot that stopped it. With `cache`, a slot that passed on
+    this exact tree state, command and env is reused (`"cached": true`) instead of run,
+    and a new pass is stored (gate_cache); nothing else is ever stored."""
     results: dict = {}
     stopped_by = ""
     for slot, command, configured in steps:
         if stopped_by:
             results[slot] = _skipped(slot, configured, "skipped: %s did not pass first" % stopped_by)
             continue
+        k = ""
+        if cache:
+            state = _cache.tree_state(root)  # per slot: an earlier slot may have written files
+            k = _cache.key(root, state, slot, command, env or {}) if state else ""
+            hit = _cache.get(root, k) if k else None
+            if hit is not None:
+                hit.pop("storedAt", None)
+                results[slot] = {**hit, "cached": True}
+                continue
         res = run(slot, command, root, timeout_for(slot), configured=configured, env=env or None)
         entry = res.to_dict()
         if res.outcome != _verify.OUTCOME_OK:
             entry["errorLines"] = _verify.failure_lines(res.output)
             if fail_fast:
                 stopped_by = slot
+        elif k:
+            _cache.put(root, k, entry)
         results[slot] = entry
     budgets = [timeout_for(s) for s, _c, _k in steps]
     return {

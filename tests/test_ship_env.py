@@ -88,3 +88,14 @@ class TestDriverEnv(ShipCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestAuditGateCommand(ShipCase):
+    def test_the_audit_brief_carries_the_gate_command_of_each_worktree(self):
+        fake = FakeOrca(self.root)
+        fake.on_audit = self.approve_audit()
+        self.run_ship(fake, lambda path, unit_only, timeout=None, **kw: (0, "ok"))
+        audit = next(t["spec"] for t in fake.tasks.values() if "rein-audit" in t["spec"])
+        api = self.wtpath("proxima-api")
+        self.assertIn("gate %s --repo proxima-api --env-root %s" % (api, os.path.abspath(self.root)), audit)
+        self.assertIn("gate %s --repo proxima-admin" % self.wtpath("proxima-admin"), audit)

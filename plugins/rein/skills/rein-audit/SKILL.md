@@ -16,11 +16,15 @@ Usage: `/rein:rein-audit [change-name]`
 
 1. Load the plan (`rein tasks <root> --change <name>`) and the real diff:
    `git diff <base>...<branch>`.
-2. **Mechanical part.** Run the project's configured `test`, `lint` and `typecheck`
-   (`rein detect .`). If any is red the verdict **cannot** be `APPROVED` however good the
-   code reads — record `CHANGES_REQUESTED` with the failing commands as `BLOCKING` findings
-   (a red gate is by definition a blocker; see the severity vocabulary in step 7). If a slot
-   is not configured, say it is absent rather than substituting one.
+2. **Mechanical part.** Run `rein gate <worktree>` — under `rein ship`, the exact command your
+   brief gives for each worktree — never the raw test, lint or typecheck commands, and never
+   with a shorter `--timeout` (without one it uses the project's). A check that already passed
+   on this exact state is reused and printed `cached`, so this costs nothing after Rein's own
+   gate. If any slot is red the verdict **cannot** be `APPROVED` however good the code reads —
+   record `CHANGES_REQUESTED` with the failing commands as `BLOCKING` findings (a red gate is
+   by definition a blocker; see the severity vocabulary in step 7). A `SETUP` result is not a
+   verdict on the code: say so rather than calling it red. If a slot is not configured, say it
+   is absent rather than substituting one.
 3. **Judgement — five axes.** Delegate to the `agent-skills:code-reviewer` agent over the
    diff: correctness, readability, architecture, security, performance. If that agent is not
    available (Codex, Antigravity, or a Claude without its plugin), review the

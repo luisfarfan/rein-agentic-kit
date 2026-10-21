@@ -497,8 +497,11 @@ def _audit(workspace: str, record: dict, changed: list, limits: dict, client: Or
     if not profile["ok"]:
         say(profile["error"])
         return 126
-    spec = ship.build_audit_spec({"why": record.get("sentence") or ""}, {workspace: changed},
-                                 profile["text"], workspace, change)
+    repo = str(record.get("repo") or "")
+    spec = ship.build_audit_spec(
+        {"why": record.get("sentence") or ""}, {workspace: changed}, profile["text"], workspace, change,
+        env_lines={workspace: _gate_env.export_lines(_gate_env.for_worktree(workspace, repo=repo))},
+        gate_commands={workspace: ship.audit_gate_command(workspace, repo)})
     baseline = ship._episode_stamp(_gate.latest_episode(workspace, change))
     client.run_create("rein quick %s" % name)
     task_id = oc.task_id_of(client.task_create(

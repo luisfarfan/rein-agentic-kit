@@ -188,7 +188,12 @@ rein gate        # ✅ did they PASS — 0 green · 1 the code is wrong · 126 t
                  # runs only lint, typecheck, build, test (never testOne or custom slots), cheap
                  # first; the first slot that does not pass stops it, the rest report `skipped`.
                  # An optional `testIntegration` command (integration/e2e suite) runs last;
-                 # --unit-only leaves it out and drops the browser-render demand
+                 # --unit-only leaves it out and drops the browser-render demand.
+                 # A slot that passed on the same tree state (HEAD, git status, diff, untracked
+                 # files), command and gate.env is reused and printed `cached` (--no-cache:
+                 # run anyway); failures, timeouts and setup problems are never stored. Cache:
+                 # $REIN_CACHE_DIR or ~/.cache/rein. Without --timeout each slot gets
+                 # ship.gateTimeoutSeconds
                  # --plan: run each TASK's own Verification before implementers are paid.
                  # Failing is fine (the work does not exist yet); proving NOTHING is not —
                  # a missing test module or a selector matching zero tests exits non-zero

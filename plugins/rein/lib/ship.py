@@ -140,7 +140,7 @@ INLINE_REVIEW = ("If you cannot launch the code-reviewer agent (Codex, Antigravi
 
 def build_audit_spec(plan: dict, changed: dict, reviewer_profile: str,
                      audit_root: str = "", change: str = "", previous_blocking: list = (),
-                     fix_commits: dict = None, env_lines: dict = None) -> str:
+                     fix_commits: dict = None, env_lines: dict = None, gate_commands: dict = None) -> str:
     """The auditor's brief. The verdict is recorded in the audit worktree, never the plan repo.
 
     With `previous_blocking` it is a re-audit: only those findings are verified."""
@@ -163,6 +163,10 @@ def build_audit_spec(plan: dict, changed: dict, reviewer_profile: str,
         lines.append("Run the rein-audit skill on %s" % path)
         if (env_lines or {}).get(path):
             lines.append("  " + env_instruction(env_lines[path]))
+        if (gate_commands or {}).get(path):
+            lines.append("  Mechanical checks: run `%s` -- not the test, lint or typecheck commands "
+                         "themselves, and never with a shorter --timeout. A check that passed on this "
+                        "exact state is reused (printed `cached`)." % gate_commands[path])
         # Files outside the audit worktree are listed absolute, so --files can name them.
         lines += ["  changed: %s" % (f if path == audit_root else os.path.join(path, f)) for f in files[:50]]
     lines += ["Record the verdict with exactly this command, run in the audit worktree:",
@@ -174,6 +178,16 @@ def build_audit_spec(plan: dict, changed: dict, reviewer_profile: str,
               "Never push, merge, open a pull request or deploy.",
               "Never read or print .env* files or credentials."]
     return "\n".join(lines)
+
+
+def audit_gate_command(path: str, repo: str = "", env_root: str = "") -> str:
+    """The `rein gate` an auditor runs on a worktree: the same env (and so the same cache) as Rein's."""
+    argv = ["rein", "gate", path]
+    if repo:
+        argv += ["--repo", repo]
+    if env_root:
+        argv += ["--env-root", env_root]
+    return shlex.join(argv)
 
 
 def head_sha(path: str) -> str:
@@ -931,9 +945,10 @@ class _Driver:
         repo_of = {p: r for r, p in self.state.worktree_paths.items()}
         env_lines = {p: _gate_env.export_lines(self.worktree_env(repo_of.get(p, ""), p))
                      for p in self.changed_by_wt}
+        gate_commands = {p: audit_gate_command(p, repo_of.get(p, ""), self.root) for p in self.changed_by_wt}
         spec = build_audit_spec(self.plan, self.changed_by_wt, self.ctx["reviewer_profile"],
                                 audit_root, self.change, self.state.previous_blocking, fix_commits,
-                                env_lines)
+                                env_lines, gate_commands)
         try:
             task_id = oc.task_id_of(self.client.task_create(
                 spec, "%s audit round %d" % (self.change, self.state.audit_rounds + 1), []))

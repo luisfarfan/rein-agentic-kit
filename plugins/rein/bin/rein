@@ -16,7 +16,9 @@ Subcommands:
                       could not run the checks. --require-review also demands a
                       current APPROVED review episode. --unit-only runs the unit slots
                       only (no testIntegration) with no browser-render demand.
-                      gate.env from flow.config.json is applied ([--repo] [--env-root])
+                      gate.env from flow.config.json is applied ([--repo] [--env-root]).
+                      A slot that passed on the same tree state, command and env is
+                      reused and printed "cached" (--no-cache runs it anyway)
   rein env [root]     `export` lines for the worktree's gate.env (flow.config.json):
                       the per-worktree environment Rein's gates use there.
                       [--repo <name>] [--env-root <plan repo>]
@@ -254,7 +256,12 @@ def cmd_gate(argv: list[str]) -> int:
     # anything starting with `-`, so `rein gate --root=/elsewhere` would have
     # resolved `.` and reported a confident verdict about the wrong repo.
     root = _positional(argv) or "."
-    timeout_raw = _opt(argv, "timeout", str(_verify.DEFAULT_TIMEOUT))
+    resolved = _detect.resolve(root)
+    # No --timeout: the project's own per-command budget (ship.gateTimeoutSeconds, 900 s by
+    # default), never verify's 120 s -- that made every auditor's run of a 6-10 minute suite
+    # "time out" into a SETUP finding.
+    default_timeout = _ship.sd.ShipConfig.from_flow_config(resolved).gate_timeout_seconds
+    timeout_raw = _opt(argv, "timeout", "%g" % default_timeout)
     try:
         timeout = float(timeout_raw)
     except ValueError:
@@ -265,14 +272,14 @@ def cmd_gate(argv: list[str]) -> int:
     only = {s.strip() for s in only_raw.split(",") if s.strip()} if only_raw else None
     require_review = "--require-review" in argv
 
-    resolved = _detect.resolve(root)
     env = _gate_env.for_worktree(resolved["root"], repo=_opt(argv, "repo"),
                                  env_root=_opt(argv, "env-root"), resolved=resolved)
     # Only the gate slots, cheap first, stopping at the first that does not pass (gate_run).
     commands = resolved.get("commands") or {}
     steps = [(slot, commands[slot], commands[slot])
              for slot in _gate_run.gate_slots(commands, only, integration="--unit-only" not in argv)]
-    report = _gate_run.run_steps(resolved["root"], steps, lambda _slot: timeout, env=env)
+    report = _gate_run.run_steps(resolved["root"], steps, lambda _slot: timeout, env=env,
+                                 cache="--no-cache" not in argv)
     report["env"] = sorted(env)  # names only: the values are the repo's business
     _verify.write_state(resolved["root"], report)
 
@@ -314,9 +321,10 @@ def cmd_gate(argv: list[str]) -> int:
 
     mark = {_gate.GATE_GREEN: "PASS", _gate.GATE_RED: "FAIL", _gate.GATE_SETUP: "SETUP"}[decision["decision"]]
     print(f"gate: {resolved['root']}")
-    for slot, res in sorted(report["results"].items()):
+    for slot, res in report["results"].items():  # run order
         code = res["exitCode"] if res["exitCode"] is not None else "-"
-        print(f"  {slot:<10} [{res['outcome']:<13}] exit={code}  {res['elapsedMs']}ms  $ {res['command']}")
+        cached = " cached" if res.get("cached") else ""
+        print(f"  {slot:<10} [{res['outcome']:<13}] exit={code}  {res['elapsedMs']}ms{cached}  $ {res['command']}")
         for line in res["outputHead"][:5]:
             print(f"    | {line}")
     print(f"\n  {mark}: {decision['reason']}")
