@@ -43,6 +43,8 @@ class TaskState:
     orca_deps: list = field(default_factory=list)
     # The dispatch id whose stop Orca could not confirm; the owner's answer to that gate fences it.
     stop_unconfirmed: str = ""
+    # An audit fix task's findings. Kept apart from `last_failure`, which a failed retry overwrites.
+    audit_findings: str = ""
 
 
 @dataclass

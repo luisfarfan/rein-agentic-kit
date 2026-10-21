@@ -1775,11 +1775,13 @@ class TestSpecs(unittest.TestCase):
         self.assertIn("Because.", spec)
         self.assertIn("no storefront", spec)
 
-    def test_last_failure_appears_only_when_retrying(self):
-        fresh = ship.build_task_spec(self.task(last_failure="boom", attempts=0), self.PLAN)
+    def test_last_failure_appears_whenever_there_is_one(self):
+        fresh = ship.build_task_spec(self.task(), self.PLAN)
         retry = ship.build_task_spec(self.task(last_failure="boom", attempts=1), self.PLAN)
-        self.assertNotIn("boom", fresh)
+        owner_retry = ship.build_task_spec(self.task(last_failure="boom", attempts=0), self.PLAN)
+        self.assertNotIn("previous attempt", fresh)
         self.assertIn("boom", retry)
+        self.assertIn("boom", owner_retry)
 
     def test_audit_fix_task_spec_carries_findings(self):
         fix = self.task(id="AUDIT1-proxima-api", last_failure="BLOCKING: missing test", verification="")

@@ -1000,7 +1000,8 @@ class Audit(unittest.TestCase):
                      "[search.service.ts](x)", "search.service.ts; also"):
             self.assertEqual(set(self._per_repo(files, [text])), {"AUDIT1-a"}, text)
         for text in ("search.service.ts.bak", "my-search.service.ts", "xsearch.service.ts"):
-            self.assertEqual(set(self._per_repo(files, [text, "y.py"])), {"AUDIT1-b"}, text)
+            # unassigned, so it goes to every repo; it did not match a's file, or b would lack it
+            self.assertEqual(self._per_repo(files, [text, "y.py"])["AUDIT1-b"], text + "\ny.py", text)
 
     def test_repo_relative_path_match(self):
         out = self._per_repo(["a/src/x.py", "b/src/y.py"], ["problem in src/y.py"])

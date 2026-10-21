@@ -92,10 +92,15 @@ def build_task_spec(task: ss.TaskState, plan: dict) -> str:
         lines += ["", "Decisions (binding):", decisions]
     if plan.get("scopeOut"):
         lines += ["Out of scope:"] + ["- %s" % s for s in plan["scopeOut"]]
-    if task.last_failure and task.attempts > 0:
+    findings = task.audit_findings
+    if not findings and sd._is_fix(task) and task.attempts == 0:
+        findings = task.last_failure  # a state saved before audit_findings existed
+    if findings:
+        lines += ["", "The audit found these blocking problems; fix them (a finding that is not about "
+                  "the %s repository belongs to another repository's fix task):" % task.repo, findings]
+    if task.last_failure and task.last_failure != findings:
+        # Also after the owner's "retry", which resets the attempts: a fresh worker must not start blind.
         lines += ["", "The previous attempt failed this check; fix it:", task.last_failure]
-    elif task.last_failure and task.id.startswith("AUDIT"):
-        lines += ["", "The audit found these blocking problems; fix them:", task.last_failure]
     lines += ["", "Edit only the %s repository." % task.repo,
               "Commit your work on this worktree's branch when the verification passes. Never push.",
               "Never push, merge, open a pull request or deploy.",

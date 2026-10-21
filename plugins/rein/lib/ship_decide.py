@@ -780,9 +780,25 @@ def _fix_assignments(state: ShipState, changed_files: list, findings: list) -> l
     named = {f for fs in assigned.values() for f in fs}
     if not named:
         return [(r, list(findings)) for r in repos]
-    unassigned = [f for f in findings if f not in named]
-    return [(r, [f for f in findings if f in assigned[r] or f in unassigned])
-            for r in repos if assigned[r]]
+
+    def homes(finding):
+        # A finding that names no file goes to the repo it names, else to every touched repo:
+        # never only to a repo that happens to have another finding.
+        return [r for r in repos if _names_repo(finding, r)] or repos
+
+    out = []
+    for r in repos:
+        mine = [f for f in findings if f in assigned[r] or (f not in named and r in homes(f))]
+        if mine:
+            out.append((r, mine))
+    return out
+
+
+def _names_repo(finding: str, repo: str) -> bool:
+    """True when the finding mentions the repo's name (or its last dash part, `admin` of `proxima-admin`)."""
+    names = {repo, repo.rsplit("-", 1)[-1]}
+    return any(n and re.search(r"(?<![\w\-])%s(?![\w\-])" % re.escape(n), finding, re.IGNORECASE)
+               for n in names if len(n) >= 3)
 
 
 def _on_changes_computed(state: ShipState, event: ChangesComputed, cfg: ShipConfig, actions: list) -> None:
@@ -860,8 +876,9 @@ def _start_fix_round(state: ShipState, changed_files: list, findings: list) -> N
     state.previous_blocking = blocking or list(findings)  # unlabelled findings: verify them all
     for repo, repo_findings in _fix_assignments(state, list(changed_files), list(findings)):
         fix_id = "%s%d-%s" % (_FIX_PREFIX, state.audit_rounds, repo)
+        text = "\n".join(repo_findings)[:GATE_FAILURE_CAP]
         state.tasks[fix_id] = TaskState(
             id=fix_id, repo=repo, deps=[], human_review=False, verification="",
-            type="implementation", last_failure="\n".join(repo_findings)[:GATE_FAILURE_CAP],
+            type="implementation", last_failure=text, audit_findings=text,
         )
     state.phase = "fixing"

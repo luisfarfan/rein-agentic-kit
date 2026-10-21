@@ -49,5 +49,63 @@ class OwnerQuestionsQuoteEnough(unittest.TestCase):
         self.assertIn("assert 7.0 == 6.3", opened(st, "retry_exhausted")[0]["question"])
 
 
+class RetryKeepsItsContext(unittest.TestCase):
+    """Driver hunt 4, 5 and 9: what the next worker of a failed task is told."""
+
+    def fix_task(self):
+        st = state_of(task("T1", repo="api", status="done"))
+        st.worktree_paths = {"api": "/p/api"}
+        st.phase = "auditing"
+        st, _ = sd.decide(st, sd.AuditVerdict("CHANGES_REQUESTED", 1, ["api/src/x.py"],
+                                              ["BLOCKING: src/x.py leaks the token in logs"]), CFG)
+        return st, next(t for t in st.tasks.values() if t.id.startswith("AUDIT"))
+
+    def test_a_fix_task_whose_gate_fails_keeps_its_findings(self):
+        st, fix = self.fix_task()
+        fix.status, fix.dispatch_id = "gating", "d1"
+        st, _ = sd.decide(st, sd.GateVerdict(fix.id, 1, "test [failed] exit=1\nE assert 1 == 2"), CFG)
+        spec = ship.build_task_spec(st.tasks[fix.id], {})
+        self.assertIn("leaks the token", spec)
+        self.assertIn("E assert 1 == 2", spec)
+
+    def test_a_fix_task_whose_worker_fails_keeps_its_findings(self):
+        st, fix = self.fix_task()
+        fix.status, fix.dispatch_id = "running", "d1"
+        st, _ = sd.decide(st, sd.WorkerDone("d1", "failed"), CFG)
+        self.assertIn("leaks the token", ship.build_task_spec(st.tasks[fix.id], {}))
+
+    def test_owner_retry_still_shows_the_last_failure(self):
+        t = task("T1", status="gating", dispatch_id="d2", attempts=CFG.max_retries)
+        st, _ = sd.decide(state_of(t), sd.GateVerdict("T1", 1, "DECISIVE: tests/test_a.py::test_b assert 7 == 6"), CFG)
+        gate = dict(st.pending_gates.pop())
+        st.gates["g1"] = gate
+        st, _ = sd.decide(st, sd.GateResolved("g1", "retry"), CFG)
+        t = st.tasks["T1"]
+        self.assertEqual((t.status, t.attempts), ("pending", 0))
+        spec = ship.build_task_spec(t, {})
+        self.assertIn("DECISIVE", spec)
+        self.assertNotIn("The audit found", spec)
+
+    def test_a_finding_naming_no_file_reaches_the_repo_it_belongs_to(self):
+        st = state_of(task("T1", repo="api", status="done"), task("T2", repo="admin", status="done"))
+        st.worktree_paths = {"api": "/w/api", "admin": "/w/admin"}
+        out = dict(sd._fix_assignments(st, ["api/src/auth.py", "admin/src/Login.tsx"],
+                                       ["BLOCKING: src/auth.py logs the bearer token",
+                                        "BLOCKING: the login screen never shows the 401 error message"]))
+        self.assertIn("admin", out)
+        self.assertIn("BLOCKING: the login screen never shows the 401 error message", out["admin"])
+        self.assertIn("BLOCKING: src/auth.py logs the bearer token", out["api"])
+        self.assertNotIn("BLOCKING: src/auth.py logs the bearer token", out["admin"])
+
+    def test_a_finding_naming_a_repo_goes_only_there(self):
+        st = state_of(task("T1", repo="api", status="done"), task("T2", repo="admin", status="done"))
+        st.worktree_paths = {"api": "/w/api", "admin": "/w/admin"}
+        out = dict(sd._fix_assignments(st, ["api/src/auth.py", "admin/src/Login.tsx"],
+                                       ["BLOCKING: src/auth.py logs the bearer token",
+                                        "BLOCKING: the admin login never shows the 401"]))
+        self.assertEqual(out, {"api": ["BLOCKING: src/auth.py logs the bearer token"],
+                               "admin": ["BLOCKING: the admin login never shows the 401"]})
+
+
 if __name__ == "__main__":
     unittest.main()
