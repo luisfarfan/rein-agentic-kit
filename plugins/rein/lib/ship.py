@@ -1486,6 +1486,7 @@ class _Driver:
                 t.starting = ""
                 t.status = "pending"  # decided but never started
             elif t.status == "gating":
+                t.started_at = 0.0  # resumed mid-gate: the re-run gate gets a fresh budget
                 events.append(sd.RunGate(t.id, t.type != "verification"))
         self.save()
         for e in events:

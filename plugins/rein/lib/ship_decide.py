@@ -564,9 +564,10 @@ def _on_tick(state: ShipState, event: Tick, cfg: ShipConfig, actions: list) -> N
         return
     now = event.now
 
-    # A task re-dispatched by a verdict has no clock yet; start it now.
+    # A task re-dispatched by a verdict, or one that just entered (or resumed) its gate, has no
+    # clock yet; start it now. The gate gets its own full budget, never the worker's leftover.
     for task in state.tasks.values():
-        if task.status == "running" and task.started_at == 0.0:
+        if task.status in ("running", "gating") and task.started_at == 0.0:
             task.started_at = now
 
     for task in state.tasks.values():
@@ -665,6 +666,7 @@ def _on_worker_done(state: ShipState, event: WorkerDone, cfg: ShipConfig, action
         return
     if event.outcome == "succeeded":
         task.status = "gating"
+        task.started_at = 0.0  # the gate's own clock starts at the next tick
         actions.append(RunGate(task.id, task.type != "verification"))
     else:
         _red(state, task, "worker %s" % (event.outcome or "failed"), cfg, actions)
