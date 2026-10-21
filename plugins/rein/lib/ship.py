@@ -919,6 +919,16 @@ class _Driver:
             if active or waiting:
                 self.feed(sd.WorkerActivity(t.dispatch_id, active, waiting))
 
+    def outside_snapshot(self, repo: str) -> dict:
+        """The other checkouts Orca knows, as the worker for `repo` is launched (guard.py); the
+        worktree it works in is not one of them."""
+        if getattr(self, "dry_run", False):
+            return {}
+        mine = os.path.realpath(self.state.worktree_paths.get(repo, "") or "/nonexistent")
+        paths = [str(r.get("path") or "") for r in ((getattr(self, "ctx", None) or {}).get("repos") or {}).values()
+                 if isinstance(r, dict)]
+        return _guard.outside_snapshot([p for p in paths if p and os.path.realpath(p) != mine])
+
     def tidy_setup_tabs(self, repo: str) -> None:
         """Close the idle "Setup" tab Orca's setup run left in `repo`'s worktree.
 
@@ -1037,6 +1047,7 @@ class _Driver:
                 self.create_task(task)
             task.dispatches += 1
             task.starting = task.orca_task_id  # persisted before the start: a kill mid-start is recoverable
+            task.outside_before = self.outside_snapshot(a.repo)
             self.save()
             repo = self.ctx["repos"].get(a.repo) or {}
             fresh = a.worktree == "new-top-level"  # a reused worktree is already set up and named
@@ -1204,6 +1215,8 @@ class _Driver:
         allowed = gate_config_allowed(getattr(self, "plan", None) or {}, self.state, task,
                                       (getattr(self, "ctx", None) or {}).get("default_repo", ""))
         log, change = self.gate_log_path(), getattr(self, "change", "")
+        outside_before = dict(getattr(task, "outside_before", None) or {})
+        plan_file = getattr(self.state, "plan_path", "")
 
         def job(cancel=None):
             if not path:
@@ -1249,6 +1262,7 @@ class _Driver:
                                               ("gate", detail.split("\n"))], _FAILURE_CAP)
             if code != 126:
                 problems = _guard.check(path, guard_base, _detect.resolve(path), allowed)
+                problems += _guard.outside_changes(outside_before, ignore=[plan_file] if plan_file else [])
                 if problems:
                     entry["guard"] = "; ".join(problems)[:600]
                     say("%s guard: %s" % (task_id, "; ".join(problems)[:300]))

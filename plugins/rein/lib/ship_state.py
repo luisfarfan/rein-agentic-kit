@@ -57,6 +57,9 @@ class TaskState:
     # The dispatch whose "stalled" gate the owner answered: Orca's "parked on a prompt" evidence no
     # longer re-asks at once for it, only the stall window does.
     stall_answered: str = ""
+    # guard.outside_snapshot of the other checkouts Orca knows, taken when the worker was launched:
+    # what changed there by the time its task ends was written outside its worktree.
+    outside_before: dict = field(default_factory=dict)
 
 
 @dataclass

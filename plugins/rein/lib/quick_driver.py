@@ -377,6 +377,10 @@ def start_quick(
                               sentence, linear, now(), allow_config=_guard.declared_paths(allow_config))
     if handle:
         record["terminal"] = handle  # where `rein quick answer` types the owner's answers
+    # The other checkouts Orca knows: `done` names what changed there (guard.outside_changes).
+    record["outside_before"] = _guard.outside_snapshot(
+        [str(r.get("path") or "") for r in repos
+         if r.get("path") and os.path.realpath(str(r["path"])) != os.path.realpath(workspace)])
     record["brief"] = brief  # what `rein quick resend` types again when a startup dialog swallowed it
     try:
         with record_lock(workspace):
@@ -714,6 +718,7 @@ def done_quick(*, cwd: str = ".", client: OrcaClient, run=verify.run_one,
     # the repo's commit-msg hook. A breach is red, with its reason.
     problems = _guard.check(workspace, record["base_sha"], resolved,
                             _guard.declared_paths(record.get("allow_config") or []))
+    problems += _guard.outside_changes(record.get("outside_before") or {})
     for problem in problems:
         say("guard: %s" % problem)
     if outcome == "red" or (problems and outcome != "setup"):

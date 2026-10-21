@@ -14,6 +14,11 @@ commands and `gate.affected`), and another skipped the repo's commit-msg hook wi
   (`git hook run`, so `core.hooksPath` and lefthook/husky installs are honoured) with the
   usual bypass variables removed from its environment.
 
+- the worker wrote outside its worktree: `outside_snapshot` notes the git state of every other
+  checkout Orca knows when the worker is launched, and `outside_changes` names what changed
+  in them by the time its task ends. This is detection, not prevention: a sandbox the agent
+  cannot write out of is the agent's (or Orca's) to provide.
+
 Each problem is one line saying what and why; none means the change is clean. A checkout
 git cannot read is not this module's verdict to give (the gate's is): it yields nothing.
 """
@@ -26,6 +31,8 @@ import re
 import shutil
 import subprocess
 import tempfile
+
+import hashlib
 
 import detect as _detect
 
@@ -251,6 +258,64 @@ def commit_msg_failures(path: str, base: str, env=None) -> list:
             problems.append("commit %s %r does not pass the repo's commit-msg hook (exit %d)%s; amend its "
                             "message, never bypass the hook" % (sha[:8], subject, proc.returncode,
                                                                 ": " + tail[:300] if tail else ""))
+    return problems
+
+
+OUTSIDE_STATUS_CAP = 2000  # status lines kept per checkout; the diff digest still covers the rest
+
+
+def _status_lines(path: str) -> list:
+    code, out = _git(path, "status", "--porcelain", "--untracked-files=all")
+    if code != 0:
+        return []
+    return [ln for ln in out.splitlines() if ln[3:].strip() and not ln[3:].strip().strip('"').startswith(".rein")]
+
+
+def outside_snapshot(paths) -> dict:
+    """`{realpath: {head, status, diff}}` of the git checkouts in `paths` (those git can read)."""
+    snap = {}
+    for path in paths or ():
+        if not path or not os.path.isdir(path):
+            continue
+        code, head = _git(path, "rev-parse", "HEAD")
+        if code != 0:
+            continue
+        _, diff = _git(path, "diff", "HEAD", "--", ".", ":(exclude).rein")
+        snap[os.path.realpath(path)] = {"head": head.strip(), "status": _status_lines(path)[:OUTSIDE_STATUS_CAP],
+                                        "diff": hashlib.sha1(diff.encode("utf-8", "replace")).hexdigest()}
+    return snap
+
+
+def outside_changes(before: dict, ignore=()) -> list:
+    """One problem per checkout of `before` that changed since: new commits, new or changed paths.
+    `ignore`: absolute paths Rein itself writes there (the plan file it ticks)."""
+    skip = {os.path.realpath(p) for p in ignore or ()}
+    problems = []
+    for path, was in sorted((before or {}).items()):
+        if not os.path.isdir(path) or not isinstance(was, dict):
+            continue
+        code, head = _git(path, "rev-parse", "HEAD")
+        if code != 0:
+            continue
+        now = _status_lines(path)
+        _, diff = _git(path, "diff", "HEAD", "--", ".", ":(exclude).rein")
+        new = [ln[3:].strip().strip('"') for ln in now if ln not in set(was.get("status") or [])]
+        new = [n for n in new if os.path.realpath(os.path.join(path, n)) not in skip]
+        what = []
+        if head.strip() != was.get("head"):
+            what.append("new commit(s) (HEAD %s -> %s)" % (str(was.get("head"))[:8], head.strip()[:8]))
+        if new:
+            what.append("changed: %s" % ", ".join(new[:10]) + (" ..." if len(new) > 10 else ""))
+        elif (hashlib.sha1(diff.encode("utf-8", "replace")).hexdigest() != was.get("diff")
+              and head.strip() == was.get("head")):
+            changed = [ln[3:].strip().strip('"') for ln in now]
+            changed = [n for n in changed if os.path.realpath(os.path.join(path, n)) not in skip]
+            if changed:
+                what.append("files already modified there were changed further: %s" % ", ".join(changed[:10]))
+        if what:
+            problems.append("it wrote outside its worktree, in %s: %s; a worker may only write inside its "
+                            "worktree -- revert that (if you changed it yourself meanwhile, retry)"
+                            % (path, "; ".join(what)))
     return problems
 
 

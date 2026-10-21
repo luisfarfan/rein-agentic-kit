@@ -209,6 +209,7 @@ class StartTests(DriverCase):
             "--json"])
         rec = self.record(self.worktree)
         self.assertEqual(rec.pop("brief"), brief)  # kept for `rein quick resend`
+        self.assertIsInstance(rec.pop("outside_before"), dict)  # the other checkouts, for the guard
         self.assertEqual(rec, quick.new_record(
             "proxima-api", self.worktree, "develop", SHA, "claude", "sonnet",
             "arregla el boton", "PPR-9", 1234.5))
