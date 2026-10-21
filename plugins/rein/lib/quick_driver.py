@@ -14,13 +14,21 @@ the owner must decide), 2 no quick task here, 126 not a verdict on the code
 
 from __future__ import annotations
 
+import contextlib
+import hashlib
 import json
 import os
 import shlex
 import signal
 import subprocess
+import tempfile
 import time
 from typing import Callable
+
+try:
+    import fcntl
+except ImportError:  # not POSIX: no lock between processes, only the atomic replace
+    fcntl = None
 
 import detect as _detect
 import gate as _gate
@@ -146,11 +154,65 @@ def _exclude_file(git: Callable[..., tuple], workspace: str) -> str:
 
 
 def _write_record(workspace: str, record: dict) -> None:
+    """Replace the record atomically. Call it under `record_lock`, or through `update_record`."""
     folder = os.path.join(workspace, ".rein")
     os.makedirs(folder, exist_ok=True)
-    with open(os.path.join(workspace, quick.RECORD), "w", encoding="utf-8") as fh:
-        json.dump(record, fh, indent=2)
-        fh.write("\n")
+    fd, tmp = tempfile.mkstemp(dir=folder, prefix=".quick.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(record, fh, indent=2)
+            fh.write("\n")
+        os.replace(tmp, os.path.join(workspace, quick.RECORD))
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _lock_path(workspace: str) -> str:
+    """The record's lock: in the checkout's git dir (gone with the worktree, never an untracked file
+    in the tree that would stop `orca worktree rm`); else in the temp dir, keyed by the path."""
+    code, out = run_git(workspace, "rev-parse", "--git-path", "rein-quick.lock")
+    found = out.strip() if code == 0 else ""
+    if found:
+        return found if os.path.isabs(found) else os.path.join(workspace, found)
+    digest = hashlib.sha256(os.path.realpath(workspace).encode("utf-8")).hexdigest()[:16]
+    return os.path.join(tempfile.gettempdir(), "rein-quick-%s.lock" % digest)
+
+
+@contextlib.contextmanager
+def record_lock(workspace: str):
+    """Hold the record's lock across processes (the agent's `ask`, the orchestrator's `watch`,
+    `answer`, `resend`, and `done`'s audit) for a whole read-modify-write."""
+    fh = None
+    if fcntl is not None:
+        try:
+            fh = open(_lock_path(workspace), "a")
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        except OSError:
+            if fh is not None:
+                fh.close()
+            fh = None
+    try:
+        yield
+    finally:
+        if fh is not None:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+            fh.close()
+
+
+def update_record(workspace: str, change: Callable[[dict], object]) -> tuple:
+    """Read the record, apply `change` to it and save it, all under `record_lock`: `(record, "")`, or
+    `(None, why)` when there is no usable record. `change` returning False saves nothing."""
+    with record_lock(workspace):
+        record, why = _load_record(workspace)
+        if record is None:
+            return None, why
+        if change(record) is not False:
+            _write_record(workspace, record)
+        return record, ""
 
 
 def _ref_exists(git: Callable[..., tuple], repo_path: str, ref: str) -> bool:
@@ -317,7 +379,8 @@ def start_quick(
         record["terminal"] = handle  # where `rein quick answer` types the owner's answers
     record["brief"] = brief  # what `rein quick resend` types again when a startup dialog swallowed it
     try:
-        _write_record(workspace, record)
+        with record_lock(workspace):
+            _write_record(workspace, record)
     except OSError as error:
         say("the agent started but %s could not be written in %s: %s"
             % (quick.RECORD, workspace, error))
@@ -571,11 +634,14 @@ def _audit(workspace: str, record: dict, changed: list, limits: dict, client: Or
         blocking = _blocking(_findings(workspace, change))
         for line in blocking:
             say(line)
-        # Only a verdict of changes spends a round; the findings stay for the cap message.
-        record["audit_rounds"] = rounds + 1
-        record["last_blocking"] = blocking
+        # Only a verdict of changes spends a round; the findings stay for the cap message. The record
+        # is read again: the agent may have asked (or the owner answered) while the audit ran.
+        def spend(fresh):
+            fresh["audit_rounds"] = rounds + 1
+            fresh["last_blocking"] = blocking
+        record["audit_rounds"], record["last_blocking"] = rounds + 1, blocking
         try:
-            _write_record(workspace, record)
+            update_record(workspace, spend)
         except OSError as error:
             say("cannot update %s in %s: %s" % (quick.RECORD, workspace, error))
         return 1

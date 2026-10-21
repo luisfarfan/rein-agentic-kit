@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import json
 import os
-import tempfile
 import time
 from typing import Callable
 
@@ -36,24 +35,6 @@ WATCH_POLL_SECONDS = 10
 def workspace_of(cwd: str) -> str:
     code, top = qd.run_git(cwd or ".", "rev-parse", "--show-toplevel")
     return top.strip() if code == 0 else ""
-
-
-def save(workspace: str, record: dict) -> None:
-    """Replace the record atomically: the agent and the orchestrator both write it."""
-    folder = os.path.join(workspace, os.path.dirname(quick.RECORD))
-    os.makedirs(folder, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=folder, prefix=".quick.", suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump(record, fh, indent=2)
-            fh.write("\n")
-        os.replace(tmp, os.path.join(workspace, quick.RECORD))
-    except BaseException:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
 
 
 def questions(record: dict) -> list:
@@ -100,15 +81,21 @@ def ask(cwd: str, text: str, *, now: Callable[[], float] = time.time,
         say("rein quick ask needs the question")
         return 2
     workspace = workspace_of(cwd)
-    record, why = qd._load_record(workspace) if workspace else (None, "not inside a git checkout")
+    if not workspace:
+        say("not inside a git checkout")
+        return 2
+    added = {}
+
+    def add(record):
+        asked = questions(record)
+        added["id"] = "q%d" % (len(asked) + 1)
+        record["questions"] = asked + [{"id": added["id"], "text": text.strip(), "asked_at": now(),
+                                        "answer": None, "answered_at": None}]
+    record, why = qd.update_record(workspace, add)
     if record is None:
         say(why)
         return 2
-    asked = questions(record)
-    qid = "q%d" % (len(asked) + 1)
-    record["questions"] = asked + [{"id": qid, "text": text.strip(), "asked_at": now(), "answer": None,
-                                    "answered_at": None}]
-    save(workspace, record)
+    qid = added["id"]
     say("pregunta %s registrada: el orquestador avisa al dueño. Detente y espera su respuesta, que llegará "
         "a esta terminal; no sigas con lo que dependa de ella." % qid)
     return 0
@@ -131,14 +118,21 @@ def answer(arg: str, text: str, client: OrcaClient, *, cwd: str = ".", qid: str 
         say("several quick tasks have open questions; name one: %s" % ", ".join(found))
         return 2
     workspace = found[0]
-    record, _ = qd._load_record(workspace)
-    pending = open_questions(record)
-    chosen = next((q for q in pending if q.get("id") == qid), None) if qid else pending[0]
-    if chosen is None:
-        say("no open question %r in %s; open: %s" % (qid, workspace, ", ".join(q["id"] for q in pending)))
-        return 2
-    chosen["answer"], chosen["answered_at"] = text.strip(), now()
-    save(workspace, record)
+    picked, pending_ids = {}, []
+
+    def mark(record):
+        pending = open_questions(record)
+        pending_ids[:] = [q.get("id") for q in pending]
+        chosen = next((q for q in pending if q.get("id") == qid), None) if qid else (pending or [None])[0]
+        if chosen is None:
+            return False
+        chosen["answer"], chosen["answered_at"] = text.strip(), now()
+        picked["q"] = chosen
+    record, why = qd.update_record(workspace, mark)
+    if record is None or "q" not in picked:
+        say(why or "no open question %r in %s; open: %s" % (qid, workspace, ", ".join(map(str, pending_ids))))
+        return 2 if record is not None and pending_ids else 1
+    chosen = picked["q"]
     handle = str(record.get("terminal") or "")
     message = "Respuesta del dueño a tu pregunta %s (%s): %s" % (chosen["id"], chosen.get("text"), text.strip())
     if not handle:
@@ -208,10 +202,11 @@ def resend(arg: str, client: OrcaClient, *, cwd: str = ".", terminal: str = "",
     except OrcaError as exc:
         say("orca could not type the brief into %s: %s" % (handle, exc.message))
         return 126
-    record["resent_at"] = now()
-    if terminal:
-        record["terminal"] = terminal
-    save(workspace, record)
+    def stamp(fresh):
+        fresh["resent_at"] = now()
+        if terminal:
+            fresh["terminal"] = terminal
+    qd.update_record(workspace, stamp)
     say("brief re-sent to %s (%s)" % (handle, workspace))
     return 0
 
@@ -227,23 +222,35 @@ def stall(workspace: str, record: dict, now: float) -> str:
 
     A sign of work (HEAD moved past the base, an edit, a question) marks the record `active`
     for good; an alert is given once per window, counted from the launch, the last alert or
-    the last `rein quick resend`."""
+    the last `rein quick resend`. Decided on the record as it is under the lock: `record` (what
+    the caller read) only spares the lock when it already says `active`."""
     if record.get("active"):
         return ""
+    found = {}
+
+    def check(fresh):
+        found["alert"] = _stall_of(workspace, fresh, now)
+        return found["alert"] is not None
+    qd.update_record(workspace, check)
+    return found.get("alert") or ""
+
+
+def _stall_of(workspace: str, record: dict, now: float):
+    """The alert ("" when one is marked active), or None when nothing changes in the record."""
+    if record.get("active"):
+        return None
     base = str(record.get("base_sha") or "")
     code, head = qd.run_git(workspace, "rev-parse", "HEAD")
     code2, porcelain = qd.run_git(workspace, "status", "--porcelain", "--untracked-files=all")
     if (code == 0 and base and head.strip() != base) or (code2 == 0 and qd._is_dirty(porcelain)) \
             or questions(record):
         record["active"] = True
-        save(workspace, record)
         return ""
     minutes = _sd.ShipConfig.from_flow_config(_detect.resolve(workspace)).stall_minutes
     since = max(float(record.get(k) or 0) for k in ("started_at", "stall_alerted_at", "resent_at"))
     if not minutes or minutes <= 0 or now - since < minutes * 60:
-        return ""
+        return None
     record["stall_alerted_at"] = now
-    save(workspace, record)
     return ("STALLED %s: the agent (%s/%s) has shown no sign of work for %g minutes (no commit, no edit, "
             "no question). It may be stuck on a startup dialog (a trust or hooks-review prompt) that "
             "swallowed its brief: look at its tab %s, clear the dialog, then: rein quick resend %s"
