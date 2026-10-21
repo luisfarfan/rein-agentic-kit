@@ -360,3 +360,15 @@ class M6EveryReviewerRefused(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ProdWordTest(unittest.TestCase):
+    def test_prod_is_refused_only_as_its_own_word(self):
+        for cmd in ("uv run pytest tests/unit/catalog/test_products.py", "pnpm vitest run src/production-ready.spec.ts"):
+            self.assertEqual(ship.verification_refusal(cmd), "", cmd)
+        for cmd in ("aws s3 ls --profile proxima-prod", "pnpm run seed --env prod", "cat config/prod.yml"):
+            self.assertTrue(ship.verification_refusal(cmd), cmd)
+
+
+if __name__ == "__main__":
+    unittest.main()

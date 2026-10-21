@@ -300,9 +300,11 @@ UNRUN_VERIFICATION_TYPES = ("verification", "manual")
 
 # A Verification is usually prose for a person. The driver runs only a field that BEGINS with one
 # backticked command, and never one that reaches outside the worktree or the machine.
-REFUSED_IN_VERIFICATION = ("--profile", "prod", "deploy", "git push", "push ", "rm -rf", "sudo", "curl ",
+REFUSED_IN_VERIFICATION = ("--profile", "deploy", "git push", "push ", "rm -rf", "sudo", "curl ",
                            "wget ", "aws ", "cdk ", "terraform", "kubectl", "docker push", "npm publish",
                            "pnpm publish", "> /")
+# "prod" as its own word (proxima-prod, --env prod, prod.yml), never inside "products".
+_PROD_WORD = re.compile(r"(?<![a-z0-9])prod(?![a-z0-9])")
 _REDIRECT_TARGET = re.compile(r">>?\|?\s*([^\s;&|<>()]+)")
 _TEE_TARGET = re.compile(r"\btee\b((?:\s+-\S+)*)\s+([^\s;&|<>()]+)")
 
@@ -324,6 +326,8 @@ def verification_refusal(cmd: str) -> str:
     for bad in REFUSED_IN_VERIFICATION:
         if bad in low:
             return "it contains %r" % bad.strip()
+    if _PROD_WORD.search(low):
+        return "it contains 'prod'"
     outside = _writes_outside(cmd)
     if outside:
         return "it writes outside the worktree (%s)" % outside
