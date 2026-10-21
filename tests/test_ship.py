@@ -1814,8 +1814,9 @@ class TestSpecs(unittest.TestCase):
                                            previous_blocking=["BLOCKING: x"])):
             self.assertIn("do the five-axis review yourself", spec)
             self.assertIn("Never ask the gate for a reviewer", spec)
-        skill = open(os.path.join(os.path.dirname(__file__), "..", "plugins", "rein", "skills",
-                                  "rein-audit", "SKILL.md")).read()
+        with open(os.path.join(os.path.dirname(__file__), "..", "plugins", "rein", "skills",
+                               "rein-audit", "SKILL.md")) as fh:
+            skill = fh.read()
         self.assertIn("review the\n   five axes yourself", skill)
 
     def test_audit_spec_names_every_worktree_and_the_exact_record_command(self):

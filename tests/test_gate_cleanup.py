@@ -27,7 +27,10 @@ class Cleanup(QuickCloseBase):
 
     def log(self):
         path = os.path.join(self.tmp, "cleanup.log")
-        return open(path).read().split() if os.path.exists(path) else []
+        if not os.path.exists(path):
+            return []
+        with open(path) as fh:
+            return fh.read().split()
 
     def command(self):
         return "echo {worktree} {repo} >> %s" % os.path.join(self.tmp, "cleanup.log")
