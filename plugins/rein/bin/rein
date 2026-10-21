@@ -47,8 +47,8 @@ Subcommands:
   rein watch <change> [--root <plan repo>] [--once] [--skip <id,id>]
                       block until `rein ship <change>` needs the owner (a new question,
                       the run finished, or the driver died), print it, exit 0. --once
-                      polls a single time and exits 1 when nothing is pending; --skip hides
-                      gates the owner deferred. Exit 2
+                      polls a single time and exits 1 when nothing is pending (126 when
+                      Orca cannot be asked); --skip hides gates the owner deferred. Exit 2
                       usage
   rein quick "<sentence>" [--repo <name>] [--base <branch>] [--here [--dirty-ok]]
                       [--agent <id> [--model <m>]] [--linear <id>]

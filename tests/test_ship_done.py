@@ -151,6 +151,18 @@ class DoneTests(Env):
         self.assertEqual(code, 1)
         self.assertEqual(orca.rm_paths(), [])
 
+    def test_driver_check_is_scoped_to_the_plan_root(self):
+        root = self.plan_repo()
+        self.state(root, {"api": self.worktree()})
+        seen = []
+        real = ship_done.sw.driver_alive
+        ship_done.sw.driver_alive = lambda change, **kw: seen.append((change, kw)) or True
+        self.addCleanup(setattr, ship_done.sw, "driver_alive", real)
+        client = OrcaClient(executable="ORCA", runner=FakeOrca())
+        code = ship_done.run_done(root, CHANGE, client, today="2026-10-20", say=self.say, env={})
+        self.assertEqual(code, 1)
+        self.assertEqual(seen, [(CHANGE, {"root": root})])
+
     def test_missing_state_refuses(self):
         root = self.plan_repo()
         code, _ = self.run_done(root)

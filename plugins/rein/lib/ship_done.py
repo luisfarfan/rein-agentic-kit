@@ -330,7 +330,7 @@ def _already_archived(root: str, change: str) -> bool:
 
 def run_done(root: str, change: str, client: OrcaClient, *, dry_run: bool = False, yes: bool = False,
              git: Callable[..., tuple] = qd.run_git, fetch: Callable[[str, str], tuple] = qd.run_fetch,
-             driver_alive: Callable[[str], bool] = sw.driver_alive, today: str = "",
+             driver_alive: Optional[Callable[[str], bool]] = None, today: str = "",
              say: Callable[[str], None] = print, env: Optional[dict] = None) -> int:
     root = os.path.abspath(root)
     env = os.environ if env is None else env
@@ -344,7 +344,7 @@ def run_done(root: str, change: str, client: OrcaClient, *, dry_run: bool = Fals
     if phase != "done":
         say("rein done: %s is in phase %s, not done; nothing removed" % (change, phase))
         return 1
-    if driver_alive(change):
+    if (driver_alive or (lambda c: sw.driver_alive(c, root=root)))(change):
         say("rein done: `rein ship %s` is still running; nothing removed" % change)
         return 1
 
