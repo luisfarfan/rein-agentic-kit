@@ -67,7 +67,7 @@ class ShipState:
     # Newest review episode present when the audit started; a verdict is only
     # accepted from a different (newer) one, so a resume cannot take a stale one.
     audit_baseline: str = ""
-    # "", "approved", "rejected" or "skipped": how the audit ended.
+    # "", "approved", "rejected", "skipped" or "unapproved" (a task failed, so no audit could approve).
     audit_result: str = ""
     # Owner gates decide asked for that the driver has not yet created in Orca.
     pending_gates: list = field(default_factory=list)

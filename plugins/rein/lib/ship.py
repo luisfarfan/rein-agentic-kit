@@ -1002,9 +1002,13 @@ class _Driver:
         tasks = self.state.tasks.values()
         approved = self.state.audit_result == "approved"
         ok = all(t.status == "done" for t in tasks) and approved
+        result = self.state.audit_result
         summary = "rein ship %s: %d/%d tasks done, audit %s" % (
             self.change, sum(t.status == "done" for t in tasks), len(self.state.tasks),
-            "approved" if approved else "not approved")
+            "approved" if approved else ("%s (not approved)" % result if result else "not approved"))
+        if not approved and result != "rejected" and self.state.previous_blocking:
+            summary += "; the blocking findings of the last audit were NOT verified as fixed: %s" % (
+                "; ".join(self.state.previous_blocking))[:600]
         if self.state.phase == "done":  # a paused run is not in review: it will be resumed
             for repo, wt in self.state.worktrees.items():
                 try:

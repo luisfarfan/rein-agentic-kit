@@ -31,7 +31,8 @@ It applies to every task.
      the owner, then run `rein answer <change> "<text>" --gate <id> --root <root>` (option gates: one listed
      option; never invent an answer). On exit 2, re-show the options, ask again. Start the watcher again once every gate is answered or deferred; for deferred ones use
      `--skip <ids>` and say they can answer later with "¿qué me pregunta rein?".
-   - **FINISHED**: summarise tasks, audit result and where the work is. Then offer: push to
+   - **FINISHED**: summarise tasks, audit result and where the work is. An audit other than
+     `approved` comes first: its blocking findings were not verified. Then offer: push to
      develop (only with the owner's yes: api first, then admin, respecting the hooks), and after
      that close it with `rein done <change> --root <root>` (`--dry-run` previews). On blockers
      show them and stop. If it WARNs about gitignored files (.env ...), show the list and add `--yes` only after an explicit yes.

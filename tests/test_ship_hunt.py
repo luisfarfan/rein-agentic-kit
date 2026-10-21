@@ -107,5 +107,72 @@ class RetryKeepsItsContext(unittest.TestCase):
                                "admin": ["BLOCKING: the admin login never shows the 401"]})
 
 
+class SkippedFixStillReaudits(unittest.TestCase):
+    """A skipped audit-fix task must not end the run as done with no audit verdict."""
+
+    def fixing(self, fix_status="gated"):
+        st = state_of(task("T1", repo="a", status="done"),
+                      task("AUDIT1-a", repo="a", status=fix_status, verification="",
+                           audit_findings="BLOCKING: leak", last_failure="BLOCKING: leak"))
+        st.phase, st.audit_rounds, st.previous_blocking = "fixing", 1, ["BLOCKING: leak"]
+        st.gates["g1"] = {"task_id": "AUDIT1-a", "kind": "setup", "message_id": ""}
+        return st
+
+    def test_skipping_a_fix_task_runs_the_scoped_reaudit(self):
+        st, actions = sd.decide(self.fixing(), sd.GateResolved("g1", "skip"), CFG)
+        self.assertEqual(st.tasks["AUDIT1-a"].status, "failed")
+        self.assertEqual(st.phase, "auditing")
+        self.assertIn(sd.ComputeChanges(), actions)
+        self.assertNotIn(sd.Finish(), actions)
+
+    def test_a_failed_original_task_ends_the_run_explicitly_unapproved(self):
+        st = state_of(task("T1", repo="a", status="gated"))
+        st.gates["g1"] = {"task_id": "T1", "kind": "setup", "message_id": ""}
+        st, actions = sd.decide(st, sd.GateResolved("g1", "skip"), CFG)
+        self.assertEqual((st.phase, st.audit_result), ("done", "unapproved"))
+        self.assertIn(sd.Finish(), actions)
+
+
+class FinishSaysWhatWasNotVerified(ShipCase):
+    def test_a_skipped_reaudit_says_the_blocking_findings_were_not_verified(self):
+        from ship_state import ShipState as S
+        st = S(change="demo", plan_path="", phase="done", audit_result="skipped",
+               previous_blocking=["BLOCKING: src/x.py leaks the token"])
+        st.tasks["T1"] = task("T1", status="done")
+        drv = ship._Driver.__new__(ship._Driver)
+        drv.state, drv.change, drv.dry_run = st, "demo", True
+        drv.client = ship.OrcaClient(executable="ORCA", runner=FakeOrca(self.root))
+        import io
+        from contextlib import redirect_stdout
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = drv.finish()
+        out = buf.getvalue()
+        self.assertEqual(code, 1)
+        self.assertIn("audit skipped", out)
+        self.assertIn("not verified", out.lower())
+        self.assertIn("leaks the token", out)
+
+
+class SkippedFixRunEndToEnd(ShipCase):
+    def test_a_skipped_fix_task_is_followed_by_the_reaudit(self):
+        self.write_plan(PLAN.split("- [ ] T002")[0])
+        fake = FakeOrca(self.root)
+        verdicts = [("CHANGES_REQUESTED", ["BLOCKING: src/proxima-api.py leaks the token"]), ("APPROVED", [])]
+
+        def audit():
+            verdict, findings = verdicts.pop(0)
+            self.approve_audit(verdict, findings)()
+        fake.on_audit = audit
+        fake.auto_resolve = "skip"
+        self.run_ship(fake, scripted_gate(0, 126))
+        audits = [t for t in fake.tasks.values() if "audit round" in t["title"]]
+        self.assertEqual(len(audits), 2, self.out)
+        self.assertIn("leaks the token", audits[1]["spec"])  # the scoped re-audit
+        st = json.load(open(self.state_file))
+        self.assertEqual(st["tasks"]["AUDIT1-proxima-api"]["status"], "failed")
+        self.assertNotEqual(st["audit_result"], "")
+
+
 if __name__ == "__main__":
     unittest.main()

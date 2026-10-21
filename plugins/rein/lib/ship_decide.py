@@ -381,7 +381,18 @@ def _settle(state: ShipState, actions: list) -> None:
         return
     if any(_ready(state, t) for t in state.tasks.values()):
         return
+    if state.phase == "fixing" and all(t.status in ("done", "failed") for t in state.tasks.values()):
+        # A fix task the owner skipped leaves its findings unverified: the scoped re-audit still
+        # runs and reports them, so the run never ends "done" without a verdict.
+        if state.paused:
+            return
+        state.phase = "auditing"
+        state.changed_files = []
+        actions.append(ComputeChanges())
+        return
     state.phase = "done"
+    if not state.audit_result:
+        state.audit_result = "unapproved"  # a task failed, so no audit could approve the change
     actions.append(Finish())
 
 
