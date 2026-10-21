@@ -169,9 +169,29 @@ class SkippedFixRunEndToEnd(ShipCase):
         audits = [t for t in fake.tasks.values() if "audit round" in t["title"]]
         self.assertEqual(len(audits), 2, self.out)
         self.assertIn("leaks the token", audits[1]["spec"])  # the scoped re-audit
-        st = json.load(open(self.state_file))
+        with open(self.state_file, encoding="utf-8") as fh:
+            st = json.load(fh)
         self.assertEqual(st["tasks"]["AUDIT1-proxima-api"]["status"], "failed")
         self.assertNotEqual(st["audit_result"], "")
+
+
+class AuditBriefNeedsNoClaudeSkill(unittest.TestCase):
+    def test_the_brief_names_the_skill_file_to_read(self):
+        path = os.path.join(ship.PLUGIN, "skills", "rein-audit", "SKILL.md")
+        self.assertTrue(os.path.isabs(path) and os.path.isfile(path))
+        for prev in ((), ["BLOCKING: x"]):
+            spec = ship.build_audit_spec({}, {"/wt/a": ["x.py"]}, "R", "/wt/a", "demo", previous_blocking=prev)
+            self.assertIn(path, spec)
+            self.assertIn("read it and follow its steps", spec)
+            self.assertIn(ship.INLINE_REVIEW, spec)
+
+    def test_the_skill_reviews_inline_when_the_code_reviewer_is_missing_even_for_claude(self):
+        with open(os.path.join(ship.PLUGIN, "skills", "rein-audit", "SKILL.md"), encoding="utf-8") as fh:
+            text = fh.read()
+        step3 = " ".join(text.split("3. **Judgement")[1].split("4. **Intent")[0].split())
+        self.assertIn("not available", step3)
+        self.assertIn("Claude without", step3)
+        self.assertNotIn("Do not reimplement this inline", step3)
 
 
 if __name__ == "__main__":

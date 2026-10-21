@@ -22,8 +22,8 @@ Usage: `/rein:rein-audit [change-name]`
    (a red gate is by definition a blocker; see the severity vocabulary in step 7). If a slot
    is not configured, say it is absent rather than substituting one.
 3. **Judgement — five axes.** Delegate to the `agent-skills:code-reviewer` agent over the
-   diff: correctness, readability, architecture, security, performance. Do not reimplement
-   this inline — unless you cannot launch that agent (Codex, Antigravity): then review the
+   diff: correctness, readability, architecture, security, performance. If that agent is not
+   available (Codex, Antigravity, or a Claude without its plugin), review the
    five axes yourself and never ask anyone for a reviewer. Look at the change **as a whole** — coherence defects *between* tasks are the
    ones nobody else will see.
 4. **Intent.** If the plan has a `Why`, judge the work against it — not only against

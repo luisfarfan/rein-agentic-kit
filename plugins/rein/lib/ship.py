@@ -116,6 +116,8 @@ REAUDIT_SCOPE = (
 )
 
 
+AUDIT_SKILL = os.path.join(PLUGIN, "skills", "rein-audit", "SKILL.md")
+
 INLINE_REVIEW = ("If you cannot launch the code-reviewer agent (Codex, Antigravity and other non-Claude "
                  "auditors cannot), do the five-axis review yourself: correctness, readability, "
                  "architecture, security, performance. Never ask the gate for a reviewer.")
@@ -138,6 +140,9 @@ def build_audit_spec(plan: dict, changed: dict, reviewer_profile: str,
     if plan.get("why"):
         lines.append("Why: %s" % plan["why"])
     lines.append(INLINE_REVIEW)
+    # Not every auditor has Claude's skill loader (Codex, Antigravity): the skill is a plain file.
+    lines.append("The rein-audit skill is the file %s: read it and follow its steps "
+                 "(no skill loader is needed)." % AUDIT_SKILL)
     lines.append("Audit worktree (your working directory): %s" % audit_root)
     for path, files in changed.items():
         lines.append("Run the rein-audit skill on %s" % path)
