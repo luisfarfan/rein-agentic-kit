@@ -15,6 +15,8 @@ import tempfile
 import time
 from typing import Callable
 
+import gate_env as _gate_env
+import orca_client as oc
 import quick
 import quick_driver as qd
 from orca_client import OrcaClient, OrcaError
@@ -143,6 +145,67 @@ def answer(arg: str, text: str, client: OrcaClient, *, cwd: str = ".", qid: str 
             % (chosen["id"], workspace, handle, exc.message, message))
         return 126
     say("answered %s in %s (sent to %s)" % (chosen["id"], workspace, handle))
+    return 0
+
+
+def _brief_of(workspace: str, record: dict) -> str:
+    """The brief `rein quick` sent; rebuilt from the record when it predates keeping it."""
+    if isinstance(record.get("brief"), str) and record["brief"].strip():
+        return record["brief"]
+    sentence = str(record.get("sentence") or "")
+    env = _gate_env.export_lines(_gate_env.for_worktree(workspace, repo=str(record.get("repo") or "")))
+    return quick.build_brief(sentence, str(record.get("linear") or ""), quick.looks_like_bug(sentence),
+                             qd.ship.BIN, env)
+
+
+def _agent_terminal(workspace: str, record: dict, client: OrcaClient) -> tuple:
+    """`(handle, "")`, or `("", why)`: the recorded handle, else the workspace's only agent tab."""
+    if record.get("terminal"):
+        return str(record["terminal"]), ""
+    try:
+        rows = oc.terminals_of(client.terminal_list("path:" + workspace))
+    except OrcaError as exc:
+        return "", "orca cannot list the terminals of %s: %s" % (workspace, exc.message)
+    here = os.path.realpath(workspace)
+    found = [str(t["handle"]) for t in rows if t.get("handle")
+             and os.path.realpath(str(t.get("worktreePath") or workspace)) == here
+             and t.get("title") != oc.SETUP_TAB_TITLE and not str(t.get("title") or "").startswith("rein ")]
+    if len(found) == 1:
+        return found[0], ""
+    return "", ("%s has %s; name the agent's with --terminal <handle>"
+                % (workspace, "tabs %s" % ", ".join(found) if found else "no agent tab"))
+
+
+def resend(arg: str, client: OrcaClient, *, cwd: str = ".", terminal: str = "",
+           now: Callable[[], float] = time.time, say: Callable[[str], None] = print) -> int:
+    """`rein quick resend [<workspace>] [--terminal <handle>]`: type the task's brief into the agent's
+    terminal again (one lost behind a startup dialog). 0 sent, 1 no quick task, 2 ambiguous, 126 Orca."""
+    found = targets(arg, client, cwd)
+    if not found:
+        say("no quick task%s" % (" for %r" % arg if arg else " here"))
+        return 1
+    if len(found) > 1:
+        say("several quick tasks; name one: %s" % ", ".join(found))
+        return 2
+    workspace = found[0]
+    record, why = qd._load_record(workspace)
+    if record is None:
+        say(why)
+        return 1
+    handle, why = (terminal, "") if terminal else _agent_terminal(workspace, record, client)
+    if not handle:
+        say(why)
+        return 2
+    try:
+        client.terminal_send(handle, _brief_of(workspace, record), enter=True)
+    except OrcaError as exc:
+        say("orca could not type the brief into %s: %s" % (handle, exc.message))
+        return 126
+    record["resent_at"] = now()
+    if terminal:
+        record["terminal"] = terminal
+    save(workspace, record)
+    say("brief re-sent to %s (%s)" % (handle, workspace))
     return 0
 
 

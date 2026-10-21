@@ -208,6 +208,7 @@ class StartTests(DriverCase):
             "--linear-issue", "PPR-9",
             "--json"])
         rec = self.record(self.worktree)
+        self.assertEqual(rec.pop("brief"), brief)  # kept for `rein quick resend`
         self.assertEqual(rec, quick.new_record(
             "proxima-api", self.worktree, "develop", SHA, "claude", "sonnet",
             "arregla el boton", "PPR-9", 1234.5))

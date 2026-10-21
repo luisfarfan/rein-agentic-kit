@@ -86,6 +86,10 @@ Subcommands:
   rein quick watch [<path or quick-<slug>>] [--once]
                       block until a quick task needs the owner (a question), print it,
                       exit 0; --once exits 1 when nothing is pending
+  rein quick resend [<path or quick-<slug>>] [--terminal <handle>]
+                      type the task's brief (kept in .rein/quick.json) into the agent's
+                      terminal again, e.g. once a startup dialog that swallowed it is gone.
+                      Exit 0 sent / 1 no quick task / 2 ambiguous / 126 Orca
   rein quick done     run by that agent when you say "listo": light gate on the
                       changed files, plus an audit only for risky paths. Never commits
                       or pushes. Exit 0 green / 1 red / 2 no quick task / 126 setup
@@ -1087,15 +1091,17 @@ def cmd_done(argv: list[str]) -> int:
 
 
 _INBOX_USAGE = ('usage: rein quick ask "<question>"  |  rein quick answer [<path or quick-<slug>>] "<text>" '
-                '[--id q1]  |  rein quick watch [<path or quick-<slug>>] [--once]')
+                '[--id q1]  |  rein quick watch [<path or quick-<slug>>] [--once]  |  '
+                'rein quick resend [<path or quick-<slug>>] [--terminal <handle>]')
 
 
 def _quick_inbox(argv: list[str]):
     """`rein quick ask|answer|watch ...`, or None when argv is not one of them."""
-    if not argv or argv[0] not in ("ask", "answer", "watch"):
+    if not argv or argv[0] not in ("ask", "answer", "watch", "resend"):
         return None
     sub, rest = argv[0], argv[1:]
-    words = [a for i, a in enumerate(rest) if not a.startswith("-") and not (i and rest[i - 1] == "--id")]
+    words = [a for i, a in enumerate(rest)
+             if not a.startswith("-") and not (i and rest[i - 1] in ("--id", "--terminal"))]
     flags = [a for a in rest if a.startswith("-")]
     if sub == "ask":
         if len(words) != 1 or flags:
@@ -1108,6 +1114,13 @@ def _quick_inbox(argv: list[str]):
             return 2
         target, text = (words[0], words[1]) if len(words) == 2 else ("", words[0])
         return _inbox.answer(target, text, _quick.OrcaClient(), cwd=".", qid=_opt(rest, "id"))
+    if sub == "resend":
+        if len(words) > 1 or any(f != "--terminal" and not f.startswith("--terminal=") for f in flags) \
+                or _flag_missing_value(rest, ("--terminal",)):
+            print(_INBOX_USAGE)
+            return 2
+        return _inbox.resend(words[0] if words else "", _quick.OrcaClient(), cwd=".",
+                             terminal=_opt(rest, "terminal"))
     if len(words) > 1 or any(f != "--once" for f in flags):
         print(_INBOX_USAGE)
         return 2

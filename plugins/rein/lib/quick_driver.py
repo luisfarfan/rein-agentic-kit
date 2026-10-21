@@ -315,6 +315,7 @@ def start_quick(
                               sentence, linear, now())
     if handle:
         record["terminal"] = handle  # where `rein quick answer` types the owner's answers
+    record["brief"] = brief  # what `rein quick resend` types again when a startup dialog swallowed it
     try:
         _write_record(workspace, record)
     except OSError as error:
