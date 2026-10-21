@@ -125,11 +125,11 @@ class Env(unittest.TestCase):
         os.makedirs(ship_state.answers_dir(root, CHANGE), exist_ok=True)
         return sp
 
-    def run_done(self, root, orca=None, dry=False, alive=False, yes=False):
+    def run_done(self, root, orca=None, dry=False, alive=False, yes=False, env=None):
         orca = orca or FakeOrca(repos=[{"displayName": "api", "worktreeBaseRef": "origin/develop"}])
         client = OrcaClient(executable="ORCA", runner=orca)
         code = ship_done.run_done(root, CHANGE, client, dry_run=dry, yes=yes, driver_alive=lambda c: alive,
-                                  today="2026-10-20", say=self.say)
+                                  today="2026-10-20", say=self.say, env=env or {})
         return code, orca
 
 
@@ -868,6 +868,55 @@ class WarningScopeTests(QuickCloseBase):
         code, orca = self.close(arg=a)
         self.assertEqual(code, 0, self.text())
         self.assertNotIn("WARNING", self.text())
+
+
+class ArchiveGuardTests(Env):
+    def test_own_tab_is_left_open(self):
+        root = self.plan_repo()
+        wt = self.worktree()
+        self.state(root, {"api": wt})
+        orca = FakeOrca(repos=[{"displayName": "api", "worktreeBaseRef": "origin/develop"}],
+                        terminals=[{"handle": "t1", "title": "rein ship demo", "worktreePath": root}])
+        code, orca = self.run_done(root, orca, env={"ORCA_TERMINAL_HANDLE": "t1"})
+        self.assertEqual(code, 0, self.text())
+        self.assertEqual(orca.closed(), [])
+        self.assertIn("left the tab", self.text())
+        self.assertFalse(os.path.exists(ship_state.state_path(root, CHANGE)))
+
+    def test_plan_root_off_its_default_branch_blocks(self):
+        root = self.plan_repo()
+        git(root, "checkout", "-q", "-b", "topic")
+        wt = self.worktree()
+        self.state(root, {"api": wt})
+        code, orca = self.run_done(root)
+        self.assertEqual(code, 1, self.text())
+        self.assertEqual(orca.rm_paths(), [])
+        self.assertIn("default branch", self.text())
+        self.assertTrue(os.path.isdir(os.path.join(root, "openspec", "changes", CHANGE)))
+
+    def test_uncommitted_plan_edits_block(self):
+        root = self.plan_repo()
+        with open(os.path.join(root, "openspec", "changes", CHANGE, "proposal.md"), "a") as fh:
+            fh.write("- [x] done\n")
+        wt = self.worktree()
+        self.state(root, {"api": wt})
+        code, orca = self.run_done(root)
+        self.assertEqual(code, 1, self.text())
+        self.assertEqual(orca.rm_paths(), [])
+        self.assertIn("uncommitted", self.text())
+        self.assertEqual(git(root, "log", "-1", "--format=%s").strip(), "ignore")
+
+    def test_plan_root_mid_merge_blocks(self):
+        root = self.plan_repo()
+        head = git(root, "rev-parse", "HEAD").strip()
+        with open(os.path.join(root, ".git", "MERGE_HEAD"), "w") as fh:
+            fh.write(head + "\n")
+        wt = self.worktree()
+        self.state(root, {"api": wt})
+        code, orca = self.run_done(root)
+        self.assertEqual(code, 1, self.text())
+        self.assertEqual(orca.rm_paths(), [])
+        self.assertIn("merge", self.text())
 
 
 class QuickCloseSafetyTests(QuickCloseBase):

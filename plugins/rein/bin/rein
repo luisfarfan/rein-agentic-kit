@@ -60,7 +60,8 @@ Subcommands:
                       or pushes. Exit 0 green / 1 red / 2 no quick task / 126 setup
   rein done <change> [--root <plan repo>] [--dry-run] [--yes]
                       close a finished change: remove its worktrees, close its tab,
-                      archive the openspec plan (local commit, never pushed). Removes
+                      archive the openspec plan (local commit on the plan repo's default
+                      branch, never pushed; its folder must be committed). Removes
                       NOTHING if any worktree is dirty, a main checkout or not integrated
                       (HEAD and branch) into origin/<base>; gitignored files that would be
                       lost (.env ...) are listed and need --yes. Exit 0 closed / 1 blockers / 2 usage / 126 Orca error
