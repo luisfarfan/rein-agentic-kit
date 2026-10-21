@@ -7,7 +7,10 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
+import tempfile
+import time
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -15,6 +18,8 @@ sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "plugins", "rein", "lib"))
 
 import ship  # noqa: E402
+import ship_state  # noqa: E402
+import ship_watch as sw  # noqa: E402
 from test_ship import PLAN, FailEnvelope, FakeOrca, ShipCase, _flag, scripted_gate  # noqa: E402
 
 
@@ -166,6 +171,73 @@ class M1LateWorkerStartAnswer(ShipCase):
         fake.on_audit = self.approve_audit()
         self.assertEqual(self.run_ship(fake, scripted_gate(), sleep=lambda s: None), 0, self.out)
         self.assertEqual(len(self.starts(fake, audit=True)), 1, self.out)
+
+
+class M3DriverAliveArgvShapes(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def alive(self, line, root="/Users/l/plan"):
+        return sw.driver_alive("demo", ps=lambda: [line], own_pid=1, root=root)
+
+    def test_a_rein_path_with_spaces_is_a_driver(self):
+        folder = os.path.join(self.tmp.name, "Application Support", "rein", "bin")
+        os.makedirs(folder)
+        rein = os.path.join(folder, "rein")
+        open(rein, "w").close()
+        self.assertTrue(self.alive("123 /opt/homebrew/bin/python3.13 %s ship demo --root /Users/l/plan" % rein))
+        self.assertTrue(self.alive("123 %s ship demo --root /Users/l/plan" % rein))
+
+    def test_a_spaced_path_that_is_not_a_file_is_not_a_driver(self):
+        self.assertFalse(self.alive("123 /usr/bin/grep rein ship demo"))
+        self.assertFalse(self.alive("123 /usr/bin/vim notes about rein ship demo"))
+
+    def test_interpreter_options_with_a_value(self):
+        self.assertTrue(self.alive("123 python3 -X utf8 /x/bin/rein ship demo --root /Users/l/plan"))
+        self.assertTrue(self.alive("123 python3 -W ignore -I /x/bin/rein ship demo --root /Users/l/plan"))
+        self.assertFalse(self.alive("123 python3 -c /x/bin/rein ship demo"))
+        self.assertFalse(self.alive("123 python3 -m /x/bin/rein ship demo"))
+
+    def test_a_future_ship_flag_still_matches(self):
+        self.assertTrue(self.alive("123 python3 /x/bin/rein ship demo --root /Users/l/plan --effort high"))
+        self.assertTrue(self.alive("123 python3 /x/bin/rein ship demo --verbose"))
+        self.assertFalse(self.alive("123 python3 /x/bin/rein ship demo and more words"))
+
+
+class DriverPidLiveness(ShipCase):
+    def test_the_driver_records_its_pid_in_the_state(self):
+        self.write_plan(PLAN.split("- [ ] T002")[0])
+        fake = FakeOrca(self.root)
+        fake.on_audit = self.approve_audit()
+        self.run_ship(fake, scripted_gate())
+        with open(self.state_file, encoding="utf-8") as fh:
+            self.assertEqual(json.load(fh).get("driver_pid"), os.getpid())
+
+    def put_pid(self, pid):
+        os.makedirs(os.path.dirname(self.state_file), exist_ok=True)
+        with open(self.state_file, "w", encoding="utf-8") as fh:
+            json.dump({"change": "demo", "plan_path": self.root, "driver_pid": pid}, fh)
+
+    def spawn(self, *argv):
+        proc = subprocess.Popen(list(argv))
+        self.addCleanup(lambda: (proc.kill(), proc.wait()))
+        time.sleep(0.2)
+        return proc
+
+    def test_a_recorded_live_driver_pid_is_alive_whatever_its_argv_looks_like(self):
+        # an argv the heuristics cannot place (ps shows nothing at all here)
+        proc = self.spawn(sys.executable, "-c", "import time; time.sleep(30)", "rein", "ship", "demo")
+        self.put_pid(proc.pid)
+        self.assertTrue(sw.driver_alive("demo", ps=lambda: [], own_pid=1, root=self.root))
+        proc.kill()
+        proc.wait()
+        self.assertFalse(sw.driver_alive("demo", ps=lambda: [], own_pid=1, root=self.root))
+
+    def test_a_reused_pid_running_something_else_is_not_the_driver(self):
+        proc = self.spawn("sleep", "30")
+        self.put_pid(proc.pid)
+        self.assertFalse(sw.driver_alive("demo", ps=lambda: [], own_pid=1, root=self.root))
 
 
 if __name__ == "__main__":

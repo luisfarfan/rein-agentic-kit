@@ -96,6 +96,8 @@ class ShipState:
     audit_starting: str = ""
     # Reviewer agents Orca refused to start for the audit; a retry picks another one.
     audit_excluded: list = field(default_factory=list)
+    # The pid of the `rein ship` process that last ran this change: exact liveness for `rein watch`.
+    driver_pid: int = 0
 
 
 def state_path(repo_root: str, change: str) -> str:

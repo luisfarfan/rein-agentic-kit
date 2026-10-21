@@ -28,6 +28,9 @@ DEAD_POLLS = 2
 _PYTHON = re.compile(r"^python(\d+(\.\d+)*)?w?$", re.IGNORECASE)
 _SHIP_VALUE_FLAGS = ("--root", "--agent", "--model")
 _SHIP_BOOL_FLAGS = ("--dry-run", "--detach")
+# Interpreter options that take the next word as their value; -c and -m never run the rein script.
+_PY_VALUE_OPTS = ("-X", "-W", "--check-hash-based-pycs")
+_PY_NOT_A_SCRIPT = ("-c", "-m")
 
 
 def _ps_lines() -> list:
@@ -48,12 +51,13 @@ def _ship_flags(rest: list) -> Optional[dict]:
         i += 1
         if name in _SHIP_BOOL_FLAGS and not eq:
             flags[name] = ""
-        elif name in _SHIP_VALUE_FLAGS:
+        elif name.startswith("--") and len(name) > 2:
+            # ship's own value flags, and any flag a later rein adds (with or without a value)
             value = [inline] if eq else []
             while i < len(rest) and not rest[i].startswith("--"):
                 value.append(rest[i])
                 i += 1
-            if not value:
+            if not value and name in _SHIP_VALUE_FLAGS:
                 return None
             flags[name] = " ".join(value)
         else:
@@ -69,8 +73,7 @@ def _driver_root(argv: list, change: str) -> Optional[tuple]:
     for i, word in enumerate(argv):
         if os.path.basename(word) != "rein":
             continue
-        if i > 0 and not (_PYTHON.match(os.path.basename(argv[0]))
-                          and all(a.startswith("-") and a != "-c" for a in argv[1:i])):
+        if i > 0 and not _launches_rein(argv, i):
             continue
         if argv[i + 1:i + 3] != ["ship", change]:
             continue
@@ -80,13 +83,56 @@ def _driver_root(argv: list, change: str) -> Optional[tuple]:
     return None
 
 
+def _launches_rein(argv: list, i: int) -> bool:
+    """argv[:i+1] runs the rein script at argv[i]: python with interpreter options, then the script
+    path, or the script path alone. `ps` splits a path with spaces into several words, so those are
+    joined back -- and then the joined path must be a real file, or `grep rein` would match."""
+    start = 0
+    if _PYTHON.match(os.path.basename(argv[0])):
+        start = 1
+        while start < i and argv[start].startswith("-"):
+            if argv[start] in _PY_NOT_A_SCRIPT:
+                return False
+            start += 2 if argv[start] in _PY_VALUE_OPTS else 1
+        if start > i:
+            return False
+    if start == i:
+        return True
+    return os.path.isabs(argv[start]) and os.path.isfile(" ".join(argv[start:i + 1]))
+
+
+def _recorded_pid(root: str, change: str) -> int:
+    """The pid the driver wrote into the ship state (`driver_pid`); 0 when there is none."""
+    state = sa._read_state(ss.state_path(root, change))
+    try:
+        return int((state or {}).get("driver_pid") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _pid_is_driver(pid: int, change: str) -> bool:
+    """`pid` is running AND is a `ship <change>` process (a reused pid running something else is not)."""
+    try:
+        out = subprocess.run(["ps", "-p", str(pid), "-o", "args="], capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    words = out.stdout.split()
+    return out.returncode == 0 and any(words[k:k + 2] == ["ship", change] for k in range(len(words)))
+
+
 def driver_alive(change: str, ps: Callable[[], list] = _ps_lines, own_pid: Optional[int] = None,
                  root: Optional[str] = None) -> bool:
     """Is a `rein ship <change>` driver running (for the plan repo `root`, when given)?
 
+    The pid the driver recorded in its state file answers exactly when it is alive; otherwise
+    (no pid yet, an older driver, a new driver that has not saved yet) `ps` is searched.
     Never matches this process. A driver whose `--root` is missing or relative cannot be placed,
     so it counts as a match: a false "alive" only delays a STOPPED, a false "dead" lies."""
     own_pid = os.getpid() if own_pid is None else own_pid
+    if root:
+        pid = _recorded_pid(root, change)
+        if pid and pid != own_pid and _pid_is_driver(pid, change):
+            return True
     want = os.path.realpath(root) if root else ""
     for line in ps():
         parts = line.split()

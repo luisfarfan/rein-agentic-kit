@@ -1372,6 +1372,7 @@ def run_ship(root: str, change: str, client: OrcaClient, gate_runner: Callable, 
             state = ss.from_plan(plan, ctx["default_repo"], change)
         else:
             ss.reconcile(state, plan, ctx["default_repo"])
+        state.driver_pid = os.getpid()  # `rein watch` / `rein done` tell this driver is alive by it
         driver = _Driver(ctx, state, client, gate_runner, clock, spath, dry_run)
         try:
             driver.setup()
