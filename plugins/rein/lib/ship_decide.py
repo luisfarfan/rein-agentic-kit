@@ -98,6 +98,9 @@ class GateVerdict:
     task_id: str
     exit_code: int
     reason: str
+    # The worker attempt the gate judged: a verdict for an earlier attempt (its gate ran on after
+    # a timeout gate and a retry) must not judge the new one. "" = unknown, accepted.
+    dispatch_id: str = ""
 
 
 @dataclass
@@ -567,11 +570,14 @@ def _on_tick(state: ShipState, event: Tick, cfg: ShipConfig, actions: list) -> N
             task.started_at = now
 
     for task in state.tasks.values():
-        if task.status == "running" and now - task.started_at > cfg.task_timeout_minutes * 60:
+        # The clock covers the gate too: a task stuck in `gating` is bounded like a running one.
+        if (task.status in ("running", "gating") and task.started_at
+                and now - task.started_at > cfg.task_timeout_minutes * 60):
+            gating = task.status == "gating"
             task.status = "gated"
             _open(state, actions, task.id,
-                  "Task %s has run for more than %g minutes. Retry it, or skip it?"
-                  % (task.id, cfg.task_timeout_minutes),
+                  "Task %s has run%s for more than %g minutes. Retry it, or skip it?"
+                  % (task.id, " (and been gated)" if gating else "", cfg.task_timeout_minutes),
                   ["retry", "skip"], "timeout")
 
     for task in state.tasks.values():
@@ -668,6 +674,8 @@ def _on_gate_verdict(state: ShipState, event: GateVerdict, cfg: ShipConfig, acti
     task = state.tasks.get(event.task_id)
     if task is None or task.status != "gating":
         return
+    if event.dispatch_id and task.dispatch_id and event.dispatch_id != task.dispatch_id:
+        return  # the gate of an earlier attempt
     if event.exit_code == 0:
         if task.human_review:  # the gate is green; a person still has to say so
             _release_held(task, actions)

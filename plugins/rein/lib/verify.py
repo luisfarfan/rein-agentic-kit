@@ -304,6 +304,17 @@ def _kill_group(proc: subprocess.Popen) -> None:
         os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
 
 
+# Commands `run_one` is running right now. Each runs in its own session, so killing the
+# process that started it does not reach it: `kill_running` does (a gate being stopped).
+_LIVE: set = set()
+
+
+def kill_running() -> None:
+    """Kill the process group of every command `run_one` is running in this process."""
+    for proc in list(_LIVE):
+        _kill_group(proc)
+
+
 def run_one(
     slot: str, command: str, cwd: str, timeout: float = DEFAULT_TIMEOUT, configured: str | None = None,
     env: dict | None = None,
@@ -345,6 +356,7 @@ def run_one(
             error=str(exc), executed_command=command,
         )
 
+    _LIVE.add(proc)
     try:
         raw_stdout, _ = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
@@ -358,6 +370,8 @@ def run_one(
             error=f"timed out after {timeout}s -- the whole process group was killed",
             executed_command=command, output=(partial or b"").decode("utf-8", errors="replace"),
         )
+    finally:
+        _LIVE.discard(proc)
 
     elapsed_ms = int((time.monotonic() - started) * 1000)
     text = (raw_stdout or b"").decode("utf-8", errors="replace")

@@ -16,8 +16,10 @@ import json
 import os
 import re
 import shlex
+import signal
 import subprocess
 import sys
+import threading
 import time
 from typing import Callable
 
@@ -42,6 +44,8 @@ BIN = os.path.join(PLUGIN, "bin", "rein")
 CONTRACT = "orchestration.contract.v1"
 DEFAULT_BASE_REF = "origin/develop"
 WAIT_MS = 15000      # bounded: gate-resolve sends no inbox message, so a wait must wake to poll (and to apply queued answers)
+GATE_WAIT_MS = 3000  # the Orca wait while a gate runs in the background, so its verdict is fed soon after it lands
+GATE_POLL_SECONDS = 1.0
 IDLE_POLLS = 3       # empty waits in a row before asking worker-list what needs doing
 SAFE_NEXT_ACTIONS = ("release", "retain")
 _TAIL = 2000
@@ -317,15 +321,51 @@ def failure_detail(out: str) -> str:
     return _fit_blocks(blocks, _FAILURE_CAP)
 
 
+class GateCancelled(Exception):
+    """The driver no longer needs this gate (its task timed out while gating)."""
+
+
+def _gate_process(argv: list, timeout: float, cancel=None):
+    """Run one `rein gate` to completion: a CompletedProcess, TimeoutExpired past `timeout`, or
+    GateCancelled once `cancel` is set. Either way out, its whole process group is killed."""
+    if cancel is None:
+        return subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+    proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                            start_new_session=True)
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            out, err = proc.communicate(timeout=0.5)
+            return subprocess.CompletedProcess(argv, proc.returncode, out, err)
+        except subprocess.TimeoutExpired:
+            stop = cancel.is_set()
+            if stop or time.monotonic() >= deadline:
+                # SIGTERM first: `rein gate` then kills the check it is running (its own group).
+                try:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+                    proc.communicate(timeout=5)
+                except (ProcessLookupError, subprocess.TimeoutExpired, OSError, ValueError):
+                    pass
+                _verify._kill_group(proc)
+                try:
+                    proc.communicate(timeout=5)
+                except (subprocess.TimeoutExpired, OSError, ValueError):
+                    pass
+                if stop:
+                    raise GateCancelled()
+                raise subprocess.TimeoutExpired(argv, timeout)
+
+
 def default_gate_runner(path: str, unit_only: bool, timeout: float = 900.0, *,
-                        repo: str = "", env_root: str = "", tier: str = "", base: str = "") -> tuple:
+                        repo: str = "", env_root: str = "", tier: str = "", base: str = "",
+                        cancel=None) -> tuple:
     """`rein gate <path> --json [--unit-only] --timeout <s>`, with this process's Python and this checkout's bin.
 
     `timeout` is the per-command budget `rein gate` gives each configured command;
     the subprocess itself gets an outer bound so a hung gate cannot hang the driver.
     `repo` and `env_root` (the plan root) let it expand the worktree's `gate.env`. `tier`
     "task" (with the change's `base`) runs lint, typecheck and the affected tests; "full"
-    runs every gate slot, the repo's pre-audit gate.
+    runs every gate slot, the repo's pre-audit gate. `cancel` (a threading.Event) stops it.
     """
     argv = ([sys.executable, BIN, "gate", path, "--json"] + (["--unit-only"] if unit_only else [])
             + ["--timeout", "%g" % timeout])
@@ -339,9 +379,11 @@ def default_gate_runner(path: str, unit_only: bool, timeout: float = 900.0, *,
         argv += ["--base", base]
     outer = gate_outer_bound(path, unit_only, timeout, repo, tier) + 60
     try:
-        proc = subprocess.run(argv, capture_output=True, text=True, timeout=outer)
+        proc = _gate_process(argv, outer, cancel)
     except subprocess.TimeoutExpired:
         return 126, "gate timed out: `rein gate` exceeded %gs overall" % outer
+    except GateCancelled:
+        return 126, "gate cancelled: the driver no longer needs it"
     # The JSON report alone when stdout is one: a warning on stderr must not break its parse.
     # Anything else keeps the whole capture, and `failure_detail` falls back to its tail.
     stdout = proc.stdout or ""
@@ -563,8 +605,87 @@ def _episode_stamp(episode) -> str:
 
 # --- the driver ----------------------------------------------------------------
 
+class GatePool:
+    """Gates on background threads, so a 10-minute suite never blocks the driver loop.
+
+    The driver's thread is the only one that touches the ship state: a job gets its
+    inputs captured beforehand and returns a verdict, which `results()` hands back to
+    the driver to feed. One job per key at a time (a task's attempt, a repo); a
+    cancelled job's verdict is dropped. The pool outlives a driver across an Orca
+    restart, so a resumed run does not start a second gate on the same worktree."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._running: dict = {}   # key -> cancel Event
+        self._landed: list = []
+        self._wake = threading.Event()
+
+    def submit(self, key, job) -> bool:
+        with self._lock:
+            if key in self._running:
+                return False
+            cancel = threading.Event()
+            self._running[key] = cancel
+
+        def work():
+            try:
+                verdict = job(cancel)
+            except Exception as exc:  # a crashed gate is a setup problem, never a hung driver
+                verdict = _crashed(key, exc)
+            with self._lock:
+                self._running.pop(key, None)
+                if not cancel.is_set():
+                    self._landed.append((key, verdict))
+                self._wake.set()
+        threading.Thread(target=work, name="rein-gate-%s" % "-".join(map(str, key)), daemon=True).start()
+        return True
+
+    def results(self) -> list:
+        with self._lock:
+            out, self._landed = self._landed, []
+            self._wake.clear()
+            return out
+
+    def running(self) -> list:
+        with self._lock:
+            return list(self._running)
+
+    def busy(self) -> bool:
+        with self._lock:
+            return bool(self._running or self._landed)
+
+    def wait(self, timeout: float) -> bool:
+        """Block until a verdict lands (True) or `timeout` passes (False)."""
+        with self._lock:
+            if self._landed:
+                return True
+        return self._wake.wait(timeout) and bool(self._landed)
+
+    def cancel(self, key) -> None:
+        with self._lock:
+            cancel = self._running.get(key)
+        if cancel is not None:
+            cancel.set()
+
+    def shutdown(self, timeout: float = 10.0) -> None:
+        """Cancel every running gate and give the threads a moment to kill their processes."""
+        for key in self.running():
+            self.cancel(key)
+        deadline = time.monotonic() + timeout
+        while self.running() and time.monotonic() < deadline:
+            time.sleep(0.05)
+
+
+def _crashed(key, exc):
+    why = "the gate crashed: %s: %s" % (type(exc).__name__, exc)
+    if key[0] == "repo":
+        return sd.RepoGateVerdict(key[1], 126, why)
+    return sd.GateVerdict(key[1], 126, why, key[2] if len(key) > 2 else "")
+
+
 class _Driver:
-    def __init__(self, ctx, state, client, gate_runner, clock, spath, dry_run):
+    def __init__(self, ctx, state, client, gate_runner, clock, spath, dry_run, pool=None):
+        self.pool = pool
         self.ctx, self.state, self.client = ctx, state, client
         self.gate_runner, self.clock, self.spath, self.dry_run = gate_runner, clock, spath, dry_run
         self.root, self.cfg, self.plan = ctx["root"], ctx["cfg"], ctx["plan"]
@@ -635,15 +756,17 @@ class _Driver:
                 if follow is not None:
                     queue.append(follow)
             self.open_pending()
+        self.cancel_stale_gates()
 
     # -- actions
     def execute(self, a):
         if isinstance(a, sd.Dispatch):
             self.dispatch(a)
         elif isinstance(a, sd.RunGate):
-            return self.run_gate(a)
+            task = self.state.tasks[a.task_id]
+            return self.submit_gate(("task", a.task_id, task.dispatch_id), self.task_gate_job(a))
         elif isinstance(a, sd.RunRepoGate):
-            return self.run_repo_gate(a)
+            return self.submit_gate(("repo", a.repo), self.repo_gate_job(a))
         elif isinstance(a, sd.CloseTask):
             if not _plan.close_task(self.state.plan_path, a.task_id):
                 self.say("could not tick %s in %s" % (a.task_id, self.state.plan_path))
@@ -886,59 +1009,118 @@ class _Driver:
                 return base
         return self.base_ref(task.repo)
 
+    def repo_gate_job(self, a):
+        """A callable `job(cancel=None) -> RepoGateVerdict` for the repo's full gate before the audit.
+
+        Everything it needs is captured here, on the driver's thread: the job may run on a
+        background thread and never reads the ship state."""
+        path = self.state.worktree_paths.get(a.repo, "")
+        repo, runner, timeout = a.repo, self.gate_runner, self.cfg.gate_timeout_seconds
+        root, say = getattr(self, "root", ""), self.say
+
+        def job(cancel=None):
+            if not path:
+                return sd.RepoGateVerdict(repo, 126, "no worktree is recorded for %s" % repo)
+            try:
+                code, out = call_with(runner, path, True, timeout, repo=repo, env_root=root, tier="full",
+                                      cancel=cancel)
+            except OSError as exc:
+                code, out = 126, "gate could not run: %s" % exc
+            say("%s full gate exit %s" % (repo, code))
+            return sd.RepoGateVerdict(repo, code, failure_detail(out) if code else "")
+        return job
+
     def run_repo_gate(self, a):
         """The repo's full gate before the audit: every gate slot, the whole suite."""
-        path = self.state.worktree_paths.get(a.repo, "")
-        if not path:
-            return sd.RepoGateVerdict(a.repo, 126, "no worktree is recorded for %s" % a.repo)
-        try:
-            code, out = call_with(self.gate_runner, path, True, self.cfg.gate_timeout_seconds,
-                                  repo=a.repo, env_root=getattr(self, "root", ""), tier="full")
-        except OSError as exc:
-            code, out = 126, "gate could not run: %s" % exc
-        self.say("%s full gate exit %s" % (a.repo, code))
-        return sd.RepoGateVerdict(a.repo, code, failure_detail(out) if code else "")
+        return self.repo_gate_job(a)()
 
-    def run_gate(self, a):
+    def task_gate_job(self, a):
+        """A callable `job(cancel=None) -> GateVerdict` for a task's gate and its own Verification.
+
+        Inputs are captured now, on the driver's thread; the job never reads the ship state, so
+        it may run on a background thread while the driver keeps handling events."""
         task = self.state.tasks[a.task_id]
-        path = self.state.worktree_paths.get(task.repo, "")
-        if not path:
-            return sd.GateVerdict(a.task_id, 126, "no worktree is recorded for %s" % task.repo)
-        env = self.worktree_env(task.repo, path)
+        task_id, repo, dispatch_id = task.id, task.repo, getattr(task, "dispatch_id", "")
+        verification, task_type = task.verification, task.type
+        path = self.state.worktree_paths.get(repo, "")
+        env = self.worktree_env(repo, path)
         # A task's gate: lint, typecheck and the tests its change reaches (the full suite runs once
         # per repo before the audit). A verification-type task keeps the default, render-aware gate.
         tier = {"tier": "task", "base": self.task_base(task)} if a.unit_only else {}
-        try:
-            code, out = call_with(self.gate_runner, path, a.unit_only, self.cfg.gate_timeout_seconds,
-                                  repo=task.repo, env_root=getattr(self, "root", ""), **tier)
-        except OSError as exc:
-            code, out = 126, "gate could not run: %s" % exc
-        self.say("%s gate exit %s" % (task.id, code))
-        detail = failure_detail(out)
-        command, why_not = task_verification_command(task.verification)
-        runnable = code != 126 and task.verification.strip() and task.type not in UNRUN_VERIFICATION_TYPES
-        if runnable and not command:
-            self.say("%s verification not run (%s): the gate alone decides" % (task.id, why_not))
-        elif runnable:
-            # The task's own check, not only the project's: done needs both.
+        runner, timeout, unit_only = self.gate_runner, self.cfg.gate_timeout_seconds, a.unit_only
+        root, say = getattr(self, "root", ""), self.say
+
+        def job(cancel=None):
+            if not path:
+                return sd.GateVerdict(task_id, 126, "no worktree is recorded for %s" % repo, dispatch_id)
             try:
-                vcode, vtext = call_with(run_task_verification, command, path,
-                                         self.cfg.gate_timeout_seconds, env=env)
+                code, out = call_with(runner, path, unit_only, timeout, repo=repo, env_root=root,
+                                      cancel=cancel, **tier)
             except OSError as exc:
-                vcode, vtext = 126, "could not run: %s" % exc
-            self.say("%s verification exit %s" % (task.id, vcode))
-            if vcode == 126:
-                # A missing tool is setup, not the worker's code: no retry is burned on it.
-                self.say("%s verification could not run ($ %s): %s; the gate alone decides"
-                         % (task.id, command, (vtext or "").splitlines()[0] if vtext else "not invocable"))
-            elif vcode != 0:
-                block = _verification_block(command, vcode, vtext)
-                if code == 0:
-                    code, detail = vcode, block[:_FAILURE_CAP]
-                else:
-                    detail = _fit_blocks([(block.split("\n", 1)[0], block.split("\n")[1:]),
-                                          ("gate", detail.split("\n"))], _FAILURE_CAP)
-        return sd.GateVerdict(a.task_id, code, detail)
+                code, out = 126, "gate could not run: %s" % exc
+            say("%s gate exit %s" % (task_id, code))
+            detail = failure_detail(out)
+            if cancel is not None and cancel.is_set():
+                return sd.GateVerdict(task_id, 126, "the gate was cancelled", dispatch_id)
+            command, why_not = task_verification_command(verification)
+            runnable = code != 126 and verification.strip() and task_type not in UNRUN_VERIFICATION_TYPES
+            if runnable and not command:
+                say("%s verification not run (%s): the gate alone decides" % (task_id, why_not))
+            elif runnable:
+                # The task's own check, not only the project's: done needs both.
+                try:
+                    vcode, vtext = call_with(run_task_verification, command, path, timeout, env=env)
+                except OSError as exc:
+                    vcode, vtext = 126, "could not run: %s" % exc
+                say("%s verification exit %s" % (task_id, vcode))
+                if vcode == 126:
+                    # A missing tool is setup, not the worker's code: no retry is burned on it.
+                    say("%s verification could not run ($ %s): %s; the gate alone decides"
+                        % (task_id, command, (vtext or "").splitlines()[0] if vtext else "not invocable"))
+                elif vcode != 0:
+                    block = _verification_block(command, vcode, vtext)
+                    if code == 0:
+                        code, detail = vcode, block[:_FAILURE_CAP]
+                    else:
+                        detail = _fit_blocks([(block.split("\n", 1)[0], block.split("\n")[1:]),
+                                              ("gate", detail.split("\n"))], _FAILURE_CAP)
+            return sd.GateVerdict(task_id, code, detail, dispatch_id)
+        return job
+
+    def run_gate(self, a):
+        return self.task_gate_job(a)()
+
+    def submit_gate(self, key, job):
+        """Run `job` on the gate pool and return None (its verdict is fed when it lands), or run it
+        here and return the verdict when the driver has no pool (tests, a dry run)."""
+        pool = getattr(self, "pool", None)
+        if pool is None:
+            return job()
+        if not pool.submit(key, job):
+            self.say("a gate for %s is already running; not starting another" % (key,))
+        return None
+
+    def collect_gates(self) -> bool:
+        """Feed every gate verdict that landed; True when one did."""
+        pool = getattr(self, "pool", None)
+        if pool is None:
+            return False
+        landed = pool.results()
+        for _key, verdict in landed:
+            if verdict is not None:
+                self.feed(verdict)
+        return bool(landed)
+
+    def cancel_stale_gates(self):
+        """A task that left `gating` (its task timeout opened a gate) no longer needs its gate."""
+        pool = getattr(self, "pool", None)
+        if pool is None:
+            return
+        for key in pool.running():
+            if key[0] == "task":
+                task = self.state.tasks.get(key[1])
+                if task is None or task.status != "gating" or task.dispatch_id != key[2]:
+                    pool.cancel(key)
 
     def compute_changes(self):
         if self.state.audit_dispatch:
@@ -1312,7 +1494,9 @@ class _Driver:
                 self.feed(e)
         for repo, status in list(self.state.repo_gates.items()):
             if self.state.phase in ("verifying", "running", "fixing") and status == "running":
-                self.feed(self.run_repo_gate(sd.RunRepoGate(repo)))  # interrupted mid-gate: run it again
+                follow = self.execute(sd.RunRepoGate(repo))  # interrupted mid-gate: run it again
+                if follow is not None:
+                    self.feed(follow)
         if self.state.phase == "auditing" and self.state.audit_starting and not self.state.audit_dispatch:
             self.adopt_audit(listed)
         if self.state.phase == "auditing":
@@ -1325,8 +1509,9 @@ class _Driver:
                 self.feed_changes()
 
     def feed_gate(self, run_gate):
-        verdict = self.run_gate(run_gate)
-        self.feed(verdict)
+        verdict = self.execute(run_gate)
+        if verdict is not None:
+            self.feed(verdict)
 
     def feed_changes(self):
         event = self.compute_changes()
@@ -1336,6 +1521,9 @@ class _Driver:
     def loop(self):
         idle = 0
         while not self.finished:
+            self.collect_gates()
+            if self.finished:
+                break
             self.open_pending()
             limits = self.limits()
             self.note_quota_before(limits)
@@ -1347,7 +1535,14 @@ class _Driver:
                 continue  # the owner's answer may free work: Tick before waiting for the next message
             if self.finished:
                 break
-            res = self.client.check(wait=True, timeout_ms=WAIT_MS)
+            pool = getattr(self, "pool", None)
+            if pool is not None and pool.busy():
+                # A gate runs in the background: look at it often, and at Orca in between.
+                if pool.wait(GATE_POLL_SECONDS):
+                    continue
+                res = self.client.check(wait=True, timeout_ms=GATE_WAIT_MS)
+            else:
+                res = self.client.check(wait=True, timeout_ms=WAIT_MS)
             if oc.messages_of(res):
                 idle = 0
                 self.handle_delivery(res)
@@ -1491,6 +1686,15 @@ def run_ship(root: str, change: str, client: OrcaClient, gate_runner: Callable, 
     ctx["cfg"].override = override
     spath = state_path or ss.state_path(ctx["root"], change)
     plan = ctx["plan"]
+    pool = None if dry_run else GatePool()  # gates run off the driver loop; it outlives a resume
+    try:
+        return _run_ship_loop(ctx, change, client, gate_runner, clock, dry_run, spath, plan, sleep, pool)
+    finally:
+        if pool is not None:
+            pool.shutdown()
+
+
+def _run_ship_loop(ctx, change, client, gate_runner, clock, dry_run, spath, plan, sleep, pool) -> int:
     resumes, last_resume, auto = 0, None, False
     while True:
         try:
@@ -1507,7 +1711,7 @@ def run_ship(root: str, change: str, client: OrcaClient, gate_runner: Callable, 
         else:
             ss.reconcile(state, plan, ctx["default_repo"])
         state.driver_pid = os.getpid()  # `rein watch` / `rein done` tell this driver is alive by it
-        driver = _Driver(ctx, state, client, gate_runner, clock, spath, dry_run)
+        driver = _Driver(ctx, state, client, gate_runner, clock, spath, dry_run, pool)
         try:
             driver.setup()
             if dry_run:

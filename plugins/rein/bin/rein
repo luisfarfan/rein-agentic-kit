@@ -98,6 +98,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import signal
 import sys
 import time
 
@@ -261,6 +262,14 @@ def cmd_gate(argv: list[str]) -> int:
     # `--root` instead would have failed silently: `_positional` skips
     # anything starting with `-`, so `rein gate --root=/elsewhere` would have
     # resolved `.` and reported a confident verdict about the wrong repo.
+    # Stopped by the driver (a gate nobody needs, or one past its bound): take the running check
+    # down with it -- it runs in its own process group, which killing this process does not reach.
+    def _stop(signum, _frame):
+        _verify.kill_running()
+        os._exit(128 + signum)
+    for _sig in (signal.SIGTERM, signal.SIGINT):
+        signal.signal(_sig, _stop)
+
     root = _positional(argv) or "."
     resolved = _detect.resolve(root)
     # No --timeout: the project's own per-command budget (ship.gateTimeoutSeconds, 900 s by

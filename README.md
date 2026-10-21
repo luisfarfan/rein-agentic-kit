@@ -136,6 +136,8 @@ rein ship <change> [--root <plan repo>] [--agent <id> [--model <m>]] [--dry-run 
                  # A task's gate: lint, typecheck, the affected tests and its Verification;
                  # each repo's full gate (whole suite) runs once, after its tasks, before the
                  # audit and the re-audit. A red full gate becomes a GATE<n>-<repo> fix task.
+                 # Gates run in the background: the loop keeps handling workers, gates and
+                 # answers meanwhile. taskTimeoutMinutes covers a task's gating too.
                  # Resumes from .rein/ship/<change>.json. --dry-run prints every orca call and
                  # runs nothing. Never pushes, merges or deploys.
                  # Exit: 0 shipped and approved · 1 failed tasks or rejected audit
@@ -279,7 +281,7 @@ Everything is optional. Drop a `flow.config.json` at your project root to overri
 
 The `ship` block shows its defaults. `maxRetries` is how many times a red task is retried with a
 fresh worker, `maxAuditRounds` bounds audit and fix rounds (when it runs out with blocking findings, the gate offers `fix` for one more fix round and audit, `accept` or `reject`), `taskTimeoutMinutes` opens a gate
-instead of waiting forever, `gateTimeoutSeconds` is a gate slot's timeout until that slot has passed in the repo
+instead of waiting forever (it counts the task's gating time too), `gateTimeoutSeconds` is a gate slot's timeout until that slot has passed in the repo
 (raise it for a slow suite); after that each slot gets twice its slowest of the last five passes,
 between 2 and 30 minutes, so a hung suite is stopped long before the old 6× bound, and a change that touches `riskyPaths` or more than `largeChangeFiles`
 files gets an Opus audit.
