@@ -145,26 +145,36 @@ def run_steps(root: str, steps: list, timeout_for: Callable[[str, str], float], 
     and a new pass is stored (gate_cache); nothing else is ever stored. With
     `history_repo`, each pass's duration is recorded for the slot's next budget.
 
-    `prepare` (gate.prepare: generated code, a schema) runs once, before the first slot that is
-    not answered from the cache; when it fails, every slot left is `not_invocable` -- the
-    environment could not run the checks, which says nothing about the code."""
+    `prepare` (gate.prepare: generated code, a schema) may change the tree the slots check. So a
+    gate with one is answered wholly from the cache (every slot passed on this exact tree, with
+    this prepare) or not at all: then prepare runs FIRST, and every slot looks up and stores its
+    pass under the tree as prepare left it -- the tree it really checked. When prepare fails,
+    every slot is `not_invocable`: the environment could not run the checks, which says nothing
+    about the code."""
     results: dict = {}
     stopped_by = ""
     unprepared = ""  # why gate.prepare failed, once it did
-    for slot, command, configured in steps:
-        if stopped_by:
-            results[slot] = _skipped(slot, configured, "skipped: %s did not pass first" % stopped_by)
-            continue
-        k = ""
-        if cache:
-            state = _cache.tree_state(root)  # per slot: an earlier slot may have written files
-            k = _cache.key(root, state, slot, command, env or {}) if state else ""
-            hit = _cache.get(root, k) if k else None
-            if hit is not None:
-                hit.pop("storedAt", None)
+
+    def cache_key(slot, command):
+        state = _cache.tree_state(root)  # per slot: an earlier slot may have written files
+        keyed = command + ("\n# gate.prepare: " + prepare if prepare else "")
+        return _cache.key(root, state, slot, keyed, env or {}) if state else ""
+
+    def lookup(slot, command):
+        k = cache_key(slot, command)
+        hit = _cache.get(root, k) if k else None
+        if hit is not None:
+            hit.pop("storedAt", None)
+        return k, hit
+
+    pending = list(steps)
+    if prepare:
+        hits = {s: lookup(s, c)[1] for s, c, _k in steps} if cache else {}
+        if steps and cache and all(h is not None for h in hits.values()):
+            for slot, hit in hits.items():
                 results[slot] = {**hit, "cached": True}
-                continue
-        if prepare and "prepare" not in results:
+            pending = []  # every slot is answered for this tree: nothing to prepare
+        elif steps:
             pres = call_with(run, "prepare", prepare, root, timeout_for("prepare", prepare), configured=prepare,
                              env=env or None)
             results["prepare"] = pres.to_dict()
@@ -172,6 +182,16 @@ def run_steps(root: str, steps: list, timeout_for: Callable[[str, str], float], 
                 results["prepare"]["errorLines"] = _verify.failure_lines(pres.output)
                 lines = results["prepare"]["errorLines"] or [pres.error or "exit %s" % pres.exit_code]
                 unprepared = "gate.prepare failed ($ %s): %s" % (prepare, " | ".join(lines)[-500:])
+    for slot, command, configured in pending:
+        if stopped_by:
+            results[slot] = _skipped(slot, configured, "skipped: %s did not pass first" % stopped_by)
+            continue
+        k = ""
+        if cache and not unprepared:
+            k, hit = lookup(slot, command)
+            if hit is not None:
+                results[slot] = {**hit, "cached": True}
+                continue
         if unprepared:
             results[slot] = _verify.CommandResult(slot, configured, False, _verify.OUTCOME_NOT_INVOCABLE, None,
                                                   [], 0, error=unprepared).to_dict()

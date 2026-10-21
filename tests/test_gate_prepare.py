@@ -74,3 +74,51 @@ class QuickDone(DoneCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+import gate_run  # noqa: E402
+
+
+class PrepareAndCache(GateRunCase):
+    """R2: a pass is stored under the tree state the slot really checked -- after prepare."""
+
+    def git(self, *args):
+        subprocess.run(["git", "-C", self.root, "-c", "user.name=t", "-c", "user.email=t@t", *args],
+                       check=True, capture_output=True)
+
+    def run_once(self):
+        steps = [("typecheck", "grep -qx good generated.txt", "grep -qx good generated.txt")]
+        return gate_run.run_steps(self.root, steps, lambda s, c: 60, cache=True,
+                                  prepare="echo good > generated.txt")
+
+    def test_a_pass_after_prepare_is_not_reused_for_the_unprepared_tree(self):
+        os.environ["REIN_CACHE_DIR"] = self.cache
+        self.addCleanup(os.environ.pop, "REIN_CACHE_DIR", None)
+        with open(os.path.join(self.root, "generated.txt"), "w") as fh:
+            fh.write("bad\n")
+        self.git("init", "-q")
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "base")
+        first = self.run_once()
+        self.assertEqual(first["results"]["typecheck"]["outcome"], "ok")
+        with open(os.path.join(self.root, "generated.txt"), "w") as fh:
+            fh.write("bad\n")  # back to the state before prepare
+        second = self.run_once()
+        self.assertIn("prepare", second["results"], "the unprepared tree never passed: prepare must run")
+        with open(os.path.join(self.root, "generated.txt")) as fh:
+            self.assertEqual(fh.read().strip(), "good", "the pass, cached or not, is for the prepared tree")
+
+    def test_a_slot_cached_on_the_unprepared_tree_is_not_mixed_with_a_prepared_one(self):
+        os.environ["REIN_CACHE_DIR"] = self.cache
+        self.addCleanup(os.environ.pop, "REIN_CACHE_DIR", None)
+        with open(os.path.join(self.root, "generated.txt"), "w") as fh:
+            fh.write("bad\n")
+        self.git("init", "-q")
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "base")
+        lint = ("lint", "true", "true")
+        gate_run.run_steps(self.root, [lint], lambda s, c: 60, cache=True)  # lint cached on the bad tree
+        steps = [lint, ("typecheck", "grep -qx good generated.txt", "grep -qx good generated.txt")]
+        report = gate_run.run_steps(self.root, steps, lambda s, c: 60, cache=True, prepare="echo good > generated.txt")
+        self.assertEqual(list(report["results"])[0], "prepare", "prepare runs before every slot of that gate")
+        self.assertFalse(report["results"]["lint"].get("cached"), "lint's pass was for the unprepared tree")
