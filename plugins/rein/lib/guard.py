@@ -225,6 +225,14 @@ def _hook_installed(path: str, name: str) -> bool:
     return bool(hook) and os.path.isfile(hook) and os.access(hook, os.X_OK)
 
 
+def _has_commit_msg_hook(path: str) -> bool:
+    """A commit-msg hook is configured: a hook file, or (newer git) a config-defined hook."""
+    if _hook_installed(path, "commit-msg"):
+        return True
+    code, out = _git(path, "hook", "list", "commit-msg")
+    return code == 0 and bool(out.strip())
+
+
 def commit_msg_failures(path: str, base: str, env=None) -> list:
     """One line per commit in `base..HEAD` (merges aside) its repo's `commit-msg` hook rejects.
 
@@ -241,7 +249,7 @@ def commit_msg_failures(path: str, base: str, env=None) -> list:
     every = [c for c in out.split() if c]
     commits = every[:MAX_COMMITS]
     problems = []
-    if len(every) > len(commits):
+    if len(every) > len(commits) and _has_commit_msg_hook(path):
         problems.append("the change has %d commits; only the newest %d were run through the commit-msg hook, "
                         "%d were not checked: squash them, or check them by hand"
                         % (len(every), len(commits), len(every) - len(commits)))

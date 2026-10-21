@@ -463,3 +463,17 @@ class SubprojectRunner(unittest.TestCase):
         self.assertEqual(len(problems), 1, problems)
         self.assertIn("app/mise.toml", problems[0])
 
+
+
+class CapWithoutHook(unittest.TestCase):
+    """R6: no commit-msg hook, nothing to run: the commit cap says nothing."""
+
+    def test_past_the_cap_without_a_hook_is_clean(self):
+        tmp = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, True)
+        repo = os.path.join(tmp, "repo")
+        base = make_repo(repo, hook=False)
+        for i in range(4):
+            commit(repo, "app.py", "x = %d\n" % i, "anything %d" % i)
+        with mock.patch.object(guard, "MAX_COMMITS", 3):
+            self.assertEqual(guard.check(repo, base, {}), [])
