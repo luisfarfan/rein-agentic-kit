@@ -103,8 +103,9 @@ class BriefTests(unittest.TestCase):
             for linear in ("", "PPR-123"):
                 brief = quick.build_brief(sentence, linear=linear, bug=bug, bin_path=BIN)
                 # 170, plus the line that leaves `rein quick close` to the orchestrator and the
-                # three guardrails Rein enforces (outside the worktree, hooks, gate config).
-                self.assertLessEqual(len(brief.split()), 240)
+                # three guardrails Rein enforces (outside the worktree, hooks, gate config), and
+                # the line that sends a question through `rein quick ask`.
+                self.assertLessEqual(len(brief.split()), 260)
                 self.assertIn(sentence, brief)
 
 

@@ -223,6 +223,13 @@ class OrcaClient:
             args += ["--worktree", worktree]
         return self._call(*args)
 
+    def terminal_send(self, handle: str, text: str, enter: bool = True) -> dict:
+        """Type `text` into a live terminal (an agent's prompt), then Enter."""
+        args = ["terminal", "send", "--terminal", handle, "--text", text]
+        if enter:
+            args.append("--enter")
+        return self._call(*args)
+
     def terminal_close(self, handle: str, tab: bool = False) -> dict:
         """Close one terminal by its runtime handle; `tab` closes its whole tab."""
         args = ["terminal", "close", "--terminal", handle]

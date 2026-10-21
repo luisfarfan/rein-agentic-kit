@@ -71,6 +71,8 @@ def build_brief(sentence: str, linear: str = "", bug: bool = False, bin_path: st
     if bug:
         lines.append("Primero escribe un test que lo reproduzca.")
     lines.append("Corre solo los tests afectados, no la suite completa.")
+    lines.append("Si tienes una duda para mí, no la dejes solo en esta terminal: ejecuta "
+                 "`rein quick ask \"<pregunta>\"` y espera; mi respuesta llegará aquí.")
     lines.append("Cuando diga *listo*, ejecuta `rein quick done` y muéstrame el resultado.")
     if bin_path:
         lines.append("Si `rein` no está en el PATH, usa `python3 %s quick done`." % bin_path)
@@ -120,6 +122,14 @@ def new_record(repo: str, workspace: str, base: str, base_sha: str, agent: str,
         "started_at": now,
         "audit_rounds": 0,
     }
+
+
+def owner_decisions(record: dict) -> list:
+    """The questions the owner answered (`rein quick answer`), in ship's `owner_decisions` shape:
+    a quick audit's brief lists them as binding."""
+    found = record.get("questions") if isinstance(record.get("questions"), list) else []
+    return [{"gate": q.get("id"), "kind": "question", "task_id": None, "question": str(q.get("text") or ""),
+             "answer": q["answer"]} for q in found if isinstance(q, dict) and q.get("answer") is not None]
 
 
 # --- close: `rein quick done` ------------------------------------------------

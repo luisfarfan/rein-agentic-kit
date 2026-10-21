@@ -21,7 +21,8 @@ sys.path.insert(0, os.path.join(PLUGIN, "lib"))
 
 import roles  # noqa: E402
 
-BUDGETS = {"rein-plan": 700, "ship": 420, "answer": 200, "quick": 230}
+# quick: +70 for the watch that relays a quick agent's questions and startup stalls.
+BUDGETS = {"rein-plan": 700, "ship": 420, "answer": 200, "quick": 300}
 
 
 def _skill_files() -> list:

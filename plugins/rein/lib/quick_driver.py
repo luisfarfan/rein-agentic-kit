@@ -313,6 +313,8 @@ def start_quick(
     # 5. Record, only after Orca succeeded
     record = quick.new_record(repo_name, workspace, base, base_sha, agent, model,
                               sentence, linear, now())
+    if handle:
+        record["terminal"] = handle  # where `rein quick answer` types the owner's answers
     try:
         _write_record(workspace, record)
     except OSError as error:
@@ -520,7 +522,8 @@ def _audit(workspace: str, record: dict, changed: list, limits: dict, client: Or
     spec = ship.build_audit_spec(
         {"why": record.get("sentence") or ""}, {workspace: changed}, profile["text"], workspace, change,
         env_lines={workspace: _gate_env.export_lines(_gate_env.for_worktree(workspace, repo=repo))},
-        gate_commands={workspace: ship.audit_gate_command(workspace, repo)})
+        gate_commands={workspace: ship.audit_gate_command(workspace, repo)},
+        owner_decisions=quick.owner_decisions(record))
     baseline = ship._episode_stamp(_gate.latest_episode(workspace, change))
     client.run_create("rein quick %s" % name)
     task_id = oc.task_id_of(client.task_create(
