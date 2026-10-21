@@ -233,7 +233,7 @@ def _fallback_base(git: Callable[..., tuple], repo_path: str) -> str:
 
 def start_quick(
     sentence: str, *, repo: str, base: str = "", here: bool = False,
-    dirty_ok: bool = False, agent: str = "", model: str = "", linear: str = "",
+    dirty_ok: bool = False, agent: str = "", model: str = "", linear: str = "", allow_config=(),
     cwd: str = ".", client: OrcaClient, git: Callable[..., tuple] = run_git,
     fetch: Callable[[str, str], tuple] = run_fetch,
     now: Callable[[], float] = time.time, say: Callable[[str], None] = print,
@@ -374,7 +374,7 @@ def start_quick(
 
     # 5. Record, only after Orca succeeded
     record = quick.new_record(repo_name, workspace, base, base_sha, agent, model,
-                              sentence, linear, now())
+                              sentence, linear, now(), allow_config=_guard.declared_paths(allow_config))
     if handle:
         record["terminal"] = handle  # where `rein quick answer` types the owner's answers
     record["brief"] = brief  # what `rein quick resend` types again when a startup dialog swallowed it
@@ -711,7 +711,8 @@ def done_quick(*, cwd: str = ".", client: OrcaClient, run=verify.run_one,
     say(quick.summary(results, outputs, notes, audit_pending=pending))
     # The guard: the gate config untouched (unless the task asked for it) and every commit through
     # the repo's commit-msg hook. A breach is red, with its reason.
-    problems = _guard.check(workspace, record["base_sha"], resolved, str(record.get("sentence") or ""))
+    problems = _guard.check(workspace, record["base_sha"], resolved,
+                            _guard.declared_paths(record.get("allow_config") or []))
     for problem in problems:
         say("guard: %s" % problem)
     if outcome == "red" or (problems and outcome != "setup"):

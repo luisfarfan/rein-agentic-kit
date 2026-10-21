@@ -157,6 +157,21 @@ def build_task_spec(task: ss.TaskState, plan: dict, env_lines: list = ()) -> str
     return "\n".join(lines)
 
 
+def gate_config_allowed(plan: dict, state, task, default_repo: str = "") -> list:
+    """The gate-config paths `task` may change: its own `Gate config:` field, plus those of the
+    tasks of its repo already done (their change is in the diff since the base). A pending
+    task's declaration, or any mention in a task's text, grants nothing."""
+    out = []
+    for entry in plan.get("tasks") or []:
+        tid = entry.get("id")
+        if (entry.get("repo") or default_repo) != task.repo or not entry.get("gateConfig"):
+            continue
+        done = (state.tasks.get(tid) is not None and state.tasks[tid].status == "done")
+        if tid == task.id or done:
+            out += [p for p in _guard.declared_paths(entry["gateConfig"]) if p not in out]
+    return out
+
+
 # What no worker or auditor may do. Rein checks the last two when a task ends (guard.py).
 GUARDRAILS = [
     "Work only inside your worktree: never run scripts that live outside it (a sibling repo's, a "
@@ -164,8 +179,8 @@ GUARDRAILS = [
     "Never bypass the repo's hooks: no `--no-verify` / `-n`, no LEFTHOOK=0, LEFTHOOK_EXCLUDE, SKIP, "
     "HUSKY=0 or the like. A hook that fails is yours to fix, or a question for the owner.",
     "Never modify the configuration Rein judges the work with (flow.config.json, the task runner's "
-    "config such as mise.toml, any gate.protected file) unless your task names that file: Rein "
-    "rejects the change if you do.",
+    "config such as mise.toml or a Makefile, any gate.protected file) unless your task declares that "
+    "file in its `Gate config:` field: Rein rejects the change if you do.",
 ]
 
 
@@ -1183,14 +1198,11 @@ class _Driver:
         tier = {"tier": "task", "base": self.task_base(task)} if a.unit_only else {}
         runner, timeout, unit_only = self.gate_runner, self.cfg.gate_timeout_seconds, a.unit_only
         root, say = getattr(self, "root", ""), self.say
-        # The guard: what the change since the task's base must not do. A plan task of this repo
-        # that names a protected file (flow.config.json) lets the change touch it.
+        # The guard: what the change since the task's base must not do. Gate config only where this
+        # task, or one already done in this repo, declares it (`Gate config:`).
         guard_base = self.task_base(task)
-        allowed = " ".join(
-            " ".join([str(t.get("title") or "")] + [str(c) for c in t.get("acceptance") or []])
-            for t in ((getattr(self, "plan", None) or {}).get("tasks") or [])
-            if (t.get("repo") or (getattr(self, "ctx", None) or {}).get("default_repo")) == repo)
-        allowed += " " + (getattr(task, "audit_findings", "") or "")
+        allowed = gate_config_allowed(getattr(self, "plan", None) or {}, self.state, task,
+                                      (getattr(self, "ctx", None) or {}).get("default_repo", ""))
         log, change = self.gate_log_path(), getattr(self, "change", "")
 
         def job(cancel=None):

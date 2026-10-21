@@ -76,10 +76,10 @@ class Guard(unittest.TestCase):
         self.assertEqual(len(problems), 1)
         self.assertIn("flow.config.json", problems[0])
 
-    def test_a_task_that_names_the_file_may_change_it(self):
+    def test_a_task_that_declares_the_file_may_change_it(self):
         base = make_repo(self.repo)
         commit(self.repo, "flow.config.json", "{}", "fix: loosen the gate")
-        self.assertEqual(guard.check(self.repo, base, {}, allowed_text="Add gate.env to flow.config.json"), [])
+        self.assertEqual(guard.check(self.repo, base, {}, allowed=["flow.config.json"]), [])
 
     def test_mise_toml_is_protected_when_the_commands_come_from_mise(self):
         base = make_repo(self.repo)
@@ -297,3 +297,70 @@ class RunnerProvenance(unittest.TestCase):
                 problems = self.problems(base)
                 self.assertEqual(len(problems), 1, problems)
                 self.assertIn(name, problems[0])
+
+
+import ship_state  # noqa: E402
+
+
+class Authorization(unittest.TestCase):
+    """I4: only an explicit, scoped declaration lets a task change gate config -- a `Gate config:`
+    field on THIS task (or one already done in the same repo), or `rein quick --allow-config`.
+    Mentioning the file, even to forbid touching it, grants nothing."""
+
+    def test_a_mention_is_not_a_permission(self):
+        self.assertEqual(guard.config_changes(["flow.config.json"], ["flow.config.json"], []), ["flow.config.json"])
+
+    def test_a_declared_path_must_match_whole(self):
+        self.assertEqual(guard.config_changes(["flow.config.json"], ["flow.config.json"], ["config.json"]),
+                         ["flow.config.json"])
+        self.assertEqual(guard.config_changes(["flow.config.json"], ["flow.config.json"], ["flow.config.json"]), [])
+
+    PLAN = {"tasks": [
+        {"id": "T001", "title": "Fix UI; do not modify flow.config.json", "repo": "api", "acceptance": []},
+        {"id": "T002", "title": "Add gate.env", "repo": "api", "gateConfig": "flow.config.json, mise.toml"},
+        {"id": "T003", "title": "Other repo", "repo": "web", "gateConfig": "flow.config.json"},
+    ]}
+
+    def state(self, done=()):
+        st = ship_state.ShipState(change="c", plan_path="p")
+        for t in self.PLAN["tasks"]:
+            st.tasks[t["id"]] = ship_state.TaskState(id=t["id"], repo=t["repo"], deps=[], human_review=False,
+                                                     verification="", type="implementation",
+                                                     status="done" if t["id"] in done else "pending")
+        return st
+
+    def test_a_prohibition_in_the_task_text_grants_nothing(self):
+        st = self.state()
+        self.assertEqual(ship.gate_config_allowed(self.PLAN, st, st.tasks["T001"], "api"), [])
+
+    def test_the_tasks_own_field_grants_its_paths(self):
+        st = self.state()
+        self.assertEqual(ship.gate_config_allowed(self.PLAN, st, st.tasks["T002"], "api"),
+                         ["flow.config.json", "mise.toml"])
+
+    def test_another_pending_tasks_field_grants_nothing_a_done_ones_does(self):
+        st = self.state()
+        self.assertEqual(ship.gate_config_allowed(self.PLAN, st, st.tasks["T001"], "api"), [])
+        st = self.state(done=("T002", "T003"))
+        self.assertEqual(ship.gate_config_allowed(self.PLAN, st, st.tasks["T001"], "api"),
+                         ["flow.config.json", "mise.toml"])
+
+    def test_the_plan_parser_reads_the_field(self):
+        tasks = ship._plan.parse_tasks_md("- [ ] T001 Add env\n  - Gate config: flow.config.json\n")
+        self.assertEqual(tasks[0]["gateConfig"], "flow.config.json")
+
+
+class QuickAuthorization(DoneCase):
+    def test_a_sentence_that_mentions_the_file_does_not_allow_it(self):
+        self.make_repo(sentence="arregla el botón; no toques flow.config.json")
+        self.write("src/foo.ts", "v2\n")
+        self.write("flow.config.json", json.dumps({"commands": {"test": "true"}}))
+        code, _, _ = self.done()
+        self.assertEqual(code, 1, self.text())
+
+    def test_allow_config_in_the_record_allows_it(self):
+        self.make_repo(allow_config=["flow.config.json"])
+        self.write("src/foo.ts", "v2\n")
+        self.write("flow.config.json", json.dumps({"commands": {"test": "true"}}))
+        code, _, _ = self.done()
+        self.assertEqual(code, 0, self.text())

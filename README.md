@@ -57,7 +57,10 @@ Rein and executed without it. v2 fixes that by making execution one command.
 
 1. **Discover** (`/rein:rein-discover`) thinks the problem through. It writes no plan.
 2. **Plan** (`/rein:rein-plan`) turns it into tasks, each with acceptance criteria, a bounded
-   verification command and a `Repo:`. Nothing is written without your confirmation.
+   verification command and a `Repo:`. A task that must change the gate's own configuration
+   (flow.config.json, a Makefile/mise.toml/justfile/Taskfile a gate command uses) declares it
+   with `Gate config: <path>`; Rein's guard refuses any undeclared change to it.
+   Nothing is written without your confirmation.
 3. **Ship** (`/ship <change>`, or `/rein:ship`) runs `rein ship <change>`. Python dispatches one
    fresh Orca worker per task (Sonnet while Claude's weekly quota is low, else Codex, else
    Antigravity), runs `rein gate` on each result, retries a red task with a fresh worker, and

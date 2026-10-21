@@ -67,14 +67,14 @@ class TestQuickCli(unittest.TestCase):
             self.assertEqual(code, 0)
             start.assert_called_once_with(
                 "arregla el botón", repo="api", base="main", here=False, dirty_ok=False,
-                agent="codex", model="gpt-5", linear="PPR-12", cwd=".", client=client)
+                agent="codex", model="gpt-5", linear="PPR-12", cwd=".", client=client, allow_config="")
         with mock.patch.object(rein_cli._quick, "OrcaClient", return_value=client), \
                 mock.patch.object(rein_cli._quick, "start_quick", return_value=1) as start:
             code, _ = _run(["--here", "--dirty-ok", "tweak the header"])
             self.assertEqual(code, 1)
             start.assert_called_once_with(
                 "tweak the header", repo="", base="", here=True, dirty_ok=True,
-                agent="", model="", linear="", cwd=".", client=client)
+                agent="", model="", linear="", cwd=".", client=client, allow_config="")
         with mock.patch.object(rein_cli._quick, "OrcaClient", return_value=client), \
                 mock.patch.object(rein_cli._quick, "start_quick") as start, \
                 mock.patch.object(rein_cli._quick, "done_quick", return_value=126) as done:
@@ -91,7 +91,7 @@ class TestQuickCli(unittest.TestCase):
             self.assertEqual(code, 0)
             start.assert_called_once_with(
                 "fix it", repo="", base="", here=False, dirty_ok=False,
-                agent="codex", model="", linear="", cwd=".", client=client)
+                agent="codex", model="", linear="", cwd=".", client=client, allow_config="")
 
     def test_quick_is_registered(self):
         self.assertIs(rein_cli.COMMANDS["quick"], rein_cli.cmd_quick)
@@ -137,3 +137,12 @@ class TestQuickCloseParsing(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestAllowConfig(unittest.TestCase):
+    def test_allow_config_reaches_the_start(self):
+        with mock.patch.object(rein_cli._quick, "start_quick", return_value=0) as start, \
+                mock.patch.object(rein_cli._quick, "OrcaClient"):
+            code, _ = _run(["add the env", "--allow-config", "flow.config.json"])
+        self.assertEqual(code, 0)
+        self.assertEqual(start.call_args[1]["allow_config"], "flow.config.json")

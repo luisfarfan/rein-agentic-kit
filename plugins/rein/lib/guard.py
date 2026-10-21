@@ -7,7 +7,9 @@ commands and `gate.affected`), and another skipped the repo's commit-msg hook wi
 - the change touches the configuration Rein judges it with: `flow.config.json` always, the
   config of every task runner (mise, make, just, task) a gate command comes from or calls --
   as resolved at the change's base AND now, so deleting or swapping the runner is caught --
-  and any glob in `gate.protected`. A task whose own text names the file may change it;
+  and any glob in `gate.protected`. Only a path the task explicitly declares (`allowed`: a
+  plan task's `Gate config:` field, `rein quick --allow-config`) may change; a mention in
+  the task's text is not a declaration;
 - a commit of the change does not pass the repo's own `commit-msg` hook, run again by Rein
   (`git hook run`, so `core.hooksPath` and lefthook/husky installs are honoured) with the
   usual bypass variables removed from its environment.
@@ -120,15 +122,31 @@ def _extract(path: str, sha: str, name: str, into: str) -> None:
         fh.write(proc.stdout)
 
 
-def config_changes(changed: list, patterns: list, allowed_text: str = "") -> list:
-    """The changed files that are gate configuration, minus those the task's text names."""
+def config_changes(changed: list, patterns: list, allowed=()) -> list:
+    """The changed files that are gate configuration, minus those `allowed` declares: whole
+    repo-relative paths or globs, never a substring of a sentence."""
     out = []
     for path in changed:
         if not any(fnmatch.fnmatch(path, p) for p in patterns):
             continue
-        if allowed_text and (path in allowed_text or os.path.basename(path) in allowed_text):
+        if any(a and fnmatch.fnmatch(path, a) for a in allowed or ()):
             continue
         out.append(path)
+    return out
+
+
+def declared_paths(value) -> list:
+    """`flow.config.json, mise.toml` (a `Gate config:` field, an --allow-config value) -> paths."""
+    if isinstance(value, (list, tuple)):
+        items = [str(v) for v in value]
+    else:
+        items = re.split(r"[,\s]+", str(value or ""))
+    out = []
+    for item in items:
+        item = item.strip().strip("`")
+        item = item[2:] if item.startswith("./") else item
+        if item:
+            out.append(item)
     return out
 
 
@@ -207,7 +225,7 @@ def commit_msg_failures(path: str, base: str, env=None) -> list:
     return problems
 
 
-def check(path: str, base: str, resolved: dict, allowed_text: str = "", env=None) -> list:
+def check(path: str, base: str, resolved: dict, allowed=(), env=None) -> list:
     """Every rule the change since `base` breaks, one line each; [] when it breaks none."""
     if not base:
         return []
@@ -217,6 +235,7 @@ def check(path: str, base: str, resolved: dict, allowed_text: str = "", env=None
         return []
     patterns = protected_patterns(resolved, resolve_at(path, base) or {})
     problems = ["it changes %s, the configuration Rein gates it with; revert that change (only a task "
-                "that names the file may change it)" % f
-                for f in config_changes(changed, patterns, allowed_text)]
+                "that declares the file -- a plan task's `Gate config:` field, `rein quick "
+                "--allow-config` -- may change it)" % f
+                for f in config_changes(changed, patterns, allowed)]
     return problems + commit_msg_failures(path, base, env)

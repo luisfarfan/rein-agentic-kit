@@ -72,7 +72,9 @@ Subcommands:
                       Orca cannot be asked); --skip hides gates the owner deferred. Exit 2
                       usage
   rein quick "<sentence>" [--repo <name>] [--base <branch>] [--here [--dirty-ok]]
-                      [--agent <id> [--model <m>]] [--linear <id>]
+                      [--agent <id> [--model <m>]] [--linear <id>] [--allow-config <path,...>]
+                      (--allow-config: the gate config, e.g. flow.config.json, this task may
+                      change; Rein's guard refuses any other change to it)
                       hand a small change to a cheap agent chosen by quota, in a tab
                       you talk to. Default: its own worktree; --here uses the checkout
                       you are in (main or a linked worktree) on its current branch, even
@@ -1137,7 +1139,7 @@ def cmd_quick(argv: list[str]) -> int:
     (`--agent --model x`) is a usage error, judged here rather than by `_opt`.
     """
     usage = ('usage: rein quick "<sentence>" [--repo <name>] [--base <branch>] [--here [--dirty-ok]] '
-             "[--agent <id> [--model <m>]] [--linear <id>]  |  rein quick done  |  "
+             "[--agent <id> [--model <m>]] [--linear <id>] [--allow-config <path,...>]  |  rein quick done  |  "
              "rein quick close [<path or quick-<slug>>] [--dry-run] [--yes]")
     # One pass over argv. A value flag takes the next token as its value (or `--flag=value`);
     # a missing, empty or `-`-led value is a usage error, and the token that was not consumed
@@ -1157,7 +1159,7 @@ def cmd_quick(argv: list[str]) -> int:
         if any(a.startswith("-") for a in tail):
             print(usage)
             return 2
-    value_flags = ("repo", "base", "agent", "model", "linear")
+    value_flags = ("repo", "base", "agent", "model", "linear", "allow-config")
     values: dict = {}
     words: list = []
     here = dirty_ok = bad = False
@@ -1194,6 +1196,7 @@ def cmd_quick(argv: list[str]) -> int:
     return _quick.start_quick(
         sentence, repo=values.get("repo", ""), base=values.get("base", ""), here=here, dirty_ok=dirty_ok,
         agent=agent, model=model, linear=values.get("linear", ""), cwd=".", client=_quick.OrcaClient(),
+        allow_config=values.get("allow-config", ""),
     )
 
 

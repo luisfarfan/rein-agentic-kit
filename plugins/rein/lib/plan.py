@@ -73,6 +73,9 @@ FIELDS = {
     "verification": ("verification", "verify"),
     "area": ("area",),
     "repo": ("repo",),
+    # Gate configuration (flow.config.json, a runner's file) this task may change: Rein's guard
+    # refuses any other change to it. An explicit, scoped declaration -- a mention is not one.
+    "gateConfig": ("gate config", "gateconfig"),
 }
 _LOOKUP = {spelling: canon for canon, spellings in FIELDS.items() for spelling in spellings}
 

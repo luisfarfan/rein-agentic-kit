@@ -44,6 +44,7 @@ Usage: `/rein:rein-plan <change-name> [description]`
        - reads flow.config.json when present
    ```
 
+   Changing gate config (flow.config.json, runner files) needs `Gate config: <path>`.
    The header is short: `Out` and decision titles ride in every worker's prompt. Decisions
    only where a worker could plausibly reverse a choice unnoticed.
 5. **Critique the draft before it is shown or written.** UNCONDITIONAL: every invocation, never

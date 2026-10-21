@@ -49,8 +49,8 @@ GUARDRAILS = [
     "ni escribas fuera.",
     "No te saltes hooks: nada de `--no-verify`, LEFTHOOK=0, LEFTHOOK_EXCLUDE, SKIP ni HUSKY=0; "
     "si uno falla, arréglalo o pregúntame.",
-    "No toques la config con la que Rein te evalúa (flow.config.json, mise.toml de los gates) "
-    "salvo que la tarea lo pida.",
+    "No toques la config de los gates (flow.config.json, mise.toml, Makefile) salvo que la tarea "
+    "lo autorice con --allow-config.",
 ]
 
 
@@ -108,8 +108,8 @@ def start_refusal(here: bool, base_given: bool, dirty: bool, dirty_ok: bool) -> 
 
 
 def new_record(repo: str, workspace: str, base: str, base_sha: str, agent: str,
-               model: str, sentence: str, linear: str, now: float) -> dict:
-    return {
+               model: str, sentence: str, linear: str, now: float, allow_config=()) -> dict:
+    record = {
         "version": VERSION,
         "repo": repo,
         "workspace": workspace,
@@ -122,6 +122,9 @@ def new_record(repo: str, workspace: str, base: str, base_sha: str, agent: str,
         "started_at": now,
         "audit_rounds": 0,
     }
+    if allow_config:
+        record["allow_config"] = list(allow_config)  # the gate config this task may change (guard.py)
+    return record
 
 
 def owner_decisions(record: dict) -> list:
