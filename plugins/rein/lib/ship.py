@@ -880,8 +880,9 @@ class _Driver:
         """Look for a sign of work from each running worker that has shown none yet: its worktree
         changed since launch (a commit or an edit), or Orca says it is parked on a prompt only a
         person can answer. Fed to decide, which asks the owner about a worker that never started."""
-        for t in list(self.state.tasks.values()):
-            if t.status != "running" or not t.dispatch_id or t.active:
+        for tid in list(self.state.tasks):
+            t = self.state.tasks.get(tid)  # fresh each time: a feed below replaces the state
+            if t is None or t.status != "running" or not t.dispatch_id or t.active:
                 continue
             path = self.state.worktree_paths.get(t.repo, "")
             active = False

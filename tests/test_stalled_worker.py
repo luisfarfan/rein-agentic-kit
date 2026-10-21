@@ -178,6 +178,23 @@ class Driver(ShipCase):
             drv.probe_activity()
         self.assertTrue(drv.state.tasks["T001"].active)
 
+    def test_two_running_workers_are_both_probed_across_a_feed(self):
+        drv, path = self.driver(FakeOrca(self.root, repos=("proxima-api",)))
+        other = os.path.join(self.tmp.name, "wt", "other")
+        os.makedirs(other)
+        subprocess.run(["git", "init", "-q", other], check=True)
+        git(other, "commit", "-q", "--allow-empty", "-m", "base")
+        drv.state.tasks["T002"] = TaskState(id="T002", repo="other", deps=[], human_review=False,
+                                            verification="", type="implementation", status="running",
+                                            dispatch_id="d_2", launched_at=1.0)
+        drv.state.worktree_paths["other"] = other
+        with open(os.path.join(path, "x.py"), "w") as fh:
+            fh.write("x")
+        with contextlib.redirect_stdout(io.StringIO()):
+            drv.probe_activity()  # T001 is fed as active, then T002 gets its baseline
+        self.assertTrue(drv.state.tasks["T001"].active)
+        self.assertTrue(drv.state.tasks["T002"].launch_head, "the baseline survives the feed before it")
+
     def test_orcas_agent_wait_opens_the_gate(self):
         fake = FakeOrca(self.root, repos=("proxima-api",))
         original = fake._answer
