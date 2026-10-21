@@ -22,6 +22,7 @@ import json
 import os
 import re
 import shlex
+import threading
 
 CONFIG_NAME = "flow.config.json"
 
@@ -44,11 +45,31 @@ INFRA_GLOBS = ("*.tf", "*.tfvars")
 DESTRUCTIVE_OPS = ("deploy", "apply", "destroy")
 
 
+class DetectReadError(RuntimeError):
+    """`resolve_strict` met a file or folder that exists but could not be read (or parsed)."""
+
+
+# Strict mode is per thread: the ship driver resolves on gate threads while others stay tolerant.
+_STRICT = threading.local()
+
+
+def _strict_mode() -> bool:
+    return bool(getattr(_STRICT, "on", False))
+
+
+def _unreadable(path: str, exc: Exception) -> None:
+    """Tolerant mode (`resolve`): an unreadable input counts as absent. Strict mode
+    (`resolve_strict`): it raises -- though a path that does not exist is still just absent."""
+    if _strict_mode() and os.path.lexists(path):
+        raise DetectReadError("cannot read %s: %s" % (path, exc))
+
+
 def _read_json(path: str) -> dict:
     try:
         with open(path, encoding="utf-8") as fh:
             return json.load(fh)
-    except (OSError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError) as exc:
+        _unreadable(path, exc)
         return {}
 
 
@@ -56,7 +77,8 @@ def _read_text(path: str) -> str:
     try:
         with open(path, encoding="utf-8", errors="replace") as fh:
             return fh.read()
-    except OSError:
+    except OSError as exc:
+        _unreadable(path, exc)
         return ""
 
 
@@ -113,7 +135,8 @@ def _infra_files(root: str) -> list[str]:
             return
         try:
             entries = sorted(os.listdir(path))
-        except OSError:
+        except OSError as exc:
+            _unreadable(path, exc)
             return
         for entry in entries:
             if entry in _INFRA_SKIP_DIRS or entry.startswith("."):
@@ -242,7 +265,8 @@ def _find_subprojects(root: str) -> list[str]:
             return
         try:
             entries = sorted(os.listdir(path))
-        except OSError:
+        except OSError as exc:
+            _unreadable(path, exc)
             return
         for entry in entries:
             if entry in _INFRA_SKIP_DIRS or entry.startswith("."):
@@ -253,7 +277,8 @@ def _find_subprojects(root: str) -> list[str]:
 
     try:
         top_entries = sorted(os.listdir(root))
-    except OSError:
+    except OSError as exc:
+        _unreadable(root, exc)
         return []
     for entry in top_entries:
         if entry in _INFRA_SKIP_DIRS or entry.startswith("."):
@@ -876,6 +901,19 @@ def _verify_policy(root: str, subtypes: list[str], commands: dict[str, str], cfg
     # violate the schema on any project with a typo'd verify.mode.
     result = {"mode": mode, "requires": requires, "forbids": forbids, "tools": tools}
     return result, warnings
+
+
+def resolve_strict(root: str = ".") -> dict:
+    """`resolve`, but an input that exists and cannot be read or parsed (or a folder that cannot be
+    listed) raises DetectReadError instead of counting as absent. For a caller that must not mistake
+    an incomplete look for a clean one -- the guard rebuilding a change's base. Only this thread is
+    strict, and only for this call."""
+    previous = _strict_mode()
+    _STRICT.on = True
+    try:
+        return resolve(root)
+    finally:
+        _STRICT.on = previous
 
 
 def resolve(root: str = ".") -> dict:

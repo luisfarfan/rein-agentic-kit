@@ -111,7 +111,7 @@ def resolve_at(path: str, base: str):
     try:
         for name in names:
             _extract(path, sha, name, tmp)
-        sub = str((_detect.resolve(tmp).get("subproject") or "")).strip("/")
+        sub = str((_resolve_base(tmp).get("subproject") or "")).strip("/")
         if sub:
             # The sub-project's own files: blobs only (a tree is a folder, never a file to write).
             code, listing = _git(path, "ls-tree", sha, sub + "/")
@@ -121,9 +121,17 @@ def resolve_at(path: str, base: str):
                 meta, _, name = line.partition("\t")
                 if name and meta.split()[1:2] == ["blob"]:
                     _extract(path, sha, name, tmp)
-        return _detect.resolve(tmp)
+        return _resolve_base(tmp)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _resolve_base(tmp: str) -> dict:
+    """detect, strictly: an extracted input that cannot be read or parsed fails closed (N3)."""
+    try:
+        return _detect.resolve_strict(tmp)
+    except _detect.DetectReadError as exc:
+        raise GuardError("cannot read the base's config: %s" % str(exc).replace(tmp + os.sep, ""))
 
 
 _MANIFESTS = ("pyproject.toml", "setup.py", "setup.cfg", "requirements.txt", "Cargo.toml", "go.mod", "package.json",
