@@ -47,7 +47,7 @@ _RUNNER_CALL = re.compile(r"(?:^|[\s;&|()])(%s)(?=\s|$)" % "|".join(RUNNER_CONFI
 # Where a runner's files can sit beyond the root: the nested mise config folders.
 _NESTED_CONFIG = (".config/mise.toml", ".config/mise/config.toml", ".mise/config.toml")
 HOOK_TIMEOUT = 120
-MAX_COMMITS = 50
+MAX_COMMITS = 200  # hook runs per check; past it the newest are checked and the rest is reported
 
 
 def gate_runners(resolved: dict) -> set:
@@ -206,7 +206,7 @@ def commit_msg_failures(path: str, base: str, env=None) -> list:
 
     Nothing when the repo has no such hook. A git that cannot run hooks (`git hook`, git >= 2.36)
     while one is installed is a problem of its own: the messages cannot be checked."""
-    code, out = _git(path, "rev-list", "--no-merges", "--reverse", "%s..HEAD" % base)
+    code, out = _git(path, "rev-list", "--no-merges", "%s..HEAD" % base)  # newest first
     if code != 0:
         return []
     if not _git_runs_hooks(path):
@@ -214,8 +214,13 @@ def commit_msg_failures(path: str, base: str, env=None) -> list:
             return ["the repo has a commit-msg hook but this git cannot run it again (`git hook` needs "
                     "git >= 2.36), so the change's commit messages are unchecked; upgrade git"]
         return []
-    commits = [c for c in out.split() if c][:MAX_COMMITS]
+    every = [c for c in out.split() if c]
+    commits = every[:MAX_COMMITS]
     problems = []
+    if len(every) > len(commits):
+        problems.append("the change has %d commits; only the newest %d were run through the commit-msg hook, "
+                        "%d were not checked: squash them, or check them by hand"
+                        % (len(every), len(commits), len(every) - len(commits)))
     for sha in commits:
         code, message = _git(path, "log", "-1", "--format=%B", sha)
         if code != 0:

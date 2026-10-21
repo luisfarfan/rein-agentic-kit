@@ -405,3 +405,31 @@ class HookExitCodes(unittest.TestCase):
         commit(self.repo, "app.py", "x = 9\n", "bad message")
         with mock.patch.object(guard, "_git_runs_hooks", return_value=False):
             self.assertEqual(guard.check(self.repo, self.base, {}), [])
+
+
+class ManyCommits(unittest.TestCase):
+    """I6: the newest commits are always checked, and going past the cap is said, never a quiet green."""
+
+    def setUp(self):
+        self.tmp = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.repo = os.path.join(self.tmp, "repo")
+        self.base = make_repo(self.repo)
+
+    def commits(self, messages):
+        for i, msg in enumerate(messages):
+            commit(self.repo, "app.py", "x = %d\n" % i, msg)
+
+    def test_the_newest_commit_past_the_cap_is_checked(self):
+        self.commits(["fix: %d" % i for i in range(3)] + ["bad newest"])
+        with mock.patch.object(guard, "MAX_COMMITS", 3):
+            problems = guard.check(self.repo, self.base, {})
+        self.assertTrue(any("bad newest" in p for p in problems), problems)
+
+    def test_going_past_the_cap_is_explicit(self):
+        self.commits(["fix: %d" % i for i in range(5)])
+        with mock.patch.object(guard, "MAX_COMMITS", 3):
+            problems = guard.check(self.repo, self.base, {})
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("5 commits", problems[0])
+        self.assertIn("2", problems[0])
