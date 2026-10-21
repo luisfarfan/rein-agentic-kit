@@ -97,5 +97,43 @@ class TestQuickCli(unittest.TestCase):
         self.assertIs(rein_cli.COMMANDS["quick"], rein_cli.cmd_quick)
 
 
+class TestQuickCloseParsing(unittest.TestCase):
+    def run_close(self, argv):
+        with mock.patch.object(rein_cli._done, "run_quick_close", return_value=0) as close, \
+                mock.patch.object(rein_cli._quick, "start_quick", return_value=0) as start, \
+                mock.patch.object(rein_cli._quick, "OrcaClient"), \
+                mock.patch.object(rein_cli._ship, "OrcaClient"):
+            code, out = _run(argv)
+        return code, out, close, start
+
+    def test_close_with_quick_flags_is_usage_not_a_task(self):
+        for argv in (["close", "--repo", "x"], ["close", "--base", "develop"], ["--repo", "x", "close"],
+                     ["close", "--here"], ["close", "quick-a", "--repo", "x"], ["close", "--nope"]):
+            with self.subTest(argv=argv):
+                code, out, close, start = self.run_close(argv)
+                self.assertEqual(code, 2, out)
+                self.assertIn("rein quick close", out)
+                start.assert_not_called()
+                close.assert_not_called()
+
+    def test_close_forms(self):
+        for argv, target, dry, yes in ((["close"], "", False, False),
+                                       (["close", "--dry-run"], "", True, False),
+                                       (["close", "quick-a", "--yes"], "quick-a", False, True),
+                                       (["close", "--yes", "/w/quick-a"], "/w/quick-a", False, True)):
+            with self.subTest(argv=argv):
+                code, out, close, start = self.run_close(argv)
+                self.assertEqual(code, 0, out)
+                start.assert_not_called()
+                self.assertEqual(close.call_args[0][0], target)
+                self.assertEqual((close.call_args[1]["dry_run"], close.call_args[1]["yes"]), (dry, yes))
+
+    def test_a_quoted_sentence_starting_with_close_is_a_task(self):
+        code, out, close, start = self.run_close(["close the modal on save"])
+        self.assertEqual(code, 0, out)
+        close.assert_not_called()
+        start.assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main()

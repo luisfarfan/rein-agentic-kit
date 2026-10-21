@@ -960,17 +960,23 @@ def cmd_quick(argv: list[str]) -> int:
     (`--agent --model x`) is a usage error, judged here rather than by `_opt`.
     """
     usage = ('usage: rein quick "<sentence>" [--repo <name>] [--base <branch>] [--here [--dirty-ok]] '
-             "[--agent <id> [--model <m>]] [--linear <id>]  |  rein quick done")
+             "[--agent <id> [--model <m>]] [--linear <id>]  |  rein quick done  |  "
+             "rein quick close [<path or quick-<slug>>] [--dry-run] [--yes]")
     # One pass over argv. A value flag takes the next token as its value (or `--flag=value`);
     # a missing, empty or `-`-led value is a usage error, and the token that was not consumed
     # stays visible as its own flag. Everything else that is not a flag is a bare word.
     # `close` is the subcommand only when what follows is flags, one path, one quick-* name or
     # nothing; anything else ("close the modal") is a task sentence and falls through.
+    # `close` followed by any other flag is a malformed close, never a task called "close".
     tail = [a for a in argv[1:] if a not in ("--dry-run", "--yes")]
-    if (argv and argv[0] == "close" and len(tail) <= 1 and (not tail or (not tail[0].startswith("-") and (
-            tail[0].startswith("quick-") or os.sep in tail[0] or os.path.isdir(tail[0]))))):
-        return _done.run_quick_close(tail[0] if tail else "", _ship.OrcaClient(), cwd=".",
-                                     dry_run="--dry-run" in argv, yes="--yes" in argv)
+    if argv and argv[0] == "close":
+        if len(tail) <= 1 and (not tail or (not tail[0].startswith("-") and (
+                tail[0].startswith("quick-") or os.sep in tail[0] or os.path.isdir(tail[0])))):
+            return _done.run_quick_close(tail[0] if tail else "", _ship.OrcaClient(), cwd=".",
+                                         dry_run="--dry-run" in argv, yes="--yes" in argv)
+        if any(a.startswith("-") for a in tail):
+            print(usage)
+            return 2
     value_flags = ("repo", "base", "agent", "model", "linear")
     values: dict = {}
     words: list = []
@@ -999,7 +1005,8 @@ def cmd_quick(argv: list[str]) -> int:
     sentence = words[0] if words else ""
     agent, model = values.get("agent", ""), values.get("model", "")
     # A lone --agent is fine (the driver supplies its default model); a lone --model is not.
-    if bad or len(words) != 1 or ("model" in values and "agent" not in values) or (dirty_ok and not here):
+    if bad or len(words) != 1 or ("model" in values and "agent" not in values) or (dirty_ok and not here) \
+            or sentence == "close":
         print(usage)
         return 2
     if sentence == "done":
