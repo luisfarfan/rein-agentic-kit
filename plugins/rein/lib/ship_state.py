@@ -173,7 +173,7 @@ def _task_state(task: dict, default_repo: str) -> TaskState:
         repo=task.get("repo") or default_repo,
         deps=list(task.get("dependsOn") or []),
         human_review=bool(task.get("humanReview")),
-        verification=task.get("verification") or "",
+        verification=task.get("verificationRaw") or task.get("verification") or "",
         type=task.get("type") or "",
         status="done" if task.get("checked") else "pending",
     )

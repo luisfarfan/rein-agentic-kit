@@ -298,6 +298,53 @@ def default_gate_runner(path: str, unit_only: bool, timeout: float = 900.0) -> t
 # Task types whose Verification is a person or a browser looking, never a command the driver runs.
 UNRUN_VERIFICATION_TYPES = ("verification", "manual")
 
+# A Verification is usually prose for a person. The driver runs only a field that BEGINS with one
+# backticked command, and never one that reaches outside the worktree or the machine.
+REFUSED_IN_VERIFICATION = ("--profile", "prod", "deploy", "git push", "push ", "rm -rf", "sudo", "curl ",
+                           "wget ", "aws ", "cdk ", "terraform", "kubectl", "docker push", "npm publish",
+                           "pnpm publish", "> /")
+_REDIRECT_TARGET = re.compile(r">>?\|?\s*([^\s;&|<>()]+)")
+_TEE_TARGET = re.compile(r"\btee\b((?:\s+-\S+)*)\s+([^\s;&|<>()]+)")
+
+
+def _writes_outside(cmd: str) -> str:
+    targets = [m.group(1) for m in _REDIRECT_TARGET.finditer(cmd)]
+    targets += [m.group(2) for m in _TEE_TARGET.finditer(cmd)]
+    for target in targets:
+        if target.startswith("&") or target == "/dev/null":
+            continue  # a descriptor duplication, or nowhere
+        if target.startswith(("/", "~", "$")) or ".." in target.split("/"):
+            return target
+    return ""
+
+
+def verification_refusal(cmd: str) -> str:
+    """Why the driver must not run `cmd` on its own, or "" when it may."""
+    low = cmd.lower()
+    for bad in REFUSED_IN_VERIFICATION:
+        if bad in low:
+            return "it contains %r" % bad.strip()
+    outside = _writes_outside(cmd)
+    if outside:
+        return "it writes outside the worktree (%s)" % outside
+    return ""
+
+
+def task_verification_command(field: str) -> tuple:
+    """`(command, "")` when the field begins with one backticked command the driver may run
+    (the prose after it is ignored), else `("", why it is not run)`: the gate alone decides."""
+    text = (field or "").strip()
+    if not text.startswith("`") or text.startswith("``"):
+        return "", "it is not a backticked command"
+    end = text.find("`", 1)
+    command = text[1:end].strip() if end > 0 else ""
+    if not command:
+        return "", "it is not a backticked command"
+    refused = verification_refusal(command)
+    if refused:
+        return "", "refused: %s" % refused
+    return command, ""
+
 
 def run_task_verification(command: str, path: str, timeout: float) -> tuple:
     """Run a task's own Verification command in its worktree: `(0, "")` when it passed,
@@ -745,15 +792,22 @@ class _Driver:
             code, out = 126, "gate could not run: %s" % exc
         self.say("%s gate exit %s" % (task.id, code))
         detail = failure_detail(out)
-        command = task.verification.strip().strip("`").strip()
-        if code != 126 and command and task.type not in UNRUN_VERIFICATION_TYPES:
+        command, why_not = task_verification_command(task.verification)
+        runnable = code != 126 and task.verification.strip() and task.type not in UNRUN_VERIFICATION_TYPES
+        if runnable and not command:
+            self.say("%s verification not run (%s): the gate alone decides" % (task.id, why_not))
+        elif runnable:
             # The task's own check, not only the project's: done needs both.
             try:
                 vcode, vtext = run_task_verification(command, path, self.cfg.gate_timeout_seconds)
             except OSError as exc:
                 vcode, vtext = 126, "could not run: %s" % exc
             self.say("%s verification exit %s" % (task.id, vcode))
-            if vcode != 0:
+            if vcode == 126:
+                # A missing tool is setup, not the worker's code: no retry is burned on it.
+                self.say("%s verification could not run ($ %s): %s; the gate alone decides"
+                         % (task.id, command, (vtext or "").splitlines()[0] if vtext else "not invocable"))
+            elif vcode != 0:
                 block = _verification_block(command, vcode, vtext)
                 if code == 0:
                     code, detail = vcode, block[:_FAILURE_CAP]

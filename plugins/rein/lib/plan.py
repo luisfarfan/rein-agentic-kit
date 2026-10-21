@@ -159,6 +159,10 @@ def parse_tasks_md(text: str) -> list[dict]:
                 current["humanReview"] = _clean(value).lower() in TRUE_WORDS
             elif key:
                 current[key] = _clean(value)
+                if key == "verification":
+                    # As written: the driver runs only a field that BEGINS with a backticked
+                    # command, which the cleaned value can no longer tell apart from prose.
+                    current["verificationRaw"] = value.strip()
             continue
 
         if collecting == "acceptance":

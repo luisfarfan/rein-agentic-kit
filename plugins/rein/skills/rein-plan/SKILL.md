@@ -80,6 +80,7 @@ Usage: `/rein:rein-plan <change-name> [description]`
 
 - Every task has a **runnable** `Verification` (one test file or id, never "the suite") or
   `Human review: true`. Check commands against `config.commands`; say which are missing.
+  `rein ship` runs only a field that **starts** with a backticked command; prose is not run.
 - Criteria are checkable and name the **guarantee**, not a proxy a fixture can dodge.
 - `Human review: true` only for a product decision or content the owner must sign (labels,
   copy, prices, a go/no-go) — never for technical work the Verification and the audit already
