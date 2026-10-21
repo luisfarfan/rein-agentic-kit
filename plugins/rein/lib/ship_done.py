@@ -251,46 +251,20 @@ def _archive_target(root: str, change: str, today: str) -> Optional[tuple]:
     return src, os.path.join(root, "openspec", "changes", "archive", "%s-%s" % (today, change))
 
 
-def _default_branches(root: str, git: Callable[..., tuple], repos: dict) -> set:
-    """The plan repo's default branch(es): the remote's HEAD and Orca's base ref for this repo."""
-    found = set()
-    code, out = git(root, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD")
-    if code == 0 and out.strip():
-        head = out.strip()
-        found.add(head[len("origin/"):] if head.startswith("origin/") else head)
-    for repo in repos.values():
-        if repo.get("path") and os.path.realpath(str(repo["path"])) == os.path.realpath(root):
-            ref = str(repo.get("worktreeBaseRef") or "")
-            if ref:
-                found.add(ref[len("origin/"):] if ref.startswith("origin/") else ref)
-    if not found:
-        fallback = qd._fallback_base(git, root)
-        if fallback:
-            found.add(fallback)
-    return found
-
-
 _IN_PROGRESS = (("MERGE_HEAD", "a merge"), ("rebase-merge", "a rebase"), ("rebase-apply", "a rebase or am"),
                 ("CHERRY_PICK_HEAD", "a cherry-pick"), ("REVERT_HEAD", "a revert"))
 
 
-def _archive_blockers(root: str, src: str, dst: str, git: Callable[..., tuple], repos: Optional[dict] = None) -> list:
+def _archive_blockers(root: str, src: str, dst: str, git: Callable[..., tuple]) -> list:
+    """The archive commits on whatever branch the plan repo has checked out (develop, a feature
+    worktree ...); only a dirty plan folder or an operation in progress stops it."""
     out = []
     if os.path.exists(dst):
         out.append("archive folder already exists: %s" % dst)
     if git(root, "ls-files", "--error-unmatch", "--", src)[0] != 0:
         out.append("the plan %s is not tracked by git, so it cannot be moved with git mv" % src)
-    code, branch = git(root, "symbolic-ref", "--quiet", "--short", "HEAD")
-    if code != 0:
+    if git(root, "symbolic-ref", "--quiet", "--short", "HEAD")[0] != 0:
         out.append("the plan repo is on a detached HEAD (no branch to commit the archive on)")
-    else:
-        allowed = _default_branches(root, git, repos or {})
-        if not allowed:
-            out.append("cannot tell the plan repo's default branch (no origin/HEAD, no main); "
-                       "the archive commit would land on %s" % branch.strip())
-        elif branch.strip() not in allowed:
-            out.append("the plan repo is on %s, not its default branch (%s); check that out so the "
-                       "archive commit lands there" % (branch.strip(), " or ".join(sorted(allowed))))
     code, porcelain = git(root, "status", "--porcelain", "--untracked-files=all", "--", src)
     if code != 0 or porcelain.strip():
         out.append("the plan folder %s has uncommitted changes; commit or discard them first" % src)
@@ -366,7 +340,7 @@ def run_done(root: str, change: str, client: OrcaClient, *, dry_run: bool = Fals
             present.append((repo, path))
     archive = _archive_target(root, change, today)
     if archive:
-        blockers += [("plan", root, why) for why in _archive_blockers(root, archive[0], archive[1], git, repos)]
+        blockers += [("plan", root, why) for why in _archive_blockers(root, archive[0], archive[1], git)]
     if blockers:
         say("rein done: %s is NOT ready to close; nothing was removed:" % change)
         for repo, path, why in blockers:
@@ -384,7 +358,9 @@ def run_done(root: str, change: str, client: OrcaClient, *, dry_run: bool = Fals
     for repo, path in gone:
         say("already gone: %s (%s)" % (repo, path))
     if archive:
-        say("%sarchive plan %s -> %s" % (prefix, os.path.relpath(archive[0], root), os.path.relpath(archive[1], root)))
+        on = git(root, "symbolic-ref", "--quiet", "--short", "HEAD")[1].strip()
+        say("%sarchive plan %s -> %s (commit on %s)" % (prefix, os.path.relpath(archive[0], root),
+                                                         os.path.relpath(archive[1], root), on))
     elif _already_archived(root, change):
         say("plan already archived")
     say("%sclose tab 'rein ship %s', archive the state and drop the mailbox" % (prefix, change))

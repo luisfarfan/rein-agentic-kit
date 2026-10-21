@@ -895,16 +895,32 @@ class ArchiveGuardTests(Env):
         self.assertIn("left the tab", self.text())
         self.assertFalse(os.path.exists(ship_state.state_path(root, CHANGE)))
 
-    def test_plan_root_off_its_default_branch_blocks(self):
+    def test_plan_root_on_any_branch_archives_there_and_names_it(self):
+        # Owner decision (review I1): plan roots live on develop or on feature worktrees.
         root = self.plan_repo()
+        before = git(root, "rev-parse", "HEAD").strip()
         git(root, "checkout", "-q", "-b", "topic")
+        wt = self.worktree()
+        self.state(root, {"api": wt})
+        code, orca = self.run_done(root)
+        self.assertEqual(code, 0, self.text())
+        self.assertEqual(orca.rm_paths(), [wt])
+        self.assertIn("committed on topic", self.text())
+        self.assertEqual(git(root, "rev-parse", "--abbrev-ref", "HEAD").strip(), "topic")
+        self.assertEqual(git(root, "log", "-1", "--format=%s").strip(), "docs(openspec): archive %s" % CHANGE)
+        self.assertNotEqual(git(root, "rev-parse", "HEAD").strip(), before)
+        self.assertFalse(os.path.isdir(os.path.join(root, "openspec", "changes", CHANGE)))
+
+    def test_untracked_file_in_the_plan_folder_blocks(self):
+        root = self.plan_repo()
+        with open(os.path.join(root, "openspec", "changes", CHANGE, "notes.md"), "w") as fh:
+            fh.write("draft\n")
         wt = self.worktree()
         self.state(root, {"api": wt})
         code, orca = self.run_done(root)
         self.assertEqual(code, 1, self.text())
         self.assertEqual(orca.rm_paths(), [])
-        self.assertIn("default branch", self.text())
-        self.assertTrue(os.path.isdir(os.path.join(root, "openspec", "changes", CHANGE)))
+        self.assertIn("uncommitted", self.text())
 
     def test_uncommitted_plan_edits_block(self):
         root = self.plan_repo()
