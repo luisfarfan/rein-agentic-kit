@@ -286,18 +286,38 @@ def commit_msg_failures(path: str, base: str, env=None) -> list:
     return problems
 
 
-OUTSIDE_STATUS_CAP = 2000  # status lines kept per checkout; the diff digest still covers the rest
+OUTSIDE_PATH_CAP = 5000  # dirty or untracked paths fingerprinted per checkout
 
 
-def _status_lines(path: str) -> list:
-    code, out = _git(path, "status", "--porcelain", "--untracked-files=all")
+def _dirty_paths(path: str) -> list:
+    """Repo-relative paths git reports changed or untracked (renames as both ends), Rein's `.rein/` aside."""
+    code, out = _git(path, "status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames")
     if code != 0:
         return []
-    return [ln for ln in out.splitlines() if ln[3:].strip() and not ln[3:].strip().strip('"').startswith(".rein")]
+    found = [entry[3:] for entry in out.split("\0") if len(entry) > 3]
+    return [p for p in found if p and not (p == ".rein" or p.startswith(".rein/"))]
+
+
+def _fingerprint(path: str, rel: str) -> str:
+    """What `rel` is now: a content digest, "missing", or "dir"."""
+    full = os.path.join(path, rel)
+    if os.path.isdir(full) and not os.path.islink(full):
+        return "dir"
+    try:
+        if os.path.islink(full):
+            return "link:" + os.readlink(full)
+        digest = hashlib.sha1()
+        with open(full, "rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+    except OSError:
+        return "missing"
 
 
 def outside_snapshot(paths) -> dict:
-    """`{realpath: {head, status, diff}}` of the git checkouts in `paths` (those git can read)."""
+    """`{realpath: {head, paths: {rel: fingerprint}}}` of the git checkouts in `paths`: HEAD, and the
+    content of every path that is dirty or untracked there (a clean tracked path is HEAD's)."""
     snap = {}
     for path in paths or ():
         if not path or not os.path.isdir(path):
@@ -305,15 +325,16 @@ def outside_snapshot(paths) -> dict:
         code, head = _git(path, "rev-parse", "HEAD")
         if code != 0:
             continue
-        _, diff = _git(path, "diff", "HEAD", "--", ".", ":(exclude).rein")
-        snap[os.path.realpath(path)] = {"head": head.strip(), "status": _status_lines(path)[:OUTSIDE_STATUS_CAP],
-                                        "diff": hashlib.sha1(diff.encode("utf-8", "replace")).hexdigest()}
+        snap[os.path.realpath(path)] = {"head": head.strip(), "paths": {
+            rel: _fingerprint(path, rel) for rel in _dirty_paths(path)[:OUTSIDE_PATH_CAP]}}
     return snap
 
 
 def outside_changes(before: dict, ignore=()) -> list:
-    """One problem per checkout of `before` that changed since: new commits, new or changed paths.
-    `ignore`: absolute paths Rein itself writes there (the plan file it ticks)."""
+    """One problem per checkout of `before` that changed since: new commits, and every path whose
+    content or existence differs -- edited, created or deleted, untracked ones included.
+    `ignore`: absolute paths Rein itself writes there (the plan file it ticks); they are left out of
+    the comparison itself, so they never make another path look changed."""
     skip = {os.path.realpath(p) for p in ignore or ()}
     problems = []
     for path, was in sorted((before or {}).items()):
@@ -322,21 +343,16 @@ def outside_changes(before: dict, ignore=()) -> list:
         code, head = _git(path, "rev-parse", "HEAD")
         if code != 0:
             continue
-        now = _status_lines(path)
-        _, diff = _git(path, "diff", "HEAD", "--", ".", ":(exclude).rein")
-        new = [ln[3:].strip().strip('"') for ln in now if ln not in set(was.get("status") or [])]
-        new = [n for n in new if os.path.realpath(os.path.join(path, n)) not in skip]
+        old = was.get("paths") if isinstance(was.get("paths"), dict) else {}
+        now = {rel: _fingerprint(path, rel) for rel in _dirty_paths(path)[:OUTSIDE_PATH_CAP]}
+        changed = [rel for rel in sorted(set(old) | set(now))
+                   if os.path.realpath(os.path.join(path, rel)) not in skip
+                   and old.get(rel, "clean") != now.get(rel, "clean")]
         what = []
         if head.strip() != was.get("head"):
             what.append("new commit(s) (HEAD %s -> %s)" % (str(was.get("head"))[:8], head.strip()[:8]))
-        if new:
-            what.append("changed: %s" % ", ".join(new[:10]) + (" ..." if len(new) > 10 else ""))
-        elif (hashlib.sha1(diff.encode("utf-8", "replace")).hexdigest() != was.get("diff")
-              and head.strip() == was.get("head")):
-            changed = [ln[3:].strip().strip('"') for ln in now]
-            changed = [n for n in changed if os.path.realpath(os.path.join(path, n)) not in skip]
-            if changed:
-                what.append("files already modified there were changed further: %s" % ", ".join(changed[:10]))
+        if changed:
+            what.append("changed: %s" % ", ".join(changed[:10]) + (" ..." if len(changed) > 10 else ""))
         if what:
             problems.append("it wrote outside its worktree, in %s: %s; a worker may only write inside its "
                             "worktree -- revert that (if you changed it yourself meanwhile, retry)"

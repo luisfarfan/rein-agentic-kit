@@ -112,8 +112,7 @@ class Ship(ShipCase):
                 calls.append(p)
                 if len(calls) == 1:  # the first worker ran the sibling's update script
                     write(qa, "CLAUDE.md", "@rules/new.md\n")
-                else:  # the owner put it back before the retry finished
-                    os.remove(os.path.join(qa, "CLAUDE.md"))
+                # the retry leaves the sibling as it found it at its own launch
             return 0, "ok"
         fake.on_audit = self.approve_audit()
         self.run_ship(fake, gates)
@@ -125,3 +124,47 @@ class Ship(ShipCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class UntrackedAndIgnored(unittest.TestCase):
+    """R3: a pre-existing untracked file edited or deleted is caught. R4: a path Rein ignores
+    (the plan it ticks) never makes another dirty file look changed."""
+
+    def setUp(self):
+        self.tmp = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.qa = os.path.join(self.tmp, "proxima-qa")
+        make_repo(self.qa, hook=False)
+
+    def test_an_untracked_file_edited_further_is_caught(self):
+        write(self.qa, "CLAUDE.md", "@rules/a.md\n")
+        before = guard.outside_snapshot([self.qa])
+        write(self.qa, "CLAUDE.md", "@rules/new.md\n")
+        problems = guard.outside_changes(before)
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("CLAUDE.md", problems[0])
+
+    def test_an_untracked_file_deleted_is_caught(self):
+        write(self.qa, "CLAUDE.md", "@rules/a.md\n")
+        before = guard.outside_snapshot([self.qa])
+        os.remove(os.path.join(self.qa, "CLAUDE.md"))
+        problems = guard.outside_changes(before)
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("CLAUDE.md", problems[0])
+
+    def test_a_tracked_dirty_file_deleted_is_caught(self):
+        write(self.qa, "app.py", "y = 1\n")
+        before = guard.outside_snapshot([self.qa])
+        os.remove(os.path.join(self.qa, "app.py"))
+        self.assertEqual(len(guard.outside_changes(before)), 1)
+
+    def test_the_ignored_plan_never_blames_another_dirty_file(self):
+        write(self.qa, "tasks.md", "- [ ] T001\n")
+        run_git(self.qa, "add", "tasks.md")
+        run_git(self.qa, "commit", "-q", "-m", "chore: plan")
+        write(self.qa, "app.py", "y = 1\n")  # dirty before the worker started
+        before = guard.outside_snapshot([self.qa])
+        with open(os.path.join(self.qa, "tasks.md"), "w") as fh:
+            fh.write("- [x] T001\n")
+        self.assertEqual(guard.outside_changes(before, ignore=[os.path.join(self.qa, "tasks.md")]), [])
+
