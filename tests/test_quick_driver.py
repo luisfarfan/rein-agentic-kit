@@ -388,6 +388,16 @@ class StartTests(DriverCase):
         self.assertEqual(self.base_branch_of(orca), "develop")
         self.assertEqual(len(orca.launches()), 1)
 
+    def test_a_failed_fetch_names_the_stale_remote_ref_it_branches_from(self):
+        git = _Git()
+        git.remote_refs = {"develop"}
+        git.fetch_code = 1
+        code, orca, _ = self.run_quick(git=git)
+        self.assertEqual(code, 0)
+        self.assertEqual(self.base_branch_of(orca), "origin/develop")
+        self.assertIn("uso origin/develop", self.text())
+        self.assertNotIn("develop local", self.text())
+
     def test_a_timed_out_fetch_is_a_failed_fetch(self):
         def timed_out(path, base):
             return 124, "tiempo agotado tras 60s"
@@ -1234,6 +1244,95 @@ class DoneAuditTests(DoneCase):
         self.assertEqual(len(orca.called("orchestration", "worker-stop")), 1)
         self.assertIn("audit worker %s stopped" % DISPATCH, self.text())
         self.assertEqual(self.audit_rounds(), 0)
+
+
+class HereInLinkedWorktreeTests(unittest.TestCase):
+    """`--here` from an Orca (linked) worktree on a local-only branch: real git, fake Orca."""
+
+    def setUp(self):
+        self.root = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.root, True)
+        self.env = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t", GIT_COMMITTER_NAME="t",
+                        GIT_COMMITTER_EMAIL="t@t", GIT_CONFIG_GLOBAL="/dev/null", GIT_CONFIG_SYSTEM="/dev/null")
+        self.main = os.path.join(self.root, "proxima-api")
+        self.g(self.root, "init", "-q", "-b", "develop", self.main)
+        with open(os.path.join(self.main, "README"), "w") as fh:
+            fh.write("hi\n")
+        self.g(self.main, "add", "README")
+        self.g(self.main, "commit", "-q", "-m", "init")
+        self.linked = os.path.join(self.root, "workspaces", "proxima-api", "data-exports-core")
+        self.g(self.main, "worktree", "add", "-q", "-b", "data-exports-core", self.linked)
+        with open(os.path.join(self.linked, "x.txt"), "w") as fh:
+            fh.write("x\n")
+        self.g(self.linked, "add", "x.txt")
+        self.g(self.linked, "commit", "-q", "-m", "local work")
+        self.repos = [{"id": "r1", "path": self.main, "displayName": "proxima-api"}]
+        self.out, self.fetches = [], []
+
+    def g(self, path, *args):
+        proc = subprocess.run(["git", "-C", path, *args], capture_output=True, text=True, env=self.env)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        return proc.stdout
+
+    def fetch(self, path, base):
+        self.fetches.append((path, base))
+        return 128, "fatal: couldn't find remote ref"
+
+    def start(self, **kw):
+        orca = _Orca(self.repos, _limits(10, 10), worktree_path=os.path.join(self.root, "new"))
+        kw.setdefault("repo", "")
+        kw.setdefault("cwd", self.linked)
+        code = quick_driver.start_quick("arregla el export", here=True, agent="claude", model="sonnet",
+                                        client=OrcaClient(executable="ORCA", runner=orca), fetch=self.fetch,
+                                        now=lambda: 1.0, say=self.out.append, **kw)
+        return code, orca
+
+    def record(self, path):
+        with open(os.path.join(path, ".rein", "quick.json"), encoding="utf-8") as fh:
+            return json.load(fh)
+
+    def test_here_in_a_linked_worktree_uses_it_and_its_local_branch(self):
+        code, orca = self.start()
+        self.assertEqual(code, 0, self.out)
+        [argv] = orca.launches()
+        self.assertEqual(argv[1:3], ["agent", "launch"])
+        self.assertIn("path:" + self.linked, argv)
+        rec = self.record(self.linked)
+        self.assertEqual(rec["base"], "data-exports-core")
+        self.assertEqual(rec["base_sha"], self.g(self.linked, "rev-parse", "HEAD").strip())
+        self.assertEqual(rec["workspace"], self.linked)
+        self.assertEqual(self.fetches, [])
+        self.assertFalse(os.path.exists(os.path.join(self.main, ".rein", "quick.json")))
+
+    def test_here_from_a_subdirectory_with_the_repo_named(self):
+        sub = os.path.join(self.linked, "src")
+        os.makedirs(sub)
+        code, orca = self.start(repo="proxima-api", cwd=sub)
+        self.assertEqual(code, 0, self.out)
+        self.assertIn("path:" + self.linked, orca.launches()[0])
+
+    def test_here_checks_the_linked_worktree_for_dirt(self):
+        with open(os.path.join(self.linked, "x.txt"), "a") as fh:
+            fh.write("wip\n")
+        code, orca = self.start()
+        self.assertEqual(code, 2, self.out)
+        self.assertEqual(orca.launches(), [])
+        self.assertNotIn("not inside a repo", "\n".join(self.out))
+
+    def test_a_worktree_task_from_a_linked_worktree_finds_its_repo(self):
+        orca = _Orca(self.repos, _limits(10, 10), worktree_path=self.linked)
+        code = quick_driver.start_quick("otra cosa", repo="", cwd=self.linked, agent="claude", model="sonnet",
+                                        client=OrcaClient(executable="ORCA", runner=orca), fetch=self.fetch,
+                                        now=lambda: 1.0, say=self.out.append)
+        self.assertEqual(code, 0, self.out)
+        argv = orca.launches()[0]
+        self.assertEqual(argv[argv.index("--repo") + 1], "id:r1")
+
+    def test_here_still_works_in_the_main_checkout(self):
+        code, orca = self.start(cwd=self.main)
+        self.assertEqual(code, 0, self.out)
+        self.assertIn("path:" + self.main, orca.launches()[0])
+        self.assertEqual(self.record(self.main)["base"], "develop")
 
 
 if __name__ == "__main__":

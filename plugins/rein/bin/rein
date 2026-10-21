@@ -53,8 +53,9 @@ Subcommands:
   rein quick "<sentence>" [--repo <name>] [--base <branch>] [--here [--dirty-ok]]
                       [--agent <id> [--model <m>]] [--linear <id>]
                       hand a small change to a cheap agent chosen by quota, in a tab
-                      you talk to. Default: its own worktree; --here uses the main
-                      checkout. Exit 0 started / 1 failed / 2 usage / 126 environment
+                      you talk to. Default: its own worktree; --here uses the checkout
+                      you are in (main or a linked worktree) on its current branch, even
+                      a local-only one. Exit 0 started / 1 failed / 2 usage / 126 environment
   rein quick done     run by that agent when you say "listo": light gate on the
                       changed files, plus an audit only for risky paths. Never commits
                       or pushes. Exit 0 green / 1 red / 2 no quick task / 126 setup
