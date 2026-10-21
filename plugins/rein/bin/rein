@@ -18,7 +18,9 @@ Subcommands:
                       only (no testIntegration) with no browser-render demand.
                       gate.env from flow.config.json is applied ([--repo] [--env-root]).
                       A slot that passed on the same tree state, command and env is
-                      reused and printed "cached" (--no-cache runs it anyway)
+                      reused and printed "cached" (--no-cache runs it anyway). Each
+                      slot's timeout is 2x its slowest recent pass (2-30 min); without
+                      history, --timeout or ship.gateTimeoutSeconds
   rein env [root]     `export` lines for the worktree's gate.env (flow.config.json):
                       the per-worktree environment Rein's gates use there.
                       [--repo <name>] [--env-root <plan repo>]
@@ -104,6 +106,7 @@ sys.path.insert(0, os.path.join(PLUGIN_ROOT, "lib"))
 
 import detect as _detect  # noqa: E402
 import gate as _gate  # noqa: E402
+import gate_cache as _gate_cache  # noqa: E402
 import gate_env as _gate_env  # noqa: E402
 import gate_run as _gate_run  # noqa: E402
 import migrate_config as _migrate_config  # noqa: E402
@@ -278,8 +281,15 @@ def cmd_gate(argv: list[str]) -> int:
     commands = resolved.get("commands") or {}
     steps = [(slot, commands[slot], commands[slot])
              for slot in _gate_run.gate_slots(commands, only, integration="--unit-only" not in argv)]
-    report = _gate_run.run_steps(resolved["root"], steps, lambda _slot: timeout, env=env,
-                                 cache="--no-cache" not in argv)
+    # Each slot's budget: 2x its slowest recent pass in this repo (within [2, 30] min), else
+    # the timeout above. History needs a repo identity, so only a git checkout keeps one.
+    history_repo = (_opt(argv, "repo") or _gate_env.repo_name_of(resolved["root"])) \
+        if _gate_cache.is_git(resolved["root"]) else ""
+
+    def budget(slot):
+        return _gate_run.slot_budget(history_repo, slot, commands[slot], timeout)
+    report = _gate_run.run_steps(resolved["root"], steps, budget, env=env,
+                                 cache="--no-cache" not in argv, history_repo=history_repo)
     report["env"] = sorted(env)  # names only: the values are the repo's business
     _verify.write_state(resolved["root"], report)
 

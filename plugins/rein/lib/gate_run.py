@@ -41,20 +41,39 @@ def gate_slots(commands: dict, only=None, integration: bool = True) -> list:
     return out
 
 
+BUDGET_MIN = 120.0
+BUDGET_MAX = 1800.0
+BUDGET_FACTOR = 2.0
+
+
+def slot_budget(repo: str, label: str, command: str, fallback: float) -> float:
+    """A slot's timeout: twice its slowest recent pass, within [2 min, 30 min]; `fallback`
+    (the project's ship.gateTimeoutSeconds, or --timeout) when it has never passed.
+
+    The slowest of the last few passes, not the last one: a suite slowed by a busy machine
+    must not time out because it once ran alone."""
+    passes = _cache.recent_passes(repo, label, command) if repo else []
+    if not passes:
+        return float(fallback)
+    return min(max(BUDGET_FACTOR * max(passes), BUDGET_MIN), BUDGET_MAX)
+
+
 def _skipped(slot: str, command: str, why: str) -> dict:
     return _verify.CommandResult(slot, command, True, _verify.OUTCOME_SKIPPED, None, [], 0,
                                  error=why).to_dict()
 
 
 def run_steps(root: str, steps: list, timeout_for: Callable[[str], float], env: dict = None,
-              run: Callable = _verify.run_one, fail_fast: bool = True, cache: bool = False) -> dict:
+              run: Callable = _verify.run_one, fail_fast: bool = True, cache: bool = False,
+              history_repo: str = "") -> dict:
     """Run `[(slot, command, configured)]` in order; after the first slot that is not ok, skip the rest.
 
     `timeout_for(slot)` is each slot's budget. A slot whose outcome is anything but
     `ok` (failed, timeout, not invocable) ends the run: what follows is reported
     `skipped`, naming the slot that stopped it. With `cache`, a slot that passed on
     this exact tree state, command and env is reused (`"cached": true`) instead of run,
-    and a new pass is stored (gate_cache); nothing else is ever stored."""
+    and a new pass is stored (gate_cache); nothing else is ever stored. With
+    `history_repo`, each pass's duration is recorded for the slot's next budget."""
     results: dict = {}
     stopped_by = ""
     for slot, command, configured in steps:
@@ -70,14 +89,19 @@ def run_steps(root: str, steps: list, timeout_for: Callable[[str], float], env: 
                 hit.pop("storedAt", None)
                 results[slot] = {**hit, "cached": True}
                 continue
-        res = run(slot, command, root, timeout_for(slot), configured=configured, env=env or None)
+        budget = timeout_for(slot)
+        res = run(slot, command, root, budget, configured=configured, env=env or None)
         entry = res.to_dict()
+        entry["budgetSeconds"] = budget
         if res.outcome != _verify.OUTCOME_OK:
             entry["errorLines"] = _verify.failure_lines(res.output)
             if fail_fast:
                 stopped_by = slot
-        elif k:
-            _cache.put(root, k, entry)
+        else:
+            if k:
+                _cache.put(root, k, entry)
+            if history_repo:
+                _cache.record_pass(history_repo, slot, configured, res.elapsed_ms / 1000.0)
         results[slot] = entry
     budgets = [timeout_for(s) for s, _c, _k in steps]
     return {

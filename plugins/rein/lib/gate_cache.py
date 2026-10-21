@@ -18,8 +18,8 @@ Stored outside the repo (`$REIN_CACHE_DIR`, else `$XDG_CACHE_HOME/rein`, else
 `~/.cache/rein`): the gate never writes under the root it checks. A directory
 git cannot read has no state, so nothing is cached for it.
 
-The same directory keeps each slot's last passing duration (`history`), which
-sizes the next run's timeout.
+The same directory keeps each slot's recent passing durations (`history`), which
+size the next run's timeout (gate_run.slot_budget).
 """
 
 from __future__ import annotations
@@ -46,7 +46,7 @@ def cache_dir() -> str:
 def _git(root: str, *args: str):
     try:
         proc = subprocess.run(["git", "-C", root, *args], capture_output=True)
-    except OSError:
+    except (OSError, subprocess.SubprocessError):
         return None
     return proc.stdout if proc.returncode == 0 else None
 
@@ -143,24 +143,35 @@ def put(root: str, k: str, result: dict) -> None:
         pass  # a cache that cannot be written only costs a rerun
 
 
-# -- history: the last passing duration of each slot, per repo ---------------
+# -- history: the recent passing durations of each slot, per repo -----------
+
+HISTORY_KEEP = 5
+
+
+def is_git(root: str) -> bool:
+    return _git(root, "rev-parse", "--show-toplevel") is not None
+
 
 def _history_path(repo: str, label: str, command: str) -> str:
     digest = hashlib.sha256(json.dumps([repo, label, command]).encode("utf-8")).hexdigest()[:24]
     return os.path.join(cache_dir(), "history", digest + ".json")
 
 
-def last_pass_seconds(repo: str, label: str, command: str):
+def recent_passes(repo: str, label: str, command: str) -> list:
+    """The last passing durations (seconds) of this repo's slot and configured command, oldest first."""
     try:
         with open(_history_path(repo, label, command), encoding="utf-8") as fh:
-            value = json.load(fh).get("seconds")
+            values = json.load(fh).get("seconds")
     except (OSError, ValueError, AttributeError):
-        return None
-    return float(value) if isinstance(value, (int, float)) and value > 0 else None
+        return []
+    if not isinstance(values, list):
+        return []
+    return [float(v) for v in values if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0]
 
 
 def record_pass(repo: str, label: str, command: str, seconds: float) -> None:
+    kept = (recent_passes(repo, label, command) + [float(seconds)])[-HISTORY_KEEP:]
     try:
-        _write(_history_path(repo, label, command), {"seconds": float(seconds), "at": time.time()})
+        _write(_history_path(repo, label, command), {"seconds": kept, "at": time.time()})
     except OSError:
         pass

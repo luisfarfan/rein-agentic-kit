@@ -45,7 +45,7 @@ def repo_name_of(root: str) -> str:
         proc = subprocess.run(["git", "-C", root, "rev-parse", "--git-common-dir"],
                               capture_output=True, text=True)
         common = proc.stdout.strip() if proc.returncode == 0 else ""
-    except OSError:
+    except (OSError, subprocess.SubprocessError):
         common = ""
     if common:
         common = os.path.realpath(os.path.join(root, common))

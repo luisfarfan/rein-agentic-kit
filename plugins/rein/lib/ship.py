@@ -26,6 +26,7 @@ import inspect
 import detect as _detect
 import gate as _gate
 import gate_env as _gate_env
+import gate_run as _gate_run
 import orca_client as oc
 import plan as _plan
 import plan_check as _plan_check
@@ -225,7 +226,14 @@ def changed_files(worktree_path: str, base_ref: str) -> list:
     return sorted(f for f in found if not f.startswith(".rein/"))
 
 
-_GATE_COMMANDS_BOUND = 6  # generous bound on configured gate commands (test, lint, typecheck, ...)
+def gate_outer_bound(path: str, unit_only: bool, timeout: float, repo: str = "") -> float:
+    """What one `rein gate` may take at most: the sum of the budgets of the slots it will run
+    (gate_run.slot_budget), never less than one `timeout`."""
+    commands = _detect.resolve(path).get("commands") or {}
+    repo = repo or _gate_env.repo_name_of(path)
+    total = sum(_gate_run.slot_budget(repo, slot, commands[slot], timeout)
+                for slot in _gate_run.gate_slots(commands, integration=not unit_only))
+    return max(total, timeout)
 
 
 def _fit_blocks(blocks: list, cap: int) -> str:
@@ -315,7 +323,7 @@ def default_gate_runner(path: str, unit_only: bool, timeout: float = 900.0, *,
         argv += ["--repo", repo]
     if env_root:
         argv += ["--env-root", env_root]
-    outer = timeout * _GATE_COMMANDS_BOUND + 60
+    outer = gate_outer_bound(path, unit_only, timeout, repo) + 60
     try:
         proc = subprocess.run(argv, capture_output=True, text=True, timeout=outer)
     except subprocess.TimeoutExpired:

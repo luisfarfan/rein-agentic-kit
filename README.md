@@ -192,7 +192,8 @@ rein gate        # ✅ did they PASS — 0 green · 1 the code is wrong · 126 t
                  # A slot that passed on the same tree state (HEAD, git status, diff, untracked
                  # files), command and gate.env is reused and printed `cached` (--no-cache:
                  # run anyway); failures, timeouts and setup problems are never stored. Cache:
-                 # $REIN_CACHE_DIR or ~/.cache/rein. Without --timeout each slot gets
+                 # $REIN_CACHE_DIR or ~/.cache/rein. Each slot's timeout is 2x its slowest
+                 # recent pass (2-30 min); before it ever passed, --timeout or
                  # ship.gateTimeoutSeconds
                  # --plan: run each TASK's own Verification before implementers are paid.
                  # Failing is fine (the work does not exist yet); proving NOTHING is not —
@@ -271,8 +272,9 @@ Everything is optional. Drop a `flow.config.json` at your project root to overri
 
 The `ship` block shows its defaults. `maxRetries` is how many times a red task is retried with a
 fresh worker, `maxAuditRounds` bounds audit and fix rounds (when it runs out with blocking findings, the gate offers `fix` for one more fix round and audit, `accept` or `reject`), `taskTimeoutMinutes` opens a gate
-instead of waiting forever, `gateTimeoutSeconds` is the per-command timeout of each task's gate
-(raise it for a slow suite), and a change that touches `riskyPaths` or more than `largeChangeFiles`
+instead of waiting forever, `gateTimeoutSeconds` is a gate slot's timeout until that slot has passed in the repo
+(raise it for a slow suite); after that each slot gets twice its slowest of the last five passes,
+between 2 and 30 minutes, so a hung suite is stopped long before the old 6× bound, and a change that touches `riskyPaths` or more than `largeChangeFiles`
 files gets an Opus audit.
 
 ### Per-worktree environment (`gate.env`)
