@@ -4,9 +4,10 @@ A worker in a real run rewrote the `flow.config.json` it was being gated with (i
 commands and `gate.affected`), and another skipped the repo's commit-msg hook with
 `LEFTHOOK_EXCLUDE`. The briefs forbid both; this module is how Rein notices anyway:
 
-- the change touches the configuration Rein judges it with: `flow.config.json` always,
-  the task runner's config when the commands come from one (`mise.toml`), and any glob in
-  `gate.protected`. A task whose own text names the file may change it;
+- the change touches the configuration Rein judges it with: `flow.config.json` always, the
+  config of every task runner (mise, make, just, task) a gate command comes from or calls --
+  as resolved at the change's base AND now, so deleting or swapping the runner is caught --
+  and any glob in `gate.protected`. A task whose own text names the file may change it;
 - a commit of the change does not pass the repo's own `commit-msg` hook, run again by Rein
   (`git hook run`, so `core.hooksPath` and lefthook/husky installs are honoured) with the
   usual bypass variables removed from its environment.
@@ -19,27 +20,104 @@ from __future__ import annotations
 
 import fnmatch
 import os
+import re
+import shutil
 import subprocess
 import tempfile
+
+import detect as _detect
 
 
 # Environment variables that switch a repo's hooks off (lefthook, husky, pre-commit).
 BYPASS_ENV = ("LEFTHOOK", "LEFTHOOK_EXCLUDE", "LEFTHOOK_SKIP", "HUSKY", "HUSKY_SKIP_HOOKS", "SKIP",
               "PRE_COMMIT", "PRE_COMMIT_ALLOW_NO_CONFIG", "GIT_HOOKS_PATH")
-RUNNER_CONFIG = {"mise": ("mise.toml", ".mise.toml", "mise.*.toml", ".mise.*.toml", ".mise/config.toml",
-                          ".config/mise.toml", ".config/mise/config.toml")}
+# Each task runner detect knows, and the files that define its tasks.
+RUNNER_CONFIG = {
+    "mise": ("mise.toml", ".mise.toml", "mise.*.toml", ".mise.*.toml", ".mise/config.toml",
+             ".config/mise.toml", ".config/mise/config.toml"),
+    "make": ("Makefile", "makefile", "GNUmakefile", "*.mk"),
+    "just": ("justfile", "Justfile", ".justfile"),
+    "task": ("Taskfile.yml", "Taskfile.yaml", "taskfile.yml", "taskfile.yaml", "Taskfile.dist.yml",
+             "Taskfile.dist.yaml"),
+}
+GATE_COMMANDS = ("lint", "typecheck", "build", "test", "testOne", "testIntegration")
+_RUNNER_CALL = re.compile(r"(?:^|[\s;&|()])(%s)(?=\s|$)" % "|".join(RUNNER_CONFIG))
+# Where a runner's files can sit beyond the root: the nested mise config folders.
+_NESTED_CONFIG = (".config/mise.toml", ".config/mise/config.toml", ".mise/config.toml")
 HOOK_TIMEOUT = 120
 MAX_COMMITS = 50
 
 
-def protected_patterns(resolved: dict) -> list:
-    """Repo-relative globs of the configuration Rein gates a change with."""
+def gate_runners(resolved: dict) -> set:
+    """The task runners a gate command comes from (its source) or calls (`make test`, `mise run x`)."""
+    resolved = resolved or {}
+    commands, sources = resolved.get("commands") or {}, resolved.get("commandSources") or {}
+    found = set()
+    for slot in GATE_COMMANDS:
+        command = str(commands.get(slot) or "")
+        if not command.strip():
+            continue
+        if sources.get(slot) in RUNNER_CONFIG:
+            found.add(sources[slot])
+        found.update(m.group(1) for m in _RUNNER_CALL.finditer(command))
+    return found
+
+
+def protected_patterns(*resolutions: dict) -> list:
+    """Repo-relative globs of the configuration Rein gates a change with, under every resolution
+    given (the change's base and its current tree)."""
     patterns = ["flow.config.json"]
-    patterns += list(RUNNER_CONFIG.get(str((resolved or {}).get("taskRunner") or ""), ()))
-    declared = ((resolved or {}).get("gate") or {}).get("protected")
-    if isinstance(declared, list):
-        patterns += [p.strip() for p in declared if isinstance(p, str) and p.strip()]
-    return patterns
+    for resolved in resolutions:
+        resolved = resolved or {}
+        sub = str(resolved.get("subproject") or "").strip("/")
+        for runner in sorted(gate_runners(resolved)):
+            for name in RUNNER_CONFIG[runner]:
+                patterns += [name] + (["%s/%s" % (sub, name)] if sub else [])
+        declared = (resolved.get("gate") or {}).get("protected")
+        if isinstance(declared, list):
+            patterns += [p.strip() for p in declared if isinstance(p, str) and p.strip()]
+    return list(dict.fromkeys(patterns))
+
+
+def resolve_at(path: str, base: str):
+    """`detect.resolve` of the tree at the merge base of `base` and HEAD: its root files (and the
+    nested mise configs and the chosen sub-project's files) written to a temp dir. None when git
+    cannot say."""
+    code, sha = _git(path, "merge-base", base, "HEAD")
+    sha = sha.strip()
+    if code != 0 or not sha:
+        return None
+    code, listing = _git(path, "ls-tree", sha)
+    if code != 0:
+        return None
+    names = [line.split("\t", 1)[1] for line in listing.splitlines()
+             if "\t" in line and line.split()[1] == "blob"]
+    names += list(_NESTED_CONFIG)
+    tmp = tempfile.mkdtemp(prefix="rein-guard-base-")
+    try:
+        for name in names:
+            _extract(path, sha, name, tmp)
+        sub = str((_detect.resolve(tmp).get("subproject") or "")).strip("/")
+        if sub:
+            code, listing = _git(path, "ls-tree", "--name-only", sha, sub + "/")
+            for name in listing.splitlines() if code == 0 else []:
+                _extract(path, sha, name, tmp)
+        return _detect.resolve(tmp)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _extract(path: str, sha: str, name: str, into: str) -> None:
+    try:
+        proc = subprocess.run(["git", "-C", path, "show", "%s:%s" % (sha, name)], capture_output=True, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return
+    if proc.returncode != 0:
+        return
+    target = os.path.join(into, name)
+    os.makedirs(os.path.dirname(target), exist_ok=True)
+    with open(target, "wb") as fh:
+        fh.write(proc.stdout)
 
 
 def config_changes(changed: list, patterns: list, allowed_text: str = "") -> list:
@@ -137,7 +215,8 @@ def check(path: str, base: str, resolved: dict, allowed_text: str = "", env=None
         changed = changed_paths(path, base)
     except (RuntimeError, OSError):
         return []
+    patterns = protected_patterns(resolved, resolve_at(path, base) or {})
     problems = ["it changes %s, the configuration Rein gates it with; revert that change (only a task "
                 "that names the file may change it)" % f
-                for f in config_changes(changed, protected_patterns(resolved), allowed_text)]
+                for f in config_changes(changed, patterns, allowed_text)]
     return problems + commit_msg_failures(path, base, env)

@@ -85,7 +85,8 @@ class Guard(unittest.TestCase):
         base = make_repo(self.repo)
         commit(self.repo, "mise.toml", "[tasks.test]\nrun = 'true'\n", "fix: tasks")
         self.assertEqual(guard.check(self.repo, base, {}), [])
-        self.assertEqual(len(guard.check(self.repo, base, {"taskRunner": "mise"})), 1)
+        fed = {"commands": {"test": "mise run test"}, "commandSources": {"test": "mise"}}
+        self.assertEqual(len(guard.check(self.repo, base, fed)), 1)
 
     def test_gate_protected_adds_globs(self):
         base = make_repo(self.repo)
@@ -225,3 +226,74 @@ class Renames(unittest.TestCase):
         run_git(self.repo, "mv", "cfg.json", "flow.config.json")
         run_git(self.repo, "commit", "-q", "-m", "chore: move")
         self.assertEqual(len(guard.check(self.repo, base, {})), 1)
+
+
+import detect  # noqa: E402
+
+MISE_GATE = '[tasks.test]\nrun = "true"\n[tasks.lint]\nrun = "true"\n'
+
+
+class RunnerProvenance(unittest.TestCase):
+    """I3: a task runner's config is protected when it feeds a gate command -- at the base or now --
+    whichever runner it is (mise, make, just, task), and not when no gate command comes from it."""
+
+    def setUp(self):
+        self.tmp = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.repo = os.path.join(self.tmp, "repo")
+
+    def repo_with(self, files, config=None):
+        os.makedirs(self.repo)
+        subprocess.run(["git", "init", "-q", "-b", "develop", self.repo], check=True)
+        if config is not None:
+            files = dict(files, **{"flow.config.json": json.dumps(config)})
+        for name, text in files.items():
+            os.makedirs(os.path.dirname(os.path.join(self.repo, name)) or self.repo, exist_ok=True)
+            with open(os.path.join(self.repo, name), "w") as fh:
+                fh.write(text)
+        run_git(self.repo, "add", "-A")
+        run_git(self.repo, "commit", "-q", "-m", "chore: base")
+        return run_git(self.repo, "rev-parse", "HEAD").strip()
+
+    def problems(self, base):
+        return guard.check(self.repo, base, detect.resolve(self.repo))
+
+    def test_deleting_the_runner_that_fed_the_gate_is_caught(self):
+        base = self.repo_with({"mise.toml": MISE_GATE})
+        run_git(self.repo, "rm", "-q", "mise.toml")
+        problems = self.problems(base)
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("mise.toml", problems[0])
+
+    def test_switching_runner_keeps_the_old_one_protected(self):
+        base = self.repo_with({"Makefile": "test:\n\ttrue\nlint:\n\ttrue\n"})
+        run_git(self.repo, "rm", "-q", "Makefile")
+        with open(os.path.join(self.repo, "justfile"), "w") as fh:
+            fh.write("test:\n    true\n")
+        self.assertTrue(any("Makefile" in p for p in self.problems(base)))
+
+    def test_a_runner_that_feeds_no_gate_command_may_change(self):
+        base = self.repo_with({"mise.toml": '[tasks.deploy]\nrun = "echo"\n'},
+                              config={"commands": {"test": "true", "lint": "true"}})
+        with open(os.path.join(self.repo, "mise.toml"), "a") as fh:
+            fh.write('[tasks.dev]\nrun = "echo"\n')
+        self.assertEqual(self.problems(base), [])
+
+    def test_a_configured_command_that_calls_the_runner_protects_it(self):
+        base = self.repo_with({"mise.toml": MISE_GATE}, config={"commands": {"test": "mise run test"}})
+        with open(os.path.join(self.repo, "mise.toml"), "w") as fh:
+            fh.write('[tasks.test]\nrun = "echo skipped"\n')
+        self.assertEqual(len(self.problems(base)), 1)
+
+    def test_make_just_and_task_are_covered(self):
+        for files, name in (({"Makefile": "test:\n\ttrue\n"}, "Makefile"),
+                            ({"justfile": "test:\n    true\n"}, "justfile"),
+                            ({"Taskfile.yml": "version: '3'\ntasks:\n  test:\n    cmds: [true]\n"}, "Taskfile.yml")):
+            with self.subTest(runner=name):
+                shutil.rmtree(self.repo, True)
+                base = self.repo_with(files)
+                with open(os.path.join(self.repo, name), "a") as fh:
+                    fh.write("\n# loosened\n")
+                problems = self.problems(base)
+                self.assertEqual(len(problems), 1, problems)
+                self.assertIn(name, problems[0])
