@@ -406,5 +406,87 @@ class ResumeLimitIsPerIncident(ShipCase):
         self.assertGreater(self.out.count("Orca is back; resuming"), ship.RESUME_MAX)
 
 
+class TaskVerificationRuns(ShipCase):
+    """Owner decision: a task is done only when its own Verification AND the gate pass."""
+
+    def test_a_failing_verification_retries_the_task_with_its_output(self):
+        self.write_plan(PLAN.split("- [ ] T002")[0])
+        results = [(1, "E   assert total() == 6.3")]
+
+        def verify(command, path, timeout):
+            self.verifications.append((command, path))
+            return results.pop(0) if results else (0, "")
+        ship.run_task_verification = verify
+        fake = FakeOrca(self.root)
+        fake.on_audit = self.approve_audit()
+        self.assertEqual(self.run_ship(fake, scripted_gate()), 0, self.out)
+        self.assertEqual([c for c, _ in self.verifications], ["pnpm test", "pnpm test"])
+        self.assertEqual({p for _, p in self.verifications}, {self.wtpath("proxima-api")})
+        t001 = [v for v in fake.tasks.values() if v["title"].startswith("T001")]
+        self.assertEqual(len(t001), 2, "the failing verification cost a retry")
+        self.assertIn("assert total() == 6.3", t001[1]["spec"])
+        self.assertIn("task verification", t001[1]["spec"])
+
+    def test_a_verification_type_task_is_not_run_by_the_driver(self):
+        self.write_plan("""# Change: demo
+
+- [ ] T001 Look at the page
+  - Repo: proxima-api
+  - Type: verification
+  - Verification: `open the page in a browser`
+""")
+        fake = FakeOrca(self.root)
+        fake.on_audit = self.approve_audit()
+        self.run_ship(fake, scripted_gate())
+        self.assertEqual(self.verifications, [])
+
+    def test_the_worker_is_told_it_is_judged_on_both(self):
+        self.assertIn("gate", ship.WORKER_PREAMBLE)
+        self.assertIn("test, lint, typecheck and build", ship.WORKER_PREAMBLE)
+
+
+class RealTaskVerification(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_pass_fail_and_timeout(self):
+        run = ship.run_task_verification
+        self.assertEqual(run("true", self.tmp.name, 30), (0, ""))
+        code, text = run("echo noise; echo 'AssertionError: boom'; exit 1", self.tmp.name, 30)
+        self.assertEqual(code, 1)
+        self.assertIn("AssertionError: boom", text)
+        code, text = run("sleep 5", self.tmp.name, 0.5)
+        self.assertEqual(code, 1)
+        self.assertIn("timed out", text)
+
+    def test_it_runs_in_the_worktree(self):
+        with open(os.path.join(self.tmp.name, "marker"), "w") as fh:
+            fh.write("x")
+        self.assertEqual(ship.run_task_verification("test -f marker", self.tmp.name, 30)[0], 0)
+
+
+class VerificationAndGateBothFail(ShipCase):
+    def test_both_failures_reach_the_worker(self):
+        def verify(command, path, timeout):
+            return 1, "E   assert own_check()"
+        ship.run_task_verification = verify
+        gate_out = json.dumps({"decision": {"decision": "red", "reason": "failed: lint"},
+                               "report": {"results": {"lint": {"slot": "lint", "outcome": "failed", "exitCode": 1,
+                                                               "command": "ruff", "errorLines": ["x.py:1: E501"]}}}})
+        drv = ship._Driver.__new__(ship._Driver)
+        drv.state = state_of(task("T1", repo="r", verification="`pytest -k own`"))
+        drv.state.worktree_paths = {"r": "/wt"}
+        drv.gate_runner = lambda path, unit_only, timeout=900.0: (1, gate_out)
+        drv.cfg = CFG
+        drv.say = lambda *a, **k: None
+        v = drv.run_gate(sd.RunGate("T1", True))
+        self.assertEqual(v.exit_code, 1)
+        self.assertIn("assert own_check()", v.reason)
+        self.assertIn("pytest -k own", v.reason)
+        self.assertIn("x.py:1: E501", v.reason)
+
+
 if __name__ == "__main__":
     unittest.main()

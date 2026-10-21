@@ -53,7 +53,9 @@ _FAILURE_CAP = sd.GATE_FAILURE_CAP
 WORKER_PREAMBLE = (
     "You are a Rein ship worker with exactly one task. The driver runs the gate, retries and "
     "closes the task: do not run `rein gate`, `rein close` or tick the plan. Run the task's "
-    "Verification command, fix what it reports, then commit as instructed below. "
+    "Verification command, fix what it reports, then commit as instructed below. The task is "
+    "done only when both its Verification command and the project's gate (its configured "
+    "test, lint, typecheck and build) pass in this worktree. "
     "If you are blocked, ask the owner with `orca orchestration ask --question <text>`."
 )
 
@@ -291,6 +293,31 @@ def default_gate_runner(path: str, unit_only: bool, timeout: float = 900.0) -> t
         return proc.returncode, stdout
     except ValueError:
         return proc.returncode, stdout + (proc.stderr or "")
+
+
+# Task types whose Verification is a person or a browser looking, never a command the driver runs.
+UNRUN_VERIFICATION_TYPES = ("verification", "manual")
+
+
+def run_task_verification(command: str, path: str, timeout: float) -> tuple:
+    """Run a task's own Verification command in its worktree: `(0, "")` when it passed,
+    `(1, decisive lines)` when it failed or timed out, `(126, why)` when it could not run."""
+    res = _verify.run_one("verification", command, path, timeout=timeout)
+    if res.outcome == _verify.OUTCOME_OK:
+        return 0, ""
+    if res.outcome == _verify.OUTCOME_NOT_INVOCABLE:
+        return 126, res.error or "the command could not be invoked"
+    lines = _verify.failure_lines(res.output or "") or list(res.output_head or [])
+    if res.outcome == _verify.OUTCOME_TIMEOUT:
+        lines = ["timed out after %gs" % timeout] + lines
+    elif "pytest" in command and res.exit_code == 5:
+        lines = ["pytest selected no tests (exit 5): this verification confirms nothing"] + lines
+    return 1, "\n".join(lines)
+
+
+def _verification_block(command: str, code: int, text: str) -> str:
+    return "task verification [%s] exit=%s $ %s\n%s" % (
+        "failed" if code == 1 else "could not run", code, command, text)
 
 
 # --- preflight -----------------------------------------------------------------
@@ -717,7 +744,23 @@ class _Driver:
         except OSError as exc:
             code, out = 126, "gate could not run: %s" % exc
         self.say("%s gate exit %s" % (task.id, code))
-        return sd.GateVerdict(a.task_id, code, failure_detail(out))
+        detail = failure_detail(out)
+        command = task.verification.strip().strip("`").strip()
+        if code != 126 and command and task.type not in UNRUN_VERIFICATION_TYPES:
+            # The task's own check, not only the project's: done needs both.
+            try:
+                vcode, vtext = run_task_verification(command, path, self.cfg.gate_timeout_seconds)
+            except OSError as exc:
+                vcode, vtext = 126, "could not run: %s" % exc
+            self.say("%s verification exit %s" % (task.id, vcode))
+            if vcode != 0:
+                block = _verification_block(command, vcode, vtext)
+                if code == 0:
+                    code, detail = vcode, block[:_FAILURE_CAP]
+                else:
+                    detail = _fit_blocks([(block.split("\n", 1)[0], block.split("\n")[1:]),
+                                          ("gate", detail.split("\n"))], _FAILURE_CAP)
+        return sd.GateVerdict(a.task_id, code, detail)
 
     def compute_changes(self):
         if self.state.audit_dispatch:

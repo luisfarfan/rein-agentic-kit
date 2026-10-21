@@ -269,15 +269,21 @@ class ShipCase(unittest.TestCase):
         self.state_file = os.path.join(self.root, ".rein", "ship", "demo.json")
         self.wt = os.path.join(self.tmp.name, "wt")
         self.ledger = os.path.join(self.tmp.name, "runs.jsonl")
-        self._saved = (ship._tr.PROJECTS, ship._tr.LEDGER_PATH, ship.changed_files)
+        self._saved = (ship._tr.PROJECTS, ship._tr.LEDGER_PATH, ship.changed_files, ship.run_task_verification)
         ship._tr.PROJECTS = os.path.join(self.tmp.name, "projects")
         ship._tr.LEDGER_PATH = self.ledger
         ship.changed_files = lambda path, base: ["src/%s.py" % os.path.basename(path)]
+        self.verifications = []  # (command, path) of every task verification the driver ran
+
+        def verified(command, path, timeout):
+            self.verifications.append((command, path))
+            return 0, ""
+        ship.run_task_verification = verified
         self.addCleanup(self._restore)
         self.clock_value = 1000.0
 
     def _restore(self):
-        ship._tr.PROJECTS, ship._tr.LEDGER_PATH, ship.changed_files = self._saved
+        ship._tr.PROJECTS, ship._tr.LEDGER_PATH, ship.changed_files, ship.run_task_verification = self._saved
 
     def write_plan(self, text):
         with open(os.path.join(self.root, "tasks.md"), "w", encoding="utf-8") as fh:
@@ -1940,7 +1946,7 @@ class TestFailureDetail(ShipCase):
         class T:  # minimal driver surface for run_gate
             pass
         drv = ship._Driver.__new__(ship._Driver)
-        task = T(); task.repo = "r"; task.id = "T001"
+        task = T(); task.repo = "r"; task.id = "T001"; task.verification = ""; task.type = "implementation"
         drv.state = T(); drv.state.tasks = {"T001": task}; drv.state.worktree_paths = {"r": "/wt"}
         drv.gate_runner = lambda path, unit_only, timeout=900.0: (1, out)
         drv.cfg = T(); drv.cfg.gate_timeout_seconds = 900.0
