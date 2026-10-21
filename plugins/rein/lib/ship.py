@@ -559,34 +559,90 @@ class _Driver:
         task.orca_deps = deps
         self.save()
 
+    @staticmethod
+    def _row_worktree(row: dict) -> str:
+        return str((row.get("resource") or {}).get("worktreeId")
+                   or ((row.get("projection") or {}).get("workspace") or {}).get("id") or "")
+
+    def _started_row(self, orca_task_id: str, rows=None):
+        """The worker-list row Orca made for `orca_task_id`, or None. Raises OrcaError when Orca cannot say."""
+        rows = self.rows() if rows is None else rows
+        return next((r for r in rows if str(r.get("taskId") or "") == orca_task_id and r.get("dispatchId")), None)
+
+    def adopt_started(self, task, rows=None) -> bool:
+        """A worker-start whose answer was lost (a kill, a dropped connection): if Orca did start
+        the worker, supervise it rather than starting a second one in a second worktree.
+
+        True when adopted. When Orca lists no such worker the intent is cleared; when
+        Orca cannot be asked (OrcaError) it stays, for the next dispatch or resume."""
+        if not task.starting:
+            return False
+        row = self._started_row(task.starting, rows)
+        task.starting = ""
+        if row is None:
+            self.save()
+            return False
+        task.dispatch_id, task.status = str(row["dispatchId"]), "running"
+        wt = self._row_worktree(row)
+        if wt and task.repo not in self.state.worktrees:
+            self.state.worktrees[task.repo] = wt
+            self.state.worktree_paths[task.repo] = oc.worktree_path_of(wt)
+        provider = str(((row.get("projection") or {}).get("provider") or {}).get("id") or "")
+        if provider:
+            task.agent = provider
+        if task.agent and task.agent not in self.state.launched_agents:
+            self.state.launched_agents.append(task.agent)
+        self.save()
+        self.say("%s: adopted worker %s, started before the driver could record it" % (task.id, task.dispatch_id))
+        return True
+
+    def _setup_gate(self, task, question):
+        task.dispatch_id = ""
+        task.status = "gated"
+        self.state.pending_gates.append({
+            "task_id": task.id, "kind": "setup", "message_id": "", "options": ["retry", "skip"],
+            "question": question})
+        self.save()
+        self.open_pending()
+
     def dispatch(self, a):
         task = self.state.tasks[a.task_id]
+        if task.starting:  # an earlier start's answer was lost: never start a second worker blind
+            try:
+                if self.adopt_started(task):
+                    return
+            except OrcaError as exc:
+                self._setup_gate(task, "Rein cannot tell whether Orca started the earlier worker for %s (%s). "
+                                       "Check Orca, then retry or skip." % (task.id, exc))
+                return
         try:
             # Every worker start consumes an Orca task, so each dispatch gets a fresh one; so does a
             # task created against a dependency id that has since been replaced by a retry.
             if not task.orca_task_id or task.dispatches > 0 or task.orca_deps != self.orca_deps(task):
                 self.create_task(task)
             task.dispatches += 1
+            task.starting = task.orca_task_id  # persisted before the start: a kill mid-start is recoverable
             self.save()
             repo = self.ctx["repos"].get(a.repo) or {}
             fresh = a.worktree == "new-top-level"  # a reused worktree is already set up and named
             res = self.client.worker_start(
                 task.orca_task_id, worktree=a.worktree, agent=a.agent, model=a.model,
                 repo="id:%s" % repo["id"] if fresh and repo.get("id") else "",
-                name=self.change if fresh else "", setup="run" if fresh else "")
+                name=self.change if fresh else "", setup="run" if fresh else "",
+                timeout=START_TIMEOUT_SECONDS)
         except OrcaError as exc:
-            task.dispatch_id = ""
-            task.status = "gated"
+            try:  # Orca may have started it and lost only the answer
+                if self.adopt_started(task):
+                    return
+            except OrcaError:
+                pass  # `starting` stays set: the retry or the resume asks again
             question = "Orca could not start a worker for %s: %s" % (task.id, exc)
             residual = oc.residual_resources_of(exc)
             if residual:
                 question += " (left behind in Orca: %s)" % ", ".join(residual)
-            self.state.pending_gates.append({
-                "task_id": task.id, "kind": "setup", "message_id": "", "options": ["retry", "skip"],
-                "question": question})
-            self.save()
-            self.open_pending()
+            self._setup_gate(task, question)
             return
+        task.starting = ""
         task.dispatch_id = oc.dispatch_id_of(res)
         wt = oc.worktree_of(res)
         if wt and a.repo not in self.state.worktrees:
@@ -701,15 +757,59 @@ class _Driver:
                     fix_commits[p] = {"base": base, "log": fix_log(p, base)}
         spec = build_audit_spec(self.plan, self.changed_by_wt, self.ctx["reviewer_profile"],
                                 audit_root, self.change, self.state.previous_blocking, fix_commits)
-        task_id = oc.task_id_of(self.client.task_create(
-            spec, "%s audit round %d" % (self.change, self.state.audit_rounds + 1), []))
-        res = self.client.worker_start(task_id, worktree="id:%s" % first, agent=a.agent, model=a.model)
+        try:
+            task_id = oc.task_id_of(self.client.task_create(
+                spec, "%s audit round %d" % (self.change, self.state.audit_rounds + 1), []))
+            # Persisted before the start, with what reading the verdict needs: a kill mid-start
+            # is adopted on resume instead of starting a second auditor.
+            self.state.audit_starting = task_id
+            self.state.audit_root = audit_root
+            self.state.audit_baseline = _episode_stamp(_gate.latest_episode(audit_root, self.change))
+            self.save()
+            res = self.client.worker_start(task_id, worktree="id:%s" % first, agent=a.agent, model=a.model,
+                                           timeout=START_TIMEOUT_SECONDS)
+        except OrcaError as exc:
+            if self.state.audit_starting:
+                try:
+                    if self.adopt_audit():
+                        return
+                except OrcaError:
+                    pass
+            if is_transient(exc):
+                raise  # Orca is restarting: run_ship waits, and the resume adopts or restarts the audit
+            self.state.audit_starting = ""
+            if a.agent not in self.state.audit_excluded:
+                self.state.audit_excluded.append(a.agent)
+            self.state.pending_gates.append({
+                "task_id": None, "kind": "setup", "message_id": "", "audit": "", "options": ["retry", "skip"],
+                "question": "Orca could not start the audit on %s/%s: %s. Retry picks another reviewer when one "
+                            "is free; skip ends the audit unapproved." % (a.agent, a.model, exc)})
+            self.save()
+            self.open_pending()
+            return
+        self.state.audit_starting = ""
         self.state.audit_dispatch = oc.dispatch_id_of(res)
-        self.state.audit_root = audit_root
-        self.state.audit_baseline = _episode_stamp(_gate.latest_episode(audit_root, self.change))
         self.state.audit_started_at = 0.0
+        agent, model = a.agent, a.model
+        launch = oc.effective_launch_of(res)
+        if launch.get("agent") and (launch["agent"], launch.get("model")) != (a.agent, a.model):
+            agent, model = launch["agent"], launch.get("model") or a.model
+            self.say("Orca launched %s/%s for the audit, not %s/%s%s" % (
+                agent, model, a.agent, a.model,
+                " -- it also implemented part of this change" if agent in self.state.launched_agents else ""))
         self.save()
-        self.say("audit started on %s/%s in %s (%s)" % (a.agent, a.model, audit_root, self.state.audit_dispatch))
+        self.say("audit started on %s/%s in %s (%s)" % (agent, model, audit_root, self.state.audit_dispatch))
+
+    def adopt_audit(self, rows=None) -> bool:
+        """The audit's worker-start answer was lost: supervise the auditor Orca did start, if any."""
+        row = self._started_row(self.state.audit_starting, rows)
+        self.state.audit_starting = ""
+        if row is not None:
+            self.state.audit_dispatch = str(row["dispatchId"])
+            self.state.audit_started_at = 0.0
+            self.say("adopted audit worker %s, started before the driver could record it" % self.state.audit_dispatch)
+        self.save()
+        return row is not None
 
     # -- events from Orca
     def apply_answers(self):
@@ -951,10 +1051,14 @@ class _Driver:
         self.requeue_orphans()
         self.open_pending()
         self.apply_answers()
-        rows = {str(r.get("dispatchId")): r for r in self.rows()}
+        listed = self.rows()
+        rows = {str(r.get("dispatchId")): r for r in listed}
         events = self.lost_completions(rows)
         for t in self.state.tasks.values():
             if t.status == "running" and not t.dispatch_id:
+                if t.starting and self.adopt_started(t, listed):
+                    continue  # killed mid-start: Orca did start it
+                t.starting = ""
                 t.status = "pending"  # decided but never started
             elif t.status == "gating":
                 events.append(sd.RunGate(t.id, t.type != "verification"))
@@ -964,6 +1068,8 @@ class _Driver:
                 self.feed_gate(e)
             else:
                 self.feed(e)
+        if self.state.phase == "auditing" and self.state.audit_starting and not self.state.audit_dispatch:
+            self.adopt_audit(listed)
         if self.state.phase == "auditing":
             if self.state.audit_dispatch:
                 self.probe_audit()
@@ -1097,6 +1203,7 @@ def detach_ship(root: str, change: str, client: OrcaClient, *, override: tuple |
     return 0
 
 
+START_TIMEOUT_SECONDS = 1800  # one worker-start, `--setup run` included; a hung CLI must not hang the driver
 RESUME_POLL_SECONDS = 5
 RESUME_WAIT_SECONDS = 600
 RESUME_MAX = 3

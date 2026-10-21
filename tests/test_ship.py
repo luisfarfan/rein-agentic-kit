@@ -163,7 +163,8 @@ class FakeOrca:
             rows = []
             for did, d in self.dispatches.items():
                 rows.append({"dispatchId": did, "taskId": d["task"], "agentTerminalHandle": "term_" + did,
-                             "workerState": "working", "dispatchStatus": "dispatched", "projection": {}})
+                             "workerState": "working", "dispatchStatus": "dispatched", "projection": {},
+                             "resource": {"worktreeId": d["worktree"]}})
             return {"workers": rows}
         if verb == "worker-show":
             return {"dispatch": {"status": self.show_status},

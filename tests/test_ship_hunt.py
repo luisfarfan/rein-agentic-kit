@@ -256,5 +256,93 @@ class DriverRecordsTheLaunchedAgent(ShipCase):
         self.assertNotEqual(_flag(audit, "--agent"), "claude", self.out)
 
 
+class KillOnStart(FakeOrca):
+    """worker-start succeeds in Orca, then the driver dies before it reads the answer."""
+    kill_title = "T001"
+
+    def _answer(self, a):
+        r = super()._answer(a)
+        if (a[:2] == ["orchestration", "worker-start"] and self.kill_title
+                and self.tasks[_flag(a, "--task")]["title"].startswith(self.kill_title)):
+            self.kill_title = ""
+            raise KeyboardInterrupt("SIGTERM while worker-start was answering")
+        return r
+
+
+class LostStartAnswer(FakeOrca):
+    """worker-start succeeds in Orca, but the CLI reports a lost connection."""
+    lose = True
+
+    def _answer(self, a):
+        r = super()._answer(a)
+        if a[:2] == ["orchestration", "worker-start"] and self.lose:
+            self.lose = False
+            raise FailEnvelope({"ok": False, "error": {"code": "runtime_unavailable", "message": "connection closed"}})
+        return r
+
+
+class NoDoubleDispatch(ShipCase):
+    def setUp(self):
+        super().setUp()
+        self.write_plan(PLAN.split("- [ ] T002")[0])
+
+    def worker_starts(self, fake):
+        return [s for s in fake.starts() if "audit" not in fake.tasks[_flag(s, "--task")]["title"]]
+
+    def test_a_kill_during_worker_start_is_adopted_not_restarted(self):
+        fake = KillOnStart(self.root)
+        with self.assertRaises(KeyboardInterrupt):
+            self.run_ship(fake, scripted_gate())
+        with open(self.state_file, encoding="utf-8") as fh:
+            self.assertTrue(json.load(fh)["tasks"]["T001"]["starting"])
+        fake.on_audit = self.approve_audit()
+        self.assertEqual(self.run_ship(fake, scripted_gate()), 0, self.out)
+        self.assertEqual(len(self.worker_starts(fake)), 1, self.out)
+        self.assertIn("adopted", self.out)
+
+    def test_a_lost_answer_to_worker_start_adopts_the_worker(self):
+        fake = LostStartAnswer(self.root)
+        fake.auto_resolve = "retry"
+        fake.on_audit = self.approve_audit()
+        self.assertEqual(self.run_ship(fake, scripted_gate()), 0, self.out)
+        self.assertEqual(len(self.worker_starts(fake)), 1, self.out)
+        self.assertEqual(len({d["worktree"] for d in fake.dispatches.values()}), 1)
+
+    def test_a_kill_during_the_audit_start_does_not_start_a_second_audit(self):
+        fake = KillOnStart(self.root)
+        fake.kill_title = "demo audit"
+        fake.on_audit = self.approve_audit()
+        with self.assertRaises(KeyboardInterrupt):
+            self.run_ship(fake, scripted_gate())
+        self.assertEqual(self.run_ship(fake, scripted_gate()), 0, self.out)
+        audits = [s for s in fake.starts() if "audit" in fake.tasks[_flag(s, "--task")]["title"]]
+        self.assertEqual(len(audits), 1, self.out)
+
+
+class AuditStartFails(FakeOrca):
+    def _answer(self, a):
+        if (a[:2] == ["orchestration", "worker-start"] and _flag(a, "--agent") == "codex"
+                and "audit" in self.tasks.get(_flag(a, "--task"), {}).get("title", "")):
+            raise FailEnvelope({"ok": False, "error": {"code": "agent_unavailable", "message": "codex is not installed"}})
+        return super()._answer(a)
+
+
+class AuditStartErrorOpensAGate(ShipCase):
+    def test_a_non_transient_audit_start_error_asks_the_owner_and_retry_picks_another_reviewer(self):
+        self.write_plan(PLAN.split("- [ ] T002")[0])
+        fake = AuditStartFails(self.root)
+        fake.auto_resolve = "retry"
+        fake.on_audit = self.approve_audit()
+        with open(os.path.join(self.root, "flow.config.json"), "w", encoding="utf-8") as fh:
+            json.dump({"ship": {"claudeWeeklyThreshold": 100}}, fh)  # Sonnet implements: codex is the fresh reviewer
+        code = self.run_ship(fake, scripted_gate())
+        self.assertEqual(code, 0, self.out)
+        self.assertTrue(any("could not start the audit" in g["question"] for g in fake.gates), self.out)
+        audits = [_flag(s, "--agent") for s in fake.starts() if "audit" in fake.tasks[_flag(s, "--task")]["title"]]
+        self.assertEqual(len(audits), 2)
+        self.assertEqual(audits[0], "codex")
+        self.assertNotIn(audits[1], ("codex", "claude"), "another reviewer, and still not the implementer")
+
+
 if __name__ == "__main__":
     unittest.main()

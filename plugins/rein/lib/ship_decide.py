@@ -252,14 +252,14 @@ def _claude_usable(limits: dict) -> bool:
 
 
 def audit_model(changed_files: list, implementer_agents: list, cfg: ShipConfig,
-                limits: dict | None = None, reaudit: bool = False) -> tuple:
+                limits: dict | None = None, reaudit: bool = False, exclude=()) -> tuple:
     """Opus for risky or large changes; otherwise a reviewer under the brake, preferring
     a provider that did not implement. A re-audit (after a fix round) is never Opus: it
     only verifies the earlier findings. Opus obeys the brake like any reviewer, and Claude is
     never picked on unknown usage. When every reviewer is braked, the first one, so the
     caller can see the brake and ask the owner."""
     limits = limits or {}
-    claude = _claude_usable(limits)
+    claude = _claude_usable(limits) and "claude" not in exclude
     if not reaudit and claude:
         if len(changed_files) > cfg.large_change_files:
             return quota.OPUS
@@ -269,6 +269,7 @@ def audit_model(changed_files: list, implementer_agents: list, cfg: ShipConfig,
     used = set(implementer_agents)
     if (limits.get("antigravity") or {}).get("weekly") is not None and quota.ANTIGRAVITY[0] not in used:
         pool.append(quota.ANTIGRAVITY)  # a last resort, never reviewing its own work
+    pool = [m for m in pool if m[0] not in exclude] or pool  # Orca refused to start these
     fresh = [m for m in pool if m[0] not in used]
     choices = fresh + [m for m in pool if m not in fresh]
     return quota.first_unbraked(choices, limits)
@@ -837,7 +838,7 @@ def _on_changes_computed(state: ShipState, event: ChangesComputed, cfg: ShipConf
     state.changed_files = list(event.changed_files)
     implementers = state.launched_agents or state.implementer_agents  # what Orca ran, not what was asked
     agent, model = audit_model(state.changed_files, implementers, cfg, event.limits,
-                               reaudit=state.audit_rounds > 0)
+                               reaudit=state.audit_rounds > 0, exclude=state.audit_excluded)
     braked = quota.brake_reason(event.limits, agent)
     if braked:
         _open(state, actions, None,

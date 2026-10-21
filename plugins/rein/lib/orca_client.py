@@ -122,6 +122,7 @@ class OrcaClient:
         name: str = "",
         setup: str = "",
         comment: str = "",
+        timeout: Optional[float] = None,
     ) -> dict:
         args = [
             "orchestration", "worker-start", "--task", task_id,
@@ -132,7 +133,7 @@ class OrcaClient:
         ):
             if value:
                 args += [flag, value]
-        return self._call(*args)
+        return self._call(*args, timeout=timeout)
 
     def worker_show(self, dispatch_id: str) -> dict:
         return self._call("orchestration", "worker-show", "--dispatch", dispatch_id)

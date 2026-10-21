@@ -45,6 +45,9 @@ class TaskState:
     stop_unconfirmed: str = ""
     # An audit fix task's findings. Kept apart from `last_failure`, which a failed retry overwrites.
     audit_findings: str = ""
+    # The Orca task a worker-start was sent for and not yet answered: a kill or a lost answer
+    # leaves it set, and the next dispatch or resume looks for that worker before starting another.
+    starting: str = ""
 
 
 @dataclass
@@ -89,6 +92,10 @@ class ShipState:
     previous_blocking: list = field(default_factory=list)
     # `{repo: HEAD sha}` of each worktree when the latest fix round started; the re-audit lists the commits since.
     fix_round_base: dict = field(default_factory=dict)
+    # The Orca task an audit worker-start was sent for and not yet answered (see TaskState.starting).
+    audit_starting: str = ""
+    # Reviewer agents Orca refused to start for the audit; a retry picks another one.
+    audit_excluded: list = field(default_factory=list)
 
 
 def state_path(repo_root: str, change: str) -> str:
