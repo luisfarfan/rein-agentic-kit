@@ -765,8 +765,10 @@ class _Driver:
             self.dispatch(a)
         elif isinstance(a, sd.RunGate):
             task = self.state.tasks[a.task_id]
+            self.tidy_setup_tabs(task.repo)
             return self.submit_gate(("task", a.task_id, task.dispatch_id), self.task_gate_job(a))
         elif isinstance(a, sd.RunRepoGate):
+            self.tidy_setup_tabs(a.repo)
             return self.submit_gate(("repo", a.repo), self.repo_gate_job(a))
         elif isinstance(a, sd.CloseTask):
             if not _plan.close_task(self.state.plan_path, a.task_id):
@@ -802,6 +804,19 @@ class _Driver:
         elif isinstance(a, sd.Finish):
             self.finished = True
         return None
+
+    def tidy_setup_tabs(self, repo: str) -> None:
+        """Close the idle "Setup" tab Orca's setup run left in `repo`'s worktree.
+
+        A gate starting means the worktree's setup is over. Once per worktree per driver process;
+        never in a dry run, and an Orca error is only reported."""
+        path = (getattr(self.state, "worktree_paths", None) or {}).get(repo, "")
+        tidied = self.__dict__.setdefault("tidied_worktrees", set())
+        if getattr(self, "dry_run", False) or not path or path in tidied:
+            return
+        tidied.add(path)
+        for handle in oc.close_idle_setup_tabs(self.client, path, say=self.say):
+            self.say("closed the idle Setup tab %s of %s" % (handle, repo))
 
     def release(self, dispatch_id):
         try:

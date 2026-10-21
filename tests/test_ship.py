@@ -133,6 +133,8 @@ class FakeOrca:
             return {"repos": [dict(base, id="repo-%s" % n, displayName=n, path="/r/%s" % n) for n in self.repos]}
         if a[0] == "worktree":
             return {}
+        if a[0] == "terminal":  # tidying the idle "Setup" tabs when a gate starts
+            return {"terminals": []} if a[1] == "list" else {}
         verb = a[1]
         if verb == "run-create":
             return _fixture("run_create")

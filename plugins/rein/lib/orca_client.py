@@ -13,9 +13,12 @@ already decoded, empty, or absent.
 
 from __future__ import annotations
 
+import datetime
 import json
 import os
 import subprocess
+import sys
+import time
 from typing import Callable, Optional
 
 
@@ -39,7 +42,9 @@ LONG_TIMEOUT = 1800.0  # a call that may run a worktree's setup
 
 def _default_runner(argv: list, timeout: Optional[float] = None) -> tuple:
     """`(exit code, stdout, stderr)`. A custom runner may return just `(code, stdout)`."""
-    proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+    # Never the caller's stdin: a caller inside a `while read` loop would lose its input to orca.
+    proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout,
+                          stdin=subprocess.DEVNULL)
     return proc.returncode, proc.stdout, proc.stderr
 
 
@@ -218,9 +223,12 @@ class OrcaClient:
             args += ["--worktree", worktree]
         return self._call(*args)
 
-    def terminal_close(self, handle: str) -> dict:
-        """Close one terminal by its runtime handle."""
-        return self._call("terminal", "close", "--terminal", handle)
+    def terminal_close(self, handle: str, tab: bool = False) -> dict:
+        """Close one terminal by its runtime handle; `tab` closes its whole tab."""
+        args = ["terminal", "close", "--terminal", handle]
+        if tab:
+            args.append("--tab")
+        return self._call(*args)
 
     # -- worktrees --------------------------------------------------------
     def worktree_create(
@@ -385,6 +393,72 @@ def terminal_handle_of(terminal_create_result: dict) -> str:
 def terminals_of(terminal_list_result: dict) -> list:
     items = _dict(terminal_list_result).get("terminals")
     return [t for t in items if isinstance(t, dict)] if isinstance(items, list) else []
+
+
+SETUP_TAB_TITLE = "Setup"
+
+
+def _epoch_seconds(value) -> Optional[float]:
+    """`lastOutputAt` as epoch seconds: epoch ms (a number) or an ISO-8601 string; None if unreadable."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return value / 1000.0 if value > 1e11 else float(value)  # a small number is already seconds
+    if isinstance(value, str) and value.strip():
+        text = value.strip()
+        if text.endswith(("Z", "z")):
+            text = text[:-1] + "+00:00"
+        try:
+            parsed = datetime.datetime.fromisoformat(text)
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+        return parsed.timestamp()
+    return None
+
+
+def _stderr(text: str) -> None:
+    print(text, file=sys.stderr, flush=True)
+
+
+def close_idle_setup_tabs(client: "OrcaClient", worktree_path: str, quiet_seconds: float = 60,
+                          *, now: Optional[Callable[[], float]] = None,
+                          say: Optional[Callable[[str], None]] = None) -> list:
+    """Close the tabs a worktree's setup script left open at an idle prompt; the handles closed.
+
+    Only a tab titled exactly "Setup", in this worktree (realpath compare), whose last output is
+    older than `quiet_seconds`: a setup still printing is never killed, and a tab without a
+    readable `lastOutputAt` is kept. Call it only once setup is certainly over. Orca errors are
+    reported through `say` and ignored: tidying tabs never fails a run.
+    """
+    if not worktree_path:
+        return []
+    say = say or _stderr
+    target = os.path.realpath(worktree_path)
+    current = (now or time.time)()
+    try:
+        rows = terminals_of(client.terminal_list())
+    except (OrcaError, OSError) as exc:
+        say("could not list the Setup tabs of %s: %s" % (worktree_path, exc))
+        return []
+    closed = []
+    for row in rows:
+        handle, path = _str(row.get("handle")), _str(row.get("worktreePath"))
+        if row.get("title") != SETUP_TAB_TITLE or not handle or not path:
+            continue
+        if os.path.realpath(path) != target:
+            continue
+        last = _epoch_seconds(row.get("lastOutputAt"))
+        if last is None or current - last < quiet_seconds:
+            continue
+        try:
+            client.terminal_close(handle, tab=True)
+        except (OrcaError, OSError) as exc:
+            say("could not close the Setup tab %s of %s: %s" % (handle, worktree_path, exc))
+            continue
+        closed.append(handle)
+    return closed
 
 
 def coordinator_of(run_show_result: dict) -> str:

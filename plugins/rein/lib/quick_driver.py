@@ -590,6 +590,8 @@ def done_quick(*, cwd: str = ".", client: OrcaClient, run=verify.run_one,
     if record is None:
         say(problem)
         return 2
+    # The agent is done, so the worktree's setup is too: its idle "Setup" tab can go.
+    oc.close_idle_setup_tabs(client, workspace, say=say)
 
     # 2. What changed
     try:

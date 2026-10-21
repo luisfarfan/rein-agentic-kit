@@ -781,6 +781,11 @@ class DoneCase(unittest.TestCase):
 TERMINAL = {"ORCA_TERMINAL_HANDLE": "term_1"}
 
 
+def _beyond_tidying(calls):
+    """Orca calls other than the `terminal list` that tidies the idle Setup tab first."""
+    return [c for c in calls if c[1:3] != ["terminal", "list"]]
+
+
 class DoneGateTests(DoneCase):
     def test_no_record_is_usage(self):
         self.make_repo(record=False)
@@ -832,7 +837,7 @@ class DoneGateTests(DoneCase):
         self.assertEqual((command, configured), ("make one src/foo.test.ts", ONE))
         self.assertEqual((cwd, timeout), (self.ws, 900.0))
         self.assertIn("verdict: green", self.text())
-        self.assertEqual(orca.calls, [])  # no audit, no Orca
+        self.assertEqual(_beyond_tidying(orca.calls), [])  # no audit, no Orca
         self.assertEqual(self.audit_rounds(), 0)
 
     def test_gate_timeout_comes_from_the_config(self):
@@ -865,7 +870,7 @@ class DoneGateTests(DoneCase):
         code, _, orca = self.done(run=run, env=TERMINAL)
         self.assertEqual(code, 126)
         self.assertIn("verdict: setup", self.text())
-        self.assertEqual(orca.calls, [])
+        self.assertEqual(_beyond_tidying(orca.calls), [])
 
     def test_large_change_warns_without_audit(self):
         self.make_repo()
@@ -875,7 +880,7 @@ class DoneGateTests(DoneCase):
         self.assertEqual(code, 0)
         self.assertIn("4 archivos", self.text())
         self.assertIn("plan", self.text())
-        self.assertEqual(orca.calls, [])
+        self.assertEqual(_beyond_tidying(orca.calls), [])
 
     def test_no_related_tests_is_said(self):
         self.make_repo()
@@ -958,7 +963,7 @@ class DoneAuditTests(DoneCase):
         run = _Gate({"lint": _result("lint", "failed", 1, "error: x")})
         code, _, orca = self.done(run=run, env=TERMINAL)
         self.assertEqual(code, 1)
-        self.assertEqual(orca.calls, [])
+        self.assertEqual(_beyond_tidying(orca.calls), [])
 
     def test_every_reviewer_braked_is_126(self):
         self.risky()
@@ -1117,7 +1122,7 @@ class DoneAuditTests(DoneCase):
         code, run, orca = self.done()  # no Orca terminal needed either
         self.assertEqual(code, 0)
         self.assertIn("auditoría vigente: aprobada", self.text())
-        self.assertEqual(orca.calls, [])
+        self.assertEqual(_beyond_tidying(orca.calls), [])
         self.assertEqual(self.audit_rounds(), 0)
 
     def test_approved_then_a_tweak_outside_the_reviewed_files_stays_approved(self):
@@ -1158,7 +1163,7 @@ class DoneAuditTests(DoneCase):
         code, _, orca = self.done()
         self.assertEqual(code, 0)
         self.assertIn("auditoría vigente: aprobada", self.text())
-        self.assertEqual(orca.calls, [])
+        self.assertEqual(_beyond_tidying(orca.calls), [])
 
     def test_an_approval_stands_even_after_the_cap(self):
         self.risky(audit_rounds=2)
