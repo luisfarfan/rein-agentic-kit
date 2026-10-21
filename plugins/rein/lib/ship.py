@@ -27,6 +27,7 @@ import affected as _affected
 import detect as _detect
 import gate as _gate
 import gate_env as _gate_env
+import gate_log as _gate_log
 import gate_run as _gate_run
 import guard as _guard
 import orca_client as oc
@@ -1067,6 +1068,11 @@ class _Driver:
                 return base
         return self.base_ref(task.repo)
 
+    def gate_log_path(self) -> str:
+        """Where this run's gates are kept (next to its state); "" in a dry run."""
+        spath = getattr(self, "spath", "")
+        return "" if getattr(self, "dry_run", False) or not spath else _gate_log.ship_log_path(spath)
+
     def repo_gate_job(self, a):
         """A callable `job(cancel=None) -> RepoGateVerdict` for the repo's full gate before the audit.
 
@@ -1075,6 +1081,7 @@ class _Driver:
         path = self.state.worktree_paths.get(a.repo, "")
         repo, runner, timeout = a.repo, self.gate_runner, self.cfg.gate_timeout_seconds
         root, say = getattr(self, "root", ""), self.say
+        log, change = self.gate_log_path(), getattr(self, "change", "")
 
         def job(cancel=None):
             if not path:
@@ -1085,6 +1092,13 @@ class _Driver:
             except OSError as exc:
                 code, out = 126, "gate could not run: %s" % exc
             say("%s full gate exit %s" % (repo, code))
+            if log:
+                entry = dict(_gate_log.summarize(out), kind="repo", change=change, repo=repo, worktree=path,
+                             exit=code)
+                entry.setdefault("tier", "full")
+                if not entry["slots"] and code:
+                    entry["error"] = (out or "")[-300:]
+                _gate_log.append(log, entry)
             return sd.RepoGateVerdict(repo, code, failure_detail(out) if code else "")
         return job
 
@@ -1115,6 +1129,7 @@ class _Driver:
             for t in ((getattr(self, "plan", None) or {}).get("tasks") or [])
             if (t.get("repo") or (getattr(self, "ctx", None) or {}).get("default_repo")) == repo)
         allowed += " " + (getattr(task, "audit_findings", "") or "")
+        log, change = self.gate_log_path(), getattr(self, "change", "")
 
         def job(cancel=None):
             if not path:
@@ -1126,7 +1141,14 @@ class _Driver:
                 code, out = 126, "gate could not run: %s" % exc
             say("%s gate exit %s" % (task_id, code))
             detail = failure_detail(out)
+            entry = dict(_gate_log.summarize(out), kind="task", change=change, task=task_id, repo=repo,
+                         dispatch=dispatch_id, worktree=path, gateExit=code)
+            entry.setdefault("tier", tier.get("tier") or "default")
+            if not entry["slots"] and code:
+                entry["error"] = (out or "")[-300:]
             if cancel is not None and cancel.is_set():
+                if log:
+                    _gate_log.append(log, dict(entry, exit=126, error="cancelled: the driver no longer needed it"))
                 return sd.GateVerdict(task_id, 126, "the gate was cancelled", dispatch_id)
             command, why_not = task_verification_command(verification)
             runnable = code != 126 and verification.strip() and task_type not in UNRUN_VERIFICATION_TYPES
@@ -1139,6 +1161,7 @@ class _Driver:
                 except OSError as exc:
                     vcode, vtext = 126, "could not run: %s" % exc
                 say("%s verification exit %s" % (task_id, vcode))
+                entry["verification"] = "exit %s $ %s" % (vcode, command)
                 if vcode == 126:
                     # A missing tool is setup, not the worker's code: no retry is burned on it.
                     say("%s verification could not run ($ %s): %s; the gate alone decides"
@@ -1153,12 +1176,15 @@ class _Driver:
             if code != 126:
                 problems = _guard.check(path, guard_base, _detect.resolve(path), allowed)
                 if problems:
+                    entry["guard"] = "; ".join(problems)[:600]
                     say("%s guard: %s" % (task_id, "; ".join(problems)[:300]))
                     head, lines = "Rein's guard rejected the change:", ["- %s" % p for p in problems]
                     if code == 0:
                         code, detail = 1, _fit_blocks([(head, lines)], _FAILURE_CAP)
                     else:
                         detail = _fit_blocks([(head, lines), ("gate", detail.split("\n"))], _FAILURE_CAP)
+            if log:
+                _gate_log.append(log, dict(entry, exit=code))
             return sd.GateVerdict(task_id, code, detail, dispatch_id)
         return job
 

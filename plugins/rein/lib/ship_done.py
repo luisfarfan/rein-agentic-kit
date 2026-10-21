@@ -21,6 +21,7 @@ from typing import Callable, Optional
 
 import detect as _detect
 import gate_env as _gate_env
+import gate_log as _gate_log
 import orca_client as oc
 import quick
 import quick_driver as qd
@@ -504,6 +505,9 @@ def run_done(root: str, change: str, client: OrcaClient, *, dry_run: bool = Fals
         dest = os.path.join(root, ".rein", "ship", "archive", os.path.basename(state_file))
         os.makedirs(os.path.dirname(dest), exist_ok=True)
         shutil.move(state_file, dest)
+        gates = _gate_log.ship_log_path(state_file)
+        if os.path.exists(gates):  # the run's gate reports travel with its state
+            shutil.move(gates, _gate_log.ship_log_path(dest))
         shutil.rmtree(ss.answers_dir(root, change), ignore_errors=True)
     except OSError as exc:
         say("could not archive the state file: %s" % exc)

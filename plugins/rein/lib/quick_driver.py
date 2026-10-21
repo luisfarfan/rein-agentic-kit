@@ -26,6 +26,7 @@ import detect as _detect
 import gate as _gate
 import gate_cache as _gate_cache
 import gate_env as _gate_env
+import gate_log as _gate_log
 import gate_run as _gate_run
 import guard as _guard
 import orca_client as oc
@@ -632,6 +633,10 @@ def done_quick(*, cwd: str = ".", client: OrcaClient, run=verify.run_one,
     results = [_Slot(e) for e in report["results"].values()]
     outputs = {e["slot"]: "\n".join(e.get("errorLines") or []) for e in report["results"].values()}
     outcome = quick.verdict(results)
+    _gate_log.append(_gate_log.root_log_path(workspace), dict(
+        _gate_log.summarize(report), kind="quick", repo=repo, tier="task+full-suite" if full_suite else "task",
+        env=sorted(gate_vars), affected=planned.get("affected"), base=record["base_sha"],
+        exit={"green": 0, "red": 1}.get(outcome, 126)))
     notes = _gate_notes(planned, full_suite, changed, cfg, commands)
     say(quick.summary(results, outputs, notes, audit_pending=pending))
     # The guard: the gate config untouched (unless the task asked for it) and every commit through

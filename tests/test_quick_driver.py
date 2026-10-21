@@ -724,6 +724,10 @@ class DoneCase(unittest.TestCase):
         os.environ["REIN_CACHE_DIR"] = os.path.join(self.root, "_cache")
         self.addCleanup(lambda: os.environ.pop("REIN_CACHE_DIR") if saved is None
                         else os.environ.__setitem__("REIN_CACHE_DIR", saved))
+        saved_log = os.environ.get("REIN_GATE_LOG_DIR")  # nor the real gate log
+        os.environ["REIN_GATE_LOG_DIR"] = os.path.join(self.root, "_log")
+        self.addCleanup(lambda: os.environ.pop("REIN_GATE_LOG_DIR") if saved_log is None
+                        else os.environ.__setitem__("REIN_GATE_LOG_DIR", saved_log))
         self.ws = os.path.join(self.root, "quick-fix")
         self.out = []
 

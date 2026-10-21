@@ -207,6 +207,10 @@ rein gate        # ✅ did they PASS — 0 green · 1 the code is wrong · 126 t
                  # --plan: run each TASK's own Verification before implementers are paid.
                  # Failing is fine (the work does not exist yet); proving NOTHING is not —
                  # a missing test module or a selector matching zero tests exits non-zero
+rein gate-log <change>  # every gate a ship run ran (task and repo gates): tier, slots, time,
+                 # cached, budget, gate.env names; kept next to its state, archived by `rein done`.
+                 # `--path <checkout>`: the gates `rein gate` / `rein quick done` ran there
+                 # (~/.claude/rein/verify/log). --json for the raw lines
 rein env [root]  # `export` lines of the worktree's gate.env with its placeholders filled:
                  # `eval "$(rein env)"` gives a shell the env Rein's gates use there
 rein plan-check  # mechanical findings on a drafted plan's own text. Always exits 0 (it runs

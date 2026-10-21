@@ -24,6 +24,11 @@ Subcommands:
                       --tier task --base <ref>: lint, typecheck and only the tests the
                       change since <ref> reaches (gate.affected); --tier full: every
                       gate slot with testIntegration. Both without the render demand
+  rein gate-log <change> [--root <plan repo>] | --path <checkout>  [--json]
+                      every gate a ship run (task and repo gates, next to its state) or a
+                      checkout (`rein gate`, `rein quick done`, under
+                      ~/.claude/rein/verify/log) ran: tier, slots, time, cached, budget,
+                      gate.env names. Exit 1 when there is no log
   rein env [root]     `export` lines for the worktree's gate.env (flow.config.json):
                       the per-worktree environment Rein's gates use there.
                       [--repo <name>] [--env-root <plan repo>]
@@ -118,6 +123,7 @@ import detect as _detect  # noqa: E402
 import gate as _gate  # noqa: E402
 import gate_cache as _gate_cache  # noqa: E402
 import gate_env as _gate_env  # noqa: E402
+import gate_log as _gate_log  # noqa: E402
 import gate_run as _gate_run  # noqa: E402
 import migrate_config as _migrate_config  # noqa: E402
 import plan as _plan  # noqa: E402
@@ -358,6 +364,10 @@ def cmd_gate(argv: list[str]) -> int:
     decision = _gate.decide_gate(report, review=review, require_review=require_review,
                                  verify_policy=policy, serve=serve, render=render,
                                  allow_empty=tier == "task")
+    # Kept per checkout, readable afterwards with `rein gate-log --path <root>`.
+    _gate_log.append(_gate_log.root_log_path(resolved["root"]), dict(
+        _gate_log.summarize({"decision": decision, "report": report}), kind="gate", repo=history_repo,
+        base=_opt(argv, "base"), exit=decision["exit"]))
 
     if "--json" in argv:
         print(json.dumps({"decision": decision, "report": report}, indent=2))
@@ -378,6 +388,27 @@ def cmd_gate(argv: list[str]) -> int:
     if decision["decision"] == _gate.GATE_SETUP:
         print("  fix the environment and run again -- this is not a verdict on the code")
     return decision["exit"]
+
+
+def cmd_gate_log(argv: list[str]) -> int:
+    """The gates a ship run (`<change>`) or a checkout (`--path`) ran, oldest first."""
+    usage = "usage: rein gate-log <change> [--root <plan repo>] [--json]  |  rein gate-log --path <checkout> [--json]"
+    change, path = _positional(argv), _opt(argv, "path")
+    if bool(change) == bool(path):
+        print(usage)
+        return 2
+    where = (_gate_log.root_log_path(path) if path else
+             _gate_log.ship_log_path(_ship.ss.state_path(os.path.abspath(_opt(argv, "root", ".")), change)))
+    entries = _gate_log.read(where)
+    if "--json" in argv:
+        print(json.dumps({"path": where, "gates": entries}, indent=2))
+        return 0 if entries else 1
+    if not entries:
+        print(f"no gate log at {where}")
+        return 1
+    print(f"gates ({where}):")
+    print(_gate_log.render(entries))
+    return 0
 
 
 def cmd_env(argv: list[str]) -> int:
@@ -1148,6 +1179,7 @@ COMMANDS = {
     "detect": cmd_detect,
     "verify": cmd_verify,
     "gate": cmd_gate,
+    "gate-log": cmd_gate_log,
     "env": cmd_env,
     "role": cmd_role,
     "tasks": cmd_tasks,
