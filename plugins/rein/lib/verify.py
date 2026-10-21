@@ -205,37 +205,75 @@ class CommandResult:
         }
 
 
+FAILURE_LINES_CAP = 60      # non-blank lines `failure_lines` keeps from one capture
+FAILURE_CHARS_CAP = 5000    # and characters: under ship's 6000-char failure cap, with room for a header
+
 _STRONG_RE = re.compile(
-    r"\bFAIL(?:ED|URES?)?\b|\bERROR\b|\w*Error:|AssertionError|\u2717|\u00d7|^=+ .*\b(?:failed|FAILURES)\b"
+    r"\bFAIL(?:ED|URES?)?\b|\bERROR\b|\w*Error:|AssertionError|\u2717|\u00d7"
+    r"|^=+ .*\b(?:failed|FAILURES)\b"
+    r"|^E\s"                                           # pytest: the explained assertion
+    r"|^>\s"                                           # pytest: the failing source line
+    r"|^\s*[-+]?\s*(?:Expected|Received)\b"            # jest/vitest diff header
+    r"|[\w./\\-]+\.\w+(?::\d+){1,2}\b|\.\w+\(\d+,\d+\)"  # file:line[:col], tsc file(l,c)
+    r"|\b\d+ (?:failed|errors?)\b|\bTests?\b.*\bfailed\b"  # runner summaries
 )
+# Opens an assertion block whose explanation (diff, location, code frame) follows it.
+_BLOCK_RE = re.compile(r"^\s*FAIL\b|AssertionError|^\s*\w*Error:|^_{3,} .* _{3,}$")
+_BLOCK_AFTER = 12
+# A passing test is never failure evidence, whatever its name says.
+_PASSING_RE = re.compile(r"\u2713|\u2714|\bPASS(?:ED)?\b|\.\.\. ok$|\bok$")
+_SUMMARY_TAIL = 3  # the last non-blank lines: where a runner prints its summary
 
 
-def failure_lines(text: str, cap: int = ERROR_LINES_CAP) -> list:
-    """The lines that explain a failure in a long capture, at most `cap`.
+def failure_lines(text: str, cap: int = FAILURE_LINES_CAP, max_chars: int = FAILURE_CHARS_CAP) -> list:
+    """The lines that explain a failure in a capture: at most `cap` non-blank lines, `max_chars` characters.
 
-    `error_lines` keeps the FIRST matches, so in a long suite names like
-    `test_error_handling ... ok` crowd out the assertion at the end. Here real
-    failure markers (FAIL/FAILED/ERROR/`XError:`/AssertionError/marks/a runner's
-    failure summary) come first, other matches only fill what is left, and over
-    the cap the LAST lines win -- a runner reports its failures last."""
+    A capture that fits is returned whole: filtering a short report only loses
+    the assertion detail. Otherwise real failure evidence wins: FAIL/ERROR
+    markers, `XError:`, pytest `E`/`>` lines, expected/received diffs,
+    file:line locations and the runner summary (its last lines), each with
+    context, and an assertion block with what follows it. Over the budget the
+    LAST lines win: a runner reports its failures last. Plain `error`/`fail`
+    mentions only fill what is left, and a passing test never counts."""
     if not isinstance(text, str) or not text:
         return []
-    lines = text.splitlines()
+    lines = [line[:_LINE_MAX] for line in text.splitlines()]
+    while lines and not lines[-1].strip():
+        lines.pop()
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    if (sum(1 for x in lines if x.strip()) <= cap
+            and sum(len(x) + 1 for x in lines) <= max_chars):
+        return lines
 
-    def span(i):
-        return range(max(0, i - _CONTEXT), min(len(lines), i + _CONTEXT + 1))
+    def span(i, after=_CONTEXT):
+        return range(max(0, i - _CONTEXT), min(len(lines), i + after + 1))
 
     strong, weak = set(), set()
     for i, line in enumerate(lines):
+        if _PASSING_RE.search(line):
+            continue
         if _STRONG_RE.search(line):
-            strong.update(span(i))
+            strong.update(span(i, _BLOCK_AFTER if _BLOCK_RE.search(line) else _CONTEXT))
         elif _ERROR_RE.search(line):
             weak.update(span(i))
-    chosen = sorted(strong)[-cap:]
-    room = cap - len(chosen)
-    if room > 0:
-        chosen = sorted(set(chosen) | set(sorted(weak - strong)[-room:]))
-    return [lines[i][:_LINE_MAX] for i in chosen]
+    tail = [i for i in range(len(lines)) if lines[i].strip()][-_SUMMARY_TAIL:]
+    strong.update(tail)
+    strong = {i for i in strong if not _PASSING_RE.search(lines[i])}
+    weak = {i for i in weak - strong if not _PASSING_RE.search(lines[i])}
+
+    chosen, used, chars = set(), 0, 0
+    for pool in (strong, weak):
+        for i in sorted(pool, reverse=True):  # the tail first
+            cost = 1 if lines[i].strip() else 0
+            if used + cost > cap or chars + len(lines[i]) + 1 > max_chars:
+                break
+            chosen.add(i)
+            used, chars = used + cost, chars + len(lines[i]) + 1
+    picked = sorted(chosen)
+    while picked and not lines[picked[0]].strip():
+        picked.pop(0)
+    return [lines[i] for i in picked]
 
 
 def _first_lines(text: str, n: int = OUTPUT_HEAD_LINES) -> list[str]:

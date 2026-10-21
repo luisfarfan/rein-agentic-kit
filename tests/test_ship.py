@@ -1986,11 +1986,76 @@ class TestFailureDetail(ShipCase):
     def test_cap_respected_and_first_header_kept(self):
         slots = {n: {"slot": n, "outcome": "failed", "exitCode": 1, "command": "c-" + n,
                      "outputHead": [], "errorLines": ["e%d %s" % (i, "y" * 100) for i in range(40)]}
-                 for n in ("aaa", "test")}
+                 for n in ("lint", "test")}
         v = self._verdict(_gate_json(slots))
         self.assertLessEqual(len(v.reason), ship._FAILURE_CAP)
-        self.assertTrue(v.reason.startswith("aaa [failed] exit=1 $ c-aaa"))
+        self.assertTrue(v.reason.startswith("lint [failed] exit=1 $ c-lint"))
         self.assertIn("test [failed]", v.reason)
+
+    def test_over_the_cap_each_block_keeps_its_tail(self):
+        slots = {n: {"slot": n, "outcome": "failed", "exitCode": 1, "command": "c-" + n,
+                     "outputHead": [], "errorLines": ["%s e%d %s" % (n, i, "y" * 150) for i in range(40)]}
+                 for n in ("lint", "test")}
+        reason = self._verdict(_gate_json(slots)).reason
+        self.assertIn("test e39", reason)
+        self.assertIn("lint e39", reason)
+        self.assertNotIn("test e0 ", reason)
+
+    def test_a_small_block_is_not_cut_to_share_with_a_big_one(self):
+        slots = {"lint": {"slot": "lint", "outcome": "failed", "exitCode": 1, "command": "ruff",
+                          "outputHead": [], "errorLines": ["noise %d %s" % (i, "z" * 200) for i in range(60)]},
+                 "test": {"slot": "test", "outcome": "failed", "exitCode": 1, "command": "pytest",
+                          "outputHead": [], "errorLines": ["E   assert %d == 1 %s" % (i, "q" * 80) for i in range(25)]}}
+        reason = self._verdict(_gate_json(slots)).reason
+        for i in range(25):
+            self.assertIn("E   assert %d == 1" % i, reason)
+
+    def test_long_vitest_run_with_noise_slots_keeps_the_decisive_lines(self):
+        import verify
+        sys.path.insert(0, HERE)
+        from test_verify_commands import vitest_long
+        test_out = vitest_long(width=150)
+        tsc = "\n".join("src/a%d.ts(%d,5): error TS2322: Type 'string' is not assignable %s" % (i, i, "y" * 200)
+                        for i in range(30))
+        slots = {
+            "test": {"slot": "test", "outcome": "failed", "exitCode": 1, "command": "npx vitest run",
+                     "errorLines": verify.failure_lines(test_out), "outputHead": test_out.splitlines()[:20]},
+            "testOne": {"slot": "testOne", "outcome": "inconclusive", "exitCode": 1, "command": "npx vitest run {target}",
+                        "errorLines": ["No test files found, exiting with code 1"], "outputHead": []},
+            "typecheck": {"slot": "typecheck", "outcome": "failed", "exitCode": 2, "command": "npx tsc --noEmit",
+                          "errorLines": verify.failure_lines(tsc), "outputHead": []},
+        }
+        reason = self._verdict(_gate_json(slots)).reason
+        self.assertLessEqual(len(reason), ship._FAILURE_CAP)
+        for needle in ("FAIL  src/f2", "expected 2 to be 3", "Tests  3 failed", "+ Received", "src/a29.ts"):
+            self.assertIn(needle, reason)
+        self.assertNotIn("testOne", reason)  # decide_gate ignores it; so does the worker's brief
+        self.assertNotIn("\u2713", reason)
+
+    def test_no_failing_slot_gives_the_decision_reason_not_json(self):
+        out = json.dumps({"decision": {"decision": "setup", "exit": 126,
+                                       "reason": "a real browser render is required here and none was recorded"},
+                          "report": {"results": {"test": {"slot": "test", "outcome": "ok", "exitCode": 0,
+                                                          "command": "pnpm test", "outputHead": ["line 0"]}}}},
+                         indent=2)
+        reason = self._verdict(out).reason
+        self.assertIn("a real browser render is required", reason)
+        self.assertNotIn("outputHead", reason)
+        self.assertNotIn("{", reason)
+
+    def test_gate_runner_parses_stdout_even_with_stderr_noise(self):
+        report = _gate_json({"test": {"slot": "test", "outcome": "failed", "exitCode": 1, "command": "t",
+                                      "outputHead": [], "errorLines": ["AssertionError: the one"]}})
+
+        class P:
+            returncode, stdout, stderr = 1, report, "mise WARN deprecated config\n"
+        saved = ship.subprocess.run
+        ship.subprocess.run = lambda *a, **k: P()
+        try:
+            code, out = ship.default_gate_runner("/wt", True, 5)
+        finally:
+            ship.subprocess.run = saved
+        self.assertIn("AssertionError: the one", ship.failure_detail(out))
 
 
 if __name__ == "__main__":

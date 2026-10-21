@@ -25,6 +25,7 @@ from ship_state import ShipState, TaskState
 
 _DEFAULT_RISKY = ["**/auth/**", "**/payments/**", "**/migrations/**"]
 GATE_FAILURE_CAP = 6000  # a failed gate's detail: the real error lines, not a 2000-char tail
+QUESTION_DETAIL = 1200   # how much of a failure an owner question quotes (Orca takes 2000)
 _BUSY = ("running", "gating", "gated")  # statuses that hold a repo's worktree
 _FIX_PREFIX = "AUDIT"
 # Task-less owner gates that hold the audit: no audit may start behind one.
@@ -512,7 +513,7 @@ def _red(state: ShipState, task: TaskState, reason: str, cfg: ShipConfig, action
         return
     task.status = "failed"
     _open(state, actions, task.id,
-          "Task %s failed after %d retries: %s" % (task.id, task.attempts, task.last_failure[:300]),
+          "Task %s failed after %d retries: %s" % (task.id, task.attempts, task.last_failure[:QUESTION_DETAIL]),
           ["retry", "skip"], "retry_exhausted")
 
 
@@ -556,7 +557,7 @@ def _on_gate_verdict(state: ShipState, event: GateVerdict, cfg: ShipConfig, acti
     elif event.exit_code == 126:
         task.status = "gated"
         _open(state, actions, task.id,
-              "The check for task %s could not run: %s" % (task.id, event.reason[:300]),
+              "The check for task %s could not run: %s" % (task.id, event.reason[:QUESTION_DETAIL]),
               ["retry", "skip"], "setup")
     else:
         _red(state, task, event.reason, cfg, actions)

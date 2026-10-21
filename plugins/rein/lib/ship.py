@@ -31,6 +31,7 @@ import roles as _roles
 import ship_decide as sd
 import ship_state as ss
 import token_report as _tr
+import verify as _verify
 from orca_client import OrcaClient, OrcaError
 
 PLUGIN = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -186,36 +187,77 @@ def changed_files(worktree_path: str, base_ref: str) -> list:
 _GATE_COMMANDS_BOUND = 6  # generous bound on configured gate commands (test, lint, typecheck, ...)
 
 
-def failure_detail(out: str) -> str:
-    """What a failed gate tells the worker: the failing slots' real error lines.
+def _fit_blocks(blocks: list, cap: int) -> str:
+    """`[(header, lines)]` joined within `cap` characters.
 
-    Built from the `rein gate --json` report when it parses; anything else
-    (timeout message, crash) keeps the plain tail."""
+    Headers are never cut. A block that fits keeps all its lines; the rest
+    share what is left evenly, and each keeps its decisive part (verify's
+    selector: failure evidence first, the tail over the head)."""
+    def render(parts):
+        return "\n\n".join(("%s\n%s" % (h, "\n".join(ls))).rstrip() for h, ls in parts)
+
+    whole = render(blocks)
+    if len(whole) <= cap:
+        return whole
+    room = cap - sum(len(h) + 3 for h, _ in blocks)
+    sizes = [sum(len(x) + 1 for x in ls) for _, ls in blocks]
+    budget = [0] * len(blocks)
+    left = list(range(len(blocks)))
+    while left and room > 0:  # water-fill: small blocks keep everything, big ones share the rest
+        share = room // len(left)
+        small = [i for i in left if sizes[i] <= share]
+        if not small:
+            for i in left:
+                budget[i] = share
+            break
+        for i in small:
+            budget[i] = sizes[i]
+            room -= sizes[i]
+            left.remove(i)
+    parts = []
+    for (h, ls), size, b in zip(blocks, sizes, budget):
+        if size > b:
+            ls = _verify.failure_lines("\n".join(ls), cap=10 ** 6, max_chars=max(b, 0))
+        parts.append((h, ls))
+    return render(parts)[:cap]
+
+
+def failure_detail(out: str) -> str:
+    """What a failed gate tells the worker: the failing slots' decisive error lines.
+
+    Built from the `rein gate --json` report when it parses. Only the slots the
+    gate decides on count (`testOne`, `serve` and custom slots prove nothing).
+    When no slot explains the verdict, the gate's own reason does. Anything
+    else (timeout message, crash) keeps the plain tail."""
     out = out or ""
     try:
-        results = json.loads(out)["report"]["results"]
+        data = json.loads(out)
+        results = data["report"]["results"]
+        decision = data.get("decision") if isinstance(data.get("decision"), dict) else {}
         blocks = []
         for slot, res in sorted(results.items()):
+            if slot not in _gate.GATE_SLOTS:
+                continue
             if res.get("outcome") == "ok" or (
                     res.get("outcome") == "skipped"
                     or (res.get("outcome") == "proves_nothing"
                         and not (res.get("errorLines") or res.get("outputHead")))):
                 continue
             lines = res.get("errorLines") or res.get("outputHead") or []
-            blocks.append("%s [%s] exit=%s $ %s\n%s" % (
-                res.get("slot") or slot, res.get("outcome"), res.get("exitCode"), res.get("command"),
-                "\n".join(str(x) for x in lines)))
+            if not lines and res.get("error"):
+                lines = [str(res["error"])]
+            blocks.append(("%s [%s] exit=%s $ %s" % (
+                res.get("slot") or slot, res.get("outcome"), res.get("exitCode"), res.get("command")),
+                [str(x) for x in lines]))
     except (ValueError, KeyError, TypeError, AttributeError):
         return out[-_TAIL:]
     if not blocks:
-        return out[-_TAIL:]
-    detail = "\n\n".join(b.rstrip() for b in blocks)
-    if len(detail) <= _FAILURE_CAP:
-        return detail
-    # Keep the head of every block: share the cap evenly, headers never cut.
-    share = max(_FAILURE_CAP // len(blocks) - 2, 1)
-    detail = "\n\n".join(b.rstrip()[:share] for b in blocks)
-    return detail[:_FAILURE_CAP]
+        reason = str(decision.get("reason") or "").strip()
+        if reason:
+            return "gate %s: %s" % (decision.get("decision") or "not green", reason)
+        ran = ", ".join("%s [%s]" % (k, (v or {}).get("outcome")) for k, v in sorted(results.items()))
+        return "the gate was not green but reported no failing check (%s)" % (ran or "nothing ran")
+    return _fit_blocks(blocks, _FAILURE_CAP)
 
 
 def default_gate_runner(path: str, unit_only: bool, timeout: float = 900.0) -> tuple:
@@ -231,8 +273,14 @@ def default_gate_runner(path: str, unit_only: bool, timeout: float = 900.0) -> t
         proc = subprocess.run(argv, capture_output=True, text=True, timeout=outer)
     except subprocess.TimeoutExpired:
         return 126, "gate timed out: `rein gate` exceeded %gs overall" % outer
-    # The whole capture: `failure_detail` reads the JSON, and falls back to the tail.
-    return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
+    # The JSON report alone when stdout is one: a warning on stderr must not break its parse.
+    # Anything else keeps the whole capture, and `failure_detail` falls back to its tail.
+    stdout = proc.stdout or ""
+    try:
+        json.loads(stdout)
+        return proc.returncode, stdout
+    except ValueError:
+        return proc.returncode, stdout + (proc.stderr or "")
 
 
 # --- preflight -----------------------------------------------------------------

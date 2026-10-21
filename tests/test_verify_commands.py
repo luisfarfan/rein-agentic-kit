@@ -463,5 +463,74 @@ class TestFailureLines(unittest.TestCase):
         self.assertNotIn("FAIL: t0", got)
 
 
+PYTEST_OUT = """============================= test session starts ==============================
+collected 3 items
+
+tests/test_calc.py .F.                                                   [100%]
+
+=================================== FAILURES ===================================
+_________________________________ test_total __________________________________
+
+    def test_total():
+        cart = Cart([Item(3), Item(4)])
+>       assert cart.total(discount=0.1) == 6.3
+E       assert 7.0 == 6.3
+E        +  where 7.0 = <bound method Cart.total of <Cart>>(discount=0.1)
+E        +    where <bound method Cart.total of <Cart>> = <Cart>.total
+
+tests/test_calc.py:12: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_calc.py::test_total - assert 7.0 == 6.3
+========================= 1 failed, 2 passed in 0.05s =========================
+"""
+
+VITEST_BLOCK = [" FAIL  src/f{i}.test.ts > case {i}",
+                "AssertionError: expected {i} to be {j} // Object.is equality",
+                "", "- Expected", "+ Received", "", "- {j}", "+ {i}", "",
+                " \u276f src/f{i}.test.ts:9:30",
+                "      9|     expect(c.total()).toBe({j});"]
+
+
+def vitest_long(passing=200, width=300):
+    parts = [" \u2713 src/mod%d.test.ts > handles error case %d when the upstream fails %s" % (i, i, "x" * width)
+             for i in range(passing)]
+    for i in range(3):
+        parts += [""] + [l.format(i=i, j=i + 1) for l in VITEST_BLOCK]
+    parts += ["", " Test Files  3 failed | 197 passed (200)", "      Tests  3 failed | 197 passed (200)"]
+    return "\n".join(parts)
+
+
+class TestFailureLinesKeepTheDecisivePart(unittest.TestCase):
+    def test_short_pytest_output_keeps_the_assertion_and_location(self):
+        got = "\n".join(verify.failure_lines(PYTEST_OUT))
+        self.assertIn(">       assert cart.total(discount=0.1) == 6.3", got)
+        self.assertIn("E       assert 7.0 == 6.3", got)
+        self.assertIn("tests/test_calc.py:12: AssertionError", got)
+        self.assertIn("1 failed, 2 passed", got)
+
+    def test_vitest_diff_and_location_survive(self):
+        text = "\n".join([" RUN  v1.6.0 /repo", ""] + [l.format(i=0, j=1) for l in VITEST_BLOCK]
+                         + ["", "      Tests  1 failed | 2 passed (3)"])
+        got = "\n".join(verify.failure_lines(text))
+        for needle in ("- Expected", "+ Received", "src/f0.test.ts:9:30", "Tests  1 failed"):
+            self.assertIn(needle, got)
+
+    def test_long_suite_keeps_every_failure_and_the_summary_not_passing_noise(self):
+        got = verify.failure_lines(vitest_long())
+        text = "\n".join(got)
+        for needle in ("FAIL  src/f0", "FAIL  src/f2", "expected 2 to be 3", "+ Received",
+                       "src/f2.test.ts:9:30", "Tests  3 failed"):
+            self.assertIn(needle, text)
+        self.assertFalse(any("\u2713" in line for line in got))
+        self.assertLessEqual(sum(len(x) + 1 for x in got), verify.FAILURE_CHARS_CAP)
+
+    def test_passing_lines_are_never_weak_matches(self):
+        text = "\n".join(["test_error_%d ... ok" % i for i in range(100)] + ["boom: something went wrong"] * 0
+                         + ["Ran 100 tests", "FAILED (errors=1)"])
+        got = verify.failure_lines(text)
+        self.assertFalse(any(line.endswith("... ok") and "error" in line for line in got[:-3]))
+        self.assertIn("FAILED (errors=1)", got)
+
+
 if __name__ == "__main__":
     unittest.main()
