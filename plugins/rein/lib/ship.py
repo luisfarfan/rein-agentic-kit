@@ -1206,7 +1206,8 @@ def detach_ship(root: str, change: str, client: OrcaClient, *, override: tuple |
 START_TIMEOUT_SECONDS = 1800  # one worker-start, `--setup run` included; a hung CLI must not hang the driver
 RESUME_POLL_SECONDS = 5
 RESUME_WAIT_SECONDS = 600
-RESUME_MAX = 3
+RESUME_MAX = 3  # automatic resumes per incident
+RESUME_INCIDENT_SECONDS = 1800  # a restart this long after the last resume is a new incident
 STATUS_TIMEOUT_SECONDS = 15  # one `orca status` during the wait; a hung CLI counts as not back yet
 
 
@@ -1240,7 +1241,7 @@ def run_ship(root: str, change: str, client: OrcaClient, gate_runner: Callable, 
     ctx["cfg"].override = override
     spath = state_path or ss.state_path(ctx["root"], change)
     plan = ctx["plan"]
-    resumes = 0
+    resumes, last_resume, auto = 0, None, False
     while True:
         try:
             state = None if dry_run else ss.load(spath)
@@ -1265,15 +1266,17 @@ def run_ship(root: str, change: str, client: OrcaClient, gate_runner: Callable, 
             if state.phase == "done":
                 driver.finished = True
             else:
-                driver.resume(owner_restart=resumes == 0)
+                driver.resume(owner_restart=not auto)
             driver.loop()
             return driver.finish()
         except OrcaError as exc:
             driver.save()
+            if last_resume is not None and clock() - last_resume > RESUME_INCIDENT_SECONDS:
+                resumes = 0  # the last restart was recovered long ago: this is a new incident
             if not dry_run and is_transient(exc) and resumes < RESUME_MAX:
                 print("ship: Orca is restarting (%s); waiting to resume…" % exc.code, flush=True)
                 if _wait_for_orca(client, clock, sleep):
-                    resumes += 1
+                    resumes, last_resume, auto = resumes + 1, clock(), True
                     print("ship: Orca is back; resuming", flush=True)
                     continue
             print("ship: Orca failed (%s); state saved, re-run `rein ship %s` to resume" % (exc, change))

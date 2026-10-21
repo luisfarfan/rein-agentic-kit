@@ -344,5 +344,67 @@ class AuditStartErrorOpensAGate(ShipCase):
         self.assertNotIn(audits[1], ("codex", "claude"), "another reviewer, and still not the implementer")
 
 
+class OrcaCallsAreBounded(unittest.TestCase):
+    def capture(self, call):
+        import orca_client
+        seen = []
+
+        class P:
+            returncode, stdout, stderr = 0, json.dumps({"ok": True, "result": {}}), ""
+
+        def run(argv, **kw):
+            seen.append(kw.get("timeout"))
+            return P()
+        saved = orca_client.subprocess.run
+        orca_client.subprocess.run = run
+        try:
+            call(orca_client.OrcaClient(executable="orca"))
+        finally:
+            orca_client.subprocess.run = saved
+        return seen[0]
+
+    def test_every_built_in_call_has_a_subprocess_timeout(self):
+        self.assertTrue(self.capture(lambda c: c.worker_list("run_1")))
+        self.assertTrue(self.capture(lambda c: c.gate_list()))
+        wait = self.capture(lambda c: c.check(wait=True, timeout_ms=15000))
+        self.assertGreater(wait, 15)
+        self.assertGreaterEqual(self.capture(lambda c: c.worker_start("t", worktree="new-top-level",
+                                                                      agent="codex", model="m")), 600)
+
+
+class SpacedRestarts(FakeOrca):
+    """The first five inbox checks fail like Orca auto-updates; status answers at once."""
+
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self.checks = 0
+        self.failures = 0
+
+    def _answer(self, a):
+        if a[:2] == ["orchestration", "check"] and "--ack" not in a:
+            self.checks += 1
+            if self.failures < 5:
+                self.failures += 1
+                raise FailEnvelope({"ok": False, "error": {"code": "runtime_unavailable", "message": "restart"}})
+        return super()._answer(a)
+
+
+class ResumeLimitIsPerIncident(ShipCase):
+    def test_restarts_spread_over_a_long_run_each_resume(self):
+        self.write_plan(PLAN.split("- [ ] T002")[0])
+        with open(os.path.join(self.root, "flow.config.json"), "w", encoding="utf-8") as fh:
+            json.dump({"ship": {"taskTimeoutMinutes": 10 ** 6}}, fh)
+        fake = SpacedRestarts(self.root)
+        fake.on_audit = self.approve_audit()
+
+        def slow_clock():  # an hour passes between calls: each restart is its own incident
+            self.clock_value += 3600
+            return self.clock_value
+        self.clock = slow_clock
+        code = self.run_ship(fake, scripted_gate(), sleep=lambda s: None)
+        self.assertEqual(code, 0, self.out)
+        self.assertGreater(self.out.count("Orca is back; resuming"), ship.RESUME_MAX)
+
+
 if __name__ == "__main__":
     unittest.main()

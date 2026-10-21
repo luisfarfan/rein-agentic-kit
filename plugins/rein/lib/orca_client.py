@@ -31,6 +31,12 @@ class OrcaError(Exception):
         self.envelope = envelope if isinstance(envelope, dict) else {}
 
 
+# A subprocess bound on every call, so a hung `orca` (an update holding the socket open) raises
+# instead of blocking its caller forever. Generous: Orca's own waits come on top (see `check`).
+DEFAULT_TIMEOUT = 300.0
+LONG_TIMEOUT = 1800.0  # a call that may run a worktree's setup
+
+
 def _default_runner(argv: list, timeout: Optional[float] = None) -> tuple:
     """`(exit code, stdout, stderr)`. A custom runner may return just `(code, stdout)`."""
     proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
@@ -48,6 +54,7 @@ class OrcaClient:
 
     def _call(self, *args: str, timeout: Optional[float] = None) -> dict:
         argv = [self.executable, *args, "--json"]
+        timeout = timeout or DEFAULT_TIMEOUT
         try:
             # Only the built-in runner can be bounded; a custom runner owns its own limits.
             ran = self._runner(argv, timeout=timeout) if timeout and self._runner is _default_runner \
@@ -133,7 +140,7 @@ class OrcaClient:
         ):
             if value:
                 args += [flag, value]
-        return self._call(*args, timeout=timeout)
+        return self._call(*args, timeout=timeout or LONG_TIMEOUT)
 
     def worker_show(self, dispatch_id: str) -> dict:
         return self._call("orchestration", "worker-show", "--dispatch", dispatch_id)
@@ -170,7 +177,8 @@ class OrcaClient:
         args += ["--types", types, "--timeout-ms", str(timeout_ms)]
         if ack:
             args += ["--ack", ack]
-        return self._call(*args)
+        # Orca's own wait plus the usual bound.
+        return self._call(*args, timeout=(timeout_ms / 1000.0 if wait else 0) + DEFAULT_TIMEOUT)
 
     def reply(self, message_id: str, body: str) -> dict:
         return self._call("orchestration", "reply", "--id", message_id, "--body", body)
@@ -227,7 +235,7 @@ class OrcaClient:
         ]
         if linear:
             args += ["--linear-issue", linear]
-        return self._call(*args)
+        return self._call(*args, timeout=LONG_TIMEOUT)
 
     def agent_launch(self, worktree: str, agent: str, model: str, prompt: str) -> dict:
         """Start a fresh agent in an existing worktree (`worktree` is a selector)."""
