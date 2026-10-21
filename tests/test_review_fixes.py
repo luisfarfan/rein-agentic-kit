@@ -333,5 +333,30 @@ class M5SkippedFixThenApproved(ShipCase):
         self.assertIn("1 audit-fix task skipped by the owner", self.out)
 
 
+class M6EveryReviewerRefused(unittest.TestCase):
+    OK = {"claude": {"session": 10.0, "weekly": 10.0}, "codex": {"session": 5.0, "weekly": 5.0}}
+
+    def auditing(self, excluded):
+        st = ShipState(change="c", plan_path="p.md", phase="auditing", audit_excluded=list(excluded),
+                       launched_agents=["claude"])
+        st.tasks["T1"] = _task("T1", status="done")
+        return st
+
+    def test_a_refused_reviewer_is_not_picked_again(self):
+        st, actions = sd.decide(self.auditing(["claude", "codex"]),
+                                sd.ChangesComputed(["src/a.py"], self.OK), sd.ShipConfig())
+        self.assertFalse([a for a in actions if isinstance(a, sd.StartAudit)], actions)
+        gates = [g for g in st.pending_gates if g["kind"] == "setup"]
+        self.assertEqual(len(gates), 1)
+        self.assertIn("no other reviewer is available", gates[0]["question"])
+        self.assertEqual(st.audit_excluded, [], "the owner's retry tries every reviewer again")
+
+    def test_one_refused_reviewer_leaves_the_other(self):
+        _, actions = sd.decide(self.auditing(["codex"]), sd.ChangesComputed(["src/a.py"], self.OK), sd.ShipConfig())
+        starts = [a for a in actions if isinstance(a, sd.StartAudit)]
+        self.assertEqual(len(starts), 1)
+        self.assertNotEqual(starts[0].agent, "codex")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -257,7 +257,7 @@ def audit_model(changed_files: list, implementer_agents: list, cfg: ShipConfig,
     a provider that did not implement. A re-audit (after a fix round) is never Opus: it
     only verifies the earlier findings. Opus obeys the brake like any reviewer, and Claude is
     never picked on unknown usage. When every reviewer is braked, the first one, so the
-    caller can see the brake and ask the owner."""
+    caller can see the brake and ask the owner. `("", "")` when Orca refused every reviewer."""
     limits = limits or {}
     claude = _claude_usable(limits) and "claude" not in exclude
     if not reaudit and claude:
@@ -269,7 +269,9 @@ def audit_model(changed_files: list, implementer_agents: list, cfg: ShipConfig,
     used = set(implementer_agents)
     if (limits.get("antigravity") or {}).get("weekly") is not None and quota.ANTIGRAVITY[0] not in used:
         pool.append(quota.ANTIGRAVITY)  # a last resort, never reviewing its own work
-    pool = [m for m in pool if m[0] not in exclude] or pool  # Orca refused to start these
+    pool = [m for m in pool if m[0] not in exclude]  # Orca refused to start these
+    if not pool:
+        return "", ""
     fresh = [m for m in pool if m[0] not in used]
     choices = fresh + [m for m in pool if m not in fresh]
     return quota.first_unbraked(choices, limits)
@@ -844,6 +846,14 @@ def _on_changes_computed(state: ShipState, event: ChangesComputed, cfg: ShipConf
     implementers = state.launched_agents or state.implementer_agents  # what Orca ran, not what was asked
     agent, model = audit_model(state.changed_files, implementers, cfg, event.limits,
                                reaudit=state.audit_rounds > 0, exclude=state.audit_excluded)
+    if not agent:
+        refused = ", ".join(state.audit_excluded)
+        state.audit_excluded = []  # the retry tries every reviewer again, once the owner fixed Orca
+        _open(state, actions, None,
+              "Orca refused to start the audit on every reviewer (%s): no other reviewer is available. Fix "
+              "Orca, then retry (every reviewer is tried again), or skip the audit (the change stays "
+              "unapproved)?" % refused, ["retry", "skip"], "setup")
+        return
     braked = quota.brake_reason(event.limits, agent)
     if braked:
         _open(state, actions, None,
