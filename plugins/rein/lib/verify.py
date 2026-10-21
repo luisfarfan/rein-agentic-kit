@@ -571,12 +571,17 @@ def verify_plan(root: str, tasks: list, timeout: float = DEFAULT_TIMEOUT) -> dic
     results = {}
     for task in tasks or []:
         tid = task.get("id") or "?"
-        cmd = (task.get("verification") or "").strip().strip("`")
+        # Same rule as the ship driver: only a field that BEGINS with one backticked command runs,
+        # and only that command; prose (and anything refused as outward-facing) is never executed.
+        from ship import task_verification_command  # lazy: ship imports this module
+        field = task.get("verificationRaw") or task.get("verification") or ""
+        cmd, why = task_verification_command(field)
         if not cmd:
             results[tid] = {
                 "command": "", "outcome": OUTCOME_SKIPPED,
                 "provesNothing": False,
-                "reason": "the task declares no verification command",
+                "reason": ("the task declares no verification command" if not field.strip()
+                           else "not run: %s" % why),
             }
             continue
         res = run_one(tid, cmd, root, timeout=timeout)

@@ -358,6 +358,21 @@ class M6EveryReviewerRefused(unittest.TestCase):
         self.assertNotEqual(starts[0].agent, "codex")
 
 
+class VerifyPlanProseTest(unittest.TestCase):
+    def test_verify_plan_never_runs_prose(self):
+        import verify
+        with tempfile.TemporaryDirectory() as root:
+            report = verify.verify_plan(root, [
+                {"id": "T1", "verification": "Chrome: precio > 0 en /pagar",
+                 "verificationRaw": "Chrome: precio > 0 en /pagar"},
+                {"id": "T2", "verification": "true", "verificationRaw": "`true` devuelve 0"},
+            ])
+            self.assertEqual(os.listdir(root), [])  # prose created no file
+            text = json.dumps(report)
+            self.assertIn("not run", text)
+            self.assertIn('"command": "true"', text)
+
+
 if __name__ == "__main__":
     unittest.main()
 
