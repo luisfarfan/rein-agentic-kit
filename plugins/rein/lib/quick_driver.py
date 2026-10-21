@@ -27,6 +27,7 @@ import gate as _gate
 import gate_cache as _gate_cache
 import gate_env as _gate_env
 import gate_run as _gate_run
+import guard as _guard
 import orca_client as oc
 import quick
 import quota
@@ -633,7 +634,12 @@ def done_quick(*, cwd: str = ".", client: OrcaClient, run=verify.run_one,
     outcome = quick.verdict(results)
     notes = _gate_notes(planned, full_suite, changed, cfg, commands)
     say(quick.summary(results, outputs, notes, audit_pending=pending))
-    if outcome == "red":
+    # The guard: the gate config untouched (unless the task asked for it) and every commit through
+    # the repo's commit-msg hook. A breach is red, with its reason.
+    problems = _guard.check(workspace, record["base_sha"], resolved, str(record.get("sentence") or ""))
+    for problem in problems:
+        say("guard: %s" % problem)
+    if outcome == "red" or (problems and outcome != "setup"):
         return 1
     if outcome == "setup":
         return 126

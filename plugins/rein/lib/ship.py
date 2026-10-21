@@ -28,6 +28,7 @@ import detect as _detect
 import gate as _gate
 import gate_env as _gate_env
 import gate_run as _gate_run
+import guard as _guard
 import orca_client as oc
 import plan as _plan
 import plan_check as _plan_check
@@ -149,9 +150,22 @@ def build_task_spec(task: ss.TaskState, plan: dict, env_lines: list = ()) -> str
         lines += ["", "The previous attempt failed this check; fix it:", task.last_failure]
     lines += ["", "Edit only the %s repository." % task.repo,
               "Commit your work on this worktree's branch when the verification passes. Never push.",
-              "Never push, merge, open a pull request or deploy.",
-              "Never read or print .env* files or credentials."]
+              "Never push, merge, open a pull request or deploy."]
+    lines += GUARDRAILS
+    lines.append("Never read or print .env* files or credentials.")
     return "\n".join(lines)
+
+
+# What no worker or auditor may do. Rein checks the last two when a task ends (guard.py).
+GUARDRAILS = [
+    "Work only inside your worktree: never run scripts that live outside it (a sibling repo's, a "
+    "harness or update script) and never write files outside it.",
+    "Never bypass the repo's hooks: no `--no-verify` / `-n`, no LEFTHOOK=0, LEFTHOOK_EXCLUDE, SKIP, "
+    "HUSKY=0 or the like. A hook that fails is yours to fix, or a question for the owner.",
+    "Never modify the configuration Rein judges the work with (flow.config.json, the task runner's "
+    "config such as mise.toml, any gate.protected file) unless your task names that file: Rein "
+    "rejects the change if you do.",
+]
 
 
 REAUDIT_SCOPE = (
@@ -208,8 +222,9 @@ def build_audit_spec(plan: dict, changed: dict, reviewer_profile: str,
               "absolute paths for files outside %s> --findings \"BLOCKING: ...|IMPORTANT: ...\""
               % (shlex.quote(audit_root), shlex.quote(change), audit_root),
               "Never record into any other checkout. If `rein` is not on PATH, run: python3 %s" % BIN,
-              "Never push, merge, open a pull request or deploy.",
-              "Never read or print .env* files or credentials."]
+              "Never push, merge, open a pull request or deploy."]
+    lines += GUARDRAILS
+    lines.append("Never read or print .env* files or credentials.")
     return "\n".join(lines)
 
 
@@ -1092,6 +1107,14 @@ class _Driver:
         tier = {"tier": "task", "base": self.task_base(task)} if a.unit_only else {}
         runner, timeout, unit_only = self.gate_runner, self.cfg.gate_timeout_seconds, a.unit_only
         root, say = getattr(self, "root", ""), self.say
+        # The guard: what the change since the task's base must not do. A plan task of this repo
+        # that names a protected file (flow.config.json) lets the change touch it.
+        guard_base = self.task_base(task)
+        allowed = " ".join(
+            " ".join([str(t.get("title") or "")] + [str(c) for c in t.get("acceptance") or []])
+            for t in ((getattr(self, "plan", None) or {}).get("tasks") or [])
+            if (t.get("repo") or (getattr(self, "ctx", None) or {}).get("default_repo")) == repo)
+        allowed += " " + (getattr(task, "audit_findings", "") or "")
 
         def job(cancel=None):
             if not path:
@@ -1127,6 +1150,15 @@ class _Driver:
                     else:
                         detail = _fit_blocks([(block.split("\n", 1)[0], block.split("\n")[1:]),
                                               ("gate", detail.split("\n"))], _FAILURE_CAP)
+            if code != 126:
+                problems = _guard.check(path, guard_base, _detect.resolve(path), allowed)
+                if problems:
+                    say("%s guard: %s" % (task_id, "; ".join(problems)[:300]))
+                    head, lines = "Rein's guard rejected the change:", ["- %s" % p for p in problems]
+                    if code == 0:
+                        code, detail = 1, _fit_blocks([(head, lines)], _FAILURE_CAP)
+                    else:
+                        detail = _fit_blocks([(head, lines), ("gate", detail.split("\n"))], _FAILURE_CAP)
             return sd.GateVerdict(task_id, code, detail, dispatch_id)
         return job
 

@@ -43,6 +43,17 @@ def looks_like_bug(sentence: str) -> bool:
     return any(word in low for word in _BUG_WORDS)
 
 
+# Lo que el agente no puede hacer; `rein quick done` comprueba las dos últimas (guard.py).
+GUARDRAILS = [
+    "Solo dentro de este worktree: no ejecutes scripts de fuera (repo hermano, harness, update) "
+    "ni escribas fuera.",
+    "No te saltes hooks: nada de `--no-verify`, LEFTHOOK=0, LEFTHOOK_EXCLUDE, SKIP ni HUSKY=0; "
+    "si uno falla, arréglalo o pregúntame.",
+    "No toques la config con la que Rein te evalúa (flow.config.json, mise.toml de los gates) "
+    "salvo que la tarea lo pida.",
+]
+
+
 def build_brief(sentence: str, linear: str = "", bug: bool = False, bin_path: str = "",
                 env_lines: list = ()) -> str:
     """The agent's first message, in Spanish (spec section 4).
@@ -77,6 +88,7 @@ def build_brief(sentence: str, linear: str = "", bug: bool = False, bin_path: st
     else:
         lines.append("Commit convencional sin ID de issue: no inventes uno ni lo preguntes.")
     lines.append("No incluyas `.rein/` en ningún commit.")
+    lines += GUARDRAILS
     lines.append("`rein quick close` no es tuyo: lo corre el orquestador desde fuera.")
     lines.append("No leas `.env*` ni credenciales.")
     return "\n".join(lines)
