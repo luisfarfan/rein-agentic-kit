@@ -1,8 +1,9 @@
 """`rein done <change>` and `rein quick close`: remove what is integrated, keep everything else.
 
-The rule above all: a worktree is removed only when it is clean AND every commit it has
-beyond `origin/<base>` is already in there (patch-equivalent, so rebases and squash-free
-cherry-picks count). Any doubt -- a dirty tree, an unmerged commit, a base that cannot be
+The rule above all: a worktree is removed only when it is clean AND everything it has beyond
+`origin/<base>` is already in there: merging its tip into `origin/<base>` changes nothing
+(so merge commits, squash merges and rebases are judged by content), or, for a history
+without merge commits, every commit is patch-equivalent to one upstream. Any doubt -- a dirty tree, an unmerged commit, a base that cannot be
 fetched -- blocks the WHOLE operation: nothing is removed and the reasons are printed.
 """
 
@@ -160,12 +161,46 @@ def check_worktree(path: str, base: str, git: Callable[..., tuple], fetch: Calla
         if tips == {base_sha}:
             return ""
     for ref in ("HEAD", "refs/heads/" + branch):
-        code, out = git(path, "cherry", "origin/" + base, ref)
-        if code != 0:
-            return "cannot compare %s with origin/%s" % (ref, base)
-        unmerged = [ln for ln in out.splitlines() if ln.startswith("+")]
-        if unmerged:
-            return "not integrated: %d commit(s) of %s are not in origin/%s" % (len(unmerged), ref, base)
+        why = integration_gap(path, "origin/" + base, ref, git)
+        if why:
+            return why
+    return ""
+
+
+def integration_gap(path: str, upstream: str, ref: str, git: Callable[..., tuple]) -> str:
+    """"" when everything `ref` holds is already in `upstream`, else why not.
+
+    The rule is about content, so merge commits (which `git cherry` never looks at), squash
+    merges and a base merged into the branch are all judged alike: `ref` is integrated when
+    merging it into `upstream` would leave `upstream`'s tree exactly as it is
+    (`git merge-tree --write-tree`, git >= 2.38). A history with no merge commits is also
+    accepted when every commit is patch-equivalent to one in `upstream` (`git cherry`), so a
+    change that landed and was later reverted upstream still counts as integrated. Without
+    merge-tree, a history with merge commits cannot be vouched for and blocks.
+    """
+    code, out = git(path, "rev-list", "--merges", "--count", "%s..%s" % (upstream, ref))
+    if code != 0:
+        return "cannot compare %s with %s" % (ref, upstream)
+    merges = int(out.strip() or "0")
+    code, out = git(path, "merge-tree", "--write-tree", "--no-messages", upstream, ref)
+    tree_ok = code in (0, 1)
+    if code == 0:
+        lines = out.split()
+        code2, base_tree = git(path, "rev-parse", "--verify", "--quiet", upstream + "^{tree}")
+        if code2 == 0 and lines and lines[0] == base_tree.strip():
+            return ""
+    if merges:
+        if not tree_ok:
+            return ("cannot verify the %d merge commit(s) of %s against %s: `git merge-tree "
+                    "--write-tree` failed (it needs git >= 2.38)" % (merges, ref, upstream))
+        return "not integrated: merging %s into %s would change it (its history has %d merge commit(s))" % (
+            ref, upstream, merges)
+    code, out = git(path, "cherry", upstream, ref)
+    if code != 0:
+        return "cannot compare %s with %s" % (ref, upstream)
+    unmerged = [ln for ln in out.splitlines() if ln.startswith("+")]
+    if unmerged:
+        return "not integrated: %d commit(s) of %s are not in %s" % (len(unmerged), ref, upstream)
     return ""
 
 

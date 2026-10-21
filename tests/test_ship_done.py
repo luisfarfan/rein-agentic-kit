@@ -666,6 +666,133 @@ class NoiseTests(Env):
         self.assertEqual(sha, git(main, "rev-parse", "origin/develop").strip())
 
 
+class MergeIntegrationTests(Env):
+    """Integration is judged by content: merging the tip into origin/<base> must change nothing."""
+
+    def advance_develop(self, name="other.txt"):
+        commit_file(self.seed, name, "o\n", "dev advances")
+        git(self.seed, "push", "-q", "origin", "develop")
+
+    def test_content_only_in_a_merge_commit_blocks(self):
+        root = self.plan_repo()
+        wt = self.worktree()
+        self.advance_develop()
+        git(wt, "fetch", "-q", "origin")
+        git(wt, "merge", "-q", "--no-ff", "--no-commit", "origin/develop")
+        with open(os.path.join(wt, "precious.txt"), "w") as fh:
+            fh.write("work only in the merge commit\n")
+        git(wt, "add", "precious.txt")
+        git(wt, "commit", "-q", "-m", "merge develop")
+        self.assertEqual(git(wt, "cherry", "origin/develop", "HEAD").strip(), "")  # invisible to cherry
+        self.state(root, {"api": wt})
+        code, orca = self.run_done(root)
+        self.assertEqual(code, 1, self.text())
+        self.assertEqual(orca.rm_paths(), [])
+        self.assertIn("not integrated", self.text())
+
+    def test_a_pure_sync_merge_is_integrated(self):
+        root = self.plan_repo()
+        wt = self.worktree()
+        self.advance_develop()
+        git(wt, "fetch", "-q", "origin")
+        git(wt, "merge", "-q", "--no-ff", "-m", "sync", "origin/develop")
+        self.state(root, {"api": wt})
+        code, orca = self.run_done(root)
+        self.assertEqual(code, 0, self.text())
+        self.assertEqual(orca.rm_paths(), [wt])
+
+    def test_base_merged_in_then_patch_landed_is_integrated(self):
+        root = self.plan_repo()
+        wt = self.worktree()
+        commit_file(wt, "new.txt", "n\n", "feat")
+        patch = git(wt, "format-patch", "-1", "--stdout")
+        self.advance_develop()
+        proc = subprocess.run(["git", "-C", self.seed, "am", "-q"], input=patch, text=True, capture_output=True,
+                              env=dict(os.environ, GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t"))
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        git(self.seed, "push", "-q", "origin", "develop")
+        git(wt, "fetch", "-q", "origin")  # the base, already holding the patch, is merged in afterwards
+        git(wt, "merge", "-q", "--no-ff", "-m", "sync", "origin/develop")
+        self.assertIn("+", git(wt, "cherry", "origin/develop", "HEAD"))  # cherry alone would block
+        self.state(root, {"api": wt})
+        code, orca = self.run_done(root)
+        self.assertEqual(code, 0, self.text())
+        self.assertEqual(orca.rm_paths(), [wt])
+
+    def test_a_squash_merge_is_integrated(self):
+        root = self.plan_repo()
+        wt = self.worktree()
+        commit_file(wt, "a.txt", "a\n", "a")
+        commit_file(wt, "b.txt", "b\n", "b")
+        git(wt, "push", "-q", "origin", "feature")
+        self.advance_develop()
+        git(self.seed, "fetch", "-q", "origin")
+        git(self.seed, "merge", "-q", "--squash", "origin/feature")
+        git(self.seed, "commit", "-q", "-m", "squash feature")
+        git(self.seed, "push", "-q", "origin", "develop")
+        self.state(root, {"api": wt})
+        code, orca = self.run_done(root)
+        self.assertEqual(code, 0, self.text())
+        self.assertEqual(orca.rm_paths(), [wt])
+
+    def test_squash_then_more_work_blocks(self):
+        root = self.plan_repo()
+        wt = self.worktree()
+        commit_file(wt, "a.txt", "a\n", "a")
+        git(wt, "push", "-q", "origin", "feature")
+        git(self.seed, "fetch", "-q", "origin")
+        git(self.seed, "merge", "-q", "--squash", "origin/feature")
+        git(self.seed, "commit", "-q", "-m", "squash feature")
+        git(self.seed, "push", "-q", "origin", "develop")
+        commit_file(wt, "a.txt", "later\n", "more")
+        self.state(root, {"api": wt})
+        code, orca = self.run_done(root)
+        self.assertEqual(code, 1, self.text())
+        self.assertEqual(orca.rm_paths(), [])
+
+    def test_quick_close_keeps_a_merge_only_branch(self):
+        main = os.path.join(self.tmp, "qm")
+        self.clone(self.origin, main)
+        path = os.path.join(self.tmp, "quick-m")
+        git(main, "worktree", "add", "-q", "-b", "quick-m", path, "origin/develop")
+        sha = git(path, "rev-parse", "HEAD").strip()
+        os.makedirs(os.path.join(path, ".rein"))
+        with open(os.path.join(path, ".rein", "quick.json"), "w") as fh:
+            json.dump({"base": "develop", "base_sha": sha}, fh)
+        self.advance_develop()
+        git(path, "fetch", "-q", "origin")
+        git(path, "merge", "-q", "--no-ff", "--no-commit", "origin/develop")
+        with open(os.path.join(path, "precious.txt"), "w") as fh:
+            fh.write("p\n")
+        git(path, "add", "precious.txt")
+        git(path, "commit", "-q", "-m", "merge develop")
+        client = OrcaClient(executable="ORCA", runner=FakeOrca())
+        code = ship_done.run_quick_close(path, client, cwd=self.tmp, say=self.say)
+        self.assertEqual(code, 1, self.text())
+        self.assertTrue(os.path.isfile(os.path.join(path, ".rein", "quick.json")))
+
+    def no_merge_tree(self, path, *args):
+        if args[:1] == ("merge-tree",):
+            return 129, ""
+        return ship_done.qd.run_git(path, *args)
+
+    def test_without_merge_tree_merges_block_and_plain_commits_use_cherry(self):
+        wt = self.worktree()
+        commit_file(wt, "new.txt", "n\n", "feat")
+        patch = git(wt, "format-patch", "-1", "--stdout")
+        proc = subprocess.run(["git", "-C", self.seed, "am", "-q"], input=patch, text=True, capture_output=True,
+                              env=dict(os.environ, GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t"))
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        git(self.seed, "push", "-q", "origin", "develop")
+        why = ship_done.check_worktree(wt, "develop", self.no_merge_tree, ship_done.qd.run_fetch, branch="feature")
+        self.assertEqual(why, "")
+        self.advance_develop("more.txt")
+        git(wt, "fetch", "-q", "origin")
+        git(wt, "merge", "-q", "--no-ff", "-m", "sync", "origin/develop")
+        why = ship_done.check_worktree(wt, "develop", self.no_merge_tree, ship_done.qd.run_fetch, branch="feature")
+        self.assertIn("merge", why)
+
+
 class QuickCloseSafetyTests(QuickCloseTests):
     def test_non_quick_linked_worktree_only_loses_its_record(self):
         main = os.path.join(self.tmp, "m")
