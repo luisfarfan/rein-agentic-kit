@@ -180,13 +180,39 @@ def _hook_env(env=None) -> dict:
     return out
 
 
+def _git_runs_hooks(path: str) -> bool:
+    """This git has `git hook run` (git >= 2.36): asked on its own, never read off a hook's exit."""
+    try:
+        proc = subprocess.run(["git", "-C", path, "hook", "-h"], capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return "git hook run" in (proc.stdout or "") + (proc.stderr or "")  # usage, not "not a git command"
+
+
+def _hook_installed(path: str, name: str) -> bool:
+    """A `name` hook exists for the checkout (core.hooksPath, else the git dir's hooks)."""
+    code, configured = _git(path, "config", "core.hooksPath")
+    if code == 0 and configured.strip():
+        folder = os.path.join(path, os.path.expanduser(configured.strip()))
+    else:
+        code, folder = _git(path, "rev-parse", "--git-path", "hooks")
+        folder = os.path.join(path, folder.strip()) if code == 0 else ""
+    hook = os.path.join(folder, name) if folder else ""
+    return bool(hook) and os.path.isfile(hook) and os.access(hook, os.X_OK)
+
+
 def commit_msg_failures(path: str, base: str, env=None) -> list:
     """One line per commit in `base..HEAD` (merges aside) its repo's `commit-msg` hook rejects.
 
-    Nothing when the repo has no such hook, or when this git cannot run one (`git hook`,
-    git >= 2.36)."""
+    Nothing when the repo has no such hook. A git that cannot run hooks (`git hook`, git >= 2.36)
+    while one is installed is a problem of its own: the messages cannot be checked."""
     code, out = _git(path, "rev-list", "--no-merges", "--reverse", "%s..HEAD" % base)
     if code != 0:
+        return []
+    if not _git_runs_hooks(path):
+        if out.split() and _hook_installed(path, "commit-msg"):
+            return ["the repo has a commit-msg hook but this git cannot run it again (`git hook` needs "
+                    "git >= 2.36), so the change's commit messages are unchecked; upgrade git"]
         return []
     commits = [c for c in out.split() if c][:MAX_COMMITS]
     problems = []
@@ -214,9 +240,7 @@ def commit_msg_failures(path: str, base: str, env=None) -> list:
             except OSError:
                 pass
         said = ((proc.stderr or "") + (proc.stdout or "")).strip()
-        if proc.returncode == 129 or "is not a git command" in said:
-            return problems  # this git has no `git hook`: nothing can be checked
-        if proc.returncode != 0:
+        if proc.returncode != 0:  # the hook ran (git can run hooks): every non-zero exit rejects
             subject = (message.strip().splitlines() or [""])[0][:100]
             tail = " | ".join(line.strip() for line in said.splitlines()[-3:] if line.strip())
             problems.append("commit %s %r does not pass the repo's commit-msg hook (exit %d)%s; amend its "

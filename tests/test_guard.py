@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -364,3 +365,43 @@ class QuickAuthorization(DoneCase):
         self.write("flow.config.json", json.dumps({"commands": {"test": "true"}}))
         code, _, _ = self.done()
         self.assertEqual(code, 0, self.text())
+
+
+class HookExitCodes(unittest.TestCase):
+    """I5: once the hook ran, any non-zero exit is a rejection -- 129 and "is not a git command" in
+    its output included. Whether this git can run hooks at all is asked separately."""
+
+    def setUp(self):
+        self.tmp = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.repo = os.path.join(self.tmp, "repo")
+        self.base = make_repo(self.repo, hook=False)
+
+    def hook(self, body):
+        path = os.path.join(self.repo, ".git", "hooks", "commit-msg")
+        with open(path, "w") as fh:
+            fh.write("#!/bin/sh\n" + body + "\n")
+        os.chmod(path, 0o755)
+        commit(self.repo, "app.py", "x = 9\n", "bad message")
+
+    def test_a_hook_that_exits_129_rejects(self):
+        self.hook("echo hook-rejected; exit 129")
+        problems = guard.check(self.repo, self.base, {})
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("exit 129", problems[0])
+
+    def test_a_rejection_that_says_not_a_git_command_still_rejects(self):
+        self.hook("echo \"git: 'lint' is not a git command\"; exit 1")
+        self.assertEqual(len(guard.check(self.repo, self.base, {})), 1)
+
+    def test_a_git_without_hook_support_and_a_hook_installed_is_reported(self):
+        self.hook("exit 0")
+        with mock.patch.object(guard, "_git_runs_hooks", return_value=False):
+            problems = guard.check(self.repo, self.base, {})
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("git hook", problems[0])
+
+    def test_a_git_without_hook_support_and_no_hook_is_fine(self):
+        commit(self.repo, "app.py", "x = 9\n", "bad message")
+        with mock.patch.object(guard, "_git_runs_hooks", return_value=False):
+            self.assertEqual(guard.check(self.repo, self.base, {}), [])
