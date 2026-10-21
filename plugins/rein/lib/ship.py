@@ -23,6 +23,7 @@ from typing import Callable
 
 import inspect
 
+import affected as _affected
 import detect as _detect
 import gate as _gate
 import gate_env as _gate_env
@@ -220,10 +221,7 @@ def changed_files(worktree_path: str, base_ref: str) -> list:
     A worker that forgot to commit must not make its change invisible to the
     audit, so all three are united. Rein's own `.rein/` state is not a change.
     """
-    found = set(_git_lines(worktree_path, "diff", "--name-only", "%s...HEAD" % base_ref))
-    found.update(_git_lines(worktree_path, "diff", "--name-only", "HEAD"))
-    found.update(_git_lines(worktree_path, "ls-files", "--others", "--exclude-standard"))
-    return sorted(f for f in found if not f.startswith(".rein/"))
+    return _affected.changed_files(worktree_path, base_ref)
 
 
 def gate_outer_bound(path: str, unit_only: bool, timeout: float, repo: str = "") -> float:

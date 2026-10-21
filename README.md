@@ -194,7 +194,10 @@ rein gate        # ✅ did they PASS — 0 green · 1 the code is wrong · 126 t
                  # run anyway); failures, timeouts and setup problems are never stored. Cache:
                  # $REIN_CACHE_DIR or ~/.cache/rein. Each slot's timeout is 2x its slowest
                  # recent pass (2-30 min); before it ever passed, --timeout or
-                 # ship.gateTimeoutSeconds
+                 # ship.gateTimeoutSeconds.
+                 # --tier task --base <ref>: lint, typecheck and only the tests the change since
+                 # <ref> reaches (see gate.affected); --tier full: every gate slot plus
+                 # testIntegration. Both are command gates (no browser-render demand)
                  # --plan: run each TASK's own Verification before implementers are paid.
                  # Failing is fine (the work does not exist yet); proving NOTHING is not —
                  # a missing test module or a selector matching zero tests exits non-zero
@@ -294,6 +297,29 @@ to every gate and Verification it runs in that worktree, to `rein quick done`, a
 pass an environment to an agent — writes them as an `export` line at the top of the worker's and
 the auditor's brief so their own test runs use the same database. Without `gate.env` nothing
 changes. Creating the database on first use is the repo's job (its test setup).
+
+### Tiered gates (`gate.affected`)
+
+A task's gate runs `lint`, `typecheck`, the tests its change reaches and the task's own
+Verification; the full `test` slot (and `build`, and the optional `testIntegration`) runs once
+per repo, after all its tasks and before the audit. How a change maps to tests:
+
+```json
+{ "gate": { "affected": { "python": "pytest", "node": "vitest" }, "affectedMax": 40 } }
+```
+
+- `pytest` — changed test files, `tests/**/test_<module>.py` for each changed module (the
+  directory that mirrors the module's wins), and every test that imports the module (a grep of
+  its dotted path), run through `commands.testOne` with all of them in `{target}`.
+- `vitest` / `jest` — the runner's own graph: `vitest related --run <files>`,
+  `jest --findRelatedTests <files>`.
+- a command with `{tests}` (mapped test files, e.g. sibling `*.spec.ts`) or `{files}` (the changed
+  files), e.g. `"npx ng test --watch=false --include {tests}"`.
+- `testOne` (mapped test files through `commands.testOne`) or `full` (the `test` slot).
+
+Without `gate.affected` it is detected from the `test` command (pytest, vitest, jest), else
+`full`. Nothing affected runs no tests at task level; more than `affectedMax` files (default 40)
+or a change to dependencies or test configuration runs the full slot.
 
 **Precedence:** `flow.config.json` › task runner (`justfile` / `Makefile` / `Taskfile` / `mise`) ›
 autodetection. A project that already declares how it is built is never second-guessed.

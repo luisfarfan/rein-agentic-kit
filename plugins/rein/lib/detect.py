@@ -1017,6 +1017,8 @@ def resolve(root: str = ".") -> dict:
         "taskRunner": runner,
         "commands": commands,
         "commandSources": sources,
+        # The sub-project the commands `cd` into ("" at the root): affected-test paths are relative to it.
+        "subproject": subproject_choice,
         "missingCommands": missing_commands,
         "plan": plan,
         "tracker": tracker,

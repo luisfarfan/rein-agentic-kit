@@ -40,7 +40,10 @@
 
   "gate": {
     "$comment": "How Rein runs the checks (all optional). env: variables set for every gate and Verification Rein runs in a worktree, and exported at the top of the worker's and auditor's brief; {worktree} is a slug of the worktree's directory name ([a-z0-9_], <= 40 chars, stable), {repo} the repo's name. Declared in a repo or in the plan root (applies to every repo; a repo's own value wins).",
-    "env": {"APP_TEST_DB": "app_test_{worktree}"}
+    "env": {"APP_TEST_DB": "app_test_{worktree}"},
+    "$affected": "Which tests a task's gate runs: per language, pytest | vitest | jest | testOne | full, or a command with {tests} (mapped test files) or {files} (changed files). Default: detected from commands.test. Nothing affected runs no test at task level; more than affectedMax files runs the full test slot, which always runs once per repo before the audit.",
+    "affected": {"python": "pytest"},
+    "affectedMax": 40
   },
 
   "retrieval": {

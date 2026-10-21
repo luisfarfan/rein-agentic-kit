@@ -320,7 +320,8 @@ _PASS_OUTCOMES = ("ok",)
 
 
 def decide_gate(report: dict, review: dict = None, require_review: bool = False,
-                verify_policy: dict = None, serve: dict = None, render: dict = None) -> dict:
+                verify_policy: dict = None, serve: dict = None, render: dict = None,
+                allow_empty: bool = False) -> dict:
     """Did the configured gate commands pass? Pure -- runs nothing.
 
     Setup beats red, always. A run where typecheck could not be invoked and
@@ -362,6 +363,13 @@ def decide_gate(report: dict, review: dict = None, require_review: bool = False,
 
     if failed:
         return _verdict(GATE_RED, EXIT_RED, "failed: " + ", ".join(failed),
+                        setup, failed, passed, ignored)
+
+    if not passed and allow_empty and not require_review:
+        # A task-level gate whose change reaches no test, in a repo without lint or
+        # typecheck: nothing to check at this level. The full suite runs before the audit.
+        return _verdict(GATE_GREEN, EXIT_GREEN,
+                        "nothing to check at task level: " + (", ".join(ignored) or "no gate slot applies"),
                         setup, failed, passed, ignored)
 
     if not passed:

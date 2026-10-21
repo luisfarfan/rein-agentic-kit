@@ -20,7 +20,10 @@ Subcommands:
                       A slot that passed on the same tree state, command and env is
                       reused and printed "cached" (--no-cache runs it anyway). Each
                       slot's timeout is 2x its slowest recent pass (2-30 min); without
-                      history, --timeout or ship.gateTimeoutSeconds
+                      history, --timeout or ship.gateTimeoutSeconds.
+                      --tier task --base <ref>: lint, typecheck and only the tests the
+                      change since <ref> reaches (gate.affected); --tier full: every
+                      gate slot with testIntegration. Both without the render demand
   rein env [root]     `export` lines for the worktree's gate.env (flow.config.json):
                       the per-worktree environment Rein's gates use there.
                       [--repo <name>] [--env-root <plan repo>]
@@ -274,24 +277,36 @@ def cmd_gate(argv: list[str]) -> int:
     only_raw = _opt(argv, "only")
     only = {s.strip() for s in only_raw.split(",") if s.strip()} if only_raw else None
     require_review = "--require-review" in argv
+    tier = _opt(argv, "tier")
+    if tier not in _gate_run.TIERS:
+        print(f"gate: --tier must be task or full, got {tier!r}")
+        return 2
 
     env = _gate_env.for_worktree(resolved["root"], repo=_opt(argv, "repo"),
                                  env_root=_opt(argv, "env-root"), resolved=resolved)
     # Only the gate slots, cheap first, stopping at the first that does not pass (gate_run).
-    commands = resolved.get("commands") or {}
-    steps = [(slot, commands[slot], commands[slot])
-             for slot in _gate_run.gate_slots(commands, only, integration="--unit-only" not in argv)]
+    # --tier task: lint, typecheck and the tests the change since --base reaches.
+    planned = _gate_run.plan(resolved["root"], resolved, tier=tier, only=only,
+                             unit_only="--unit-only" in argv, base=_opt(argv, "base"))
     # Each slot's budget: 2x its slowest recent pass in this repo (within [2, 30] min), else
     # the timeout above. History needs a repo identity, so only a git checkout keeps one.
     history_repo = (_opt(argv, "repo") or _gate_env.repo_name_of(resolved["root"])) \
         if _gate_cache.is_git(resolved["root"]) else ""
 
-    def budget(slot):
-        return _gate_run.slot_budget(history_repo, slot, commands[slot], timeout)
-    report = _gate_run.run_steps(resolved["root"], steps, budget, env=env,
-                                 cache="--no-cache" not in argv, history_repo=history_repo)
+    def budget(slot, configured):
+        return _gate_run.slot_budget(history_repo, slot, configured, timeout)
+    report = _gate_run.run_steps(resolved["root"], planned["steps"], budget, env=env,
+                                 cache="--no-cache" not in argv, history_repo=history_repo,
+                                 skipped=planned["skipped"])
     report["env"] = sorted(env)  # names only: the values are the repo's business
-    _verify.write_state(resolved["root"], report)
+    report["tier"] = tier or "default"
+    if planned["affected"] is not None:
+        info = planned["affected"]
+        report["affected"] = {"strategy": info.get("strategy", ""), "mode": info["mode"],
+                              "reason": info.get("reason", ""), "count": len(info.get("targets") or []),
+                              "targets": list(info.get("targets") or [])[:50]}
+    if tier != "task":  # a task's partial run is not the repo's verification state
+        _verify.write_state(resolved["root"], report)
 
     review = _gate.check_review(resolved["root"], _opt(argv, "change")) if require_review else None
 
@@ -312,10 +327,11 @@ def cmd_gate(argv: list[str]) -> int:
 
     tools_raw = _opt(argv, "browser-tools")
     policy = dict(resolved.get("verifyPolicy") or {})
-    if "--unit-only" in argv:
+    if "--unit-only" in argv or tier:
         # A per-task gate asks "do the commands pass", not "was the UI
         # rendered": render evidence belongs to `Type: verification` tasks.
         # It also narrows the run to the unit slots: no `testIntegration`.
+        # The driver's tiers (task, full) are command gates too.
         policy["mode"] = "unit"
     if tools_raw:
         policy["tools"] = [t.strip() for t in tools_raw.split(",") if t.strip()]
@@ -323,7 +339,8 @@ def cmd_gate(argv: list[str]) -> int:
              "url": _opt(argv, "url")}
 
     decision = _gate.decide_gate(report, review=review, require_review=require_review,
-                                 verify_policy=policy, serve=serve, render=render)
+                                 verify_policy=policy, serve=serve, render=render,
+                                 allow_empty=tier == "task")
 
     if "--json" in argv:
         print(json.dumps({"decision": decision, "report": report}, indent=2))
@@ -337,6 +354,9 @@ def cmd_gate(argv: list[str]) -> int:
         print(f"  {slot:<10} [{res['outcome']:<13}] exit={code}  {res['elapsedMs']}ms{cached}  $ {res['command']}")
         for line in res["outputHead"][:5]:
             print(f"    | {line}")
+    if "affected" in report:
+        a = report["affected"]
+        print(f"  affected tests: {a['mode']} ({a['count']} file(s))" + (f" -- {a['reason']}" if a["reason"] else ""))
     print(f"\n  {mark}: {decision['reason']}")
     if decision["decision"] == _gate.GATE_SETUP:
         print("  fix the environment and run again -- this is not a verdict on the code")

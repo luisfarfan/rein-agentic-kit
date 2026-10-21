@@ -20,12 +20,16 @@ from __future__ import annotations
 import time
 from typing import Callable
 
+import affected as _affected
 import gate_cache as _cache
 import verify as _verify
 
 # Cheap first. testIntegration (an e2e/integration suite) is the slowest by nature.
 ORDER = ("lint", "typecheck", "build", "test", "testIntegration")
 INTEGRATION = "testIntegration"
+TIERS = ("", "task", "full")
+# A task's gate: the cheap whole-repo checks, then only the tests its change reaches.
+TASK_SLOTS = ("lint", "typecheck")
 
 
 def gate_slots(commands: dict, only=None, integration: bool = True) -> list:
@@ -58,17 +62,57 @@ def slot_budget(repo: str, label: str, command: str, fallback: float) -> float:
     return min(max(BUDGET_FACTOR * max(passes), BUDGET_MIN), BUDGET_MAX)
 
 
+def plan(root: str, resolved: dict, tier: str = "", only=None, unit_only: bool = False,
+         base: str = "", changed: list = None) -> dict:
+    """`{"steps", "affected", "skipped"}` for one gate run.
+
+    tier "task": lint and typecheck, then the tests affected by the change since
+    `base` (or `changed`, repo-relative) instead of the `test` slot; no build, no
+    integration suite. Nothing affected: no test step (`skipped` says why).
+    tier "full": every gate slot including `testIntegration`.
+    no tier: every gate slot, `testIntegration` unless `unit_only`."""
+    commands = (resolved or {}).get("commands") or {}
+    if tier != "task":
+        integration = tier == "full" or not unit_only
+        return {"steps": [(s, commands[s], commands[s]) for s in gate_slots(commands, only, integration)],
+                "affected": None, "skipped": {}}
+    steps = [(s, commands[s], commands[s]) for s in gate_slots(commands, only, integration=False)
+             if s in TASK_SLOTS]
+    info, skipped = None, {}
+    if (commands.get("test") or "").strip() and (only is None or "test" in only):
+        if changed is None:
+            if not base:
+                info = {"strategy": "", "mode": "full", "targets": [],
+                        "reason": "no --base was given, so the changed files are not known"}
+            else:
+                try:
+                    changed = _affected.changed_files(root, base)
+                except RuntimeError as exc:
+                    info = {"strategy": "", "mode": "full", "targets": [],
+                            "reason": "the changes since %s are not known (%s)" % (base, exc)}
+        if info is None:
+            info = _affected.compute(root, resolved, changed)
+        if info["mode"] == "run":
+            steps.append(("test", info["command"], info["configured"]))
+        elif info["mode"] == "full":
+            steps.append(("test", commands["test"], commands["test"]))
+        else:
+            skipped["test"] = ("no affected tests (%s); the full suite runs once per repo before the audit"
+                               % info["reason"])
+    return {"steps": steps, "affected": info, "skipped": skipped}
+
+
 def _skipped(slot: str, command: str, why: str) -> dict:
     return _verify.CommandResult(slot, command, True, _verify.OUTCOME_SKIPPED, None, [], 0,
                                  error=why).to_dict()
 
 
-def run_steps(root: str, steps: list, timeout_for: Callable[[str], float], env: dict = None,
+def run_steps(root: str, steps: list, timeout_for: Callable[[str, str], float], env: dict = None,
               run: Callable = _verify.run_one, fail_fast: bool = True, cache: bool = False,
-              history_repo: str = "") -> dict:
+              history_repo: str = "", skipped: dict = None) -> dict:
     """Run `[(slot, command, configured)]` in order; after the first slot that is not ok, skip the rest.
 
-    `timeout_for(slot)` is each slot's budget. A slot whose outcome is anything but
+    `timeout_for(slot, configured)` is each slot's budget. A slot whose outcome is anything but
     `ok` (failed, timeout, not invocable) ends the run: what follows is reported
     `skipped`, naming the slot that stopped it. With `cache`, a slot that passed on
     this exact tree state, command and env is reused (`"cached": true`) instead of run,
@@ -89,7 +133,7 @@ def run_steps(root: str, steps: list, timeout_for: Callable[[str], float], env: 
                 hit.pop("storedAt", None)
                 results[slot] = {**hit, "cached": True}
                 continue
-        budget = timeout_for(slot)
+        budget = timeout_for(slot, configured)
         res = run(slot, command, root, budget, configured=configured, env=env or None)
         entry = res.to_dict()
         entry["budgetSeconds"] = budget
@@ -103,7 +147,9 @@ def run_steps(root: str, steps: list, timeout_for: Callable[[str], float], env: 
             if history_repo:
                 _cache.record_pass(history_repo, slot, configured, res.elapsed_ms / 1000.0)
         results[slot] = entry
-    budgets = [timeout_for(s) for s, _c, _k in steps]
+    for slot, why in (skipped or {}).items():
+        results[slot] = _skipped(slot, "", why)
+    budgets = [timeout_for(s, k) for s, _c, k in steps]
     return {
         "root": root,
         "timeoutSeconds": max(budgets) if budgets else 0,
