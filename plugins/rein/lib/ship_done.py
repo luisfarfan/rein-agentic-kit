@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import datetime
 import filecmp
+import fnmatch
 import json
 import os
 import shlex
@@ -114,16 +115,40 @@ def _same_as_main(main: str, path: str, name: str) -> bool:
         return False
 
 
-def _ignored_files(path: str, git: Callable[..., tuple]) -> list:
+def regenerable_patterns(*roots: str) -> list:
+    """`gate.regenerable` of each root's flow.config.json: gitignored files a setup regenerates."""
+    out = []
+    for root in roots:
+        if not root or not os.path.isdir(root):
+            continue
+        declared = (_detect.resolve(root).get("gate") or {}).get("regenerable")
+        if isinstance(declared, list):
+            out += [p.strip() for p in declared if isinstance(p, str) and p.strip()]
+    return out
+
+
+def _regenerable(name: str, patterns: list) -> bool:
+    """`name` (repo-relative, a directory ends in "/") matches a pattern; "dir/" covers its files."""
+    bare = name.rstrip("/")
+    for pattern in patterns:
+        pattern = pattern[2:] if pattern.startswith("./") else pattern
+        folder = pattern.rstrip("/")
+        if fnmatch.fnmatch(bare, folder) or bare.startswith(folder + "/"):
+            return True
+    return False
+
+
+def _ignored_files(path: str, git: Callable[..., tuple], regenerable: tuple = ()) -> list:
     # -z: names come back verbatim (no C-quoting of spaces or non-ASCII bytes)
     code, out = git(path, "status", "--porcelain", "-z", "--ignored", "--untracked-files=all")
     main = _main_checkout(path, git)
+    patterns = regenerable_patterns(path) + list(regenerable)
     found = []
     for entry in out.split("\0") if code == 0 else []:
         if not entry.startswith("!! "):
             continue
         name = entry[3:]
-        if _is_junk(name) or _same_as_main(main, path, name):
+        if _is_junk(name) or _same_as_main(main, path, name) or _regenerable(name, patterns):
             continue
         found.append(name)
     return found
@@ -147,13 +172,14 @@ def _resolve_base(path: str, base: str, git: Callable[..., tuple], fetch: Callab
 
 def check_worktree(path: str, base: str, git: Callable[..., tuple], fetch: Callable[[str, str], tuple],
                    base_sha: str = "", branch: str = "", warnings: Optional[list] = None,
-                   fallback: bool = False, notes: Optional[list] = None) -> str:
+                   fallback: bool = False, notes: Optional[list] = None, regenerable: tuple = ()) -> str:
     """"" when `path` is clean and integrated into `origin/<base>`, else the reason it is not.
 
     Both HEAD and `branch` (the one Orca deletes with the worktree) must be integrated; a
     detached HEAD with no known branch cannot be vouched for. Gitignored files that would be
     lost (`.env` ...) are appended to `warnings` -- only for an integrated worktree, since a
-    kept one loses nothing; pass `warnings=None` when the checkout will not be removed.
+    kept one loses nothing; pass `warnings=None` when the checkout will not be removed. Files
+    matching `gate.regenerable` (the worktree's own, plus `regenerable`) are not a loss.
     """
     code, porcelain = git(path, "status", "--porcelain", "--untracked-files=all")
     if code != 0:
@@ -169,17 +195,17 @@ def check_worktree(path: str, base: str, git: Callable[..., tuple], fetch: Calla
         tips = {git(path, "rev-parse", "--verify", "--quiet", ref)[1].strip()
                 for ref in ("HEAD", "refs/heads/" + branch)}
         if tips == {base_sha}:
-            return _integrated(path, git, warnings)
+            return _integrated(path, git, warnings, regenerable)
     for ref in ("HEAD", "refs/heads/" + branch):
         why = integration_gap(path, "origin/" + base, ref, git)
         if why:
             return why
-    return _integrated(path, git, warnings)
+    return _integrated(path, git, warnings, regenerable)
 
 
-def _integrated(path: str, git: Callable[..., tuple], warnings: Optional[list]) -> str:
+def _integrated(path: str, git: Callable[..., tuple], warnings: Optional[list], regenerable: tuple = ()) -> str:
     if warnings is not None:
-        warnings.extend((path, name) for name in _ignored_files(path, git))
+        warnings.extend((path, name) for name in _ignored_files(path, git, regenerable))
     return ""
 
 
@@ -365,6 +391,7 @@ def run_done(root: str, change: str, client: OrcaClient, *, dry_run: bool = Fals
 
     repos, rows = _repos_by_name(client), orca_rows(client)
     blockers, present, gone, warnings = [], [], [], []
+    regenerable = tuple(regenerable_patterns(root))  # the plan root's declaration covers every repo
     for repo, path in _worktree_paths(state).items():
         if not os.path.isdir(path):
             gone.append((repo, path))
@@ -374,7 +401,8 @@ def run_done(root: str, change: str, client: OrcaClient, *, dry_run: bool = Fals
             blockers.append((repo, path, "it is a main checkout; Rein never removes those"))
             continue
         base = _base_name(repos.get(repo), git, path)
-        why = check_worktree(path, base, git, fetch, branch=branch_of(path, row, git), warnings=warnings)
+        why = check_worktree(path, base, git, fetch, branch=branch_of(path, row, git), warnings=warnings,
+                             regenerable=regenerable)
         if why:
             blockers.append((repo, path, why))
         else:

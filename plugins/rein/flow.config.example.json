@@ -43,7 +43,9 @@
     "env": {"APP_TEST_DB": "app_test_{worktree}"},
     "$affected": "Which tests a task's gate runs: per language, pytest | vitest | jest | testOne | full, or a command with {tests} (mapped test files) or {files} (changed files). Default: detected from commands.test. Nothing affected runs no test at task level; more than affectedMax files runs the full test slot, which always runs once per repo before the audit.",
     "affected": {"python": "pytest"},
-    "affectedMax": 40
+    "affectedMax": 40,
+    "$regenerable": "Gitignored files a worktree's setup regenerates (globs, repo-relative; a trailing / covers a folder): `rein done` and `rein quick close` do not count them as lost and need no --yes for them.",
+    "regenerable": ["public/config.json"]
   },
 
   "retrieval": {
