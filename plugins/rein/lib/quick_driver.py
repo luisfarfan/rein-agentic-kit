@@ -24,7 +24,9 @@ from typing import Callable
 
 import detect as _detect
 import gate as _gate
+import gate_cache as _gate_cache
 import gate_env as _gate_env
+import gate_run as _gate_run
 import orca_client as oc
 import quick
 import quota
@@ -351,23 +353,38 @@ def _load_record(workspace: str):
     return record, ""
 
 
-def _gate_notes(steps: list, related: list, changed: list, cfg, commands: dict) -> list:
+def _gate_notes(planned: dict, full_suite: bool, changed: list, cfg, commands: dict) -> list:
     notes = []
-    ran_tests = any(slot == "test" or slot.startswith("testOne:") for slot, _c, _k in steps)
-    if not related:
+    info = planned.get("affected")
+    if full_suite:
+        notes.append("suite completa (`test`): el cambio toca rutas de riesgo y pasa a auditoría")
+    elif not (commands.get("test") or commands.get("testOne")):
+        notes.append("sin tests: el repo no define `test` ni `testOne`")
+    elif info is not None and info["mode"] == "none":
         notes.append("sin tests relacionados")
-    elif not ran_tests:
-        # Without `test` the suite cannot stand in; `testOne` is missing only when it is not defined.
-        missing = "`test`" if commands.get("testOne") else "`test` ni `testOne`"
-        notes.append("%d tests relacionados sin ejecutar: el repo no define %s"
-                     % (len(related), missing))
-    elif any(slot == "test" for slot, _c, _k in steps):
-        notes.append("%d tests relacionados: se ejecutó `test` (la suite completa, más lenta) "
-                     "en lugar de `testOne` por archivo" % len(related))
+    elif info is not None and info["mode"] == "full":
+        if commands.get("test"):
+            notes.append("se ejecutó la suite completa (`test`, más lenta): %s" % info["reason"])
+        else:
+            notes.append("hace falta la suite completa (%s) y el repo no define `test`" % info["reason"])
+    elif info is not None:
+        notes.append("%d tests afectados" % len(info.get("targets") or []))
     if len(changed) > cfg.large_change_files:
         notes.append("cambio grande (%d archivos, el aviso salta por encima de %d): "
                      "considera hacer un plan la próxima vez" % (len(changed), cfg.large_change_files))
     return notes
+
+
+class _Slot:
+    """A gate_run result entry with the attributes quick.verdict/summary read."""
+
+    def __init__(self, entry: dict):
+        self.slot = entry.get("slot") or ""
+        self.outcome = entry.get("outcome") or ""
+        self.exit_code = entry.get("exitCode")
+        self.elapsed_ms = int(entry.get("elapsedMs") or 0)
+        self.error = entry.get("error") or ""
+        self.cached = bool(entry.get("cached"))
 
 
 def _findings(workspace: str, change: str) -> list:
@@ -584,25 +601,35 @@ def done_quick(*, cwd: str = ".", client: OrcaClient, run=verify.run_one,
         say("nothing changed since the task started")
         return 0
 
-    # 3. Light gate
+    # 3. Light gate: lint, typecheck and the tests the change reaches (gate_run's task tier,
+    # the same as a ship task), cheap first and stopping at the first that fails. A change
+    # that goes to the audit runs the full suite instead of the affected tests.
     resolved = _detect.resolve(workspace)
     cfg = ship_decide.ShipConfig.from_flow_config(resolved)
-    gate_vars = _gate_env.for_worktree(workspace, repo=str(record.get("repo") or ""), resolved=resolved)
-    related = quick.related_tests(changed, lambda rel: os.path.isfile(os.path.join(workspace, rel)))
-    steps = quick.gate_steps(resolved.get("commands") or {}, related)
-    results, outputs = [], {}
-    for slot, command, configured in steps:
-        result = ship.call_with(run, slot, command, workspace, cfg.gate_timeout_seconds,
-                                configured=configured, env=gate_vars or None)
-        results.append(result)
-        outputs[slot] = getattr(result, "output", "")
-    outcome = quick.verdict(results)
+    repo = str(record.get("repo") or "")
+    gate_vars = _gate_env.for_worktree(workspace, repo=repo, resolved=resolved)
+    commands = resolved.get("commands") or {}
     change = "quick-" + os.path.basename(workspace)
     rounds = int(record.get("audit_rounds") or 0)
     risky = quick.needs_audit(changed, cfg)
     approved = risky and _approval_stands(workspace, change, changed, cfg)
     pending = risky and not approved and rounds < AUDIT_MAX_ROUNDS
-    notes = _gate_notes(steps, related, changed, cfg, resolved.get("commands") or {})
+    planned = _gate_run.plan(workspace, resolved, tier="task", changed=changed)
+    steps, skipped = list(planned["steps"]), dict(planned["skipped"])
+    full_suite = pending and bool(commands.get("test"))
+    if full_suite:
+        steps = [st for st in steps if st[0] != "test"] + [("test", commands["test"], commands["test"])]
+        skipped.pop("test", None)
+    history = repo if _gate_cache.is_git(workspace) else ""
+
+    def budget(slot, configured):
+        return _gate_run.slot_budget(history, slot, configured, cfg.gate_timeout_seconds)
+    report = _gate_run.run_steps(workspace, steps, budget, env=gate_vars or None, run=run, cache=True,
+                                 history_repo=history, skipped=skipped)
+    results = [_Slot(e) for e in report["results"].values()]
+    outputs = {e["slot"]: "\n".join(e.get("errorLines") or []) for e in report["results"].values()}
+    outcome = quick.verdict(results)
+    notes = _gate_notes(planned, full_suite, changed, cfg, commands)
     say(quick.summary(results, outputs, notes, audit_pending=pending))
     if outcome == "red":
         return 1

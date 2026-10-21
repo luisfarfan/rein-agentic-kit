@@ -14,7 +14,8 @@ from flow.config.json, per language, or is detected:
   `jest --findRelatedTests`) over the changed source files.
 - a command template with `{tests}` (mapped test files, e.g. sibling
   `*.spec.ts`) or `{files}` (changed source files).
-- `testOne`: mapped test files through `commands.testOne`.
+- `testOne` (detected when only `commands.testOne` is known): mapped test files
+  (sibling `*.spec.*`/`*.test.*`, and the python mapping) through `testOne`.
 - `full` (the default for anything else): the `test` slot.
 
 Nothing selected runs nothing at task level (lint and typecheck still run).
@@ -88,6 +89,8 @@ def strategy(resolved: dict) -> str:
         return "vitest"
     if re.search(r"\bjest\b", test):
         return "jest"
+    if "{target}" in (commands.get("testOne") or ""):
+        return "testOne"  # any runner: the mapped test files through its own testOne
     return "full"
 
 
@@ -274,6 +277,9 @@ def compute(root: str, resolved: dict, changed: list) -> dict:
             targets, why = _pytest_targets(base, rel)
         else:
             targets, why = _sibling_tests(base, rel), ""
+            if any(p.endswith(".py") for p in rel):
+                py, why = _pytest_targets(base, rel)
+                targets = sorted(set(targets) | set(py))
         if why:
             return full(why)
         return run(targets, one.replace("{target}", _quoted(targets)), one)

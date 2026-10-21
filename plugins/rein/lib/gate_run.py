@@ -17,6 +17,7 @@ the ship driver's failure detail read it unchanged.
 
 from __future__ import annotations
 
+import inspect
 import time
 from typing import Callable
 
@@ -30,6 +31,18 @@ INTEGRATION = "testIntegration"
 TIERS = ("", "task", "full")
 # A task's gate: the cheap whole-repo checks, then only the tests its change reaches.
 TASK_SLOTS = ("lint", "typecheck")
+
+
+def call_with(fn: Callable, *args, **kw):
+    """`fn(*args, **kw)` passing only the keywords `fn` accepts: older runners take fewer."""
+    try:
+        params = inspect.signature(fn).parameters.values()
+    except (TypeError, ValueError):
+        return fn(*args)
+    if any(p.kind == p.VAR_KEYWORD for p in params):
+        return fn(*args, **kw)
+    names = {p.name for p in params}
+    return fn(*args, **{k: v for k, v in kw.items() if k in names})
 
 
 def gate_slots(commands: dict, only=None, integration: bool = True) -> list:
@@ -79,7 +92,8 @@ def plan(root: str, resolved: dict, tier: str = "", only=None, unit_only: bool =
     steps = [(s, commands[s], commands[s]) for s in gate_slots(commands, only, integration=False)
              if s in TASK_SLOTS]
     info, skipped = None, {}
-    if (commands.get("test") or "").strip() and (only is None or "test" in only):
+    has_test = bool((commands.get("test") or "").strip())
+    if (has_test or (commands.get("testOne") or "").strip()) and (only is None or "test" in only):
         if changed is None:
             if not base:
                 info = {"strategy": "", "mode": "full", "targets": [],
@@ -94,8 +108,10 @@ def plan(root: str, resolved: dict, tier: str = "", only=None, unit_only: bool =
             info = _affected.compute(root, resolved, changed)
         if info["mode"] == "run":
             steps.append(("test", info["command"], info["configured"]))
-        elif info["mode"] == "full":
+        elif info["mode"] == "full" and has_test:
             steps.append(("test", commands["test"], commands["test"]))
+        elif info["mode"] == "full":
+            skipped["test"] = "the full suite is needed (%s) and the repo defines no `test`" % info["reason"]
         else:
             skipped["test"] = ("no affected tests (%s); the full suite runs once per repo before the audit"
                                % info["reason"])
@@ -134,7 +150,7 @@ def run_steps(root: str, steps: list, timeout_for: Callable[[str, str], float], 
                 results[slot] = {**hit, "cached": True}
                 continue
         budget = timeout_for(slot, configured)
-        res = run(slot, command, root, budget, configured=configured, env=env or None)
+        res = call_with(run, slot, command, root, budget, configured=configured, env=env or None)
         entry = res.to_dict()
         entry["budgetSeconds"] = budget
         if res.outcome != _verify.OUTCOME_OK:

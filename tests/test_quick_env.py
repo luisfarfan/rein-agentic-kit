@@ -51,3 +51,10 @@ class TestBrief(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestBriefTests(unittest.TestCase):
+    def test_the_brief_asks_for_the_affected_tests_not_the_suite(self):
+        brief = quick.build_brief("arregla x")
+        self.assertIn("no la suite completa", brief)
+        self.assertIn("tests afectados", brief)

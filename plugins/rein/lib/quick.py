@@ -1,17 +1,15 @@
 """Quick lane: the pure decisions taken when a quick task starts.
 
 The slug, the bug heuristic, the agent's first message, the start
-refusals and the record; and, for `done`, the related tests, the gate
-steps, the verdict, the summary and the audit decisions. Nothing here
-shells out, touches Orca or reads the filesystem (`related_tests` gets
-an `exists` callable); the driver built on top owns every side effect.
+refusals and the record; and, for `done`, the verdict, the summary and
+the audit decisions (which checks run is gate_run's, shared with ship).
+Nothing here shells out, touches Orca or reads the filesystem; the
+driver built on top owns every side effect.
 """
 
 from __future__ import annotations
 
-import posixpath
 import re
-import shlex
 import unicodedata
 from typing import Callable
 
@@ -62,6 +60,7 @@ def build_brief(sentence: str, linear: str = "", bug: bool = False, bin_path: st
     ]
     if bug:
         lines.append("Primero escribe un test que lo reproduzca.")
+    lines.append("Corre solo los tests afectados, no la suite completa.")
     lines.append("Cuando diga *listo*, ejecuta `rein quick done` y muéstrame el resultado.")
     if bin_path:
         lines.append("Si `rein` no está en el PATH, usa `python3 %s quick done`." % bin_path)
@@ -113,76 +112,14 @@ def new_record(repo: str, workspace: str, base: str, base_sha: str, agent: str,
 
 # --- close: `rein quick done` ------------------------------------------------
 
-MAX_RELATED_TESTS = 10
 from verify import ERROR_LINES_CAP, error_lines  # noqa: E402,F401  (shared with the gate report)
-
-
-def _is_test_file(path: str) -> bool:
-    name = posixpath.basename(path)
-    stem, _, ext = name.rpartition(".")
-    return (
-        ".spec." in name
-        or ".test." in name
-        or (ext == "py" and (stem.startswith("test_") or stem.endswith("_test")))
-    )
-
-
-def _sibling_candidates(path: str) -> list:
-    directory, name = posixpath.split(path)
-    stem, dot, ext = name.rpartition(".")
-    if not dot or not stem:
-        return []
-    out = [
-        posixpath.join(directory, "%s.spec.%s" % (stem, ext)),
-        posixpath.join(directory, "%s.test.%s" % (stem, ext)),
-    ]
-    if ext == "py":
-        out.append(posixpath.join(directory, "test_%s.py" % stem))
-        out.append(posixpath.join("tests", directory, "test_%s.py" % stem))
-    return out
-
-
-def related_tests(changed: list, exists: Callable[[str], bool]) -> list:
-    """Existing tests worth running for `changed` (repo-relative, sorted, unique).
-
-    A changed test file counts when it still exists; a changed source file
-    contributes the existing sibling tests named after it. Deleted files
-    never reach the result."""
-    found = set()
-    for raw in changed:
-        path = posixpath.normpath(raw)
-        if _is_test_file(path):
-            if exists(path):
-                found.add(path)
-            continue
-        for candidate in _sibling_candidates(path):
-            if exists(candidate):
-                found.add(candidate)
-    return sorted(found)
-
-
-def gate_steps(commands: dict, related: list) -> list:
-    """The light gate as `(slot, command, configured)` steps, in run order."""
-    steps = []
-    for slot in ("lint", "typecheck"):
-        cmd = commands.get(slot)
-        if cmd:
-            steps.append((slot, cmd, cmd))
-    if not related:
-        return steps
-    one, whole = commands.get("testOne"), commands.get("test")
-    if one and len(related) <= MAX_RELATED_TESTS:
-        for path in related:
-            steps.append(("testOne:" + path, one.replace("{target}", shlex.quote(path)), one))
-    elif whole:
-        steps.append(("test", whole, whole))
-    return steps
 
 
 def verdict(results: list) -> str:
     """`green`, `red` or `setup`; a setup problem outranks a red slot."""
-    outcomes = [r.outcome for r in results]
-    # Anything but ok/failed (not_invocable, timeout, inconclusive, skipped,
+    # `skipped` is not run by design (after a slot that failed, or no affected test).
+    outcomes = [r.outcome for r in results if r.outcome != "skipped"]
+    # Anything else but ok/failed (not_invocable, timeout, inconclusive,
     # proves_nothing, or an outcome this code does not know) is not a verdict
     # on the code.
     if any(o not in ("ok", "failed") for o in outcomes):
@@ -202,7 +139,8 @@ def summary(results: list, outputs: dict, notes: list, audit_pending: bool = Fal
         out = ["verdict: " + found]
     for r in results:
         code = "-" if r.exit_code is None else r.exit_code
-        out.append("%s exit=%s %dms" % (r.slot, code, r.elapsed_ms))
+        out.append("%s exit=%s %dms%s" % (r.slot, code, r.elapsed_ms,
+                                          " (cached)" if getattr(r, "cached", False) else ""))
         if r.outcome not in ("ok", "failed") and getattr(r, "error", ""):
             out.append("  %s: %s" % (r.outcome, r.error))  # a setup slot: say why
         if r.outcome == "failed":

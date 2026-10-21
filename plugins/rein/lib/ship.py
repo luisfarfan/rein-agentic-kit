@@ -21,8 +21,6 @@ import sys
 import time
 from typing import Callable
 
-import inspect
-
 import affected as _affected
 import detect as _detect
 import gate as _gate
@@ -409,16 +407,7 @@ def task_verification_command(field: str) -> tuple:
     return command, ""
 
 
-def call_with(fn: Callable, *args, **kw):
-    """`fn(*args, **kw)` passing only the keywords `fn` accepts: older gate runners take three arguments."""
-    try:
-        params = inspect.signature(fn).parameters.values()
-    except (TypeError, ValueError):
-        return fn(*args)
-    if any(p.kind == p.VAR_KEYWORD for p in params):
-        return fn(*args, **kw)
-    names = {p.name for p in params}
-    return fn(*args, **{k: v for k, v in kw.items() if k in names})
+call_with = _gate_run.call_with  # older gate runners take three arguments
 
 
 def run_task_verification(command: str, path: str, timeout: float, env: dict = None) -> tuple:

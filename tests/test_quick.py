@@ -156,90 +156,6 @@ class FakeResult:
         self.error = error
 
 
-def exists_in(*paths):
-    return lambda p: p in paths
-
-
-class RelatedTestsTests(unittest.TestCase):
-    def test_related_tests_typescript(self):
-        found = quick.related_tests(["src/a/card.ts"], exists_in("src/a/card.spec.ts"))
-        self.assertEqual(found, ["src/a/card.spec.ts"])
-
-    def test_related_tests_typescript_test_sibling_and_changed_tests(self):
-        found = quick.related_tests(
-            ["src/a/card.tsx", "src/b/list.test.ts"],
-            exists_in("src/a/card.test.tsx", "src/b/list.test.ts"),
-        )
-        self.assertEqual(found, ["src/a/card.test.tsx", "src/b/list.test.ts"])
-
-    def test_related_tests_python(self):
-        found = quick.related_tests(["app/x.py"], exists_in("tests/app/test_x.py"))
-        self.assertEqual(found, ["tests/app/test_x.py"])
-        beside = quick.related_tests(["app/x.py"], exists_in("app/test_x.py"))
-        self.assertEqual(beside, ["app/test_x.py"])
-
-    def test_related_tests_python_top_level_module(self):
-        found = quick.related_tests(["x.py"], exists_in("tests/test_x.py", "test_x.py"))
-        self.assertEqual(found, ["test_x.py", "tests/test_x.py"])
-
-    def test_related_tests_skip_deleted(self):
-        found = quick.related_tests(
-            ["src/a/gone.spec.ts", "src/a/gone.ts", "app/old.py", "tests/test_old.py"],
-            exists_in(),
-        )
-        self.assertEqual(found, [])
-
-    def test_related_tests_sorted_unique(self):
-        found = quick.related_tests(
-            ["b/x.py", "tests/b/test_x.py", "a/y.py"],
-            exists_in("tests/b/test_x.py", "a/test_y.py"),
-        )
-        self.assertEqual(found, ["a/test_y.py", "tests/b/test_x.py"])
-
-    def test_a_changed_test_is_not_its_own_source(self):
-        found = quick.related_tests(["tests/test_x.py"], exists_in("tests/test_x.py"))
-        self.assertEqual(found, ["tests/test_x.py"])
-
-
-class GateStepsTests(unittest.TestCase):
-    CMDS = {"lint": "npm run lint", "typecheck": "tsc --noEmit",
-            "test": "npm test", "testOne": "npx vitest run {target}"}
-
-    def test_lint_typecheck_then_each_related_test(self):
-        steps = quick.gate_steps(self.CMDS, ["a.spec.ts", "b.spec.ts"])
-        self.assertEqual(steps, [
-            ("lint", "npm run lint", "npm run lint"),
-            ("typecheck", "tsc --noEmit", "tsc --noEmit"),
-            ("testOne:a.spec.ts", "npx vitest run a.spec.ts", "npx vitest run {target}"),
-            ("testOne:b.spec.ts", "npx vitest run b.spec.ts", "npx vitest run {target}"),
-        ])
-
-    def test_gate_steps_cap_and_fallback(self):
-        eleven = ["t%d.spec.ts" % i for i in range(11)]
-        steps = quick.gate_steps(self.CMDS, eleven)
-        self.assertEqual([s[0] for s in steps], ["lint", "typecheck", "test"])
-        ten = quick.gate_steps(self.CMDS, eleven[:10])
-        self.assertEqual(len(ten), 12)
-        no_one = {k: v for k, v in self.CMDS.items() if k != "testOne"}
-        self.assertEqual(
-            [s[0] for s in quick.gate_steps(no_one, ["a.spec.ts"])],
-            ["lint", "typecheck", "test"],
-        )
-        self.assertEqual(
-            [s[0] for s in quick.gate_steps(self.CMDS, [])], ["lint", "typecheck"]
-        )
-
-    def test_unconfigured_commands_are_left_out(self):
-        self.assertEqual(quick.gate_steps({}, ["a.spec.ts"]), [])
-        self.assertEqual(
-            quick.gate_steps({"lint": "", "testOne": None}, ["a.spec.ts"]), []
-        )
-
-    def test_target_with_spaces_is_quoted(self):
-        steps = quick.gate_steps({"testOne": "pytest {target}"}, ["tests/a b/test_x.py"])
-        self.assertEqual(steps[0][1], "pytest 'tests/a b/test_x.py'")
-
-
 class VerdictTests(unittest.TestCase):
     def test_verdict_green_red(self):
         self.assertEqual(quick.verdict([]), "green")
@@ -248,9 +164,15 @@ class VerdictTests(unittest.TestCase):
         self.assertEqual(quick.verdict(red), "red")
 
     def test_verdict_setup_beats_red(self):
-        for outcome in ("not_invocable", "timeout", "inconclusive", "skipped", "proves_nothing"):
+        for outcome in ("not_invocable", "timeout", "inconclusive", "proves_nothing"):
             mixed = [FakeResult("test", "failed", 1), FakeResult("lint", outcome, None)]
             self.assertEqual(quick.verdict(mixed), "setup", outcome)
+
+
+    def test_a_skipped_slot_is_no_verdict(self):
+        """Skipped by design: after a failing slot (fail fast), or no test affected by the change."""
+        self.assertEqual(quick.verdict([FakeResult("lint"), FakeResult("test", "skipped", None)]), "green")
+        self.assertEqual(quick.verdict([FakeResult("lint", "failed", 1), FakeResult("test", "skipped", None)]), "red")
 
 
 class ErrorLinesTests(unittest.TestCase):

@@ -719,6 +719,11 @@ class DoneCase(unittest.TestCase):
     def setUp(self):
         self.root = os.path.realpath(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.root, True)
+        # The gate cache and timing history of these checkouts, never the real ~/.cache/rein.
+        saved = os.environ.get("REIN_CACHE_DIR")
+        os.environ["REIN_CACHE_DIR"] = os.path.join(self.root, "_cache")
+        self.addCleanup(lambda: os.environ.pop("REIN_CACHE_DIR") if saved is None
+                        else os.environ.__setitem__("REIN_CACHE_DIR", saved))
         self.ws = os.path.join(self.root, "quick-fix")
         self.out = []
 
@@ -822,7 +827,7 @@ class DoneGateTests(DoneCase):
         self.write("src/foo.ts", "v2\n")
         code, run, orca = self.done()
         self.assertEqual(code, 0)
-        self.assertEqual(run.slots(), ["lint", "typecheck", "testOne:src/foo.test.ts"])
+        self.assertEqual(run.slots(), ["lint", "typecheck", "test"])
         slot, command, cwd, timeout, configured = run.calls[2]
         self.assertEqual((command, configured), ("make one src/foo.test.ts", ONE))
         self.assertEqual((cwd, timeout), (self.ws, 900.0))
@@ -843,7 +848,7 @@ class DoneGateTests(DoneCase):
         before = "\n".join("early noise %d" % i for i in range(30))
         after = "\n".join("late noise %d" % i for i in range(30))
         out = before + "\nAssertionError: expected 1 got 2\n" + after
-        run = _Gate({"testOne:src/foo.test.ts": _result("testOne:src/foo.test.ts", "failed", 1, out)})
+        run = _Gate({"test": _result("test", "failed", 1, out)})
         code, _, _ = self.done(run=run)
         self.assertEqual(code, 1)
         text = self.text()
@@ -889,33 +894,57 @@ class DoneGateTests(DoneCase):
         self.assertEqual(run.slots(), ["test"])
         self.assertIn("suite", self.text())
 
-    def test_related_tests_that_cannot_run_are_counted(self):
+    def test_without_test_or_testone_it_says_no_tests_ran(self):
         cfg = {"commands": {"lint": LINT}, "ship": CONFIG["ship"]}
         self.make_repo(config=cfg)
         self.write("src/foo.ts", "v2\n")
         code, run, _ = self.done()
         self.assertEqual(code, 0)
         self.assertEqual(run.slots(), ["lint"])
-        self.assertIn("1 tests relacionados sin ejecutar", self.text())
         self.assertIn("el repo no define `test` ni `testOne`", self.text())
 
-    def test_too_many_related_tests_without_a_suite_names_only_test(self):
-        cfg = {"commands": {"lint": LINT, "testOne": ONE}, "ship": CONFIG["ship"]}
+    def test_too_many_affected_tests_without_a_suite_says_so(self):
+        cfg = {"commands": {"lint": LINT, "testOne": ONE}, "ship": CONFIG["ship"], "gate": {"affectedMax": 5}}
         self.make_repo(config=cfg)
-        for n in range(quick.MAX_RELATED_TESTS + 1):
+        for n in range(6):
             self.write("src/extra%d.test.ts" % n, "v2\n")
         code, run, _ = self.done()
         self.assertEqual(code, 0)
         self.assertEqual(run.slots(), ["lint"])
-        text = self.text()
-        self.assertIn("11 tests relacionados sin ejecutar: el repo no define `test`", text)
-        self.assertNotIn("`testOne`", text)
+        self.assertIn("el repo no define `test`", self.text())
+
+    def test_a_failing_slot_stops_the_rest(self):
+        self.make_repo()
+        self.write("src/foo.ts", "v2\n")
+        run = _Gate({"lint": _result("lint", "failed", 1, "error: x")})
+        code, _, _ = self.done(run=run)
+        self.assertEqual(code, 1)
+        self.assertEqual(run.slots(), ["lint"])
+        self.assertIn("skipped", self.text())
+
+    def test_the_same_state_is_not_checked_twice(self):
+        self.make_repo()
+        self.write("src/foo.ts", "v2\n")
+        first, second = _Gate(), _Gate()
+        self.done(run=first)
+        self.done(run=second)
+        self.assertEqual(first.slots(), ["lint", "typecheck", "test"])
+        self.assertEqual(second.slots(), [])
+        self.assertIn("cached", self.text())
 
 
 class DoneAuditTests(DoneCase):
     def risky(self, **kw):
         self.make_repo(**kw)
         self.write("src/auth/login.ts", "v2\n")
+
+    def test_a_standing_approval_runs_no_full_suite(self):
+        self.risky()
+        self.reviewer("APPROVED")()
+        code, run, orca = self.done(env=TERMINAL)
+        self.assertEqual(code, 0, self.text())
+        self.assertNotIn(SUITE, [c[1] for c in run.calls])
+        self.assertEqual(orca.called("orchestration", "worker-start"), [])
 
     def test_risky_without_terminal_is_126(self):
         self.risky()
@@ -953,7 +982,10 @@ class DoneAuditTests(DoneCase):
         orca = _AuditOrca(on_start=self.reviewer("APPROVED"))
         code, run, _ = self.done(orca=orca, env=TERMINAL)
         self.assertEqual(code, 0)
-        self.assertEqual(run.slots(), ["lint", "typecheck"])  # src/auth/login.ts has no tests
+        # A risky change goes to the audit: the full suite runs first, instead of the affected tests.
+        self.assertEqual(run.slots(), ["lint", "typecheck", "test"])
+        self.assertEqual(run.calls[2][1], SUITE)
+        self.assertIn("suite completa", self.text())
         [create] = orca.called("orchestration", "run-create")
         self.assertEqual(create[create.index("--objective") + 1], "rein quick quick-fix")
         [task] = orca.called("orchestration", "task-create")

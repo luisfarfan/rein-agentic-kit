@@ -171,8 +171,9 @@ rein quick "<sentence>" [--repo <name>] [--base <branch>] [--here [--dirty-ok]] 
                  # Default: its own worktree off develop, or the remote's default branch when there is none; --here uses the main checkout
                  # (--dirty-ok if it has uncommitted work). Never pushes or merges.
                  # Exit: 0 started · 1 failed · 2 usage · 126 environment
-rein quick done  # run by that agent on "listo": lint/typecheck plus the tests related to the
-                 # changed files; an audit only if a risky path changed. Never commits.
+rein quick done  # run by that agent on "listo": lint/typecheck plus the tests the change reaches
+                 # (gate.affected), stopping at the first failure, with gate.env and the gate
+                 # cache; a risky path runs the full suite instead, then an audit. Never commits.
                  # Exit: 0 green · 1 red · 2 no quick task here · 126 setup (not a verdict)
 rein quick close [<workspace path or quick-<slug> name>] [--dry-run] [--yes]
                  # remove the worktrees of finished quick tasks (all when no argument) and their
