@@ -301,6 +301,11 @@ def _is_fix(task: TaskState) -> bool:
     return task.id.startswith(_FIX_PREFIX)
 
 
+def skipped_fix_tasks(state: ShipState) -> list:
+    """Audit-fix tasks the owner skipped (a fix task only fails through the owner's skip)."""
+    return [t for t in state.tasks.values() if _is_fix(t) and t.status == "failed"]
+
+
 def _deps_done(state: ShipState, task: TaskState) -> bool:
     return all(
         d in state.tasks and state.tasks[d].status == "done" for d in task.deps
@@ -884,16 +889,21 @@ def _on_audit_verdict(state: ShipState, event: AuditVerdict, cfg: ShipConfig, ac
         _end_audit(state, actions, "approved")
         return
     # maxAuditRounds counts audits: with the default 2, one fix round and a second, final audit.
-    if state.audit_rounds + 1 >= cfg.max_audit_rounds + state.extra_audit_rounds:
+    exhausted = state.audit_rounds + 1 >= cfg.max_audit_rounds + state.extra_audit_rounds
+    # A fix the owner skipped is never reopened by a round nobody asked for: the owner decides.
+    skipped = skipped_fix_tasks(state)
+    if exhausted or skipped:
         if _owner_gate_open(state, "audit_exhausted"):
             return
         state.pending_findings = list(event.findings)
         state.pending_changed_files = list(event.changed_files)
         summary = "\n".join(event.findings)[:600]
+        why = ("after %d audit(s)" % (state.audit_rounds + 1) if exhausted else
+               "and you skipped the fix task(s) %s" % ", ".join(t.id for t in skipped))
         # The run ends only when the owner answers: accept makes the audit approved, reject rejected.
         _open(state, actions, None,
-              "The audit still has %d blocking finding(s) after %d audit(s). Fix them in one more round, accept the change anyway, or reject it? %s"
-              % (event.blocking, state.audit_rounds + 1, summary),
+              "The audit still has %d blocking finding(s) %s. Fix them in one more round, accept the change anyway, or reject it? %s"
+              % (event.blocking, why, summary),
               ["fix", "accept", "reject"], "audit_exhausted")
         return
     _start_fix_round(state, event.changed_files, list(event.findings))

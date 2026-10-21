@@ -18,6 +18,8 @@ sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "plugins", "rein", "lib"))
 
 import ship  # noqa: E402
+import ship_decide as sd  # noqa: E402
+from ship_state import ShipState, TaskState  # noqa: E402
 import ship_state  # noqa: E402
 import ship_watch as sw  # noqa: E402
 import verify  # noqa: E402
@@ -279,6 +281,56 @@ class M4FailureLinesEdges(unittest.TestCase):
         text = PASSING + "\nAssertionError: short one\n" + "FAILED " + "x" * 400
         out = verify.failure_lines(text, cap=10 ** 6, max_chars=120)
         self.assertIn("AssertionError: short one", out)
+
+
+def _task(tid, repo="a", status="pending", **kw):
+    kw.setdefault("human_review", False)
+    kw.setdefault("verification", "make test")
+    kw.setdefault("type", "implementation")
+    return TaskState(id=tid, repo=repo, deps=[], status=status, **kw)
+
+
+class M5SkippedFixTasks(unittest.TestCase):
+    def reauditing_after_a_skip(self):
+        st = ShipState(change="c", plan_path="p.md", phase="auditing", audit_rounds=1,
+                       previous_blocking=["BLOCKING: leak"])
+        st.tasks["T1"] = _task("T1", status="done")
+        st.tasks["AUDIT1-a"] = _task("AUDIT1-a", status="failed", verification="",
+                                     audit_findings="BLOCKING: leak", last_failure="BLOCKING: leak")
+        return st
+
+    def test_more_audit_rounds_never_reopen_a_skipped_fix_on_their_own(self):
+        cfg = sd.ShipConfig(max_audit_rounds=4)
+        st, actions = sd.decide(self.reauditing_after_a_skip(),
+                                sd.AuditVerdict("CHANGES_REQUESTED", 1, ["src/a.py"], ["BLOCKING: leak"]), cfg)
+        self.assertNotIn("AUDIT2-a", st.tasks, "a new fix round reopened what the owner skipped")
+        self.assertEqual(st.phase, "auditing")
+        self.assertEqual([g["kind"] for g in st.pending_gates], ["audit_exhausted"])
+        self.assertIn("skipped", st.pending_gates[0]["question"])
+
+    def test_without_a_skip_more_rounds_still_fix_automatically(self):
+        cfg = sd.ShipConfig(max_audit_rounds=4)
+        st = self.reauditing_after_a_skip()
+        st.tasks["AUDIT1-a"].status = "done"
+        st, _ = sd.decide(st, sd.AuditVerdict("CHANGES_REQUESTED", 1, ["src/a.py"], ["BLOCKING: leak"]), cfg)
+        self.assertIn("AUDIT2-a", st.tasks)
+
+
+class M5SkippedFixThenApproved(ShipCase):
+    def test_an_approving_reaudit_after_a_skipped_fix_reports_success(self):
+        self.write_plan(PLAN.split("- [ ] T002")[0])
+        fake = FakeOrca(self.root)
+        verdicts = [("CHANGES_REQUESTED", ["BLOCKING: src/proxima-api.py leaks the token"]), ("APPROVED", [])]
+
+        def audit():
+            verdict, findings = verdicts.pop(0)
+            self.approve_audit(verdict, findings)()
+        fake.on_audit = audit
+        fake.auto_resolve = "skip"
+        code = self.run_ship(fake, scripted_gate(0, 126))
+        self.assertEqual(code, 0, self.out)
+        self.assertIn("audit approved", self.out)
+        self.assertIn("1 audit-fix task skipped by the owner", self.out)
 
 
 if __name__ == "__main__":

@@ -1231,13 +1231,18 @@ class _Driver:
                     self.idle_poll()
 
     def finish(self):
-        tasks = self.state.tasks.values()
+        skipped = {t.id for t in sd.skipped_fix_tasks(self.state)}
+        # A fix task the owner skipped is not a failure once a later audit approves the change.
+        tasks = [t for t in self.state.tasks.values() if t.id not in skipped]
         approved = self.state.audit_result == "approved"
         ok = all(t.status == "done" for t in tasks) and approved
         result = self.state.audit_result
         summary = "rein ship %s: %d/%d tasks done, audit %s" % (
-            self.change, sum(t.status == "done" for t in tasks), len(self.state.tasks),
+            self.change, sum(t.status == "done" for t in tasks), len(tasks),
             "approved" if approved else ("%s (not approved)" % result if result else "not approved"))
+        if skipped:
+            summary += "; %d audit-fix task%s skipped by the owner (%s)" % (
+                len(skipped), "" if len(skipped) == 1 else "s", ", ".join(sorted(skipped)))
         if not approved and result != "rejected" and self.state.previous_blocking:
             summary += "; the blocking findings of the last audit were NOT verified as fixed: %s" % (
                 "; ".join(self.state.previous_blocking))[:600]
