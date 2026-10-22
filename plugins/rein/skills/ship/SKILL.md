@@ -35,7 +35,8 @@ It applies to every task.
      `approved` comes first: its blocking findings were not verified. Then offer: push to
      develop (only with the owner's yes: api first, then admin, respecting the hooks), and after
      that close it with `rein done <change> --root <root>` (`--dry-run` previews); ask whether to also
-     push the plan-archive commit: on yes, `rein done <change> --root <root> --push`. On blockers
+     push the plan-archive commit: on yes, `rein done <change> --root <root> --push` (on main/master/qa
+     it never pushes: show the owner the push it prints). On blockers
      show them and stop. If it WARNs about gitignored files (.env ...), show the list and add `--yes` only after an explicit yes.
      Do not restart the watcher.
    - **STOPPED**: tell the owner and offer to resume it in the Orca tab "rein ship <change>";

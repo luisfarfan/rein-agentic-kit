@@ -103,9 +103,9 @@ Subcommands:
                       archive the openspec plan (local commit on the plan repo's current
                       branch; its folder must be committed). --push also pushes that one
                       commit to the branch of the same name; it refuses (before removing
-                      anything) another upstream name, other local commits ahead, and
-                      main/master when the remote has develop or cannot be asked (it
-                      then names the git push to run). Removes
+                      anything) another upstream name or other local commits ahead. It
+                      never pushes main, master or qa: there it prints the exact git push
+                      for the owner or orchestrator to run. Removes
                       NOTHING if any worktree is dirty, a main checkout or not integrated
                       (HEAD and branch) into origin/<base>; gitignored files that would be
                       lost (.env ...) are listed and need --yes, except gate.regenerable ones.

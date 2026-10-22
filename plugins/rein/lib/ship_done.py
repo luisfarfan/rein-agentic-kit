@@ -403,23 +403,14 @@ def _push_target(root: str, branch: str, git: Callable[..., tuple]) -> tuple:
     return remote, merge
 
 
-_DEFAULT_BRANCHES = ("main", "master")
-LS_REMOTE_TIMEOUT = 30
+# Branches --push never pushes to, in any repo: publishing them is the owner's (or orchestrator's)
+# explicit act. On one of them the change still closes; the exact push is printed instead.
+PROTECTED_BRANCHES = ("main", "master", "qa")
 
 
-def _remote_heads(root: str, remote: str):
-    """The branch names `remote` has, asked of the remote itself; None when it cannot be asked (no
-    network, auth, a timeout). Never prompts: a closed `rein done` must not hang on a password."""
-    env = dict(os.environ, GIT_TERMINAL_PROMPT="0")
-    env.setdefault("GIT_SSH_COMMAND", "ssh -o BatchMode=yes")
-    try:
-        proc = subprocess.run(["git", "-C", root, "ls-remote", "--heads", remote], capture_output=True,
-                              text=True, env=env, timeout=LS_REMOTE_TIMEOUT, stdin=subprocess.DEVNULL)
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    if proc.returncode != 0:
-        return None
-    return {line.split("refs/heads/", 1)[1].strip() for line in proc.stdout.splitlines() if "refs/heads/" in line}
+def _protected_push_command(root: str, branch: str, sha: str, git: Callable[..., tuple]) -> str:
+    remote = git(root, "config", "branch.%s.remote" % branch)[1].strip() or "origin"
+    return "git -C %s push %s %s:refs/heads/%s" % (shlex.quote(root), remote, sha or "HEAD", branch)
 
 
 def _push_blockers(root: str, git: Callable[..., tuple]) -> list:
@@ -439,8 +430,7 @@ def _push_refusals(root: str, git: Callable[..., tuple]) -> list:
 
     `--push` publishes the plan-archive commit and nothing else: only to the plan repo's branch of
     the same name, which must hold every local commit already (so the archive is the one commit
-    sent), and never to main/master of a repo that also has develop -- product work goes to
-    develop, and publishing main is the owner's explicit act, not a side effect of closing a plan."""
+    sent). A PROTECTED_BRANCHES branch is never pushed at all (run_done prints the command)."""
     code, out = git(root, "symbolic-ref", "--quiet", "--short", "HEAD")
     branch = out.strip()
     if code != 0 or not branch:
@@ -448,16 +438,6 @@ def _push_refusals(root: str, git: Callable[..., tuple]) -> list:
     remote, ref = _push_target(root, branch, git)
     if ref != "refs/heads/%s" % branch:
         return ["--push only pushes to the branch of the same name: %s tracks %s %s" % (branch, remote, ref)]
-    if branch in _DEFAULT_BRANCHES:
-        # The clone's refs prove nothing (a single-branch clone, a narrowed fetch refspec): ask the remote.
-        if git(root, "rev-parse", "--verify", "--quiet", "refs/heads/develop")[0] == 0:
-            return ["--push never pushes to %s of a repo that has develop" % branch]
-        heads = _remote_heads(root, remote)
-        if heads is None:
-            return ["--push cannot tell whether %s has develop (git ls-remote failed), so it will not push "
-                    "to %s" % (remote, branch)]
-        if "develop" in heads:
-            return ["--push never pushes to %s of a repo that has develop (%s has it)" % (branch, remote)]
     tracking = "refs/remotes/%s/%s" % (remote, branch)
     if git(root, "rev-parse", "--verify", "--quiet", tracking)[0] != 0:
         return ["--push: %s has no %s/%s to push the archive onto" % (branch, remote, branch)]
@@ -512,7 +492,8 @@ def run_done(root: str, change: str, client: OrcaClient, *, dry_run: bool = Fals
     archive = _archive_target(root, change, today)
     if archive:
         blockers += [("plan", root, why) for why in _archive_blockers(root, archive[0], archive[1], git)]
-        if push:
+        on = git(root, "symbolic-ref", "--quiet", "--short", "HEAD")[1].strip()
+        if push and on not in PROTECTED_BRANCHES:
             blockers += [("plan", root, why) for why in _push_blockers(root, git)]
     if blockers:
         say("rein done: %s is NOT ready to close; nothing was removed:" % change)
@@ -537,7 +518,10 @@ def run_done(root: str, change: str, client: OrcaClient, *, dry_run: bool = Fals
         on = git(root, "symbolic-ref", "--quiet", "--short", "HEAD")[1].strip()
         say("%sarchive plan %s -> %s (commit on %s)" % (prefix, os.path.relpath(archive[0], root),
                                                          os.path.relpath(archive[1], root), on))
-        if push:
+        if push and on in PROTECTED_BRANCHES:
+            say("%s: --push never pushes %s; %s" % ("would not push" if dry_run else "will not push", on,
+                                                     "the git push to run is printed after the commit"))
+        elif push:
             say("%spush that commit to %s %s" % (prefix, *_push_target(root, on, git)))
     elif _already_archived(root, change):
         say("plan already archived")
@@ -582,6 +566,10 @@ def run_done(root: str, change: str, client: OrcaClient, *, dry_run: bool = Fals
         if not push:
             say("archived plan: committed on %s (no push); push it when ready: git -C %s push"
                 % (branch, shlex.quote(root)))
+        elif branch in PROTECTED_BRANCHES:
+            sha = git(root, "rev-parse", "HEAD")[1].strip()
+            say("archived plan: committed on %s, NOT pushed: --push never pushes %s. To publish it, the "
+                "owner or the orchestrator runs: %s" % (branch, branch, _protected_push_command(root, branch, sha, git)))
         else:
             remote, ref = _push_target(root, branch, git)
             sha = git(root, "rev-parse", "HEAD")[1].strip()  # the archive commit, nothing after it

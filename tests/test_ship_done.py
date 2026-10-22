@@ -1178,14 +1178,6 @@ class DonePushGuardTests(DonePushTests):
         self.state(root, {"api": wt})
         self.refused(root, wt, "feat: product change still local")
 
-    def test_main_of_a_repo_with_develop_is_refused(self):
-        root = self.plan_repo()
-        git(root, "fetch", "-q", "origin")
-        git(root, "checkout", "-q", "-B", "main", "origin/main")
-        wt = self.worktree()
-        self.state(root, {"api": wt})
-        self.refused(root, wt, "develop")
-
     def test_the_push_carries_exactly_the_archive_commit(self):
         root = self.plan_repo()
         before = self.remote("develop")
@@ -1214,69 +1206,56 @@ class DoneWithoutPushMessage(Env):
         self.assertIn("git -C %s push" % root, self.text())
 
 
-class DonePushMainTests(DonePushTests):
-    """Whether the remote has develop is asked of the remote itself (`git ls-remote`), never deduced
-    from the clone's refs: a single-branch clone or a narrowed fetch refspec shows no develop. When
-    the remote cannot be asked, --push does not push: it says which command to run."""
 
-    def main_clone(self, single_branch=True):
+class DonePushProtectedBranchTests(DonePushTests):
+    """--push never pushes to main, master or qa, in any repo: the change is closed and archived as
+    usual, and the exact git push is printed for the owner or the orchestrator to run."""
+
+    def on_branch(self, name, pushurl=""):
+        """A plan repo on `name`, in sync with origin/<name>; `pushurl` sends pushes elsewhere."""
         root = self.plan_repo()
-        git(root, "push", "-q", "origin", "develop:main")
-        main = os.path.join(self.tmp, "plan-main")
-        args = ["git", "clone", "-q", "--branch", "main"] + (["--single-branch"] if single_branch else []) \
-            + [self.origin, main]
-        subprocess.run(args, check=True, capture_output=True)
-        if single_branch:
-            self.assertEqual(git(main, "for-each-ref", "refs/heads/develop", "refs/remotes/origin/develop").strip(),
-                             "", "the clone shows no develop")
-        os.makedirs(os.path.join(main, ".rein"), exist_ok=True)
-        return main
+        git(root, "push", "-q", "origin", "develop:%s" % name)
+        git(root, "fetch", "-q", "origin")
+        git(root, "checkout", "-q", "-B", name, "origin/%s" % name)
+        if pushurl:
+            git(root, "config", "remote.origin.pushurl", pushurl)
+        return root
 
-    def refused(self, root, needle):
-        before = git(self.origin, "rev-parse", "main").strip()
-        wt = self.worktree()
-        self.state(root, {"api": wt})
-        self.assertEqual(self.run_push(root), 1, self.text())
-        self.assertIn(needle, self.text())
-        self.assertIn("git -C %s push" % root, self.text(), "a refused --push names the command to run")
-        self.assertEqual(git(self.origin, "rev-parse", "main").strip(), before, "nothing was pushed")
-        self.assertEqual(self.orca.rm_paths(), [])
-        self.assertTrue(os.path.isdir(os.path.join(root, "openspec", "changes", CHANGE)))
-
-    def test_a_single_branch_clone_of_main_is_refused_when_the_remote_has_develop(self):
-        self.refused(self.main_clone(), "develop")
-
-    def test_a_narrowed_fetch_refspec_is_refused_too(self):
-        root = self.main_clone(single_branch=False)
-        git(root, "config", "remote.origin.fetch", "+refs/heads/main:refs/remotes/origin/main")
-        git(root, "update-ref", "-d", "refs/remotes/origin/develop")
-        self.assertEqual(git(root, "for-each-ref", "refs/heads/develop", "refs/remotes/origin/develop").strip(), "")
-        self.refused(root, "develop")
-
-    def test_a_remote_that_cannot_be_asked_is_refused(self):
-        root = self.main_clone()
-        git(root, "remote", "set-url", "origin", os.path.join(self.tmp, "gone.git"))
-        self.refused(root, "cannot tell")
-
-    def test_main_of_a_repo_without_develop_is_pushed(self):
-        bare = os.path.join(self.tmp, "solo.git")
-        subprocess.run(["git", "init", "-q", "--bare", "-b", "main", bare], check=True)
-        root = os.path.join(self.tmp, "solo")
-        self.clone(bare, root)
-        git(root, "checkout", "-q", "-b", "main")
-        commit_file(root, "openspec/changes/%s/proposal.md" % CHANGE, "p\n", "plan")
-        with open(os.path.join(root, ".gitignore"), "w") as fh:
-            fh.write(".rein/\n")
-        git(root, "add", ".gitignore")
-        git(root, "commit", "-q", "-m", "ignore")
-        git(root, "push", "-q", "-u", "origin", "main")
+    def closed_without_push(self, root, name, remotes):
+        before = {r: git(r, "rev-parse", name).strip() for r in remotes}
         self.state(root, {"api": self.worktree()})
         self.assertEqual(self.run_push(root), 0, self.text())
-        self.assertEqual(git(bare, "rev-parse", "main").strip(), git(root, "rev-parse", "HEAD").strip())
+        self.assertEqual({r: git(r, "rev-parse", name).strip() for r in remotes}, before, "nothing was pushed")
+        sha = git(root, "rev-parse", "HEAD").strip()
+        self.assertEqual(git(root, "log", "-1", "--format=%s").strip(), "docs(openspec): archive %s" % CHANGE)
+        self.assertIn("git -C %s push origin %s:refs/heads/%s" % (root, sha, name), self.text())
+        self.assertIn("done: %s closed" % CHANGE, self.text())
 
-    def test_every_refused_push_names_the_command(self):
-        root = self.plan_repo()
-        commit_file(root, "src/product.py", "x = 1\n", "feat: local")
+    def test_main_master_and_qa_are_never_pushed(self):
+        for name in ("main", "master", "qa"):
+            with self.subTest(name):
+                self.setUp()
+                self.closed_without_push(self.on_branch(name), name, [self.origin])
+
+    def test_a_push_url_to_another_repo_changes_nothing(self):
+        # B2: the guard asked the fetch URL while git pushed to `pushurl`, a repo with develop.
+        product = os.path.join(self.tmp, "product.git")
+        subprocess.run(["git", "clone", "-q", "--bare", self.origin, product], check=True, capture_output=True)
+        root = self.on_branch("main", pushurl=product)
+        git(root, "push", "-q", product, "main")  # both remotes start at the same main
+        self.closed_without_push(root, "main", [self.origin, product])
+
+    def test_the_dry_run_says_it_would_not_push(self):
+        root = self.on_branch("main")
         self.state(root, {"api": self.worktree()})
-        self.assertEqual(self.run_push(root), 1, self.text())
-        self.assertIn("git -C %s push" % root, self.text())
+        self.assertEqual(self.run_push(root, dry=True), 0, self.text())
+        self.assertIn("would not push", self.text())
+        self.assertIn("main", self.text())
+
+    def test_another_branch_still_pushes_only_the_archive(self):
+        root = self.on_branch("release-plan")
+        before = git(self.origin, "rev-parse", "release-plan").strip()
+        self.state(root, {"api": self.worktree()})
+        self.assertEqual(self.run_push(root), 0, self.text())
+        self.assertEqual(git(self.origin, "rev-parse", "release-plan").strip(), git(root, "rev-parse", "HEAD").strip())
+        self.assertEqual(git(root, "rev-parse", "HEAD^").strip(), before)

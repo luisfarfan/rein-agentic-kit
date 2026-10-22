@@ -170,9 +170,9 @@ rein done <change> [--root <plan repo>] [--dry-run] [--yes] [--push]
                  # archive the openspec plan (local commit on the current branch), archive the ship
                  # state. --push (opt-in) pushes ONLY that commit, from the plan repo, to the branch
                  # of the same name (hooks run); it is a blocker, found before anything is removed,
-                 # when the upstream has another name, other local commits are ahead, or the branch
-                 # is main/master of a repo whose remote has develop (asked with `git ls-remote`; a
-                 # remote that cannot be asked counts as having it). A refusal names the push to run.
+                 # when the upstream has another name or other local commits are ahead. It NEVER
+                 # pushes main, master or qa, in any repo: there the change still closes and the
+                 # exact `git -C <repo> push <remote> <sha>:refs/heads/<branch>` is printed.
                  # Removes NOTHING if any worktree is dirty, a main checkout, or has commits (HEAD or its
                  # branch) not in origin/<base>. Gitignored files that would be lost need --yes.
                  # Exit: 0 closed · 1 blockers · 2 usage · 126 Orca error or a rejected --push
