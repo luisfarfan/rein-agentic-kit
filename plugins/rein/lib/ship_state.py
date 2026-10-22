@@ -60,6 +60,9 @@ class TaskState:
     # guard.outside_snapshot of the other checkouts Orca knows, taken when the worker was launched:
     # what changed there by the time its task ends was written outside its worktree.
     outside_before: dict = field(default_factory=dict)
+    # The repo-relative files this task's attempts changed (each gate adds its attempt's): an audit
+    # or gate fix task reuses the Verification of the tasks that touched the files it must fix.
+    touched: list = field(default_factory=list)
 
 
 @dataclass

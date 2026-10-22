@@ -105,6 +105,8 @@ class GateVerdict:
     # The worker attempt the gate judged: a verdict for an earlier attempt (its gate ran on after
     # a timeout gate and a retry) must not judge the new one. "" = unknown, accepted.
     dispatch_id: str = ""
+    # The repo-relative files the judged attempt changed (since its launch), whatever the verdict.
+    touched: list = field(default_factory=list)
 
 
 @dataclass
@@ -744,6 +746,7 @@ def _on_gate_verdict(state: ShipState, event: GateVerdict, cfg: ShipConfig, acti
         return
     if event.dispatch_id and task.dispatch_id and event.dispatch_id != task.dispatch_id:
         return  # the gate of an earlier attempt
+    task.touched = sorted(set(task.touched or []) | set(event.touched or []))
     if event.exit_code == 0:
         if task.human_review:  # the gate is green; a person still has to say so
             _release_held(task, actions)

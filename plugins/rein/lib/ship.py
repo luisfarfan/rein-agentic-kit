@@ -300,6 +300,63 @@ def changed_files(worktree_path: str, base_ref: str) -> list:
     return _affected.changed_files(worktree_path, base_ref)
 
 
+def attempt_touched(path: str, launch_head: str) -> list:
+    """The files a worker attempt changed since its launch HEAD; [] when that is not known."""
+    if not path or not launch_head:
+        return []
+    try:
+        return changed_files(path, launch_head)
+    except (RuntimeError, OSError):
+        return []
+
+
+_PATHLIKE = re.compile(r"[\w@.\-/]+\.[A-Za-z0-9]+")
+
+
+def _named_files(text: str, path: str, known: list) -> list:
+    """The repo-relative files `text` names: among `known`, and any path-like word that is a file
+    in the worktree `path` (a failing test the change never touched)."""
+    found = [f for f in known if sd._names_file(text, f)]
+    for word in _PATHLIKE.findall(text or ""):
+        rel = word[len(path.rstrip("/")) + 1:] if path and word.startswith(path.rstrip("/") + "/") else word
+        rel = rel[2:] if rel.startswith("./") else rel
+        if rel and not rel.startswith("/") and ".." not in rel.split("/") and rel not in found \
+                and path and os.path.isfile(os.path.join(path, rel)):
+            found.append(rel)
+    return found
+
+
+def fix_verification(task, plan: dict, state, path: str, resolved: dict, default_repo: str = "") -> str:
+    """The Verification an audit or gate fix task runs: the commands of the original tasks of its
+    repo that touched the files its findings name, else the repo's affected tests for those files
+    (its testOne), else its full test suite; "" when the repo has no test command at all."""
+    text = task.audit_findings or task.last_failure or ""
+    originals = [e for e in plan.get("tasks") or []
+                 if (e.get("repo") or default_repo) == task.repo and e.get("id") in state.tasks
+                 and not sd._is_fix(state.tasks[e["id"]])]
+    known = sorted({f for e in originals for f in (state.tasks[e["id"]].touched or [])})
+    named = _named_files(text, path, known)
+    commands, owners = [], []
+    for e in originals:
+        if set(state.tasks[e["id"]].touched or []) & set(named):
+            command, _ = task_verification_command(state.tasks[e["id"]].verification or "")
+            if command:
+                owners.append(e["id"])
+                if command not in commands:
+                    commands.append(command)
+    if commands:
+        return "`%s` (the Verification of %s, which touched %s)" % (
+            " && ".join(commands), ", ".join(owners), ", ".join(named[:5]))
+    tests = (resolved or {}).get("commands") or {}
+    if named and path:
+        info = _affected.compute(path, resolved or {}, named)
+        if info.get("mode") == "run" and not verification_refusal(info["command"]):
+            return "`%s` (the tests affected by %s)" % (info["command"], ", ".join(named[:5]))
+    if tests.get("test") and not verification_refusal(tests["test"]):
+        return "`%s` (the repo's full test suite)" % tests["test"]
+    return ""
+
+
 def gate_outer_bound(path: str, unit_only: bool, timeout: float, repo: str = "", tier: str = "") -> float:
     """What one `rein gate` may take at most: the sum of the budgets of the slots it will run
     (gate_run.slot_budget), never less than one `timeout`."""
@@ -976,6 +1033,11 @@ class _Driver:
                 % (shlex.quote(BIN), shlex.quote(repo), shlex.quote(self.root))]
 
     def create_task(self, task):
+        if sd._is_synthetic(task) and not task.verification:
+            path = self.state.worktree_paths.get(task.repo, "")
+            resolved = _detect.resolve(path) if path and os.path.isdir(path) else {}
+            task.verification = fix_verification(task, self.plan, self.state, path, resolved,
+                                                 (getattr(self, "ctx", None) or {}).get("default_repo", ""))
         spec = build_task_spec(task, self.plan, self.env_lines(task.repo))
         entry = next((t for t in self.plan.get("tasks") or [] if t["id"] == task.id), {})
         deps = self.orca_deps(task)
@@ -1220,6 +1282,7 @@ class _Driver:
         log, change = self.gate_log_path(), getattr(self, "change", "")
         outside_before = dict(getattr(task, "outside_before", None) or {})
         plan_file = getattr(self.state, "plan_path", "")
+        launch_head = getattr(task, "launch_head", "")
 
         def job(cancel=None):
             if not path:
@@ -1286,7 +1349,7 @@ class _Driver:
                         detail = _fit_blocks([(head, lines), ("gate", detail.split("\n"))], _FAILURE_CAP)
             if log:
                 _gate_log.append(log, dict(entry, exit=code))
-            return sd.GateVerdict(task_id, code, detail, dispatch_id)
+            return sd.GateVerdict(task_id, code, detail, dispatch_id, touched=attempt_touched(path, launch_head))
         return job
 
     def run_gate(self, a):
