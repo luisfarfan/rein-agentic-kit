@@ -347,11 +347,12 @@ per repo, after all its tasks and before the audit. How a change maps to tests:
 
 Without `gate.affected` it is detected from the `test` command (pytest, vitest, jest; a package
 script such as `pnpm test` is read from `package.json`), else `testOne` when it takes `{target}`,
-else `full`. `vitest related` / `jest --findRelatedTests` are only picked when the test command
-invokes that runner as its only executable (an argument such as `--configuration=vitest` does not
-count; a command that also runs another suite or check, e.g. `ng test && vitest run`, or anything
-unreadable, counts as not): a repo tested with `ng test` (vitest only as the builder's runner) uses
-its `testOne` (detected as `ng test --watch=false --include={target}`) or the full suite. Nothing affected runs no tests at task level; more than `affectedMax` files (default 40)
+else `full`. `vitest related` / `jest --findRelatedTests` are only picked when the `test` command
+is exactly ONE direct invocation of that runner -- `vitest run`, `npx jest`, `pnpm exec vitest run`,
+`pnpm vitest`, `yarn jest`, `bunx vitest` -- with plain arguments: no `&&`/`;`/`|`, redirects,
+subshells, env assignments or `cd` (a package script's body must meet the same rule). Anything
+else uses the repo's `testOne`, else the full suite: a repo tested with `ng test` gets its `testOne`
+(detected as `ng test --watch=false --include={target}`). Nothing affected runs no tests at task level; more than `affectedMax` files (default 40)
 or a change to dependencies or test configuration runs the full slot.
 
 **Precedence:** `flow.config.json` › task runner (`justfile` / `Makefile` / `Taskfile` / `mise`) ›

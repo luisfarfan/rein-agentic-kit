@@ -157,16 +157,32 @@ class TestAngular(Repo):
                      "vitest run && pnpm test:e2e"):
             self.assertEqual(affected.strategy({"stack": "node", "commands": {"test": test}}), "full", test)
 
-    def test_only_a_directory_change_may_go_with_the_runner(self):
-        self.assertEqual(affected.strategy({"stack": "node", "commands": {"test": "cd web && vitest run"}}),
-                         "vitest")
+    def test_a_directory_change_is_not_a_direct_invocation(self):
+        # B1: `cd web && vitest run` became `npx vitest related` from the repo root: the cd was lost.
+        self.write("web/src/c.ts", "")
+        cfg = {"stack": "node", "commands": {"test": "cd web && vitest run"}}
+        self.assertEqual(affected.strategy(cfg), "full")
+        out = self.compute(["web/src/c.ts"], cfg)
+        self.assertEqual((out["mode"], out["command"]), ("full", ""))
+        cfg = {"stack": "node", "commands": {"test": "cd web && vitest run", "testOne": "cd web && vitest run {target}"}}
+        self.assertEqual(affected.strategy(cfg), "testOne")
 
-    def test_the_runner_is_the_invoked_executable(self):
-        for test, want in (("vitest run", "vitest"), ("pnpm vitest run", "vitest"), ("npx vitest --run", "vitest"),
-                           ("pnpm exec vitest run", "vitest"), ("CI=1 vitest run", "vitest"),
-                           ("./node_modules/.bin/jest --ci", "jest"), ("yarn jest", "jest"),
-                           ("npm exec -- jest", "jest"), ("bunx vitest", "vitest")):
+    def test_without_a_test_command_testone_never_picks_related(self):
+        cfg = {"stack": "node", "commands": {"testOne": "npx vitest run {target}"}}
+        self.assertEqual(affected.strategy(cfg), "testOne")
+
+    def test_related_only_for_a_direct_invocation_of_the_runner(self):
+        for test, want in (("vitest run", "vitest"), ("vitest", "vitest"), ("jest --ci", "jest"),
+                           ("npx vitest --run", "vitest"), ("npx jest", "jest"), ("pnpm exec vitest run", "vitest"),
+                           ("pnpm vitest run", "vitest"), ("yarn jest", "jest"), ("bunx vitest", "vitest"),
+                           ("npm exec -- jest", "jest")):
             self.assertEqual(affected.strategy({"stack": "node", "commands": {"test": test}}), want, test)
+        for test in ("CI=1 vitest run", "env CI=1 vitest run", "cd web && vitest run", "vitest run && eslint .",
+                     "vitest run; true", "vitest run | tee out", "vitest run > log", "(vitest run)",
+                     "vitest run $(cat files)", "vitest run `cat files`", "vitest run &",
+                     "./node_modules/.bin/jest --ci", "npx -y vitest", "sh -c 'vitest run'",
+                     "pnpm --filter web vitest run", "ng test", "pnpm test"):
+            self.assertEqual(affected.strategy({"stack": "node", "commands": {"test": test}}), "full", test)
 
     def test_an_explicit_gate_affected_still_wins(self):
         cfg = {"stack": "node", "commands": {"test": "ng test --configuration=vitest"},

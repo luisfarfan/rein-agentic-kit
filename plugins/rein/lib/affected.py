@@ -12,7 +12,8 @@ from flow.config.json, per language, or is detected:
   They run through `commands.testOne`, `{target}` receiving every file.
 - `vitest` / `jest`: the runner's own dependency graph (`vitest related --run`,
   `jest --findRelatedTests`) over the changed source files. Detected only when the
-  repo's test command (or the package script it names) runs that runner itself.
+  repo's test command (or the package script it names) is exactly one direct
+  invocation of that runner, with no shell syntax, env assignment or cd.
 - a command template with `{tests}` (mapped test files, e.g. sibling
   `*.spec.ts`) or `{files}` (changed source files).
 - `testOne` (detected when only `commands.testOne` is known): mapped test files
@@ -73,10 +74,10 @@ _SCRIPT_RE = re.compile(r"^(?:npm|pnpm|yarn|bun)(?:\s+run)?\s+(\S+)\s*$")
 
 def _test_runner(commands: dict, base: str = "") -> str:
     """What `commands.test` really runs: a package script (`pnpm test`, `npm run test`) is read
-    from `base`/package.json; without a test command, `testOne` stands in."""
+    from `base`/package.json (its body must then be a direct invocation too); "" without one."""
     test = str(commands.get("test") or "").strip()
     if not test:
-        return str(commands.get("testOne") or "")
+        return ""
     m = _SCRIPT_RE.match(test)
     if m and base:
         try:
@@ -89,61 +90,19 @@ def _test_runner(commands: dict, base: str = "") -> str:
     return test
 
 
-_WRAPPERS = ("npx", "bunx", "pnpx")  # the next word is the executable
-_PMS = ("pnpm", "yarn", "bun", "npm")
-_ENV_ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
-
-
-def _executables(command: str):
-    """The executables `command` invokes, one per simple command (`a && b; c | d`); None when it
-    cannot be read (a parse error) or a part runs something unknowable here (a package script)."""
-    try:
-        lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|()")
-        lexer.whitespace_split = True
-        words = list(lexer)
-    except ValueError:
-        return None
-    parts, current = [], []
-    for w in words:
-        if w and all(c in ";&|()" for c in w):
-            parts.append(current)
-            current = []
-        else:
-            current.append(w)
-    parts.append(current)
-    out = []
-    for part in parts:
-        while part and _ENV_ASSIGN.match(part[0]):
-            part.pop(0)
-        if part and part[0] in ("env", "cross-env"):
-            part.pop(0)
-            while part and _ENV_ASSIGN.match(part[0]):
-                part.pop(0)
-        if not part:
-            continue
-        exe = posixpath.basename(part[0])
-        rest = part[1:]
-        if exe in _WRAPPERS or exe in _PMS:
-            rest = [w for w in rest if not w.startswith("-")]
-            if exe in _PMS and rest and rest[0] in ("exec", "dlx", "x"):
-                rest = rest[1:]
-            elif exe in _PMS and (not rest or rest[0] in ("run", "test", "run-script", "t")):
-                return None  # a package script: what it runs is not in this command
-            exe = posixpath.basename(rest[0]) if rest else ""
-        out.append(exe)
-    return out
-
-
-# What may run beside the runner without being a check of its own: changing directory.
-_HARMLESS = ("cd",)
+# The only test commands auto treats as the runner itself: ONE direct invocation of vitest or jest,
+# optionally through npx/bunx, `pnpm|yarn|bun|npm exec [--]` or `pnpm|yarn <bin>`, with plain
+# arguments. No shell syntax at all (&&, ;, |, redirects, subshells, $()/backticks, &), no env
+# assignments, no cd: anything else is a command the related tests could not stand in for.
+_DIRECT_RUNNER = re.compile(
+    r"^(?:(?:npx|bunx)\s+|(?:pnpm|yarn|bun|npm)\s+exec\s+(?:--\s+)?|(?:pnpm|yarn)\s+)?(vitest|jest)"
+    r"(?:\s+[^\s;&|<>()`$'\"\\]+)*$")
 
 
 def _runner(command: str) -> str:
-    """"vitest" or "jest" when `command` invokes exactly that runner, once, and nothing else but a
-    `cd` (not merely names it in an argument). Anything else in the command -- another suite, a lint,
-    a nested script -- is a check the related tests would drop, so "" (testOne or the full suite)."""
-    exes = [e for e in (_executables(command) or []) if e not in _HARMLESS]
-    return exes[0] if len(exes) == 1 and exes[0] in ("vitest", "jest") else ""
+    """"vitest" or "jest" when `command` is exactly one direct invocation of it; "" otherwise."""
+    m = _DIRECT_RUNNER.match((command or "").strip())
+    return m.group(1) if m else ""
 
 
 def strategy(resolved: dict, base: str = "") -> str:
