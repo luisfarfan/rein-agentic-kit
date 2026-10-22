@@ -65,7 +65,27 @@ class Helper(unittest.TestCase):
     def test_several_tasks_are_joined_into_one_command(self):
         out = self.verification(self.fix("AUDIT1-api", "BLOCKING: receipts.py and docs.py disagree"))
         self.assertEqual(ship.task_verification_command(out)[0],
-                         "pytest -q tests/test_receipts.py && pytest -q tests/test_docs.py")
+                         "( pytest -q tests/test_receipts.py ) && ( pytest -q tests/test_docs.py )")
+
+    def combined(self, first, second):
+        """The command a fix gets from two originals that touched the same file, run for real."""
+        plan = {"tasks": [{"id": "T001", "repo": "api"}, {"id": "T002", "repo": "api"}]}
+        for tid, cmd in (("T001", first), ("T002", second)):
+            self.state.tasks[tid].verification = "`%s`" % cmd
+            self.state.tasks[tid].touched = ["app/receipts.py"]
+        out = ship.fix_verification(self.fix("AUDIT1-api", "BLOCKING: app/receipts.py"), plan, self.state,
+                                    self.wt, self.resolved)
+        command, why = ship.task_verification_command(out)
+        self.assertTrue(command, why)
+        return ship.run_task_verification(command, self.wt, 30)[0]
+
+    def test_a_combined_verification_is_red_when_any_one_is_red(self):
+        # `a && b || c` would recover a's failure through c: each command keeps its own grouping.
+        self.assertNotEqual(self.combined("false", "false || true"), 0)
+        self.assertNotEqual(self.combined("false", "true; true"), 0)
+        self.assertNotEqual(self.combined("true", "true; false"), 0)
+        self.assertNotEqual(self.combined("false || false", "true"), 0)
+        self.assertEqual(self.combined("false || true", "false; true"), 0)
 
     def test_no_original_task_touched_them_the_affected_tests_through_test_one(self):
         os.makedirs(os.path.join(self.wt, "lib"))
@@ -115,10 +135,10 @@ class Driver(ShipCase):
         state = ship_state.load(self.state_file)
         self.assertEqual(state.tasks["T001"].touched, ["src/proxima-api.py"])
         fix = state.tasks["AUDIT1-proxima-api"]
-        self.assertEqual(ship.task_verification_command(fix.verification)[0], "pnpm test:endpoint && pnpm test")
+        self.assertEqual(ship.task_verification_command(fix.verification)[0], "( pnpm test:endpoint ) && ( pnpm test )")
         spec = next(t["spec"] for t in fake.tasks.values() if t["title"].startswith("AUDIT1-proxima-api"))
-        self.assertIn("Verification command: `pnpm test:endpoint && pnpm test`", spec)
-        self.assertIn(("pnpm test:endpoint && pnpm test", self.wtpath("proxima-api")), self.verifications)
+        self.assertIn("Verification command: `( pnpm test:endpoint ) && ( pnpm test )`", spec)
+        self.assertIn(("( pnpm test:endpoint ) && ( pnpm test )", self.wtpath("proxima-api")), self.verifications)
 
 
 if __name__ == "__main__":

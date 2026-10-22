@@ -346,8 +346,10 @@ def fix_verification(task, plan: dict, state, path: str, resolved: dict, default
                 if command not in commands:
                     commands.append(command)
     if commands:
+        # Each command in its own subshell: `a && b || c` would let c recover a's failure.
+        joined = commands[0] if len(commands) == 1 else " && ".join("( %s )" % c for c in commands)
         return "`%s` (the Verification of %s, which touched %s)" % (
-            " && ".join(commands), ", ".join(owners), ", ".join(named[:5]))
+            joined, ", ".join(owners), ", ".join(named[:5]))
     tests = (resolved or {}).get("commands") or {}
     if named and path:
         info = _affected.compute(path, resolved or {}, named)
