@@ -230,6 +230,16 @@ class OrcaClient:
             args.append("--enter")
         return self._call(*args)
 
+    def terminal_read(self, handle: str, limit: int = 0, screen: bool = False) -> dict:
+        """A terminal's recent output (`terminal.tail`, a list of lines); `screen` reads the frame it
+        renders now rather than the accumulated stream."""
+        args = ["terminal", "read", "--terminal", handle]
+        if limit:
+            args += ["--limit", str(limit)]
+        if screen:
+            args.append("--screen")
+        return self._call(*args)
+
     def terminal_close(self, handle: str, tab: bool = False) -> dict:
         """Close one terminal by its runtime handle; `tab` closes its whole tab."""
         args = ["terminal", "close", "--terminal", handle]

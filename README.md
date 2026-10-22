@@ -294,7 +294,11 @@ fresh worker, `maxAuditRounds` bounds audit and fix rounds (when it runs out wit
 instead of waiting forever (it counts the task's gating time too), `stallMinutes` opens a `stalled`
 gate (wait / resend the brief / retry) for a worker with no sign of work that long after its launch
 (no commit, no edit, no question) -- at once when Orca reports it parked on a prompt only a person can
-answer, like a trust or hooks-review dialog; `0` turns it off (`rein quick watch` says the same about
+answer, or its terminal (`orca terminal read`) shows its agent's startup dialog (Codex's "Hooks need
+review", a folder-trust prompt): the gate names it ("the agent waits for you to trust its hooks in
+<path>"). A worker that fails, or a launch Orca aborts, on such a dialog opens one `setup` question
+instead of spending retries against it. Rein never answers the dialog nor edits the agent's trust
+settings: the owner does, then retries; `0` turns it off (`rein quick watch` says the same about
 a quick task, and `rein quick resend` types its brief again), `gateTimeoutSeconds` is a gate slot's timeout until that slot has passed in the repo
 (raise it for a slow suite); after that each slot gets twice its slowest of the last five passes,
 between 2 and 30 minutes, so a hung suite is stopped long before the old 6× bound, and a change that touches `riskyPaths` or more than `largeChangeFiles`

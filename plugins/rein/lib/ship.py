@@ -37,6 +37,7 @@ import quota
 import roles as _roles
 import ship_decide as sd
 import ship_state as ss
+import startup_dialog as _dialog
 import token_report as _tr
 import verify as _verify
 from orca_client import OrcaClient, OrcaError
@@ -871,6 +872,9 @@ class _Driver:
     def feed(self, event):
         if isinstance(event, sd.GateResolved):
             self.recover_exhausted_findings(event)
+        if isinstance(event, sd.WorkerDone) and event.outcome != "succeeded" and not event.dialog:
+            # A worker that failed on its agent's startup dialog would fail the same way again.
+            event = sd.WorkerDone(event.dispatch_id, event.outcome, self.worker_dialog(event.dispatch_id))
         queue = [event]
         while queue:
             rounds = self.state.audit_rounds
@@ -967,7 +971,7 @@ class _Driver:
                     t.launch_head = head  # first look: this is the baseline
                     self.save()
                 active = bool(head and head != t.launch_head) or _worktree_dirty(path)
-            waiting = ""
+            waiting, dialog = "", ""
             if not active:
                 try:
                     show = self.client.worker_show(t.dispatch_id)
@@ -976,8 +980,11 @@ class _Driver:
                 found = ((show or {}).get("observation") or {}).get("agentWait")
                 if found:
                     waiting = found if isinstance(found, str) else json.dumps(found, sort_keys=True)[:300]
-            if active or waiting:
-                self.feed(sd.WorkerActivity(t.dispatch_id, active, waiting))
+                # Orca may not flag it: the worker's own screen says which dialog holds it.
+                handle = str(((show or {}).get("worker") or {}).get("agentTerminalHandle") or "")
+                dialog = _dialog.read(self.client, handle, path)
+            if active or waiting or dialog:
+                self.feed(sd.WorkerActivity(t.dispatch_id, active, waiting, dialog))
 
     def outside_snapshot(self, repo: str) -> dict:
         """The other checkouts Orca knows, as the worker for `repo` is launched (guard.py); the
@@ -1069,6 +1076,18 @@ class _Driver:
             self.state.worktrees[repo] = wt
             self.state.worktree_paths[repo] = oc.worktree_path_of(wt)
 
+    def worker_dialog(self, dispatch_id: str) -> str:
+        """The startup dialog a worker's terminal shows, in the owner's words; "" when none."""
+        task = sd._holder(self.state, dispatch_id)
+        if task is None or getattr(self, "dry_run", False):
+            return ""
+        try:
+            handle = next((str(r.get("agentTerminalHandle") or "") for r in self.rows()
+                           if str(r.get("dispatchId") or "") == dispatch_id), "")
+        except OrcaError:
+            return ""
+        return _dialog.read(self.client, handle, self.state.worktree_paths.get(task.repo, ""))
+
     def adopt_started(self, task, rows=None, keep: bool = False) -> bool:
         """A worker-start whose answer was lost (a kill, a dropped connection): if Orca did start
         the worker, supervise it rather than starting a second one in a second worktree.
@@ -1140,12 +1159,20 @@ class _Driver:
                     return
             except OrcaError:
                 pass  # `starting` stays set: the retry or the resume asks again
+            handle = ""
             if failed is not None:
                 # This start's own dispatch, already failed: the error is the whole story. It is not a
                 # lost answer to adopt, nor a worker_done to recover and retry.
                 task.starting = ""
                 self._record_worktree(task.repo, self._row_worktree(failed))
-            question = "Orca could not start a worker for %s: %s" % (task.id, exc)
+                handle = str(failed.get("agentTerminalHandle") or "")
+            handle = handle or next((r.split(" ", 1)[1] for r in oc.residual_resources_of(exc)
+                                     if r.startswith("terminal ")), "")
+            waits = _dialog.read(self.client, handle, self.state.worktree_paths.get(task.repo, ""))
+            if waits:
+                question = sd.startup_question(task, waits, handle)
+            else:
+                question = "Orca could not start a worker for %s: %s" % (task.id, exc)
             residual = oc.residual_resources_of(exc)
             if residual:
                 question += " (left behind in Orca: %s)" % ", ".join(residual)

@@ -95,6 +95,9 @@ class Tick:
 class WorkerDone:
     dispatch_id: str
     outcome: str
+    # What the worker's terminal shows it was waiting for when it failed (a startup dialog only a
+    # person can answer, startup_dialog.py); "" when nothing was recognised.
+    dialog: str = ""
 
 
 @dataclass
@@ -138,6 +141,8 @@ class WorkerActivity:
     dispatch_id: str
     active: bool
     waiting: str = ""
+    # A startup dialog recognised on the worker's terminal (startup_dialog.py), in the owner's words.
+    dialog: str = ""
 
 
 @dataclass
@@ -601,6 +606,10 @@ def _on_worker_activity(state: ShipState, event: WorkerActivity, cfg: ShipConfig
     if event.active:
         task.active = True
         _drop_task_gate(state, task.id, "stalled")  # it started after all: nothing to decide
+    elif event.dialog and cfg.stall_minutes > 0 and task.stall_answered != task.dispatch_id:
+        _ask_stalled(state, task, actions, "is stuck on a startup dialog: %s. Answer it yourself in its "
+                     "Orca terminal (Rein never changes an agent's trust settings), then resend the brief"
+                     % event.dialog[:300])
     elif event.waiting and cfg.stall_minutes > 0 and task.stall_answered != task.dispatch_id:
         _ask_stalled(state, task, actions, "is waiting on a prompt only a person can answer (Orca: %s)"
                      % event.waiting[:300])
@@ -736,8 +745,22 @@ def _on_worker_done(state: ShipState, event: WorkerDone, cfg: ShipConfig, action
         task.status = "gating"
         task.started_at = 0.0  # the gate's own clock starts at the next tick
         actions.append(RunGate(task.id, task.type != "verification"))
+    elif event.dialog:
+        # A relaunch would meet the same dialog: ask the owner once, and spend no retry on it.
+        _release_held(task, actions)
+        task.status = "gated"
+        task.last_failure = "worker stopped on a startup dialog: %s" % event.dialog
+        _open(state, actions, task.id, startup_question(task, event.dialog), ["retry", "skip"], "setup")
     else:
         _red(state, task, "worker %s" % (event.outcome or "failed"), cfg, actions)
+
+
+def startup_question(task: TaskState, waits: str, handle: str = "") -> str:
+    """The one question about a worker stuck on its agent's startup dialog."""
+    return ("Task %s's worker%s is stuck on a startup dialog: %s. Answer that dialog yourself in its "
+            "Orca terminal%s; Rein never changes an agent's trust settings. Then retry (a fresh worker, "
+            "no retry spent) or skip the task."
+            % (task.id, " (%s)" % task.agent if task.agent else "", waits, " %s" % handle if handle else ""))
 
 
 def _on_gate_verdict(state: ShipState, event: GateVerdict, cfg: ShipConfig, actions: list) -> None:
