@@ -40,6 +40,9 @@ CODEX_HOOKS = [
     "    3. Quit",
 ]
 CLAUDE_TRUST = ["Do you trust the files in this folder?", "/wt/pos", "❯ 1. Yes, proceed", "  2. No, exit"]
+QUOTED = ["I investigated the startup failure.", 'The previous terminal displayed "Hooks need review".',
+          "I am now checking the implementation and tests."]
+ANSWERED = CODEX_HOOKS + ["Trust accepted. Continuing.", "Reading the task brief", "Running pnpm test"]
 PLAN_ONE = "# Change: demo\n\n- [ ] T001 Add the api endpoint\n  - Repo: proxima-api\n  - Verification: `pnpm test`\n"
 
 
@@ -51,6 +54,24 @@ class Detect(unittest.TestCase):
     def test_a_folder_trust_prompt(self):
         self.assertEqual(startup_dialog.detect(CLAUDE_TRUST, "/wt/pos"),
                          "the agent waits for you to trust the folder /wt/pos")
+
+    def test_a_boxed_dialog_with_hints(self):
+        boxed = ["╭──────────────────────────────╮", "│ Do you trust the files in this folder? │",
+                 "│ /wt/pos                      │", "│ ❯ 1. Yes, proceed            │", "│   2. No, exit │",
+                 "╰──────────────────────────────╯", "  Enter to confirm · Esc to exit", ""]
+        self.assertEqual(startup_dialog.detect(boxed, "/wt/pos", screen=True),
+                         "the agent waits for you to trust the folder /wt/pos")
+
+    def test_a_quote_in_the_agents_answer_is_no_dialog(self):
+        for screen in (True, False):
+            self.assertEqual(startup_dialog.detect(QUOTED, "/x", screen=screen), "", screen)
+
+    def test_a_dialog_already_answered_is_no_dialog(self):
+        for screen in (True, False):
+            self.assertEqual(startup_dialog.detect(ANSWERED, "/x", screen=screen), "", screen)
+
+    def test_a_title_without_options_is_no_dialog(self):
+        self.assertEqual(startup_dialog.detect(["  Hooks need review", "", "  checking the hooks now"], "/x"), "")
 
     def test_ordinary_output_is_no_dialog(self):
         self.assertEqual(startup_dialog.detect(["Running tests...", "ok: 41 passed", "review the hooks docs"], "/x"),
@@ -147,6 +168,48 @@ class FailedWorker(ShipCase):
         self.assertEqual(gate["kind"], "setup")
         self.assertIn("the agent waits for you", gate["question"])
         self.assertFalse([a for a in actions if isinstance(a, sd.Dispatch)])
+
+
+class NotADialog(StallDriver):
+    """The agent's ordinary output, read through the driver, never opens a dialog question."""
+
+    def probe(self, screen):
+        fake = DialogOrca(self.root, screen, repos=("proxima-api",))
+        original = fake._answer
+
+        def answer(a):
+            if a[:2] == ["terminal", "read"]:
+                return {"terminal": {"handle": "term_d_1", "tail": list(screen), "source": "screen"}}
+            if a[:2] == ["orchestration", "worker-show"]:
+                return {"dispatch": {"status": "dispatched"},
+                        "worker": {"state": "working", "agentTerminalHandle": "term_d_1"}}
+            return original(a)
+        fake._answer = answer
+        drv, _ = self.driver(fake)
+        with contextlib.redirect_stdout(io.StringIO()):
+            drv.probe_activity()
+        return [g for g in list(drv.state.gates.values()) + drv.state.pending_gates if g["kind"] == "stalled"]
+
+    def test_a_quote_opens_no_gate(self):
+        self.assertEqual(self.probe(QUOTED), [])
+
+    def test_an_answered_dialog_opens_no_gate(self):
+        self.assertEqual(self.probe(ANSWERED), [])
+
+
+class FailedWorkerQuoting(ShipCase):
+    def test_a_failed_worker_that_quoted_the_dialog_is_retried_as_usual(self):
+        self.write_plan(PLAN_ONE)
+        fake = DialogOrca(self.root, QUOTED, repos=("proxima-api",), autocomplete=False)
+
+        def failed(f):
+            did = next(iter(f.dispatches))
+            f.dispatches[did]["reported"] = True
+            return [f.done_message(did, "failed")]
+        fake.pending = [failed] + [lambda f: []] * 3
+        with self.assertRaises(Drained):
+            self.run_ship(fake, scripted_gate())
+        self.assertEqual(ship_state.load(self.state_file).tasks["T001"].attempts, 1)
 
 
 class StalledOnADialog(StallDriver):
