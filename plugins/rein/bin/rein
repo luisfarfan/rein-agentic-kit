@@ -97,10 +97,10 @@ Subcommands:
   rein quick done     run by that agent when you say "listo": light gate on the
                       changed files, plus an audit only for risky paths. Never commits
                       or pushes. Exit 0 green / 1 red / 2 no quick task / 126 setup
-  rein done <change> [--root <plan repo>] [--dry-run] [--yes]
+  rein done <change> [--root <plan repo>] [--dry-run] [--yes] [--push]
                       close a finished change: remove its worktrees, close its tab,
-                      archive the openspec plan (local commit on the plan repo's default
-                      branch, never pushed; its folder must be committed). Removes
+                      archive the openspec plan (local commit on the plan repo's current
+                      branch, pushed only with --push; its folder must be committed). Removes
                       NOTHING if any worktree is dirty, a main checkout or not integrated
                       (HEAD and branch) into origin/<base>; gitignored files that would be
                       lost (.env ...) are listed and need --yes, except gate.regenerable ones.
@@ -1075,8 +1075,8 @@ def cmd_watch(argv: list[str]) -> int:
 
 def cmd_done(argv: list[str]) -> int:
     """`rein done <change>`: remove what a finished change left behind, safely."""
-    usage = "usage: rein done <change> [--root <plan repo>] [--dry-run] [--yes]"
-    words, skip, dry, yes = [], False, False, False
+    usage = "usage: rein done <change> [--root <plan repo>] [--dry-run] [--yes] [--push]"
+    words, skip, dry, yes, push = [], False, False, False, False
     for a in argv:
         if skip:
             skip = False
@@ -1088,6 +1088,8 @@ def cmd_done(argv: list[str]) -> int:
             dry = True
         elif a == "--yes":
             yes = True
+        elif a == "--push":
+            push = True
         elif a.startswith("-"):
             print(usage)
             return 2
@@ -1096,7 +1098,8 @@ def cmd_done(argv: list[str]) -> int:
     if skip or len(words) != 1 or not _opt(argv, "root", "."):
         print(usage)
         return 2
-    return _done.run_done(_opt(argv, "root", "."), words[0], _ship.OrcaClient(), dry_run=dry, yes=yes)
+    return _done.run_done(_opt(argv, "root", "."), words[0], _ship.OrcaClient(), dry_run=dry, yes=yes,
+                          push=push)
 
 
 _INBOX_USAGE = ('usage: rein quick ask "<question>"  |  rein quick answer [<path or quick-<slug>>] "<text>" '

@@ -1067,3 +1067,66 @@ class QuickCloseSafetyTests(QuickCloseBase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DonePushTests(Env):
+    """`rein done --push` (opt-in) pushes the plan-archive commit to the current branch; without it,
+    nothing is pushed."""
+
+    def run_push(self, root, push=True, dry=False):
+        orca = FakeOrca(repos=[{"displayName": "api", "worktreeBaseRef": "origin/develop"}])
+        client = OrcaClient(executable="ORCA", runner=orca)
+        return ship_done.run_done(root, CHANGE, client, dry_run=dry, push=push, driver_alive=lambda c: False,
+                                  today="2026-10-20", say=self.say, env={})
+
+    def remote_head(self):
+        return git(self.origin, "rev-parse", "develop").strip()
+
+    def test_push_sends_the_archive_commit_to_the_current_branch(self):
+        root = self.plan_repo()
+        self.state(root, {"api": self.worktree()})
+        self.assertEqual(self.run_push(root), 0, self.text())
+        self.assertEqual(self.remote_head(), git(root, "rev-parse", "HEAD").strip())
+        self.assertIn("pushed", self.text())
+
+    def test_without_push_nothing_is_pushed(self):
+        root = self.plan_repo()
+        before = self.remote_head()
+        self.state(root, {"api": self.worktree()})
+        self.assertEqual(self.run_push(root, push=False), 0, self.text())
+        self.assertEqual(self.remote_head(), before)
+
+    def test_dry_run_pushes_nothing(self):
+        root = self.plan_repo()
+        before = self.remote_head()
+        self.state(root, {"api": self.worktree()})
+        self.assertEqual(self.run_push(root, dry=True), 0, self.text())
+        self.assertEqual(self.remote_head(), before)
+        self.assertIn("would push", self.text())
+
+    def test_a_rejected_push_keeps_the_local_commit_and_says_so(self):
+        root = self.plan_repo()
+        commit_file(self.seed, "other", "x\n", "someone else pushed")
+        git(self.seed, "push", "-q", "origin", "develop")  # the plan repo is now behind: non-fast-forward
+        self.state(root, {"api": self.worktree()})
+        self.assertEqual(self.run_push(root), 126, self.text())
+        self.assertEqual(git(root, "log", "-1", "--format=%s").strip(), "docs(openspec): archive %s" % CHANGE)
+        self.assertIn("could not push", self.text())
+        self.assertIn("done: %s closed" % CHANGE, self.text())
+
+    def test_the_cli_takes_push(self):
+        import importlib.machinery
+        import importlib.util
+        here = os.path.dirname(os.path.abspath(__file__))
+        path = os.path.join(os.path.dirname(here), "plugins", "rein", "bin", "rein")
+        spec = importlib.util.spec_from_loader("rein_cli_push", importlib.machinery.SourceFileLoader("rein_cli_push", path))
+        cli = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cli)
+        seen = {}
+        saved = cli._done.run_done
+        self.addCleanup(setattr, cli._done, "run_done", saved)
+        cli._done.run_done = lambda root, change, client, **kw: seen.update(kw) or 0
+        self.assertEqual(cli.cmd_done([CHANGE, "--push"]), 0)
+        self.assertTrue(seen.get("push"))
+        self.assertEqual(cli.cmd_done([CHANGE]), 0)
+        self.assertFalse(seen.get("push"))

@@ -23,7 +23,8 @@ import roles  # noqa: E402
 
 # quick: +70 for the watch that relays a quick agent's questions and startup stalls.
 # rein-plan: +10 for the `Gate config:` field the guard requires to change gate config.
-BUDGETS = {"rein-plan": 710, "ship": 420, "answer": 200, "quick": 300}
+# ship: +20 for offering `rein done --push`.
+BUDGETS = {"rein-plan": 710, "ship": 440, "answer": 200, "quick": 300}
 
 
 def _skill_files() -> list:
@@ -97,6 +98,11 @@ class TestSkillBudget(unittest.TestCase):
         self.assertIn("Orca", text)
         self.assertNotIn("close this session", text)
         self.assertIn("never run the loop", text)
+
+    def test_ship_offers_to_push_the_plan_archive(self):
+        # `rein done` never pushes by default; the owner had to push the archive commit by hand.
+        text = _read(os.path.join(SKILLS, "ship", "SKILL.md"))
+        self.assertIn("rein done <change> --root <root> --push", text)
 
     def test_ship_keeps_the_owner_in_the_session_with_a_watcher(self):
         text = _read(os.path.join(SKILLS, "ship", "SKILL.md"))

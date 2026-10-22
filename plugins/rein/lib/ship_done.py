@@ -395,8 +395,16 @@ def _already_archived(root: str, change: str) -> bool:
         return False
 
 
+def _push_target(root: str, branch: str, git: Callable[..., tuple]) -> tuple:
+    """`(remote, ref)` the plan branch is pushed to: its upstream when it has one, else
+    origin's branch of the same name."""
+    remote = git(root, "config", "branch.%s.remote" % branch)[1].strip() or "origin"
+    merge = git(root, "config", "branch.%s.merge" % branch)[1].strip() or "refs/heads/%s" % branch
+    return remote, merge
+
+
 def run_done(root: str, change: str, client: OrcaClient, *, dry_run: bool = False, yes: bool = False,
-             git: Callable[..., tuple] = qd.run_git, fetch: Callable[[str, str], tuple] = qd.run_fetch,
+             push: bool = False, git: Callable[..., tuple] = qd.run_git, fetch: Callable[[str, str], tuple] = qd.run_fetch,
              driver_alive: Optional[Callable[[str], bool]] = None, today: str = "",
              say: Callable[[str], None] = print, env: Optional[dict] = None) -> int:
     root = os.path.abspath(root)
@@ -459,6 +467,8 @@ def run_done(root: str, change: str, client: OrcaClient, *, dry_run: bool = Fals
         on = git(root, "symbolic-ref", "--quiet", "--short", "HEAD")[1].strip()
         say("%sarchive plan %s -> %s (commit on %s)" % (prefix, os.path.relpath(archive[0], root),
                                                          os.path.relpath(archive[1], root), on))
+        if push:
+            say("%spush that commit to %s %s" % (prefix, *_push_target(root, on, git)))
     elif _already_archived(root, change):
         say("plan already archived")
     say("%sclose tab 'rein ship %s', archive the state and drop the mailbox" % (prefix, change))
@@ -499,7 +509,16 @@ def run_done(root: str, change: str, client: OrcaClient, *, dry_run: bool = Fals
                 "run `rein done %s` again" % change)
             return 126
         branch = git(root, "rev-parse", "--abbrev-ref", "HEAD")[1].strip() or "the plan branch"
-        say("archived plan: committed on %s (no push); push it when ready" % branch)
+        if not push:
+            say("archived plan: committed on %s (no push); push it when ready, or use --push" % branch)
+        else:
+            remote, ref = _push_target(root, branch, git)
+            if git(root, "push", "-q", remote, "HEAD:%s" % ref)[0] == 0:  # the repo's pre-push hooks run
+                say("archived plan: committed on %s and pushed to %s %s" % (branch, remote, ref))
+            else:
+                errors += 1
+                say("archived plan: committed on %s, but could not push it to %s %s (rejected or "
+                    "unreachable); the commit is local: push it yourself" % (branch, remote, ref))
 
     try:
         dest = os.path.join(root, ".rein", "ship", "archive", os.path.basename(state_file))
