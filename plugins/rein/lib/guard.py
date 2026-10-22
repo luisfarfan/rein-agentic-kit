@@ -317,7 +317,7 @@ def commit_msg_failures(path: str, base: str, env=None) -> list:
     return problems
 
 
-OUTSIDE_PATH_CAP = 5000  # dirty or untracked paths fingerprinted per checkout
+OUTSIDE_PATH_CAP = 5000  # watched (not ignored) dirty or untracked paths per checkout; past it, GuardError
 
 
 def _dirty_paths(path: str) -> list:
@@ -350,8 +350,10 @@ def _fingerprint(path: str, rel: str) -> str:
 
 
 def outside_ignore_globs(resolved) -> list:
-    """`gate.outsideIgnore` of a resolved (or raw) flow config: repo-relative globs, `dir/` for a folder."""
-    declared = ((resolved or {}).get("gate") or {}).get("outsideIgnore")
+    """`gate.outsideIgnore` of a resolved (or raw) flow config: repo-relative globs, `dir/` for a folder.
+    Anything malformed ignores nothing."""
+    gate = resolved.get("gate") if isinstance(resolved, dict) else None
+    declared = gate.get("outsideIgnore") if isinstance(gate, dict) else None
     if not isinstance(declared, list):
         return []
     return [p.strip() for p in declared if isinstance(p, str) and p.strip()]
@@ -368,13 +370,32 @@ def _repo_outside_ignore(path: str) -> list:
 
 
 def _outside_ignored(rel: str, globs) -> bool:
-    """`rel` matches one of `globs`: `.beads/` (or `.beads`) is the folder and all under it."""
+    """`rel` is exactly what one of `globs` declares, nothing more. `dir/` is what that folder
+    holds: its leading components match the folder's, one by one (a `*` there never crosses a
+    `/`), and a file named `dir` is not in it. Any other glob matches the whole path, and never a descendant of what it matches."""
+    parts = rel.split("/")
     for glob in globs or ():
-        folder = glob.rstrip("/")
-        if fnmatch.fnmatch(rel, glob) or (folder and (fnmatch.fnmatch(rel, folder)
-                                                      or fnmatch.fnmatch(rel, folder + "/*"))):
+        if not isinstance(glob, str) or not glob:
+            continue
+        if glob.endswith("/"):
+            folder = glob.rstrip("/").split("/")
+            if folder != [""] and len(parts) > len(folder) and all(
+                    fnmatch.fnmatch(p, f) for p, f in zip(parts, folder)):
+                return True
+        elif fnmatch.fnmatch(rel, glob):
             return True
     return False
+
+
+def _watched_paths(path: str, globs) -> list:
+    """The dirty or untracked paths of `path` that `globs` do not ignore. GuardError past
+    OUTSIDE_PATH_CAP: a look that cannot cover them all is not a clean one, and ignored paths
+    never use the cap up."""
+    watched = [rel for rel in _dirty_paths(path) if not _outside_ignored(rel, globs)]
+    if len(watched) > OUTSIDE_PATH_CAP:
+        raise GuardError("%s has %d changed or untracked paths outside gate.outsideIgnore, more than the %d "
+                         "Rein can check" % (path, len(watched), OUTSIDE_PATH_CAP))
+    return watched
 
 
 def outside_snapshot(paths, ignore_globs=()) -> dict:
@@ -395,9 +416,9 @@ def outside_snapshot(paths, ignore_globs=()) -> dict:
             code, head = _git(path, "rev-parse", "HEAD")
             if code != 0:
                 raise GuardError("git cannot read %s" % path)
-            snap[real] = {"head": head.strip(), "paths": {
-                rel: _fingerprint(path, rel) for rel in _dirty_paths(path)[:OUTSIDE_PATH_CAP]}}
             ignore = list(dict.fromkeys(_repo_outside_ignore(path) + list(ignore_globs or ())))
+            snap[real] = {"head": head.strip(), "paths": {
+                rel: _fingerprint(path, rel) for rel in _watched_paths(path, ignore)}}
             if ignore:
                 snap[real]["ignore"] = ignore
         except GuardError as exc:
@@ -429,7 +450,7 @@ def outside_changes(before: dict, ignore=()) -> list:
             raise GuardError("git cannot read %s" % path)
         old = was["paths"]
         globs = was.get("ignore") if isinstance(was.get("ignore"), list) else []
-        now = {rel: _fingerprint(path, rel) for rel in _dirty_paths(path)[:OUTSIDE_PATH_CAP]}
+        now = {rel: _fingerprint(path, rel) for rel in _watched_paths(path, globs)}
         changed = [rel for rel in sorted(set(old) | set(now))
                    if os.path.realpath(os.path.join(path, rel)) not in skip
                    and not _outside_ignored(rel, globs)

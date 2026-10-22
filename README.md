@@ -339,10 +339,15 @@ that repo's `flow.config.json` or in the plan root's (it then applies to every w
 { "gate": { "outsideIgnore": [".beads/"] } }
 ```
 
-`dir/` (or `dir`) is the folder and everything under it; other globs match the whole
-repo-relative path (`*` crosses `/`). The patterns are read when the worker is launched, so a
-config edited later widens nothing, and they never hide a new commit in the other checkout.
-Without `gate.outsideIgnore` every change counts.
+A pattern excludes exactly what it declares. `dir/` is everything inside that folder, nothing
+else: not a file named `dir`, and not a `dir/` deeper in the tree (each of its components is
+matched on its own, so `*` there stays inside one name). Any other glob must match the whole
+repo-relative path (`*` crosses `/`), and never covers what is under a folder it happens to
+match: `.beads/*.jsonl` does not cover `.beads/x.jsonl/CLAUDE.md`. The patterns are read when
+the worker is launched, so a config edited later widens nothing, and they never hide a new
+commit in the other checkout. Rein checks up to 5000 changed or untracked paths per checkout,
+ignored paths not counted; more than that makes the guard fail closed ("guard could not run"),
+never pass. Without `gate.outsideIgnore` every change counts.
 
 ### Tiered gates (`gate.affected`)
 

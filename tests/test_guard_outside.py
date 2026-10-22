@@ -314,3 +314,111 @@ class ShipPlanRootOutsideIgnore(ShipCase):
         self.run_ship(fake, gates)
         specs = [t["spec"] for t in fake.tasks.values() if t["title"].startswith("T001")]
         self.assertEqual(len(specs), 1, self.out)
+
+
+class OutsideIgnoreIsExact(unittest.TestCase):
+    """Review round 2. The ignore excludes exactly what the declared pattern matches (`dir/` is that
+    folder and its content, nothing more); ignored paths never count against the cap of watched
+    paths; a `gate` that is not an object ignores nothing."""
+
+    def setUp(self):
+        self.tmp = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.qa = os.path.join(self.tmp, "proxima-pos")
+        make_repo(self.qa, hook=False)
+
+    def configure(self, config):
+        with open(os.path.join(self.qa, "flow.config.json"), "w") as fh:
+            json.dump(config, fh)
+        run_git(self.qa, "commit", "-q", "-am", "chore: config")
+
+    def cap(self, n):
+        saved = guard.OUTSIDE_PATH_CAP
+        guard.OUTSIDE_PATH_CAP = n
+        self.addCleanup(setattr, guard, "OUTSIDE_PATH_CAP", saved)
+
+    # I2: a file glob is never widened to the descendants of what it matches
+    def test_a_file_glob_does_not_cover_a_folder_of_that_name(self):
+        self.configure({"gate": {"outsideIgnore": [".beads/*.jsonl"]}})
+        before = guard.outside_snapshot([self.qa])
+        write(self.qa, ".beads/issues.jsonl", "{}\n")
+        write(self.qa, ".beads/backup.jsonl/CLAUDE.md", "@rules/new.md\n")
+        problems = guard.outside_changes(before)
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn(".beads/backup.jsonl/CLAUDE.md", problems[0])
+        self.assertNotIn("issues.jsonl", problems[0])
+
+    def test_what_is_excluded_is_what_the_pattern_declares(self):
+        cases = [
+            (".beads/", ".beads/issues.jsonl", True),
+            (".beads/", ".beads/a/b.jsonl", True),
+            (".beads/", ".beads", False),  # a file named like the folder is not in it
+            (".beads/", ".beadsX/issues.jsonl", False),
+            (".beads/", "sub/.beads/issues.jsonl", False),
+            (".beads", ".beads/issues.jsonl", False),  # no slash: the path itself, not a folder
+            (".beads", ".beads", True),
+            (".beads/*.jsonl", ".beads/issues.jsonl", True),
+            (".beads/*.jsonl", ".beads/backup.jsonl/CLAUDE.md", False),
+            ("*.lock", "yarn.lock", True),
+            ("*.lock", "yarn.lock/evil.sh", False),
+            ("cache*/", "cache1/x", True),
+            ("cache*/", "cache1x/y/z", True),
+            ("cache*/", "a/cache1/x", False),
+            ("*/", "anything/x", True),  # one top-level folder, whatever its name ...
+            ("*/", "top.md", False),     # ... but never a top-level file
+        ]
+        for glob, rel, want in cases:
+            self.assertEqual(guard._outside_ignored(rel, [glob]), want, (glob, rel))
+
+    # I1: ignored paths never use up the cap, and a cap that cannot cover the rest fails closed
+    def test_ignored_files_do_not_use_up_the_cap(self):
+        self.cap(3)
+        self.configure({"gate": {"outsideIgnore": [".beads/"]}})
+        before = guard.outside_snapshot([self.qa])
+        for i in range(5):
+            write(self.qa, ".beads/%05d.jsonl" % i, "{}\n")
+        write(self.qa, "CLAUDE.md", "@rules/new.md\n")
+        problems = guard.outside_changes(before)
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("CLAUDE.md", problems[0])
+
+    def test_ignored_files_already_there_do_not_use_up_the_snapshot_cap(self):
+        self.cap(3)
+        self.configure({"gate": {"outsideIgnore": [".beads/"]}})
+        for i in range(5):
+            write(self.qa, ".beads/%05d.jsonl" % i, "{}\n")
+        write(self.qa, "notes.md", "a\n")  # dirty before the launch, edited by the worker
+        before = guard.outside_snapshot([self.qa])
+        self.assertIn("notes.md", before[self.qa]["paths"])
+        write(self.qa, "notes.md", "b\n")
+        problems = guard.outside_changes(before)
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("notes.md", problems[0])
+
+    def test_more_watched_paths_than_the_cap_fails_closed_at_the_end(self):
+        self.cap(3)
+        before = guard.outside_snapshot([self.qa])
+        for i in range(4):
+            write(self.qa, "f%d.md" % i, "x\n")
+        problems, broken = guard.run_guard(guard.outside_changes, before)
+        self.assertEqual(problems, [])
+        self.assertIn("guard could not run", broken)
+
+    def test_more_watched_paths_than_the_cap_fails_closed_at_launch(self):
+        self.cap(3)
+        for i in range(4):
+            write(self.qa, "f%d.md" % i, "x\n")
+        before = guard.outside_snapshot([self.qa])
+        self.assertIn("error", before[self.qa])
+        problems, broken = guard.run_guard(guard.outside_changes, before)
+        self.assertIn("guard could not run", broken)
+
+    # M1
+    def test_a_gate_that_is_not_an_object_ignores_nothing(self):
+        self.configure({"gate": "invalid"})
+        before = guard.outside_snapshot([self.qa])
+        self.assertNotIn("error", before[self.qa])
+        write(self.qa, ".beads/issues.jsonl", "{}\n")
+        self.assertEqual(len(guard.outside_changes(before)), 1)
+        self.assertEqual(guard.outside_ignore_globs({"gate": ["x"]}), [])
+        self.assertEqual(guard.outside_ignore_globs({"gate": {"outsideIgnore": "x"}}), [])
