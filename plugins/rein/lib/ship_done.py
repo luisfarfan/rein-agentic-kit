@@ -14,6 +14,7 @@ import filecmp
 import fnmatch
 import json
 import os
+import shlex
 import shutil
 import subprocess
 from typing import Callable, Optional
@@ -547,7 +548,8 @@ def run_done(root: str, change: str, client: OrcaClient, *, dry_run: bool = Fals
             return 126
         branch = git(root, "rev-parse", "--abbrev-ref", "HEAD")[1].strip() or "the plan branch"
         if not push:
-            say("archived plan: committed on %s (no push); push it when ready, or use --push" % branch)
+            say("archived plan: committed on %s (no push); push it when ready: git -C %s push"
+                % (branch, shlex.quote(root)))
         else:
             remote, ref = _push_target(root, branch, git)
             sha = git(root, "rev-parse", "HEAD")[1].strip()  # the archive commit, nothing after it

@@ -1203,3 +1203,12 @@ class DonePushGuardTests(DonePushTests):
         self.assertEqual(self.run_push(root, dry=True), 1, self.text())
         self.assertIn("blocker", self.text())
 
+
+class DoneWithoutPushMessage(Env):
+    def test_it_names_a_git_push_not_an_option_that_no_longer_applies(self):
+        root = self.plan_repo()
+        self.state(root, {"api": self.worktree()})
+        code, _ = self.run_done(root)
+        self.assertEqual(code, 0, self.text())
+        self.assertNotIn("--push", self.text())  # the state is archived: `rein done --push` would find none
+        self.assertIn("git -C %s push" % root, self.text())
