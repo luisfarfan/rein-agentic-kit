@@ -191,3 +191,126 @@ class QuickBaselineBeforeLaunch(DriverCase):
         self.assertEqual(code, 0, self.text())
         problems = guard.outside_changes(self.record(self.repo_path)["outside_before"])
         self.assertEqual(len(problems), 1, problems)
+
+
+POST_COMMIT_BEADS = """#!/bin/sh
+# What `bd hooks run post-commit` / lefthook's beads-export do: re-export the issues into the
+# MAIN checkout's .beads/, whichever worktree the commit was made in.
+main="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")"
+mkdir -p "$main/.beads"
+date +%s%N >> "$main/.beads/issues.jsonl"
+"""
+
+
+class RepoHooksOutsideIgnore(unittest.TestCase):
+    """A repo's own git hooks (beads: `bd hooks run post-commit`, lefthook's beads-export) rewrite
+    `.beads/` in the MAIN checkout on every commit made in a worktree. `gate.outsideIgnore` -- globs
+    relative to the watched repo, from its config or the plan root's -- leaves those paths out;
+    anything else still fails."""
+
+    def setUp(self):
+        self.tmp = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.main = os.path.join(self.tmp, "proxima-pos")
+        make_repo(self.main, hook=False)
+        hook = os.path.join(self.main, ".git", "hooks", "post-commit")
+        with open(hook, "w") as fh:
+            fh.write(POST_COMMIT_BEADS)
+        os.chmod(hook, 0o755)
+        write(self.main, ".beads/issues.jsonl", "{}\n")
+        run_git(self.main, "add", "-A")
+        run_git(self.main, "commit", "-q", "-m", "chore: beads")
+        self.wt = os.path.join(self.tmp, "wt")
+        run_git(self.main, "worktree", "add", "-q", "-b", "feature/x", self.wt)
+        with open(os.path.join(self.main, ".beads", "issues.jsonl")) as fh:
+            self.before_hook = fh.read()
+
+    def configure(self, config):
+        with open(os.path.join(self.main, "flow.config.json"), "w") as fh:
+            json.dump(config, fh)
+        run_git(self.main, "commit", "-q", "-am", "chore: config")
+
+    def worker_commits(self):
+        """The worker commits in its worktree; the repo's post-commit hook writes the main checkout."""
+        with open(os.path.join(self.wt, "app.py"), "w") as fh:
+            fh.write("x = 2\n")
+        run_git(self.wt, "commit", "-q", "-am", "feat: x")
+        with open(os.path.join(self.main, ".beads", "issues.jsonl")) as fh:
+            self.assertNotEqual(fh.read(), self.before_hook, "the hook did not write the main checkout")
+
+    def test_without_config_the_hook_write_fails_the_task(self):
+        before = guard.outside_snapshot([self.main])
+        self.worker_commits()
+        problems = guard.outside_changes(before)
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn(".beads/issues.jsonl", problems[0])
+
+    def test_the_repo_config_ignores_the_hook_write(self):
+        self.configure({"commands": {"test": "true"}, "gate": {"outsideIgnore": [".beads/"]}})
+        before = guard.outside_snapshot([self.main])
+        self.worker_commits()
+        self.assertEqual(guard.outside_changes(before), [])
+
+    def test_the_plan_root_config_ignores_the_hook_write(self):
+        before = guard.outside_snapshot([self.main], ignore_globs=[".beads/"])
+        self.worker_commits()
+        self.assertEqual(guard.outside_changes(before), [])
+
+    def test_a_write_outside_the_pattern_still_fails(self):
+        self.configure({"commands": {"test": "true"}, "gate": {"outsideIgnore": [".beads/"]}})
+        before = guard.outside_snapshot([self.main])
+        self.worker_commits()
+        write(self.main, "CLAUDE.md", "@rules/new.md\n")
+        problems = guard.outside_changes(before)
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("CLAUDE.md", problems[0])
+        self.assertNotIn(".beads", problems[0])
+
+    def test_the_patterns_are_fixed_at_launch(self):
+        """A worker that adds the ignore to the watched repo's config afterwards widens nothing."""
+        before = guard.outside_snapshot([self.main])
+        with open(os.path.join(self.main, "flow.config.json"), "w") as fh:
+            json.dump({"gate": {"outsideIgnore": ["*"]}}, fh)
+        write(self.main, "CLAUDE.md", "@rules/new.md\n")
+        problems = guard.outside_changes(before)
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("CLAUDE.md", problems[0])
+
+    def test_a_pattern_never_hides_a_new_commit(self):
+        self.configure({"commands": {"test": "true"}, "gate": {"outsideIgnore": ["*"]}})
+        before = guard.outside_snapshot([self.main])
+        commit(self.main, "app.py", "x = 9\n", "chore: sneaky")
+        self.assertEqual(len(guard.outside_changes(before)), 1)
+
+
+class ShipPlanRootOutsideIgnore(ShipCase):
+    def test_the_plan_roots_outside_ignore_applies_to_every_watched_repo(self):
+        self.write_plan("# Change: demo\n\n- [ ] T001 Add the api endpoint\n  - Repo: proxima-api\n"
+                        "  - Verification: `pnpm test`\n")
+        with open(os.path.join(self.root, "flow.config.json"), "w") as fh:
+            json.dump({"gate": {"outsideIgnore": [".beads/"]}}, fh)
+        qa = os.path.join(self.tmp.name, "proxima-qa")
+        make_repo(qa, hook=False)
+        fake = FakeOrca(self.root, repos=("proxima-api", "proxima-qa"))
+        original = fake._answer
+
+        def answer(a):
+            out = original(a)
+            if a[:2] == ["repo", "list"]:
+                for r in out["repos"]:
+                    if r["displayName"] == "proxima-qa":
+                        r["path"] = qa
+            return out
+        fake._answer = answer
+        calls = []
+
+        def gates(p, unit_only, timeout=None, **kw):
+            if kw.get("tier") == "task":
+                calls.append(p)
+                if len(calls) == 1:  # the repo's hooks, not the worker; a retry would not write again
+                    write(qa, ".beads/issues.jsonl", "{}\n")
+            return 0, "ok"
+        fake.on_audit = self.approve_audit()
+        self.run_ship(fake, gates)
+        specs = [t["spec"] for t in fake.tasks.values() if t["title"].startswith("T001")]
+        self.assertEqual(len(specs), 1, self.out)

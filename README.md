@@ -326,6 +326,24 @@ pass an environment to an agent — writes them as an `export` line at the top o
 the auditor's brief so their own test runs use the same database. Without `gate.env` nothing
 changes. Creating the database on first use is the repo's job (its test setup).
 
+### Writes outside the worktree (`gate.outsideIgnore`)
+
+When a worker (or quick agent) is launched Rein notes the git state of every other checkout Orca
+knows; any change there by the end of its task fails it, with the files named. A repo's own git
+hooks can write there without the worker doing anything: beads (`bd hooks run post-checkout`,
+`pre-commit`, lefthook's `beads-export`) rewrites `.beads/` in the MAIN checkout on every commit
+or checkout made in a worktree. Leave such paths out with globs relative to the watched repo, in
+that repo's `flow.config.json` or in the plan root's (it then applies to every watched repo):
+
+```json
+{ "gate": { "outsideIgnore": [".beads/"] } }
+```
+
+`dir/` (or `dir`) is the folder and everything under it; other globs match the whole
+repo-relative path (`*` crosses `/`). The patterns are read when the worker is launched, so a
+config edited later widens nothing, and they never hide a new commit in the other checkout.
+Without `gate.outsideIgnore` every change counts.
+
 ### Tiered gates (`gate.affected`)
 
 A task's gate runs `lint`, `typecheck`, the tests its change reaches and the task's own

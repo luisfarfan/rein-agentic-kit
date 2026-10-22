@@ -54,7 +54,9 @@
     "$cleanup": "A command run once per worktree after `rein done` / `rein quick close` removed it, from the repo's main checkout, with the worktree's gate.env: drop what the gates created outside the tree. {worktree} is the same slug gate.env uses, {repo} the repo's name, {path} the removed worktree's path (shell-quoted). A failure is reported, never undoes the close. Unset: nothing runs.",
     "cleanup": "dropdb --if-exists app_test_{worktree}",
     "$protected": "Globs of files a task may not change unless its own text names them (Rein checks it when a task ends and fails the task with the reason). flow.config.json is always protected, and so is the config of every task runner (mise.toml, Makefile, justfile, Taskfile.yml) a gate command comes from or calls, as resolved at the change's base and now: deleting or swapping that runner is caught, a runner no gate command uses may change. Each commit of the task must also pass the repo's own commit-msg hook, re-run by Rein with the bypass variables (LEFTHOOK_EXCLUDE, SKIP, HUSKY ...) removed.",
-    "protected": []
+    "protected": [],
+    "$outsideIgnore": "Globs, relative to each other checkout Rein watches while a worker runs (a trailing / covers a folder), whose changes do not count as the worker writing outside its worktree: what the repo's own git hooks rewrite in the main checkout, e.g. beads' .beads/. Declared in the watched repo or in the plan root (applies to every watched repo); read when the worker is launched; never hides a new commit. Unset: every change counts.",
+    "outsideIgnore": []
   },
 
   "retrieval": {

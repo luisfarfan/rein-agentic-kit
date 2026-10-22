@@ -990,13 +990,16 @@ class _Driver:
 
     def outside_snapshot(self, repo: str) -> dict:
         """The other checkouts Orca knows, as the worker for `repo` is launched (guard.py); the
-        worktree it works in is not one of them."""
+        worktree it works in is not one of them. The plan root's `gate.outsideIgnore` applies to each
+        (their own is read from them)."""
         if getattr(self, "dry_run", False):
             return {}
         mine = os.path.realpath(self.state.worktree_paths.get(repo, "") or "/nonexistent")
         paths = [str(r.get("path") or "") for r in ((getattr(self, "ctx", None) or {}).get("repos") or {}).values()
                  if isinstance(r, dict)]
-        return _guard.outside_snapshot([p for p in paths if p and os.path.realpath(p) != mine])
+        root = getattr(self, "root", "")
+        globs = _guard.outside_ignore_globs(_detect.resolve(root)) if root and os.path.isdir(root) else []
+        return _guard.outside_snapshot([p for p in paths if p and os.path.realpath(p) != mine], globs)
 
     def tidy_setup_tabs(self, repo: str) -> None:
         """Close the idle "Setup" tab Orca's setup run left in `repo`'s worktree.

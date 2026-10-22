@@ -17,7 +17,10 @@ commands and `gate.affected`), and another skipped the repo's commit-msg hook wi
 - the worker wrote outside its worktree: `outside_snapshot` notes the git state of every other
   checkout Orca knows when the worker is launched, and `outside_changes` names what changed
   in them by the time its task ends. This is detection, not prevention: a sandbox the agent
-  cannot write out of is the agent's (or Orca's) to provide.
+  cannot write out of is the agent's (or Orca's) to provide. `gate.outsideIgnore` (globs relative
+  to each watched repo, from its own config or the plan root's, read at launch) leaves out what
+  the repo's own git hooks rewrite there -- beads re-exports `.beads/` in the main checkout on
+  every commit or checkout made in a worktree.
 
 Each problem is one line saying what and why; none means the change is clean.
 
@@ -30,6 +33,7 @@ never "no change": an incomplete look is not a clean one.
 from __future__ import annotations
 
 import fnmatch
+import json
 import os
 import re
 import shutil
@@ -345,9 +349,39 @@ def _fingerprint(path: str, rel: str) -> str:
         raise GuardError("cannot read %s: %s" % (full, exc))
 
 
-def outside_snapshot(paths) -> dict:
-    """`{realpath: {head, paths: {rel: fingerprint}}}` of the git checkouts in `paths`: HEAD, and the
-    content of every path that is dirty or untracked there (a clean tracked path is HEAD's).
+def outside_ignore_globs(resolved) -> list:
+    """`gate.outsideIgnore` of a resolved (or raw) flow config: repo-relative globs, `dir/` for a folder."""
+    declared = ((resolved or {}).get("gate") or {}).get("outsideIgnore")
+    if not isinstance(declared, list):
+        return []
+    return [p.strip() for p in declared if isinstance(p, str) and p.strip()]
+
+
+def _repo_outside_ignore(path: str) -> list:
+    """The checkout's own `gate.outsideIgnore`. A config that cannot be read ignores nothing: stricter."""
+    try:
+        with open(os.path.join(path, _detect.CONFIG_NAME), encoding="utf-8") as fh:
+            cfg = json.load(fh)
+    except (OSError, ValueError):
+        return []
+    return outside_ignore_globs(cfg) if isinstance(cfg, dict) else []
+
+
+def _outside_ignored(rel: str, globs) -> bool:
+    """`rel` matches one of `globs`: `.beads/` (or `.beads`) is the folder and all under it."""
+    for glob in globs or ():
+        folder = glob.rstrip("/")
+        if fnmatch.fnmatch(rel, glob) or (folder and (fnmatch.fnmatch(rel, folder)
+                                                      or fnmatch.fnmatch(rel, folder + "/*"))):
+            return True
+    return False
+
+
+def outside_snapshot(paths, ignore_globs=()) -> dict:
+    """`{realpath: {head, paths: {rel: fingerprint}, ignore: [glob]}}` of the git checkouts in
+    `paths`: HEAD, and the content of every path that is dirty or untracked there (a clean tracked
+    path is HEAD's). `ignore` is the checkout's own `gate.outsideIgnore` plus `ignore_globs` (the
+    plan root's), fixed now: a worker that edits a config later widens nothing.
 
     A path that does not exist has nothing to protect and is left out. One that exists but cannot
     be read is kept as `{"error": why}`: taken at launch, the snapshot must not raise (nothing is
@@ -363,6 +397,9 @@ def outside_snapshot(paths) -> dict:
                 raise GuardError("git cannot read %s" % path)
             snap[real] = {"head": head.strip(), "paths": {
                 rel: _fingerprint(path, rel) for rel in _dirty_paths(path)[:OUTSIDE_PATH_CAP]}}
+            ignore = list(dict.fromkeys(_repo_outside_ignore(path) + list(ignore_globs or ())))
+            if ignore:
+                snap[real]["ignore"] = ignore
         except GuardError as exc:
             snap[real] = {"error": str(exc)}
     return snap
@@ -372,7 +409,8 @@ def outside_changes(before: dict, ignore=()) -> list:
     """One problem per checkout of `before` that changed since: new commits, and every path whose
     content or existence differs -- edited, created or deleted, untracked ones included.
     `ignore`: absolute paths Rein itself writes there (the plan file it ticks); they are left out of
-    the comparison itself, so they never make another path look changed."""
+    the comparison itself, so they never make another path look changed. So are the paths matching
+    the checkout's `ignore` globs from the snapshot (`gate.outsideIgnore`); a new commit never is."""
     skip = {os.path.realpath(p) for p in ignore or ()}
     problems = []
     if not isinstance(before, dict):
@@ -390,9 +428,11 @@ def outside_changes(before: dict, ignore=()) -> list:
         if code != 0:
             raise GuardError("git cannot read %s" % path)
         old = was["paths"]
+        globs = was.get("ignore") if isinstance(was.get("ignore"), list) else []
         now = {rel: _fingerprint(path, rel) for rel in _dirty_paths(path)[:OUTSIDE_PATH_CAP]}
         changed = [rel for rel in sorted(set(old) | set(now))
                    if os.path.realpath(os.path.join(path, rel)) not in skip
+                   and not _outside_ignored(rel, globs)
                    and old.get(rel, "clean") != now.get(rel, "clean")]
         what = []
         if head.strip() != was.get("head"):
