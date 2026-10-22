@@ -39,8 +39,9 @@ Subcommands:
   rein tasks          parsed plan as JSON (tasks.md or openspec)
   rein plan-check     mechanical findings on a drafted plan's own text, as JSON. A task's
                       Verification is looked up in its Repo: the plan root (--root, else
-                      the plan file's checkout), plan.repos in its flow.config.json, or
-                      the plan root's sibling directory of that name.
+                      the plan file's checkout), plan.repos in its flow.config.json, the
+                      plan root's sibling directory of that name, or else the repo of
+                      that name registered in Orca (`orca repo list`).
                       Always exits 0 (D5: never a silent skip, never a hard stop) --
                       it runs inside the planning skill, where the judgement is the
                       planner's. `--gate` is for a RUNNER instead: exits 1 on a
@@ -511,6 +512,13 @@ def _plan_root_of(path: str) -> str:
     return top.strip() if code == 0 and top.strip() else folder
 
 
+def _orca_repo_paths() -> dict:
+    """{display name: path} of the repos registered in Orca; raises when Orca cannot say."""
+    repos = _ship.OrcaClient().repo_list().get("repos") or []
+    return {str(r.get("displayName")): str(r.get("path") or "") for r in repos
+            if isinstance(r, dict) and r.get("displayName")}
+
+
 def cmd_plan_check(argv: list[str]) -> int:
     """Mechanical, pre-agent findings on a drafted plan's own text (T001:
     the-plan-checks-itself) -- the shipped entry point for `plugins/rein/lib/
@@ -550,7 +558,10 @@ def cmd_plan_check(argv: list[str]) -> int:
 
             # Each task's verification in ITS repo: the plan root (`--root`, else the plan
             # file's git checkout), `plan.repos`, or the plan root's sibling of that name.
-            findings += _plan_check.unbacked_findings(text, _opt(argv, "root") or _plan_root_of(path))
+            # Last, and only when needed: Orca's registered repos (a plan in an Orca worktree has
+            # no sibling checkouts).
+            findings += _plan_check.unbacked_findings(text, _opt(argv, "root") or _plan_root_of(path),
+                                                      repo_paths=_plan_check.lazy(_orca_repo_paths))
     # Scoped to the tasks this run will actually execute: a BLOCKING finding
     # pinned to a task nobody will touch cannot waste an implementer, and
     # stopping for it is the false stop the scoping exists to prevent. A

@@ -115,3 +115,65 @@ class UnknownRepo(Layout):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+FAKE_ORCA = """#!/bin/sh
+echo "$@" >> "%(log)s"
+case "$1 $2" in
+  "repo list") printf '%%s' '%(json)s' ;;
+  *) printf '%%s' '{"ok": false, "error": {"code": "nope", "message": "unsupported"}}'; exit 1 ;;
+esac
+"""
+
+
+class OrcaRegisteredRepo(Layout):
+    """The plan lives in an Orca worktree (~/orca/workspaces/<repo>/<name>): no sibling folder is the
+    task's repo, but Orca's registered repos say where it is."""
+
+    def fake_orca(self, repos):
+        log = os.path.join(self.tmp, "orca.log")
+        body = json.dumps({"ok": True, "result": {"repos": repos}})
+        path = os.path.join(self.tmp, "fake-orca")
+        with open(path, "w") as fh:
+            fh.write(FAKE_ORCA % {"log": log, "json": body})
+        os.chmod(path, 0o755)
+        return path, log
+
+    def run_cli(self, orca):
+        env = dict(os.environ, ORCA_CLI_COMMAND=orca)
+        out = subprocess.run([sys.executable, REIN, "plan-check", self.plan], capture_output=True, text=True,
+                             env=env)
+        return json.loads(out.stdout)["findings"]
+
+    def test_the_cli_finds_the_repo_through_orca_repo_list(self):
+        shutil.rmtree(self.api)
+        elsewhere = os.path.join(self.tmp, "Developer", "proxima-api")
+        self.touch(elsewhere, "tests/test_discount_cap.py")
+        orca, _ = self.fake_orca([{"displayName": "proxima-api", "path": elsewhere}])
+        findings = self.run_cli(orca)
+        self.assertEqual([f for f in findings if f["taskId"] == "T001"], [], findings)
+
+    def test_orca_is_only_asked_when_the_repo_is_not_found_otherwise(self):
+        self.touch(self.api, "tests/test_discount_cap.py")
+        orca, log = self.fake_orca([])
+        self.assertEqual(self.blocking(self.run_cli(orca)), [])
+        self.assertFalse(os.path.exists(log), "a sibling repo needs no Orca call")
+
+    def test_orca_unreachable_still_reports_the_repo_as_not_found(self):
+        shutil.rmtree(self.api)
+        findings = self.run_cli(os.path.join(self.tmp, "no-such-orca"))
+        notes = [f for f in findings if f["taskId"] == "T001"]
+        self.assertEqual([f["severity"] for f in notes], ["IMPORTANT"])
+        self.assertIn("Orca", notes[0]["text"])
+
+    def test_a_lazy_lookup_is_consulted_once_and_last(self):
+        calls = []
+        elsewhere = os.path.join(self.tmp, "orca", "proxima-api")
+        self.touch(elsewhere, "tests/test_discount_cap.py")
+        shutil.rmtree(self.api)
+
+        def lookup():
+            calls.append(1)
+            return {"proxima-api": elsewhere}
+        self.assertEqual(self.blocking(self.check(repo_paths=lookup)), [])
+        self.assertEqual(calls, [1])

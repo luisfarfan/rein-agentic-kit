@@ -263,7 +263,9 @@ def repo_root(plan_root: str, repo: str, repo_paths: dict = None) -> str:
 
     The plan repo itself when the task names no other; else `plan.repos` in the plan root's
     flow.config.json (name -> path, relative to the plan root), else `repo_paths` (what the
-    caller knows, e.g. Orca's registered repos), else the plan root's sibling of that name."""
+    caller knows, e.g. Orca's registered repos), else the plan root's sibling of that name.
+    A callable `repo_paths` is a lookup too costly to make first (asking Orca): it is called
+    only when nothing else finds the repo, and must return {name: path}."""
     plan_root = os.path.abspath(plan_root)
     if not repo or repo == os.path.basename(plan_root.rstrip(os.sep)):
         return plan_root
@@ -273,11 +275,30 @@ def repo_root(plan_root: str, repo: str, repo_paths: dict = None) -> str:
     candidates = []
     if isinstance(configured, dict) and isinstance(configured.get(repo), str):
         candidates.append(os.path.join(plan_root, os.path.expanduser(configured[repo])))
-    known = (repo_paths or {}).get(repo)
+    known = repo_paths.get(repo) if isinstance(repo_paths, dict) else None
     if isinstance(known, str) and known:
         candidates.append(known)
     candidates.append(os.path.join(os.path.dirname(plan_root), repo))
-    return next((os.path.normpath(c) for c in candidates if os.path.isdir(c)), "")
+    found = next((os.path.normpath(c) for c in candidates if os.path.isdir(c)), "")
+    if not found and callable(repo_paths):
+        known = (repo_paths() or {}).get(repo)
+        if isinstance(known, str) and known and os.path.isdir(known):
+            found = os.path.normpath(known)
+    return found
+
+
+def lazy(lookup):
+    """`lookup` (-> {name: path}) called at most once, and only if a repo_root needs it."""
+    memo = []
+
+    def get():
+        if not memo:
+            try:
+                memo.append(lookup() or {})
+            except Exception:  # an unreachable lookup finds nothing; it never breaks the check
+                memo.append({})
+        return memo[0]
+    return get
 
 
 def unbacked_findings(text: str, root: str, repo_paths: dict = None) -> list[dict]:
@@ -310,7 +331,9 @@ def unbacked_findings(text: str, root: str, repo_paths: dict = None) -> list[dic
                     "severity": "IMPORTANT",
                     "classId": BLOCKING_CLASSES[0],
                     "text": (f"{task.get('id')}'s verification was not checked: its repo {repo} is not "
-                             f"next to {root} and plan.repos in flow.config.json does not name it"),
+                             f"next to {root}, plan.repos in flow.config.json does not name it"
+                             + (" and Orca has no registered repo of that name" if callable(repo_paths)
+                                else "")),
                 })
             continue
         place = f" in {repo} ({where})" if where != root else ""

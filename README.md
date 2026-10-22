@@ -219,7 +219,8 @@ rein env [root]  # `export` lines of the worktree's gate.env with its placeholde
                  # `eval "$(rein env)"` gives a shell the env Rein's gates use there
 rein plan-check  # mechanical findings on a drafted plan's own text. Always exits 0 (it runs
                  # inside the planning skill); `--gate` exits 1 on a BLOCKING finding, which
-                 # is how `rein ship` refuses a bad plan. `--tasks T001,T002` scopes it
+                 # is how `rein ship` refuses a bad plan. `--tasks T001,T002` scopes it.
+                 # A task's Repo: is found by plan.repos, the sibling folder, else Orca's repos
 rein role <name> # ✅ one role's operating profile (planner|implementer|reviewer) as markdown
 rein next        # ✅ the gate: is there a task to claim, and may it be
 rein close T001  # tick a checkbox deterministically — no agent hand-edits the plan
