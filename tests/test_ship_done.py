@@ -1075,12 +1075,19 @@ class DonePushTests(Env):
 
     def run_push(self, root, push=True, dry=False):
         orca = FakeOrca(repos=[{"displayName": "api", "worktreeBaseRef": "origin/develop"}])
+        self.orca = orca
         client = OrcaClient(executable="ORCA", runner=orca)
         return ship_done.run_done(root, CHANGE, client, dry_run=dry, push=push, driver_alive=lambda c: False,
                                   today="2026-10-20", say=self.say, env={})
 
     def remote_head(self):
         return git(self.origin, "rev-parse", "develop").strip()
+
+    def plan_repo(self, openspec=True):
+        """The plan repo in sync with its upstream: only the archive commit is ever ahead of it."""
+        root = super().plan_repo(openspec)
+        git(root, "push", "-q", "origin", "develop")
+        return root
 
     def test_push_sends_the_archive_commit_to_the_current_branch(self):
         root = self.plan_repo()
@@ -1106,6 +1113,7 @@ class DonePushTests(Env):
 
     def test_a_rejected_push_keeps_the_local_commit_and_says_so(self):
         root = self.plan_repo()
+        git(self.seed, "pull", "-q", "--ff-only", "origin", "develop")
         commit_file(self.seed, "other", "x\n", "someone else pushed")
         git(self.seed, "push", "-q", "origin", "develop")  # the plan repo is now behind: non-fast-forward
         self.state(root, {"api": self.worktree()})
@@ -1130,3 +1138,68 @@ class DonePushTests(Env):
         self.assertTrue(seen.get("push"))
         self.assertEqual(cli.cmd_done([CHANGE]), 0)
         self.assertFalse(seen.get("push"))
+
+
+class DonePushGuardTests(DonePushTests):
+    """--push sends only the plan-archive commit, only from the plan repo, only to the branch of
+    the same name, and never to main of a repo that has develop. A refused push is a blocker
+    found before anything is removed or committed."""
+
+    def plan_repo(self, openspec=True):
+        root = super().plan_repo(openspec)
+        git(root, "push", "-q", "origin", "develop:main")  # the remote has main and develop, both with the plan
+        return root
+
+    def remote(self, branch):
+        return git(self.origin, "rev-parse", branch).strip()
+
+    def refused(self, root, wt, needle):
+        before = {b: self.remote(b) for b in ("main", "develop")}
+        self.assertEqual(self.run_push(root), 1, self.text())
+        self.assertIn(needle, self.text())
+        self.assertEqual({b: self.remote(b) for b in ("main", "develop")}, before, "nothing was pushed")
+        self.assertEqual(self.orca.rm_paths(), [], "nothing was removed")
+        self.assertTrue(os.path.isdir(wt))
+        self.assertTrue(os.path.isdir(os.path.join(root, "openspec", "changes", CHANGE)), "nothing was archived")
+        self.assertTrue(os.path.exists(ship_state.state_path(root, CHANGE)))
+
+    def test_an_upstream_of_another_name_is_refused(self):
+        root = self.plan_repo()
+        git(root, "fetch", "-q", "origin")
+        git(root, "checkout", "-q", "-b", "archive-work", "--track", "origin/main")
+        wt = self.worktree()
+        self.state(root, {"api": wt})
+        self.refused(root, wt, "same name")
+
+    def test_local_product_commits_are_never_pushed_with_the_archive(self):
+        root = self.plan_repo()
+        commit_file(root, "src/product.py", "x = 1\n", "feat: product change still local")
+        wt = self.worktree()
+        self.state(root, {"api": wt})
+        self.refused(root, wt, "feat: product change still local")
+
+    def test_main_of_a_repo_with_develop_is_refused(self):
+        root = self.plan_repo()
+        git(root, "fetch", "-q", "origin")
+        git(root, "checkout", "-q", "-B", "main", "origin/main")
+        wt = self.worktree()
+        self.state(root, {"api": wt})
+        self.refused(root, wt, "develop")
+
+    def test_the_push_carries_exactly_the_archive_commit(self):
+        root = self.plan_repo()
+        before = self.remote("develop")
+        self.state(root, {"api": self.worktree()})
+        self.assertEqual(self.run_push(root), 0, self.text())
+        self.assertEqual(self.remote("develop"), git(root, "rev-parse", "HEAD").strip())
+        self.assertEqual(git(root, "rev-parse", "HEAD^").strip(), before)
+        self.assertEqual(git(self.origin, "log", "-1", "--format=%s", "develop").strip(),
+                         "docs(openspec): archive %s" % CHANGE)
+
+    def test_the_dry_run_reports_a_refused_push(self):
+        root = self.plan_repo()
+        commit_file(root, "src/product.py", "x = 1\n", "feat: local")
+        self.state(root, {"api": self.worktree()})
+        self.assertEqual(self.run_push(root, dry=True), 1, self.text())
+        self.assertIn("blocker", self.text())
+

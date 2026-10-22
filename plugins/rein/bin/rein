@@ -101,7 +101,10 @@ Subcommands:
   rein done <change> [--root <plan repo>] [--dry-run] [--yes] [--push]
                       close a finished change: remove its worktrees, close its tab,
                       archive the openspec plan (local commit on the plan repo's current
-                      branch, pushed only with --push; its folder must be committed). Removes
+                      branch; its folder must be committed). --push also pushes that one
+                      commit to the branch of the same name; it refuses (before removing
+                      anything) another upstream name, other local commits ahead, and
+                      main/master of a repo that has develop. Removes
                       NOTHING if any worktree is dirty, a main checkout or not integrated
                       (HEAD and branch) into origin/<base>; gitignored files that would be
                       lost (.env ...) are listed and need --yes, except gate.regenerable ones.

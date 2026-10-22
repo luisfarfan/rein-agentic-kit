@@ -14,7 +14,6 @@ import filecmp
 import fnmatch
 import json
 import os
-import shlex
 import shutil
 import subprocess
 from typing import Callable, Optional
@@ -403,6 +402,42 @@ def _push_target(root: str, branch: str, git: Callable[..., tuple]) -> tuple:
     return remote, merge
 
 
+_DEFAULT_BRANCHES = ("main", "master")
+
+
+def _push_blockers(root: str, git: Callable[..., tuple]) -> list:
+    """Why `--push` may not run, checked before anything is removed or committed.
+
+    `--push` publishes the plan-archive commit and nothing else: only to the plan repo's branch of
+    the same name, which must hold every local commit already (so the archive is the one commit
+    sent), and never to main/master of a repo that also has develop -- product work goes to
+    develop, and publishing main is the owner's explicit act, not a side effect of closing a plan."""
+    code, out = git(root, "symbolic-ref", "--quiet", "--short", "HEAD")
+    branch = out.strip()
+    if code != 0 or not branch:
+        return ["--push needs the plan repo on a branch"]
+    remote, ref = _push_target(root, branch, git)
+    if ref != "refs/heads/%s" % branch:
+        return ["--push only pushes to the branch of the same name: %s tracks %s %s; push it yourself"
+                % (branch, remote, ref)]
+    if branch in _DEFAULT_BRANCHES and (
+            git(root, "rev-parse", "--verify", "--quiet", "refs/remotes/%s/develop" % remote)[0] == 0
+            or git(root, "rev-parse", "--verify", "--quiet", "refs/heads/develop")[0] == 0):
+        return ["--push never pushes to %s of a repo that has develop; push it yourself if you mean it"
+                % branch]
+    tracking = "refs/remotes/%s/%s" % (remote, branch)
+    if git(root, "rev-parse", "--verify", "--quiet", tracking)[0] != 0:
+        return ["--push: %s has no %s/%s to push the archive onto" % (branch, remote, branch)]
+    code, ahead = git(root, "log", "--format=%h %s", "%s..HEAD" % tracking)
+    if code != 0:
+        return ["--push: git cannot compare %s with %s/%s" % (branch, remote, branch)]
+    if ahead.strip():
+        commits = ahead.strip().splitlines()
+        return ["--push would also send %d local commit(s) not on %s/%s (%s); --push sends only the plan "
+                "archive: push or drop them first" % (len(commits), remote, branch, "; ".join(commits[:5]))]
+    return []
+
+
 def run_done(root: str, change: str, client: OrcaClient, *, dry_run: bool = False, yes: bool = False,
              push: bool = False, git: Callable[..., tuple] = qd.run_git, fetch: Callable[[str, str], tuple] = qd.run_fetch,
              driver_alive: Optional[Callable[[str], bool]] = None, today: str = "",
@@ -444,6 +479,8 @@ def run_done(root: str, change: str, client: OrcaClient, *, dry_run: bool = Fals
     archive = _archive_target(root, change, today)
     if archive:
         blockers += [("plan", root, why) for why in _archive_blockers(root, archive[0], archive[1], git)]
+        if push:
+            blockers += [("plan", root, why) for why in _push_blockers(root, git)]
     if blockers:
         say("rein done: %s is NOT ready to close; nothing was removed:" % change)
         for repo, path, why in blockers:
@@ -513,7 +550,8 @@ def run_done(root: str, change: str, client: OrcaClient, *, dry_run: bool = Fals
             say("archived plan: committed on %s (no push); push it when ready, or use --push" % branch)
         else:
             remote, ref = _push_target(root, branch, git)
-            if git(root, "push", "-q", remote, "HEAD:%s" % ref)[0] == 0:  # the repo's pre-push hooks run
+            sha = git(root, "rev-parse", "HEAD")[1].strip()  # the archive commit, nothing after it
+            if sha and git(root, "push", "-q", remote, "%s:%s" % (sha, ref))[0] == 0:  # pre-push hooks run
                 say("archived plan: committed on %s and pushed to %s %s" % (branch, remote, ref))
             else:
                 errors += 1

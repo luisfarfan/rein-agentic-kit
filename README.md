@@ -167,8 +167,11 @@ rein watch <change> [--root <plan repo>] [--once] [--skip <id,id>]
                  # --once polls once, exit 1 if nothing pending · 2 usage
 rein done <change> [--root <plan repo>] [--dry-run] [--yes] [--push]
                  # close a finished change: remove its Orca worktrees, close the "rein ship" tab,
-                 # archive the openspec plan (local commit on the current branch; --push, opt-in,
-                 # pushes it to that branch's upstream, hooks included), archive the ship state.
+                 # archive the openspec plan (local commit on the current branch), archive the ship
+                 # state. --push (opt-in) pushes ONLY that commit, from the plan repo, to the branch
+                 # of the same name (hooks run); it is a blocker, found before anything is removed,
+                 # when the upstream has another name, other local commits are ahead, or the branch
+                 # is main/master of a repo that has develop.
                  # Removes NOTHING if any worktree is dirty, a main checkout, or has commits (HEAD or its
                  # branch) not in origin/<base>. Gitignored files that would be lost need --yes.
                  # Exit: 0 closed · 1 blockers · 2 usage · 126 Orca error or a rejected --push
