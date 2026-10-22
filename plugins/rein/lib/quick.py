@@ -45,8 +45,10 @@ def looks_like_bug(sentence: str) -> bool:
 
 # Lo que el agente no puede hacer; `rein quick done` comprueba las dos últimas (guard.py).
 GUARDRAILS = [
-    "Solo dentro de este worktree: no ejecutes scripts de fuera (repo hermano, harness, update) "
+    "Solo dentro de este worktree: no ejecutes tú scripts de fuera (repo hermano, harness, update) "
     "ni escribas fuera.",
+    "Los git hooks del repo SÍ deben correr al commitear, aunque llamen scripts de otros repos: "
+    "déjalos correr, sin preguntar.",
     "No te saltes hooks: nada de `--no-verify`, LEFTHOOK=0, LEFTHOOK_EXCLUDE, SKIP ni HUSKY=0; "
     "si uno falla, arréglalo o pregúntame.",
     "No toques la config de los gates (flow.config.json, mise.toml, Makefile) salvo que la tarea "

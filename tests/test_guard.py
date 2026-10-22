@@ -147,6 +147,30 @@ class Briefs(unittest.TestCase):
             self.assertIn(word, brief)
 
 
+class HooksMustRun(unittest.TestCase):
+    """Every worker asked whether the repo's commit-msg hook (which calls a sibling repo's script)
+    was allowed: the briefs say the repo's own hooks must run; only invoking outside scripts
+    yourself, or skipping hooks, is forbidden."""
+    EN = ("git hooks must run", "even when they call scripts in other repositories")
+
+    def test_worker_and_fix_briefs(self):
+        for tid, kw in (("T1", {}), ("AUDIT1-api", {"audit_findings": "BLOCKING: x"}), ("GATE1-api", {})):
+            t = ship.ss.TaskState(id=tid, repo="api", deps=[], human_review=False, verification="", type="", **kw)
+            spec = ship.build_task_spec(t, {"tasks": []})
+            for phrase in self.EN:
+                self.assertIn(phrase, spec, tid)
+
+    def test_audit_brief(self):
+        spec = ship.build_audit_spec({}, {"/wt/a": ["x.py"]}, "R", "/wt/a", "demo")
+        for phrase in self.EN:
+            self.assertIn(phrase, spec)
+
+    def test_quick_brief(self):
+        brief = quick.build_brief("arregla x")
+        self.assertIn("hooks del repo SÍ deben correr", brief)
+        self.assertIn("aunque llamen scripts de otros repos", brief)
+
+
 class QuickDone(DoneCase):
     def test_a_quick_change_to_the_gate_config_is_red_with_its_reason(self):
         self.make_repo()

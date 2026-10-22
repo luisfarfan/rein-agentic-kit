@@ -174,8 +174,11 @@ def gate_config_allowed(plan: dict, state, task, default_repo: str = "") -> list
 
 # What no worker or auditor may do. Rein checks the last two when a task ends (guard.py).
 GUARDRAILS = [
-    "Work only inside your worktree: never run scripts that live outside it (a sibling repo's, a "
-    "harness or update script) and never write files outside it.",
+    "Work only inside your worktree: never invoke, yourself, scripts that live outside it (a sibling "
+    "repo's, a harness or update script) and never write files outside it.",
+    "The repo's git hooks must run when you commit, even when they call scripts in other repositories: "
+    "that is the repo's own setup, not you running outside scripts, so commit normally and let them run "
+    "(no need to ask).",
     "Never bypass the repo's hooks: no `--no-verify` / `-n`, no LEFTHOOK=0, LEFTHOOK_EXCLUDE, SKIP, "
     "HUSKY=0 or the like. A hook that fails is yours to fix, or a question for the owner.",
     "Never modify the configuration Rein judges the work with (flow.config.json, the task runner's "
