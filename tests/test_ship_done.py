@@ -1212,3 +1212,71 @@ class DoneWithoutPushMessage(Env):
         self.assertEqual(code, 0, self.text())
         self.assertNotIn("--push", self.text())  # the state is archived: `rein done --push` would find none
         self.assertIn("git -C %s push" % root, self.text())
+
+
+class DonePushMainTests(DonePushTests):
+    """Whether the remote has develop is asked of the remote itself (`git ls-remote`), never deduced
+    from the clone's refs: a single-branch clone or a narrowed fetch refspec shows no develop. When
+    the remote cannot be asked, --push does not push: it says which command to run."""
+
+    def main_clone(self, single_branch=True):
+        root = self.plan_repo()
+        git(root, "push", "-q", "origin", "develop:main")
+        main = os.path.join(self.tmp, "plan-main")
+        args = ["git", "clone", "-q", "--branch", "main"] + (["--single-branch"] if single_branch else []) \
+            + [self.origin, main]
+        subprocess.run(args, check=True, capture_output=True)
+        if single_branch:
+            self.assertEqual(git(main, "for-each-ref", "refs/heads/develop", "refs/remotes/origin/develop").strip(),
+                             "", "the clone shows no develop")
+        os.makedirs(os.path.join(main, ".rein"), exist_ok=True)
+        return main
+
+    def refused(self, root, needle):
+        before = git(self.origin, "rev-parse", "main").strip()
+        wt = self.worktree()
+        self.state(root, {"api": wt})
+        self.assertEqual(self.run_push(root), 1, self.text())
+        self.assertIn(needle, self.text())
+        self.assertIn("git -C %s push" % root, self.text(), "a refused --push names the command to run")
+        self.assertEqual(git(self.origin, "rev-parse", "main").strip(), before, "nothing was pushed")
+        self.assertEqual(self.orca.rm_paths(), [])
+        self.assertTrue(os.path.isdir(os.path.join(root, "openspec", "changes", CHANGE)))
+
+    def test_a_single_branch_clone_of_main_is_refused_when_the_remote_has_develop(self):
+        self.refused(self.main_clone(), "develop")
+
+    def test_a_narrowed_fetch_refspec_is_refused_too(self):
+        root = self.main_clone(single_branch=False)
+        git(root, "config", "remote.origin.fetch", "+refs/heads/main:refs/remotes/origin/main")
+        git(root, "update-ref", "-d", "refs/remotes/origin/develop")
+        self.assertEqual(git(root, "for-each-ref", "refs/heads/develop", "refs/remotes/origin/develop").strip(), "")
+        self.refused(root, "develop")
+
+    def test_a_remote_that_cannot_be_asked_is_refused(self):
+        root = self.main_clone()
+        git(root, "remote", "set-url", "origin", os.path.join(self.tmp, "gone.git"))
+        self.refused(root, "cannot tell")
+
+    def test_main_of_a_repo_without_develop_is_pushed(self):
+        bare = os.path.join(self.tmp, "solo.git")
+        subprocess.run(["git", "init", "-q", "--bare", "-b", "main", bare], check=True)
+        root = os.path.join(self.tmp, "solo")
+        self.clone(bare, root)
+        git(root, "checkout", "-q", "-b", "main")
+        commit_file(root, "openspec/changes/%s/proposal.md" % CHANGE, "p\n", "plan")
+        with open(os.path.join(root, ".gitignore"), "w") as fh:
+            fh.write(".rein/\n")
+        git(root, "add", ".gitignore")
+        git(root, "commit", "-q", "-m", "ignore")
+        git(root, "push", "-q", "-u", "origin", "main")
+        self.state(root, {"api": self.worktree()})
+        self.assertEqual(self.run_push(root), 0, self.text())
+        self.assertEqual(git(bare, "rev-parse", "main").strip(), git(root, "rev-parse", "HEAD").strip())
+
+    def test_every_refused_push_names_the_command(self):
+        root = self.plan_repo()
+        commit_file(root, "src/product.py", "x = 1\n", "feat: local")
+        self.state(root, {"api": self.worktree()})
+        self.assertEqual(self.run_push(root), 1, self.text())
+        self.assertIn("git -C %s push" % root, self.text())

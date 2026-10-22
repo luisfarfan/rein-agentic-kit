@@ -104,7 +104,8 @@ Subcommands:
                       branch; its folder must be committed). --push also pushes that one
                       commit to the branch of the same name; it refuses (before removing
                       anything) another upstream name, other local commits ahead, and
-                      main/master of a repo that has develop. Removes
+                      main/master when the remote has develop or cannot be asked (it
+                      then names the git push to run). Removes
                       NOTHING if any worktree is dirty, a main checkout or not integrated
                       (HEAD and branch) into origin/<base>; gitignored files that would be
                       lost (.env ...) are listed and need --yes, except gate.regenerable ones.

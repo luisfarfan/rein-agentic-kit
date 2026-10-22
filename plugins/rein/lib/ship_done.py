@@ -404,9 +404,37 @@ def _push_target(root: str, branch: str, git: Callable[..., tuple]) -> tuple:
 
 
 _DEFAULT_BRANCHES = ("main", "master")
+LS_REMOTE_TIMEOUT = 30
+
+
+def _remote_heads(root: str, remote: str):
+    """The branch names `remote` has, asked of the remote itself; None when it cannot be asked (no
+    network, auth, a timeout). Never prompts: a closed `rein done` must not hang on a password."""
+    env = dict(os.environ, GIT_TERMINAL_PROMPT="0")
+    env.setdefault("GIT_SSH_COMMAND", "ssh -o BatchMode=yes")
+    try:
+        proc = subprocess.run(["git", "-C", root, "ls-remote", "--heads", remote], capture_output=True,
+                              text=True, env=env, timeout=LS_REMOTE_TIMEOUT, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0:
+        return None
+    return {line.split("refs/heads/", 1)[1].strip() for line in proc.stdout.splitlines() if "refs/heads/" in line}
 
 
 def _push_blockers(root: str, git: Callable[..., tuple]) -> list:
+    """`_push_refusals`, each ending with what to run instead: in doubt, --push pushes nothing."""
+    found = _push_refusals(root, git)
+    if not found:
+        return []
+    branch = git(root, "symbolic-ref", "--quiet", "--short", "HEAD")[1].strip() or "<branch>"
+    remote = git(root, "config", "branch.%s.remote" % branch)[1].strip() or "origin"
+    how = (" -- nothing is pushed: run `rein done` without --push, then push the archive commit yourself "
+           "if that is what you want: git -C %s push %s %s" % (shlex.quote(root), remote, branch))
+    return [why + how for why in found]
+
+
+def _push_refusals(root: str, git: Callable[..., tuple]) -> list:
     """Why `--push` may not run, checked before anything is removed or committed.
 
     `--push` publishes the plan-archive commit and nothing else: only to the plan repo's branch of
@@ -419,13 +447,17 @@ def _push_blockers(root: str, git: Callable[..., tuple]) -> list:
         return ["--push needs the plan repo on a branch"]
     remote, ref = _push_target(root, branch, git)
     if ref != "refs/heads/%s" % branch:
-        return ["--push only pushes to the branch of the same name: %s tracks %s %s; push it yourself"
-                % (branch, remote, ref)]
-    if branch in _DEFAULT_BRANCHES and (
-            git(root, "rev-parse", "--verify", "--quiet", "refs/remotes/%s/develop" % remote)[0] == 0
-            or git(root, "rev-parse", "--verify", "--quiet", "refs/heads/develop")[0] == 0):
-        return ["--push never pushes to %s of a repo that has develop; push it yourself if you mean it"
-                % branch]
+        return ["--push only pushes to the branch of the same name: %s tracks %s %s" % (branch, remote, ref)]
+    if branch in _DEFAULT_BRANCHES:
+        # The clone's refs prove nothing (a single-branch clone, a narrowed fetch refspec): ask the remote.
+        if git(root, "rev-parse", "--verify", "--quiet", "refs/heads/develop")[0] == 0:
+            return ["--push never pushes to %s of a repo that has develop" % branch]
+        heads = _remote_heads(root, remote)
+        if heads is None:
+            return ["--push cannot tell whether %s has develop (git ls-remote failed), so it will not push "
+                    "to %s" % (remote, branch)]
+        if "develop" in heads:
+            return ["--push never pushes to %s of a repo that has develop (%s has it)" % (branch, remote)]
     tracking = "refs/remotes/%s/%s" % (remote, branch)
     if git(root, "rev-parse", "--verify", "--quiet", tracking)[0] != 0:
         return ["--push: %s has no %s/%s to push the archive onto" % (branch, remote, branch)]
@@ -435,7 +467,7 @@ def _push_blockers(root: str, git: Callable[..., tuple]) -> list:
     if ahead.strip():
         commits = ahead.strip().splitlines()
         return ["--push would also send %d local commit(s) not on %s/%s (%s); --push sends only the plan "
-                "archive: push or drop them first" % (len(commits), remote, branch, "; ".join(commits[:5]))]
+                "archive" % (len(commits), remote, branch, "; ".join(commits[:5]))]
     return []
 
 
