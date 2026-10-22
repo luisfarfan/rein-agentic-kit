@@ -11,7 +11,8 @@ from flow.config.json, per language, or is detected:
   module's), plus tests that import the module (a grep of its dotted path).
   They run through `commands.testOne`, `{target}` receiving every file.
 - `vitest` / `jest`: the runner's own dependency graph (`vitest related --run`,
-  `jest --findRelatedTests`) over the changed source files.
+  `jest --findRelatedTests`) over the changed source files. Detected only when the
+  repo's test command (or the package script it names) runs that runner itself.
 - a command template with `{tests}` (mapped test files, e.g. sibling
   `*.spec.ts`) or `{files}` (changed source files).
 - `testOne` (detected when only `commands.testOne` is known): mapped test files
@@ -25,6 +26,7 @@ or a strategy that cannot be applied runs the full `test` slot instead.
 
 from __future__ import annotations
 
+import json
 import os
 import posixpath
 import re
@@ -66,8 +68,33 @@ def _language(resolved: dict) -> str:
     return stack
 
 
-def strategy(resolved: dict) -> str:
-    """The strategy name or command template for this repo; "full" when nothing applies."""
+_SCRIPT_RE = re.compile(r"^(?:npm|pnpm|yarn|bun)(?:\s+run)?\s+(\S+)\s*$")
+
+
+def _test_runner(commands: dict, base: str = "") -> str:
+    """What `commands.test` really runs: a package script (`pnpm test`, `npm run test`) is read
+    from `base`/package.json; without a test command, `testOne` stands in."""
+    test = str(commands.get("test") or "").strip()
+    if not test:
+        return str(commands.get("testOne") or "")
+    m = _SCRIPT_RE.match(test)
+    if m and base:
+        try:
+            with open(os.path.join(base, "package.json"), encoding="utf-8") as fh:
+                scripts = json.load(fh).get("scripts") or {}
+        except (OSError, ValueError, AttributeError):
+            scripts = {}
+        if isinstance(scripts, dict) and isinstance(scripts.get(m.group(1)), str):
+            return scripts[m.group(1)]
+    return test
+
+
+def strategy(resolved: dict, base: str = "") -> str:
+    """The strategy name or command template for this repo; "full" when nothing applies.
+
+    Auto picks `vitest related` / `jest --findRelatedTests` only when the repo's test command
+    IS that runner: a repo tested through another runner (`ng test`, whose builder compiles
+    templateUrl that bare vitest cannot) gets its own `testOne`, or the full suite."""
     cfg = settings(resolved)["affected"]
     lang = _language(resolved)
     value = ""
@@ -85,9 +112,10 @@ def strategy(resolved: dict) -> str:
     test = "%s %s" % (commands.get("test") or "", commands.get("testOne") or "")
     if lang == "python" and "pytest" in test:
         return "pytest"
-    if re.search(r"\bvitest\b", test):
+    runner = _test_runner(commands, base)
+    if re.search(r"\bvitest\b", runner):
         return "vitest"
-    if re.search(r"\bjest\b", test):
+    if re.search(r"\bjest\b", runner):
         return "jest"
     if "{target}" in (commands.get("testOne") or ""):
         return "testOne"  # any runner: the mapped test files through its own testOne
@@ -245,10 +273,10 @@ def compute(root: str, resolved: dict, changed: list) -> dict:
     affected tests), or "full" (the whole `test` slot, `reason` says why)."""
     resolved = resolved or {}
     commands = resolved.get("commands") or {}
-    how = strategy(resolved)
-    cap = settings(resolved)["max"]
     sub = str(resolved.get("subproject") or "")
     base = os.path.join(root, sub) if sub else root
+    how = strategy(resolved, base)
+    cap = settings(resolved)["max"]
     prefix = "cd %s && " % shlex.quote(sub) if sub else ""
     rel = _relative(changed, sub)
     out = {"strategy": how, "mode": "full", "command": "", "configured": "", "targets": [], "reason": ""}

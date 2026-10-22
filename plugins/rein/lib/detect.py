@@ -373,7 +373,12 @@ def _detect_node(root: str) -> dict:
         commands["typecheck"] = "npx tsc --noEmit"
 
     # The bounded verification: ONE test file, never the suite.
-    if "vitest" in deps:
+    if re.search(r"\bng\s+test\b", str(scripts.get("test") or "")):
+        # Angular's builder compiles templateUrl/styleUrl; bare vitest/jest on a spec cannot,
+        # even when vitest is in the deps as the builder's runner.
+        exec_ = {"pnpm": "pnpm exec", "yarn": "yarn", "bun": "bunx"}.get(pm, "npx")
+        commands.setdefault("testOne", f"{exec_} ng test --watch=false --include={{target}}")
+    elif "vitest" in deps:
         commands.setdefault("testOne", "npx vitest run {target}")
     elif "jest" in deps:
         commands.setdefault("testOne", "npx jest {target}")

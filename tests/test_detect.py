@@ -60,6 +60,16 @@ class TestAutodetect(unittest.TestCase):
         self.assertIn("frontend", r["subtypes"], "vite must mark the project as needing rendered verification")
         self.assertIn("vite", r["subtypes"])
 
+    def test_angular_ng_test_gets_an_ng_test_test_one_not_bare_vitest(self):
+        # vitest is in the deps for the unit-test builder, but bare `vitest run` cannot compile
+        # templateUrl: one test file goes through `ng test --include`, like the suite does.
+        pkg = json.dumps({"scripts": {"test": "ng test"},
+                          "devDependencies": {"vitest": "^4", "@angular/cli": "^21"}})
+        with Project({"package.json": pkg, "pnpm-lock.yaml": "", "angular.json": "{}"}) as root:
+            r = detect.resolve(root)
+        self.assertEqual(r["commands"]["test"], "pnpm test")
+        self.assertEqual(r["commands"]["testOne"], "pnpm exec ng test --watch=false --include={target}")
+
     def test_rust_and_go(self):
         with Project({"Cargo.toml": ""}) as root:
             self.assertEqual(detect.resolve(root)["stack"], "rust")

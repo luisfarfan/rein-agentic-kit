@@ -108,6 +108,38 @@ class TestStrategy(unittest.TestCase):
         self.assertEqual(affected.strategy({**PY, "gate": {"affected": {"node": "vitest"}}}), "pytest")
 
 
+class TestAngular(Repo):
+    """An Angular repo tested with `ng test` (vitest in its deps, through the unit-test builder):
+    `vitest related` cannot resolve templateUrl, so auto never picks it."""
+    DETECTED = {"stack": "node", "packageManager": "pnpm",
+                "commands": {"test": "pnpm test", "testOne": "npx vitest run {target}"}}
+
+    def setUp(self):
+        super().setUp()
+        self.write("package.json", '{"scripts": {"test": "ng test"}, "devDependencies": {"vitest": "^4"}}')
+        self.write("angular.json", "{}")
+        self.write("src/app/a.component.ts", "")
+        self.write("src/app/a.component.spec.ts", "")
+
+    def test_auto_never_picks_vitest_related_for_ng_test(self):
+        self.assertNotIn(affected.strategy(self.DETECTED, self.root), ("vitest", "jest"))
+        self.assertNotIn(self.compute(["src/app/a.component.ts"], self.DETECTED)["strategy"], ("vitest", "jest"))
+        cfg = {**self.DETECTED, "commands": {"test": "pnpm exec ng test --watch=false",
+                                             "testOne": "pnpm exec ng test --watch=false --include={target}"}}
+        self.assertEqual(affected.strategy(cfg, self.root), "testOne")
+        out = self.compute(["src/app/a.component.ts"], cfg)
+        self.assertEqual(out["command"], "pnpm exec ng test --watch=false --include=src/app/a.component.spec.ts")
+
+    def test_a_test_command_that_is_not_vitest_or_jest_never_picks_related(self):
+        cfg = {"stack": "node", "commands": {"test": "pnpm exec ng test", "testOne": "npx vitest run {target}"}}
+        self.assertEqual(affected.strategy(cfg), "testOne")
+        self.assertEqual(affected.strategy({"stack": "node", "commands": {"test": "pnpm exec ng test"}}), "full")
+
+    def test_a_package_script_running_vitest_still_picks_related(self):
+        self.write("package.json", '{"scripts": {"test": "vitest run"}}')
+        self.assertEqual(affected.strategy(self.DETECTED, self.root), "vitest")
+
+
 class TestJs(Repo):
     NODE = {"stack": "node", "packageManager": "pnpm", "commands": {"test": "pnpm vitest run"}}
 

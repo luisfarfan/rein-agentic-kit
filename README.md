@@ -335,8 +335,11 @@ per repo, after all its tasks and before the audit. How a change maps to tests:
   files), e.g. `"npx ng test --watch=false --include {tests}"`.
 - `testOne` (mapped test files through `commands.testOne`) or `full` (the `test` slot).
 
-Without `gate.affected` it is detected from the `test` command (pytest, vitest, jest), else
-`full`. Nothing affected runs no tests at task level; more than `affectedMax` files (default 40)
+Without `gate.affected` it is detected from the `test` command (pytest, vitest, jest; a package
+script such as `pnpm test` is read from `package.json`), else `testOne` when it takes `{target}`,
+else `full`. `vitest related` / `jest --findRelatedTests` are only picked when the test command
+runs that runner itself: a repo tested with `ng test` (vitest only as the builder's runner) uses
+its `testOne` (detected as `ng test --watch=false --include={target}`) or the full suite. Nothing affected runs no tests at task level; more than `affectedMax` files (default 40)
 or a change to dependencies or test configuration runs the full slot.
 
 **Precedence:** `flow.config.json` › task runner (`justfile` / `Makefile` / `Taskfile` / `mise`) ›
