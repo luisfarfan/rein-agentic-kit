@@ -135,6 +135,29 @@ class TestAngular(Repo):
         self.assertEqual(affected.strategy(cfg), "testOne")
         self.assertEqual(affected.strategy({"stack": "node", "commands": {"test": "pnpm exec ng test"}}), "full")
 
+    def test_a_runner_named_only_in_the_arguments_is_not_the_runner(self):
+        self.write("package.json", '{"scripts": {"test": "ng test --configuration=vitest"}}')
+        cfg = {"stack": "node", "packageManager": "npm",
+               "commands": {"test": "npm run test", "testOne": "npx ng test --watch=false --include={target}"}}
+        self.assertEqual(affected.strategy(cfg, self.root), "testOne")
+        self.assertEqual(self.compute(["src/app/a.component.ts"], cfg)["command"],
+                         "npx ng test --watch=false --include=src/app/a.component.spec.ts")
+        for test in ("ng test --runner jest", "ng test -- --reporter=vitest-sonar", "echo vitest && ng test",
+                     "npm run test:vitest", "nx test app --runner=vitest"):
+            self.assertEqual(affected.strategy({"stack": "node", "commands": {"test": test}}), "full", test)
+
+    def test_the_runner_is_the_invoked_executable(self):
+        for test, want in (("vitest run", "vitest"), ("pnpm vitest run", "vitest"), ("npx vitest --run", "vitest"),
+                           ("pnpm exec vitest run", "vitest"), ("CI=1 vitest run", "vitest"),
+                           ("./node_modules/.bin/jest --ci", "jest"), ("yarn jest", "jest"),
+                           ("npm exec -- jest", "jest"), ("bunx vitest", "vitest")):
+            self.assertEqual(affected.strategy({"stack": "node", "commands": {"test": test}}), want, test)
+
+    def test_an_explicit_gate_affected_still_wins(self):
+        cfg = {"stack": "node", "commands": {"test": "ng test --configuration=vitest"},
+               "gate": {"affected": {"node": "vitest"}}}
+        self.assertEqual(affected.strategy(cfg), "vitest")
+
     def test_a_package_script_running_vitest_still_picks_related(self):
         self.write("package.json", '{"scripts": {"test": "vitest run"}}')
         self.assertEqual(affected.strategy(self.DETECTED, self.root), "vitest")

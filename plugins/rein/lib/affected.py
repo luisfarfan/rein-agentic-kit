@@ -89,6 +89,59 @@ def _test_runner(commands: dict, base: str = "") -> str:
     return test
 
 
+_WRAPPERS = ("npx", "bunx", "pnpx")  # the next word is the executable
+_PMS = ("pnpm", "yarn", "bun", "npm")
+_ENV_ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+
+
+def _executables(command: str):
+    """The executables `command` invokes, one per simple command (`a && b; c | d`); None when it
+    cannot be read (a parse error) or a part runs something unknowable here (a package script)."""
+    try:
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|()")
+        lexer.whitespace_split = True
+        words = list(lexer)
+    except ValueError:
+        return None
+    parts, current = [], []
+    for w in words:
+        if w and all(c in ";&|()" for c in w):
+            parts.append(current)
+            current = []
+        else:
+            current.append(w)
+    parts.append(current)
+    out = []
+    for part in parts:
+        while part and _ENV_ASSIGN.match(part[0]):
+            part.pop(0)
+        if part and part[0] in ("env", "cross-env"):
+            part.pop(0)
+            while part and _ENV_ASSIGN.match(part[0]):
+                part.pop(0)
+        if not part:
+            continue
+        exe = posixpath.basename(part[0])
+        rest = part[1:]
+        if exe in _WRAPPERS or exe in _PMS:
+            rest = [w for w in rest if not w.startswith("-")]
+            if exe in _PMS and rest and rest[0] in ("exec", "dlx", "x"):
+                rest = rest[1:]
+            elif exe in _PMS and (not rest or rest[0] in ("run", "test", "run-script", "t")):
+                return None  # a package script: what it runs is not in this command
+            exe = posixpath.basename(rest[0]) if rest else ""
+        out.append(exe)
+    return out
+
+
+def _runner(command: str) -> str:
+    """"vitest" or "jest" when `command` invokes that runner itself (not merely names it in an
+    argument), and no other test runner; "" otherwise."""
+    exes = _executables(command) or []
+    found = {e for e in exes if e in ("vitest", "jest")}
+    return found.pop() if len(found) == 1 else ""
+
+
 def strategy(resolved: dict, base: str = "") -> str:
     """The strategy name or command template for this repo; "full" when nothing applies.
 
@@ -112,11 +165,9 @@ def strategy(resolved: dict, base: str = "") -> str:
     test = "%s %s" % (commands.get("test") or "", commands.get("testOne") or "")
     if lang == "python" and "pytest" in test:
         return "pytest"
-    runner = _test_runner(commands, base)
-    if re.search(r"\bvitest\b", runner):
-        return "vitest"
-    if re.search(r"\bjest\b", runner):
-        return "jest"
+    runner = _runner(_test_runner(commands, base))
+    if runner:
+        return runner
     if "{target}" in (commands.get("testOne") or ""):
         return "testOne"  # any runner: the mapped test files through its own testOne
     return "full"
