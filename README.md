@@ -349,8 +349,9 @@ Without `gate.affected` it is detected from the `test` command (pytest, vitest, 
 script such as `pnpm test` is read from `package.json`), else `testOne` when it takes `{target}`,
 else `full`. `vitest related` / `jest --findRelatedTests` are only picked when the `test` command
 is exactly ONE direct invocation of that runner -- `vitest run`, `npx jest`, `pnpm exec vitest run`,
-`pnpm vitest`, `yarn jest`, `bunx vitest` -- with plain arguments: no `&&`/`;`/`|`, redirects,
-subshells, env assignments or `cd` (a package script's body must meet the same rule). Anything
+`pnpm vitest`, `yarn jest`, `bunx vitest` -- with plain arguments on one line: a line break, `;`,
+`&&`, `||`, `|`, `&`, backticks, `$(`, `<` or `>` anywhere disqualifies it, as do subshells, env
+assignments or `cd` (a package invocation and its script's body must meet the same rule). Anything
 else uses the repo's `testOne`, else the full suite: a repo tested with `ng test` gets its `testOne`
 (detected as `ng test --watch=false --include={target}`). Nothing affected runs no tests at task level; more than `affectedMax` files (default 40)
 or a change to dependencies or test configuration runs the full slot.

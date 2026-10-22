@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import sys
@@ -166,6 +167,34 @@ class TestAngular(Repo):
         self.assertEqual((out["mode"], out["command"]), ("full", ""))
         cfg = {"stack": "node", "commands": {"test": "cd web && vitest run", "testOne": "cd web && vitest run {target}"}}
         self.assertEqual(affected.strategy(cfg), "testOne")
+
+    def test_a_line_break_makes_two_commands_never_a_direct_invocation(self):
+        # C1: `\s+` took a LF for an argument separator, so `vitest run<LF>ng test` lost ng test.
+        cfg = {"stack": "node", "commands": {"test": "vitest run\nng test"}}
+        self.assertEqual(affected.strategy(cfg), "full")
+        self.assertEqual(self.compute(["src/app/a.component.ts"], cfg)["mode"], "full")
+        for test in ("vitest run\r\nng test", "vitest\nrun", "vitest run\n", "\nvitest run", "vitest run\tng\ntest"):
+            self.assertEqual(affected.strategy({"stack": "node", "commands": {"test": test}}), "full", repr(test))
+
+    def test_a_script_body_with_a_line_break_is_not_direct(self):
+        self.write("package.json", json.dumps({"scripts": {"test": "vitest run\nng test"}}))
+        cfg = {"stack": "node", "commands": {"test": "npm run test"}}
+        self.assertEqual(affected.strategy(cfg, self.root), "full")
+
+    def test_a_package_invocation_with_a_line_break_is_not_resolved(self):
+        self.write("package.json", json.dumps({"scripts": {"test": "vitest run"}}))
+        cfg = {"stack": "node", "commands": {"test": "npm\ntest"}}
+        self.assertEqual(affected.strategy(cfg, self.root), "full")
+        self.assertEqual(affected.strategy({"stack": "node", "commands": {"test": "npm run test"}}, self.root), "vitest")
+
+    def test_every_listed_shell_token_disqualifies(self):
+        for token in ("\n", ";", "&&", "||", "|", "&", "`", "$(", "<", ">"):
+            for test in ("vitest run %s x" % token, "vitest run%sx" % token):
+                self.assertEqual(affected.strategy({"stack": "node", "commands": {"test": test}}), "full",
+                                 repr(test))
+            self.write("package.json", json.dumps({"scripts": {"test": "vitest run %s x" % token}}))
+            self.assertEqual(affected.strategy({"stack": "node", "commands": {"test": "pnpm test"}}, self.root),
+                             "full", repr(token))
 
     def test_without_a_test_command_testone_never_picks_related(self):
         cfg = {"stack": "node", "commands": {"testOne": "npx vitest run {target}"}}

@@ -69,15 +69,26 @@ def _language(resolved: dict) -> str:
     return stack
 
 
-_SCRIPT_RE = re.compile(r"^(?:npm|pnpm|yarn|bun)(?:\s+run)?\s+(\S+)\s*$")
+_SCRIPT_RE = re.compile(r"^(?:npm|pnpm|yarn|bun)(?:[ \t]+run)?[ \t]+([^\s]+)[ \t]*$")
+
+# Shell syntax that makes a test command more than one invocation: none of these may appear in a
+# command auto treats as the runner itself, nor in the package invocation it resolves.
+SHELL_TOKENS = ("\n", "\r", ";", "&&", "||", "|", "&", "`", "$(", "<", ">")
+
+
+def _has_shell_syntax(command: str) -> bool:
+    return any(token in (command or "") for token in SHELL_TOKENS)
 
 
 def _test_runner(commands: dict, base: str = "") -> str:
     """What `commands.test` really runs: a package script (`pnpm test`, `npm run test`) is read
     from `base`/package.json (its body must then be a direct invocation too); "" without one."""
-    test = str(commands.get("test") or "").strip()
-    if not test:
+    test = str(commands.get("test") or "")
+    if not test.strip():
         return ""
+    if _has_shell_syntax(test):
+        return test  # never resolved as a script reference: `_runner` rejects it as it is
+    test = test.strip()
     m = _SCRIPT_RE.match(test)
     if m and base:
         try:
@@ -95,13 +106,16 @@ def _test_runner(commands: dict, base: str = "") -> str:
 # arguments. No shell syntax at all (&&, ;, |, redirects, subshells, $()/backticks, &), no env
 # assignments, no cd: anything else is a command the related tests could not stand in for.
 _DIRECT_RUNNER = re.compile(
-    r"^(?:(?:npx|bunx)\s+|(?:pnpm|yarn|bun|npm)\s+exec\s+(?:--\s+)?|(?:pnpm|yarn)\s+)?(vitest|jest)"
-    r"(?:\s+[^\s;&|<>()`$'\"\\]+)*$")
+    r"^(?:(?:npx|bunx)[ \t]+|(?:pnpm|yarn|bun|npm)[ \t]+exec[ \t]+(?:--[ \t]+)?|(?:pnpm|yarn)[ \t]+)?"
+    r"(vitest|jest)(?:[ \t]+[^\s;&|<>()`$'\"\\]+)*$")
 
 
 def _runner(command: str) -> str:
-    """"vitest" or "jest" when `command` is exactly one direct invocation of it; "" otherwise."""
-    m = _DIRECT_RUNNER.match((command or "").strip())
+    """"vitest" or "jest" when `command` is exactly one direct invocation of it; "" otherwise.
+    Any SHELL_TOKENS (a line break included: the shell runs each line) disqualifies it."""
+    if _has_shell_syntax(command):
+        return ""
+    m = _DIRECT_RUNNER.match((command or "").strip(" \t"))
     return m.group(1) if m else ""
 
 
