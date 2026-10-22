@@ -1056,6 +1056,19 @@ class _Driver:
         rows = self.rows() if rows is None else rows
         return next((r for r in rows if str(r.get("taskId") or "") == orca_task_id and r.get("dispatchId")), None)
 
+    def _failed_start(self, task, rows):
+        """The worker-list row of the start just attempted for `task` when Orca already reports it
+        failed (it aborted the launch), else None."""
+        if not task.starting:
+            return None
+        row = self._started_row(task.starting, rows)
+        return row if row is not None and self.settled_row(row) == "failed" else None
+
+    def _record_worktree(self, repo: str, wt: str) -> None:
+        if wt and repo not in self.state.worktrees:
+            self.state.worktrees[repo] = wt
+            self.state.worktree_paths[repo] = oc.worktree_path_of(wt)
+
     def adopt_started(self, task, rows=None, keep: bool = False) -> bool:
         """A worker-start whose answer was lost (a kill, a dropped connection): if Orca did start
         the worker, supervise it rather than starting a second one in a second worktree.
@@ -1073,10 +1086,7 @@ class _Driver:
             return False
         task.starting = ""
         task.dispatch_id, task.status = str(row["dispatchId"]), "running"
-        wt = self._row_worktree(row)
-        if wt and task.repo not in self.state.worktrees:
-            self.state.worktrees[task.repo] = wt
-            self.state.worktree_paths[task.repo] = oc.worktree_path_of(wt)
+        self._record_worktree(task.repo, self._row_worktree(row))
         provider = str(((row.get("projection") or {}).get("provider") or {}).get("id") or "")
         if provider:
             task.agent = provider
@@ -1122,11 +1132,19 @@ class _Driver:
                 name=self.change if fresh else "", setup="run" if fresh else "",
                 timeout=START_TIMEOUT_SECONDS)
         except OrcaError as exc:
+            failed = None
             try:  # Orca may have started it and lost only the answer; it may also list it only later
-                if self.adopt_started(task, keep=True):
+                rows = self.rows()
+                failed = self._failed_start(task, rows)
+                if failed is None and self.adopt_started(task, rows, keep=True):
                     return
             except OrcaError:
                 pass  # `starting` stays set: the retry or the resume asks again
+            if failed is not None:
+                # This start's own dispatch, already failed: the error is the whole story. It is not a
+                # lost answer to adopt, nor a worker_done to recover and retry.
+                task.starting = ""
+                self._record_worktree(task.repo, self._row_worktree(failed))
             question = "Orca could not start a worker for %s: %s" % (task.id, exc)
             residual = oc.residual_resources_of(exc)
             if residual:
