@@ -146,6 +146,21 @@ class TestAngular(Repo):
                      "npm run test:vitest", "nx test app --runner=vitest"):
             self.assertEqual(affected.strategy({"stack": "node", "commands": {"test": test}}), "full", test)
 
+    def test_a_command_that_also_runs_another_suite_is_never_reduced_to_related(self):
+        cfg = {"stack": "node", "commands": {"test": "ng test --watch=false && vitest run",
+                                             "testOne": "ng test --watch=false --include={target}"}}
+        self.assertEqual(affected.strategy(cfg), "testOne")
+        self.assertEqual(self.compute(["src/app/a.component.ts"], cfg)["command"],
+                         "ng test --watch=false --include=src/app/a.component.spec.ts")
+        for test in ("vitest run && ng test", "vitest run; karma start", "vitest run && playwright test",
+                     "vitest run || ng test", "vitest run && jest", "pnpm lint && vitest run",
+                     "vitest run && pnpm test:e2e"):
+            self.assertEqual(affected.strategy({"stack": "node", "commands": {"test": test}}), "full", test)
+
+    def test_only_a_directory_change_may_go_with_the_runner(self):
+        self.assertEqual(affected.strategy({"stack": "node", "commands": {"test": "cd web && vitest run"}}),
+                         "vitest")
+
     def test_the_runner_is_the_invoked_executable(self):
         for test, want in (("vitest run", "vitest"), ("pnpm vitest run", "vitest"), ("npx vitest --run", "vitest"),
                            ("pnpm exec vitest run", "vitest"), ("CI=1 vitest run", "vitest"),

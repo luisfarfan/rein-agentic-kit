@@ -134,12 +134,16 @@ def _executables(command: str):
     return out
 
 
+# What may run beside the runner without being a check of its own: changing directory.
+_HARMLESS = ("cd",)
+
+
 def _runner(command: str) -> str:
-    """"vitest" or "jest" when `command` invokes that runner itself (not merely names it in an
-    argument), and no other test runner; "" otherwise."""
-    exes = _executables(command) or []
-    found = {e for e in exes if e in ("vitest", "jest")}
-    return found.pop() if len(found) == 1 else ""
+    """"vitest" or "jest" when `command` invokes exactly that runner, once, and nothing else but a
+    `cd` (not merely names it in an argument). Anything else in the command -- another suite, a lint,
+    a nested script -- is a check the related tests would drop, so "" (testOne or the full suite)."""
+    exes = [e for e in (_executables(command) or []) if e not in _HARMLESS]
+    return exes[0] if len(exes) == 1 and exes[0] in ("vitest", "jest") else ""
 
 
 def strategy(resolved: dict, base: str = "") -> str:
