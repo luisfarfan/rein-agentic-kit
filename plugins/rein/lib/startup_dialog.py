@@ -23,8 +23,20 @@ DIALOGS = (
 
 # A choice the dialog offers: "1. Trust all", "> 1. Yes", "❯ 2. No".
 _OPTION = re.compile(r"^(?:[>❯›▶*]\s*)?\d+[.)]\s+\S")
-# What a dialog may draw below its options: key hints, nothing the agent says.
-_HINT = re.compile(r"\b(?:enter|esc|escape|return|tab|arrow|select|confirm|cancel|navigate)\b|[↑↓←→⏎]", re.I)
+# What a dialog may draw below its options: key hints, and nothing else. A hint line is made only
+# of hints ("Enter to confirm · Esc to exit", "↑/↓ to navigate"), each a key and at most "to <verb>"
+# from a short list; a key's name inside a sentence of the agent's ("return to the task") is not one.
+_KEY = r"(?:press\s+)?(?:enter|esc|escape|return|tab|space|shift\+tab|ctrl\+\w|[↑↓←→⏎]+(?:\s*/\s*[↑↓←→]+)?)"
+_VERB = (r"(?:confirm|continue|select|submit|cancel|exit|quit|go\s+back|navigate|choose|accept|proceed|"
+         r"close|dismiss|toggle|move|review)")
+_HINT_PART = re.compile(r"^%s(?:\s+(?:to\s+)?%s)?$" % (_KEY, _VERB), re.I)
+_HINT_SEP = re.compile(r"\s*(?:·|\||•|,|\s{2,})\s*")
+
+
+def _is_hint(line: str) -> bool:
+    parts = [p for p in _HINT_SEP.split(line.strip()) if p]
+    return bool(parts) and all(_HINT_PART.match(p) for p in parts)
+
 _BORDER = "│┃|║╭╮╰╯╔╗╚╝─━═ \t"
 MAX_DESCRIPTION = 12  # lines between a dialog's title and its first option
 
@@ -47,7 +59,7 @@ def _is_current(lines: list, start: int) -> bool:
     first, last = options[0], options[-1]
     if any(lines[i] and not _OPTION.match(lines[i]) for i in range(first, last + 1)):
         return False  # the option list is one block
-    return all(not x or _HINT.search(x) for x in lines[last + 1:])
+    return all(not x or _is_hint(x) for x in lines[last + 1:])
 
 
 def detect(lines, path: str, screen: bool = False) -> str:

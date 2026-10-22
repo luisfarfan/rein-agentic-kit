@@ -43,6 +43,14 @@ CLAUDE_TRUST = ["Do you trust the files in this folder?", "/wt/pos", "❯ 1. Yes
 QUOTED = ["I investigated the startup failure.", 'The previous terminal displayed "Hooks need review".',
           "I am now checking the implementation and tests."]
 ANSWERED = CODEX_HOOKS + ["Trust accepted. Continuing.", "Reading the task brief", "Running pnpm test"]
+# Output after the options that merely contains a key's name is the agent talking, not a hint.
+AFTER_WITH_KEY_WORDS = [
+    CODEX_HOOKS + ["I will now return to the task and check the implementation."],
+    CODEX_HOOKS + ["Return to the task"],
+    CODEX_HOOKS + ["Press enter to continue the refactor of the tab component"],
+    CODEX_HOOKS + ["Selected: 1. Trust all and continue", "Esc to cancel"],
+    CODEX_HOOKS + ["Running: select tests by tab"],
+]
 PLAN_ONE = "# Change: demo\n\n- [ ] T001 Add the api endpoint\n  - Repo: proxima-api\n  - Verification: `pnpm test`\n"
 
 
@@ -69,6 +77,16 @@ class Detect(unittest.TestCase):
     def test_a_dialog_already_answered_is_no_dialog(self):
         for screen in (True, False):
             self.assertEqual(startup_dialog.detect(ANSWERED, "/x", screen=screen), "", screen)
+
+    def test_a_key_word_inside_the_agents_output_is_no_hint(self):
+        for lines in AFTER_WITH_KEY_WORDS:
+            for screen in (True, False):
+                self.assertEqual(startup_dialog.detect(lines, "/x", screen=screen), "", (lines[-1], screen))
+
+    def test_real_key_hints_keep_the_dialog_open(self):
+        for hint in ("Enter to confirm · Esc to exit", "Press enter to continue", "↑/↓ to navigate",
+                     "esc to cancel", "Enter to select | Esc to quit", "↑↓ select · ⏎ confirm"):
+            self.assertTrue(startup_dialog.detect(CODEX_HOOKS + [hint], "/x", screen=True), hint)
 
     def test_a_title_without_options_is_no_dialog(self):
         self.assertEqual(startup_dialog.detect(["  Hooks need review", "", "  checking the hooks now"], "/x"), "")
@@ -195,6 +213,9 @@ class NotADialog(StallDriver):
 
     def test_an_answered_dialog_opens_no_gate(self):
         self.assertEqual(self.probe(ANSWERED), [])
+
+    def test_output_with_a_key_word_after_the_dialog_opens_no_gate(self):
+        self.assertEqual(self.probe(AFTER_WITH_KEY_WORDS[0]), [])
 
 
 class FailedWorkerQuoting(ShipCase):
