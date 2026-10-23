@@ -18,6 +18,8 @@ Starts a small change with `rein quick`; a cheap agent does it and the owner tal
 4. Report the agent, workspace and tab. When the owner says "listo", that agent runs `rein quick done`.
    Then run `rein quick watch <workspace>` in the background: a QUESTION is the agent asking the
    owner; relay it, answer with `rein quick answer <workspace> "<their words>"`, watch again.
+   REPORT: the agent's final report, as text; relay it. To let a running quick change a gate config
+   file: `rein quick allow-config <workspace> <path,...>`.
    STALLED: the agent never started (a startup dialog); tell the owner, and once they cleared it,
    `rein quick resend <workspace>`.
 5. Exit 2 (e.g. a dirty checkout with "aquí mismo"): ask the owner before re-running with `--dirty-ok`.

@@ -101,7 +101,98 @@ def ask(cwd: str, text: str, *, now: Callable[[], float] = time.time,
     return 0
 
 
+REPORT_FILE = ".rein/quick-report.md"
+REPORT_CAP = 20000  # characters kept of one report
+
+
+def reports(record: dict) -> list:
+    found = record.get("reports")
+    return [r for r in found if isinstance(r, dict)] if isinstance(found, list) else []
+
+
+def report(cwd: str, text: str, *, now: Callable[[], float] = time.time,
+           say: Callable[[str], None] = print) -> int:
+    """`rein quick report "<text or file>"`: the agent's final report, as text. A path to a file
+    reads that file. Kept in the record (`rein quick watch` prints it) and in `.rein/quick-report.md`,
+    so nobody has to read the agent's screen. 0 recorded, 2 nothing to report or no quick task here."""
+    text = str(text or "")
+    if os.path.isfile(text.strip()):
+        try:
+            with open(text.strip(), encoding="utf-8", errors="replace") as fh:
+                text = fh.read()
+        except OSError as exc:
+            say("cannot read %s: %s" % (text.strip(), exc))
+            return 2
+    text = text.strip()[:REPORT_CAP]
+    if not text:
+        say("rein quick report needs the report text (or the path of a file that holds it)")
+        return 2
+    workspace = workspace_of(cwd)
+    if not workspace:
+        say("not inside a git checkout")
+        return 2
+    added = {}
+
+    def add(record):
+        added["id"] = "r%d" % (len(reports(record)) + 1)
+        record["reports"] = reports(record) + [{"id": added["id"], "text": text, "at": now()}]
+    record, why = qd.update_record(workspace, add)
+    if record is None:
+        say(why)
+        return 2
+    try:
+        with open(os.path.join(workspace, REPORT_FILE), "w", encoding="utf-8") as fh:
+            fh.write(text + "\n")
+    except OSError as exc:  # the record has it: the file is a convenience
+        say("could not write %s: %s" % (REPORT_FILE, exc))
+    say("informe %s registrado: el orquestador lo lee con `rein quick watch`." % added["id"])
+    return 0
+
+
 # --- the orchestrator's side ---------------------------------------------------
+
+def allow_config(arg: str, paths: str, client: OrcaClient, *, cwd: str = ".",
+                 say: Callable[[str], None] = print) -> int:
+    """`rein quick allow-config <workspace> <path,...>`: let a quick task already running change those
+    gate-config files, like `--allow-config` at its start. Updates the record (the guard reads it when
+    `rein quick done` runs) and tells the agent in its terminal. 0 done, 1 no quick task, 2 usage or
+    ambiguous, 126 recorded but the agent's terminal could not be reached."""
+    granted = qd._guard.declared_paths(paths)
+    if not granted:
+        say("rein quick allow-config needs the config paths to allow, e.g. flow.config.json,mise.toml")
+        return 2
+    found = targets(arg, client, cwd)
+    if not found:
+        say("no quick task%s" % (" for %r" % arg if arg else " here"))
+        return 1
+    if len(found) > 1:
+        say("several quick tasks; name one: %s" % ", ".join(found))
+        return 2
+    workspace = found[0]
+
+    def merge(record):
+        have = qd._guard.declared_paths(record.get("allow_config") or [])
+        record["allow_config"] = have + [p for p in granted if p not in have]
+    record, why = qd.update_record(workspace, merge)
+    if record is None:
+        say(why)
+        return 1
+    message = ("El dueño autoriza ahora cambiar estos archivos de config en esta tarea: %s "
+               "(--allow-config). Ya no hace falta preguntar por ellos; cualquier otro archivo de "
+               "config sigue prohibido." % ", ".join(granted))
+    handle = str(record.get("terminal") or "")
+    if not handle:
+        say("allowed %s in %s, but the start recorded no terminal: tell the agent yourself:\n%s"
+            % (", ".join(granted), workspace, message))
+        return 126
+    try:
+        client.terminal_send(handle, message, enter=True)
+    except OrcaError as exc:
+        say("allowed %s in %s, but orca could not type it into %s (%s): tell the agent yourself:\n%s"
+            % (", ".join(granted), workspace, handle, exc.message, message))
+        return 126
+    say("allowed %s in %s (the agent was told in %s)" % (", ".join(granted), workspace, handle))
+    return 0
 
 def answer(arg: str, text: str, client: OrcaClient, *, cwd: str = ".", qid: str = "",
            now: Callable[[], float] = time.time, say: Callable[[str], None] = print) -> int:
@@ -156,7 +247,7 @@ def _brief_of(workspace: str, record: dict) -> str:
     sentence = str(record.get("sentence") or "")
     env = _gate_env.export_lines(_gate_env.for_worktree(workspace, repo=str(record.get("repo") or "")))
     return quick.build_brief(sentence, str(record.get("linear") or ""), quick.looks_like_bug(sentence),
-                             qd.ship.BIN, env)
+                             qd.ship.BIN, env, list(record.get("allow_config") or []))
 
 
 def _agent_terminal(workspace: str, record: dict, client: OrcaClient) -> tuple:
@@ -209,6 +300,11 @@ def resend(arg: str, client: OrcaClient, *, cwd: str = ".", terminal: str = "",
     qd.update_record(workspace, stamp)
     say("brief re-sent to %s (%s)" % (handle, workspace))
     return 0
+
+
+def _announce_report(workspace: str, r: dict) -> None:
+    print("REPORT %s %s" % (workspace, r.get("id")))
+    print(str(r.get("text") or ""))
 
 
 def _announce(workspace: str, q: dict) -> None:
@@ -272,6 +368,13 @@ def _poll(arg: str, client: OrcaClient, cwd: str, printed: set, now: float = 0.0
                 continue
             printed.add(key)
             _announce(workspace, q)
+            shown = True
+        for r in reports(record or {}):
+            key = (os.path.realpath(workspace), "report", r.get("id"))
+            if key in printed:
+                continue
+            printed.add(key)
+            _announce_report(workspace, r)
             shown = True
     return shown
 

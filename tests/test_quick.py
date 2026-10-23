@@ -105,8 +105,9 @@ class BriefTests(unittest.TestCase):
                 # 170, plus the line that leaves `rein quick close` to the orchestrator and the
                 # three guardrails Rein enforces (outside the worktree, hooks, gate config), and
                 # the line that sends a question through `rein quick ask`, and the line that lets
-                # the repo's own git hooks run (every worker asked about them).
-                self.assertLessEqual(len(brief.split()), 280)
+                # the repo's own git hooks run (every worker asked about them), and the line that
+                # asks for the final report through `rein quick report`.
+                self.assertLessEqual(len(brief.split()), 330)
                 self.assertIn(sentence, brief)
 
 

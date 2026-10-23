@@ -315,7 +315,8 @@ def start_quick(
         env_lines = _gate_env.export_lines(_gate_env.for_worktree(here_path, repo=repo_name))
     elif _gate_env.for_worktree(repo_path, repo=repo_name):
         env_lines = ['eval "$(python3 %s env --repo %s)"' % (shlex.quote(ship.BIN), shlex.quote(repo_name))]
-    brief = quick.build_brief(sentence, linear, quick.looks_like_bug(sentence), ship.BIN, env_lines)
+    brief = quick.build_brief(sentence, linear, quick.looks_like_bug(sentence), ship.BIN, env_lines,
+                              _guard.declared_paths(allow_config))
     # The other checkouts Orca knows, BEFORE the agent exists: `done` names what changed there
     # (guard.outside_changes). The workspace itself is not one of them (with --here it is a main checkout).
     outside_before = _guard.outside_snapshot(

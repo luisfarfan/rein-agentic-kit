@@ -121,7 +121,7 @@ def env_instruction(env_lines: list) -> str:
             "when your shell does not keep variables); every test you run must use it." % " && ".join(env_lines))
 
 
-def build_task_spec(task: ss.TaskState, plan: dict, env_lines: list = ()) -> str:
+def build_task_spec(task: ss.TaskState, plan: dict, env_lines: list = (), allowed_config: list = ()) -> str:
     entry = next((t for t in plan.get("tasks") or [] if t.get("id") == task.id), {})
     lines = [WORKER_PREAMBLE, "", "Task %s: %s" % (task.id, entry.get("title") or task.id)]
     if env_lines:
@@ -130,6 +130,9 @@ def build_task_spec(task: ss.TaskState, plan: dict, env_lines: list = ()) -> str
         lines += ["Acceptance criteria:"] + ["- %s" % c for c in entry["acceptance"]]
     if task.verification:
         lines.append("Verification command: %s" % task.verification)
+    if allowed_config:
+        lines.append("Gate config you may change (this task's `Gate config:`): %s. Any other config "
+                     "file Rein judges the work with stays off limits." % ", ".join(allowed_config))
     if plan.get("why"):
         lines += ["", "Why: %s" % plan["why"]]
     decisions = _decisions_block(plan.get("decisions") or [])
@@ -951,7 +954,7 @@ class _Driver:
             if not handle:
                 self.say("%s: Orca lists no terminal for worker %s; resend the brief by hand" % (task.id, a.dispatch_id))
                 return
-            self.client.terminal_send(handle, build_task_spec(task, self.plan, self.env_lines(task.repo)))
+            self.client.terminal_send(handle, build_task_spec(task, self.plan, self.env_lines(task.repo), self.task_allowed_config(task)))
         except OrcaError as exc:
             self.say("%s: could not resend the brief to %s: %s" % (task.id, a.dispatch_id, exc))
             return
@@ -987,6 +990,11 @@ class _Driver:
                 dialog = _dialog.read(self.client, handle, path)
             if active or waiting or dialog:
                 self.feed(sd.WorkerActivity(t.dispatch_id, active, waiting, dialog))
+
+    def task_allowed_config(self, task) -> list:
+        """The gate-config files `task` is authorized to change, named in its brief."""
+        return gate_config_allowed(getattr(self, "plan", None) or {}, self.state, task,
+                                   (getattr(self, "ctx", None) or {}).get("default_repo", ""))
 
     def outside_snapshot(self, repo: str) -> dict:
         """The other checkouts Orca knows, as the worker for `repo` is launched (guard.py); the
@@ -1050,7 +1058,7 @@ class _Driver:
             resolved = _detect.resolve(path) if path and os.path.isdir(path) else {}
             task.verification = fix_verification(task, self.plan, self.state, path, resolved,
                                                  (getattr(self, "ctx", None) or {}).get("default_repo", ""))
-        spec = build_task_spec(task, self.plan, self.env_lines(task.repo))
+        spec = build_task_spec(task, self.plan, self.env_lines(task.repo), self.task_allowed_config(task))
         entry = next((t for t in self.plan.get("tasks") or [] if t["id"] == task.id), {})
         deps = self.orca_deps(task)
         task.orca_task_id = oc.task_id_of(self.client.task_create(

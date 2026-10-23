@@ -92,9 +92,17 @@ Subcommands:
                       record the owner's answer and type it into the agent's terminal.
                       Exit 0 sent / 1 no open question / 2 usage / 126 recorded, not sent
   rein quick watch [<path or quick-<slug>>] [--once]
-                      block until a quick task needs the owner -- a question, or STALLED:
+                      block until a quick task needs the owner -- a question, a REPORT, or STALLED:
                       no sign of work ship.stallMinutes after its launch (a startup
                       dialog?) -- print it, exit 0; --once exits 1 when nothing is pending
+  rein quick report "<text or file>"
+                      run by that agent when it finishes: its report as text, kept in
+                      .rein/quick.json (and .rein/quick-report.md); `rein quick watch`
+                      prints it (REPORT), so nobody reads the agent's screen
+  rein quick allow-config <path or quick-<slug>> <path,...>
+                      grant --allow-config to a quick already running: updates its record
+                      and tells the agent in its terminal. Exit 0 / 1 no task / 2 usage /
+                      126 recorded, agent not reached
   rein quick resend [<path or quick-<slug>>] [--terminal <handle>]
                       type the task's brief (kept in .rein/quick.json) into the agent's
                       terminal again, e.g. once a startup dialog that swallowed it is gone.
@@ -1134,12 +1142,13 @@ def cmd_done(argv: list[str]) -> int:
 
 _INBOX_USAGE = ('usage: rein quick ask "<question>"  |  rein quick answer [<path or quick-<slug>>] "<text>" '
                 '[--id q1]  |  rein quick watch [<path or quick-<slug>>] [--once]  |  '
-                'rein quick resend [<path or quick-<slug>>] [--terminal <handle>]')
+                'rein quick resend [<path or quick-<slug>>] [--terminal <handle>]  |  '
+                'rein quick report "<text or file>"  |  rein quick allow-config <path or quick-<slug>> <path,...>')
 
 
 def _quick_inbox(argv: list[str]):
     """`rein quick ask|answer|watch ...`, or None when argv is not one of them."""
-    if not argv or argv[0] not in ("ask", "answer", "watch", "resend"):
+    if not argv or argv[0] not in ("ask", "answer", "watch", "resend", "report", "allow-config"):
         return None
     sub, rest = argv[0], argv[1:]
     words = [a for i, a in enumerate(rest)
@@ -1150,6 +1159,16 @@ def _quick_inbox(argv: list[str]):
             print(_INBOX_USAGE)
             return 2
         return _inbox.ask(".", words[0])
+    if sub == "report":
+        if len(words) != 1 or flags:
+            print(_INBOX_USAGE)
+            return 2
+        return _inbox.report(".", words[0])
+    if sub == "allow-config":
+        if len(words) != 2 or flags:
+            print(_INBOX_USAGE)
+            return 2
+        return _inbox.allow_config(words[0], words[1], _quick.OrcaClient(), cwd=".")
     if sub == "answer":
         if len(words) not in (1, 2) or any(f != "--id" and not f.startswith("--id=") for f in flags):
             print(_INBOX_USAGE)

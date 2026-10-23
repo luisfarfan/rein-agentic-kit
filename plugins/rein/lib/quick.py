@@ -57,11 +57,12 @@ GUARDRAILS = [
 
 
 def build_brief(sentence: str, linear: str = "", bug: bool = False, bin_path: str = "",
-                env_lines: list = ()) -> str:
+                env_lines: list = (), allowed_config: list = ()) -> str:
     """The agent's first message, in Spanish (spec section 4).
 
     `bin_path` is this checkout's `bin/rein`, named as the fallback when `rein` is not on PATH.
-    `env_lines` (the repo's `gate.env`) open it: Orca cannot pass an environment to the agent."""
+    `env_lines` (the repo's `gate.env`) open it: Orca cannot pass an environment to the agent.
+    `allowed_config` (--allow-config) is named: the agent must not ask about files its task may change."""
     lines = []
     if env_lines:
         lines.append("Entorno de tests: ejecuta `%s` antes de cualquier comando de test (en el mismo "
@@ -76,6 +77,9 @@ def build_brief(sentence: str, linear: str = "", bug: bool = False, bin_path: st
     lines.append("Si tienes una duda para mí, no la dejes solo en esta terminal: ejecuta "
                  "`rein quick ask \"<pregunta>\"` y espera; mi respuesta llegará aquí.")
     lines.append("Cuando diga *listo*, ejecuta `rein quick done` y muéstrame el resultado.")
+    lines.append("Tu informe final viaja como texto, no por la pantalla: cuando termines, ejecuta "
+                 "`rein quick report \"<texto o ruta de un archivo>\"` con lo que cambiaste y el resultado de "
+                 "los tests; el orquestador lo lee de ahí.")
     if bin_path:
         lines.append("Si `rein` no está en el PATH, usa `python3 %s quick done`." % bin_path)
     lines.append(
@@ -93,6 +97,10 @@ def build_brief(sentence: str, linear: str = "", bug: bool = False, bin_path: st
         lines.append("Commit convencional sin ID de issue: no inventes uno ni lo preguntes.")
     lines.append("No incluyas `.rein/` en ningún commit.")
     lines += GUARDRAILS
+    if allowed_config:
+        lines.append("Esta tarea AUTORIZA expresamente cambiar estos archivos de config: %s "
+                     "(--allow-config); no preguntes por ellos. Cualquier otro archivo de config "
+                     "sigue prohibido." % ", ".join(allowed_config))
     lines.append("`rein quick close` no es tuyo: lo corre el orquestador desde fuera.")
     lines.append("No leas `.env*` ni credenciales.")
     return "\n".join(lines)
