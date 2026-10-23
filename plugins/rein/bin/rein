@@ -107,9 +107,11 @@ Subcommands:
                       type the task's brief (kept in .rein/quick.json) into the agent's
                       terminal again, e.g. once a startup dialog that swallowed it is gone.
                       Exit 0 sent / 1 no quick task / 2 ambiguous / 126 Orca
-  rein quick done     run by that agent when you say "listo": light gate on the
+  rein quick done [--accept-outside]
+                      run by that agent when you say "listo": light gate on the
                       changed files, plus an audit only for risky paths. Never commits
-                      or pushes. Exit 0 green / 1 red / 2 no quick task / 126 setup
+                      or pushes. Exit 0 green / 1 red or unresolved outside activity (the owner
+                      checks it, then --accept-outside) / 2 no quick task / 126 setup
   rein done <change> [--root <plan repo>] [--dry-run] [--yes] [--push]
                       close a finished change: remove its worktrees, close its tab,
                       archive the openspec plan (local commit on the plan repo's current
@@ -1197,7 +1199,7 @@ def cmd_quick(argv: list[str]) -> int:
     (`--agent --model x`) is a usage error, judged here rather than by `_opt`.
     """
     usage = ('usage: rein quick "<sentence>" [--repo <name>] [--base <branch>] [--here [--dirty-ok]] '
-             "[--agent <id> [--model <m>]] [--linear <id>] [--allow-config <path,...>]  |  rein quick done  |  "
+             "[--agent <id> [--model <m>]] [--linear <id>] [--allow-config <path,...>]  |  rein quick done [--accept-outside]  |  "
              "rein quick close [<path or quick-<slug>>] [--dry-run] [--yes]")
     # One pass over argv. A value flag takes the next token as its value (or `--flag=value`);
     # a missing, empty or `-`-led value is a usage error, and the token that was not consumed
@@ -1253,7 +1255,7 @@ def cmd_quick(argv: list[str]) -> int:
         print(usage)
         return 2
     if sentence == "done":
-        return _quick.done_quick(cwd=".", client=_quick.OrcaClient())
+        return _quick.done_quick(cwd=".", client=_quick.OrcaClient(), accept_outside="--accept-outside" in argv)
     return _quick.start_quick(
         sentence, repo=values.get("repo", ""), base=values.get("base", ""), here=here, dirty_ok=dirty_ok,
         agent=agent, model=model, linear=values.get("linear", ""), cwd=".", client=_quick.OrcaClient(),

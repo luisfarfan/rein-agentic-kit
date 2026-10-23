@@ -658,7 +658,7 @@ def _audit(workspace: str, record: dict, changed: list, limits: dict, client: Or
 
 def done_quick(*, cwd: str = ".", client: OrcaClient, run=verify.run_one,
                clock: Callable[[], float] = time.time, env: dict = os.environ,
-               say: Callable[[str], None] = print) -> int:
+               say: Callable[[str], None] = print, accept_outside: bool = False) -> int:
     # 1. The workspace and its record
     code, top = run_git(cwd, "rev-parse", "--show-toplevel")
     workspace = top.strip()
@@ -717,18 +717,29 @@ def done_quick(*, cwd: str = ".", client: OrcaClient, run=verify.run_one,
     # the repo's commit-msg hook. A breach is red, with its reason.
     problems, broken = _guard.run_guard(_guard.check, workspace, record["base_sha"], resolved,
                                         _guard.declared_paths(record.get("allow_config") or []))
-    doubts = []
-    outside, broken2 = _guard.run_guard(_guard.outside_changes, record.get("outside_before") or {}, warnings=doubts)
+    doubts, held = [], []
+    outside, broken2 = _guard.run_guard(_guard.outside_changes, record.get("outside_before") or {},
+                                        warnings=doubts, unresolved=held)
     problems += outside
     for doubt in doubts:  # not provably this agent's: told, not failed
         say("guard warning: %s" % doubt)
+    pending = []
+    for item in held:  # could hide this agent's write: only the owner's explicit answer makes it green
+        if accept_outside:
+            say("guard: accepted by the owner: %s" % item)
+        else:
+            pending.append(item)
+            say("guard: UNRESOLVED: %s" % item)
+    if pending:
+        say("not green: check that checkout (git log, git diff HEAD~..), revert what the agent wrote there, "
+            "then `rein quick done --accept-outside` to accept it as other activity")
     broken = broken or broken2
     for problem in problems:
         say("guard: %s" % problem)
     if broken:
         say("%s (not a verdict on the code: fix the environment and run `rein quick done` again)" % broken)
     # Logged once the guard has spoken: the line keeps the verdict `done` actually gives.
-    if outcome == "red" or (problems and outcome != "setup"):
+    if outcome == "red" or ((problems or pending) and outcome != "setup"):
         verdict_code = 1
     elif outcome == "setup" or broken:
         verdict_code = 126
@@ -736,8 +747,8 @@ def done_quick(*, cwd: str = ".", client: OrcaClient, run=verify.run_one,
         verdict_code = 0
     entry = dict(_gate_log.summarize(report), kind="quick", repo=repo, tier="task+full-suite" if full_suite else "task",
                  env=sorted(gate_vars), affected=planned.get("affected"), base=record["base_sha"], exit=verdict_code)
-    if problems or broken:
-        entry["guard"] = "; ".join(problems + ([broken] if broken else []))[:600]
+    if problems or pending or broken:
+        entry["guard"] = "; ".join(problems + pending + ([broken] if broken else []))[:600]
     _gate_log.append(_gate_log.root_log_path(workspace), entry)
     if verdict_code:
         return verdict_code

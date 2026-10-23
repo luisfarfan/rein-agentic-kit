@@ -1464,6 +1464,7 @@ class _Driver:
         launch_head = getattr(task, "launch_head", "")
 
         def job(cancel=None):
+            held = []
             if not path:
                 return sd.GateVerdict(task_id, 126, "no worktree is recorded for %s" % repo, dispatch_id)
             try:
@@ -1509,8 +1510,13 @@ class _Driver:
                 problems, broken = _guard.run_guard(_guard.check, path, guard_base, _detect.resolve(path), allowed)
                 doubts = []
                 outside, broken2 = _guard.run_guard(_guard.outside_changes, outside_before,
-                                                    ignore=[plan_file] if plan_file else [], warnings=doubts)
+                                                    ignore=[plan_file] if plan_file else [], warnings=doubts,
+                                                    unresolved=held)
                 problems += outside
+                if held:  # could hide the worker's write: the owner answers before the task closes
+                    entry["guardUnresolved"] = "; ".join(held)[:600]
+                    for item in held:
+                        warn("%s guard UNRESOLVED: %s" % (task_id, item[:300]))
                 if doubts:  # not provably the worker's: the owner is told, the task is not failed
                     entry["guardWarning"] = "; ".join(doubts)[:600]
                     for doubt in doubts:
@@ -1533,7 +1539,8 @@ class _Driver:
                         detail = _fit_blocks([(head, lines), ("gate", detail.split("\n"))], _FAILURE_CAP)
             if log:
                 _gate_log.append(log, dict(entry, exit=code))
-            return sd.GateVerdict(task_id, code, detail, dispatch_id, touched=attempt_touched(path, launch_head))
+            return sd.GateVerdict(task_id, code, detail, dispatch_id, touched=attempt_touched(path, launch_head),
+                                  unresolved=held if code == 0 else [])
         return job
 
     def run_gate(self, a):

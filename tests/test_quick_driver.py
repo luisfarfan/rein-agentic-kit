@@ -772,12 +772,12 @@ class DoneCase(unittest.TestCase):
                                "opus-reviewer")
         return play
 
-    def done(self, *, run=None, orca=None, cwd=None, env=None, clock=None):
+    def done(self, *, run=None, orca=None, cwd=None, env=None, clock=None, **kw):
         run = run or _Gate()
         orca = orca or _AuditOrca()
         code = quick_driver.done_quick(
             cwd=cwd or self.ws, client=OrcaClient(executable="ORCA", runner=orca), run=run,
-            clock=clock or _Clock(), env={} if env is None else env, say=self.out.append)
+            clock=clock or _Clock(), env={} if env is None else env, say=self.out.append, **kw)
         return code, run, orca
 
     def text(self):

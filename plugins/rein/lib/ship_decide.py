@@ -122,6 +122,9 @@ class GateVerdict:
     dispatch_id: str = ""
     # The repo-relative files the judged attempt changed (since its launch), whatever the verdict.
     touched: list = field(default_factory=list)
+    # What the guard saw outside the worktree that could hide the worker's write but cannot be told
+    # from other sessions' activity. A green verdict with any is held for the owner, never closed.
+    unresolved: list = field(default_factory=list)
 
 
 @dataclass
@@ -804,6 +807,19 @@ def _on_gate_verdict(state: ShipState, event: GateVerdict, cfg: ShipConfig, acti
     if event.dispatch_id and task.dispatch_id and event.dispatch_id != task.dispatch_id:
         return  # the gate of an earlier attempt
     task.touched = sorted(set(task.touched or []) | set(event.touched or []))
+    if event.exit_code == 0 and event.unresolved:
+        # Green, but something outside the worktree may be this worker's and cannot be told from
+        # other sessions' activity: never closed on its own, the owner answers.
+        _release_held(task, actions)
+        task.status = "gated"
+        task.last_failure = "unresolved activity outside the worktree"
+        _open(state, actions, task.id,
+              "Task %s passed its gate, but the guard saw activity outside its worktree that may include "
+              "what the worker wrote there and cannot be told apart from other sessions' work: %s. Check "
+              "those checkouts. accept = it is other activity, close the task; retry = a fresh worker "
+              "(revert what the worker wrote first); skip = fail the task."
+              % (task.id, "; ".join(event.unresolved)[:QUESTION_DETAIL]), ["accept", "retry", "skip"], "outside")
+        return
     if event.exit_code == 0:
         if task.human_review:  # the gate is green; a person still has to say so
             _release_held(task, actions)
@@ -847,6 +863,7 @@ _RESOLUTIONS = {
     "human_review": ("approve", "reject"),
     "retry_exhausted": ("retry", "skip"),
     "setup": ("retry", "skip"),
+    "outside": ("accept", "retry", "skip"),
     "timeout": ("retry", "skip"),
     "brake": ("retry", "pause", "switch-to-codex"),  # switch-to-codex: gates opened by an older Rein
     "audit_exhausted": ("fix", "accept", "reject"),
@@ -919,6 +936,17 @@ def _on_gate_resolved(state: ShipState, event: GateResolved, cfg: ShipConfig, ac
                 actions.append(StopWorker(task.id, task.dispatch_id, resolution))
             else:
                 _after_stop(state, task, resolution, actions)
+    elif kind == "outside":
+        if task is not None:
+            _release_held(task, actions)
+            if resolution == "accept":  # the owner says it is not the worker's: the green stands
+                task.status = "gating"
+                _on_gate_verdict(state, GateVerdict(task.id, 0, "", task.dispatch_id), cfg, actions)
+            elif resolution == "retry":
+                task.status, task.attempts = "pending", 0
+            else:
+                task.status = "failed"
+        _settle(state, actions)
     elif kind in ("retry_exhausted", "setup"):
         if task is not None:
             _release_held(task, actions)

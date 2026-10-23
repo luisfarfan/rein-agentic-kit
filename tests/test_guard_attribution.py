@@ -48,9 +48,9 @@ class Attribution(unittest.TestCase):
         run_git(self.qa, "config", "user.name", "me")
 
     def review(self, before, **kw):
-        warnings = []
-        problems = guard.outside_changes(before, warnings=warnings, **kw)
-        return problems, warnings
+        warnings, held = [], []
+        problems = guard.outside_changes(before, warnings=warnings, unresolved=held, **kw)
+        return problems, warnings + held
 
     def test_a_fetch_that_advances_a_remote_ref_is_not_the_workers(self):
         remote = os.path.join(self.tmp, "origin.git")
@@ -73,12 +73,14 @@ class Attribution(unittest.TestCase):
         run_git(self.qa, "merge", "-q", "--ff-only", "feature")  # `rein merge` from another session
         self.assertEqual(self.review(before), ([], []))
 
-    def test_a_commit_by_another_identity_made_here_is_a_warning_not_a_failure(self):
+    def test_a_commit_by_another_identity_made_here_is_unresolved_not_a_failure(self):
         before = guard.outside_snapshot([self.qa])
         other_session_commit(self.qa, "rel.py", "r = 1\n", "chore: release")
-        problems, warnings = self.review(before)
+        held = []
+        problems = guard.outside_changes(before, warnings=[], unresolved=held)
         self.assertEqual(problems, [])
-        self.assertEqual(len(warnings), 1, warnings)
+        self.assertEqual(len(held), 1, held)
+        self.assertEqual(len(guard.outside_changes(before, warnings=[])), 1)  # no list for it: fails closed
 
     def test_a_file_dirty_at_launch_and_committed_unchanged_by_someone_else_is_clean(self):
         write(self.qa, "app.py", "y = 1\n")

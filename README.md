@@ -351,10 +351,13 @@ knows; by the end of its task, file content that differs there fails it, with th
 (a file dirty at launch and committed unchanged by someone else is not a difference). Other sessions
 work in those checkouts too, so a commit only counts when the worker could have made it: created in
 that checkout (its reflog), under the checkout's own `user.email`, and not already reachable from a
-ref seen at launch. A fetch, a fast-forward or merge of work that existed at launch, or a commit by
-another identity is not the worker's. What cannot be told (HEAD switched to unrelated history, work made
-after launch that arrived by a merge) is a visible `guard warning` for the owner in ship and quick,
-not a failure. A repo's own git
+ref seen at launch. A fetch, or a fast-forward or merge of work that existed at launch, is not the
+worker's. A commit made in that checkout by another identity may have swept in a file the worker
+left pending there, which no comparison can then see: it is **unresolved**, never green. `rein quick
+done` exits 1 ("not green") until the owner checks that checkout and runs `rein quick done
+--accept-outside`; ship holds the task in an `outside` gate (accept / retry / skip). Odder but
+harmless activity (HEAD switched to unrelated history, work made after launch that arrived by a
+merge) is a visible `guard warning`. A repo's own git
 hooks can write there without the worker doing anything: beads (`bd hooks run post-checkout`,
 `pre-commit`, lefthook's `beads-export`) rewrites `.beads/` in the MAIN checkout on every commit
 or checkout made in a worktree. Leave such paths out with globs relative to the watched repo, in

@@ -456,16 +456,17 @@ def _created_here(path: str) -> set:
 
 
 def _head_moves(path: str, was: dict, head: str) -> tuple:
-    """`(problems, doubts)` for HEAD having moved from the launch's to `head`.
+    """`(problems, doubts, unresolved)` for HEAD having moved from the launch's to `head`.
 
     The commits looked at are all those reachable from `head` that did not exist at launch (not
     reachable from the launch HEAD nor any ref the snapshot saw), whether or not HEAD still descends
     from the launch's: an amend or a reset is judged by the commits it made. Each is:
     - the worker's, a failure: made in this checkout (its reflog) under the checkout's own identity;
-    - doubtful, a warning: made in this checkout by another identity (it may have swept in a pending
-      edit of the worker's, and a commit hides the file from the content comparison, unless every file
-      it touches was dirty at launch and so is compared anyway), or arrived by a merge, pull or
-      fast-forward from elsewhere with this identity;
+    - unresolved, which a caller must not turn green: made in this checkout by another identity (it
+      may have swept in a pending edit of the worker's, and a commit hides the file from the content
+      comparison -- unless every file it touches was dirty at launch and so is compared anyway). The
+      owner resolves it explicitly;
+    - doubtful, a warning: arrived by a merge, pull or fast-forward from elsewhere with this identity;
     - not the worker's, silent: arrived by a merge, pull or fast-forward, written by someone else.
     HEAD ending on history that does not contain the launch's is a doubt of its own. Work that
     existed at launch is never new, whoever moved HEAD to it."""
@@ -498,20 +499,20 @@ def _head_moves(path: str, was: dict, head: str) -> tuple:
                 swept.append(sha)
         elif not foreign:
             arrived.append(sha)
-    problems = []
+    problems, unresolved = [], []
     if mine:
         problems.append("new commit(s) (HEAD %s -> %s)" % (old[:8], head[:8]))
     if swept:
-        doubts.append("%d commit(s) by another identity were made in this checkout (HEAD %s -> %s); they "
-                      "may include edits the worker left pending there, so whose they are cannot be told"
-                      % (len(swept), old[:8], head[:8]))
+        unresolved.append("%d commit(s) by another identity were made in this checkout (HEAD %s -> %s); they "
+                          "may include edits the worker left pending there, so whose they are cannot be told"
+                          % (len(swept), old[:8], head[:8]))
     if arrived:
         doubts.append("%d commit(s) that did not exist at launch arrived by a merge, pull or fast-forward "
                       "(HEAD %s -> %s), so whose they are cannot be told" % (len(arrived), old[:8], head[:8]))
-    return problems, doubts
+    return problems, doubts, unresolved
 
 
-def outside_changes(before: dict, ignore=(), warnings=None) -> list:
+def outside_changes(before: dict, ignore=(), warnings=None, unresolved=None) -> list:
     """One problem per checkout of `before` that changed since: every path whose content or
     existence differs from what it was at launch -- edited, created or deleted, untracked ones
     included -- and the commits the worker could have made there (`_head_moves`).
@@ -520,8 +521,10 @@ def outside_changes(before: dict, ignore=(), warnings=None) -> list:
     the comparison itself, so they never make another path look changed. So are the paths matching
     the checkout's `ignore` globs from the snapshot (`gate.outsideIgnore`).
 
-    What cannot be attributed to the worker goes to `warnings` when the caller passes a list for it
-    (ship and quick tell the owner and do not fail the task); with none it is a problem, as before."""
+    What cannot be attributed to the worker but could hide its write goes to `unresolved` when the
+    caller passes a list for it (ship and quick then hold the task for the owner's explicit answer:
+    never green); what is only odd goes to `warnings` (told, not held). With no list for either it is
+    a problem: the guard fails closed."""
     skip = {os.path.realpath(p) for p in ignore or ()}
     problems = []
     if not isinstance(before, dict):
@@ -548,10 +551,10 @@ def outside_changes(before: dict, ignore=(), warnings=None) -> list:
                    if os.path.realpath(os.path.join(path, rel)) not in skip
                    and not _outside_ignored(rel, globs)
                    and old.get(rel, "clean") != now.get(rel, "clean")]
-        what, doubts = [], []
+        what, doubts, held = [], [], []
         if head.strip() != was.get("head"):
             if isinstance(was.get("refs"), list):
-                moved, doubts = _head_moves(path, was, head.strip())
+                moved, doubts, held = _head_moves(path, was, head.strip())
                 what += moved
             else:  # a snapshot without the refs cannot attribute anything: as strict as it was
                 what.append("new commit(s) (HEAD %s -> %s)" % (str(was.get("head"))[:8], head.strip()[:8]))
@@ -561,6 +564,12 @@ def outside_changes(before: dict, ignore=(), warnings=None) -> list:
             problems.append("it wrote outside its worktree, in %s: %s; a worker may only write inside its "
                             "worktree -- revert that (if you changed it yourself meanwhile, retry)"
                             % (path, "; ".join(what)))
+        for doubt in held:
+            line = "in %s: %s" % (path, doubt)
+            if unresolved is None:
+                problems.append("it may have written outside its worktree, " + line)
+            else:
+                unresolved.append(line)
         for doubt in doubts:
             line = "in %s: %s" % (path, doubt)
             if warnings is None:

@@ -39,8 +39,9 @@ class R1(unittest.TestCase):
         make_repo(self.qa, hook=False)
 
     def review(self, before):
-        warnings = []
-        return guard.outside_changes(before, warnings=warnings), warnings
+        warnings, held = [], []
+        problems = guard.outside_changes(before, warnings=warnings, unresolved=held)
+        return problems, warnings + held
 
     def test_a_workers_pending_edit_swept_into_another_sessions_commit_is_not_green(self):
         before = guard.outside_snapshot([self.qa])
@@ -65,7 +66,7 @@ class R1(unittest.TestCase):
         problems, warnings = self.review(before)
         self.assertEqual(len(problems), 1, (problems, warnings))
 
-    def test_a_foreign_commit_made_in_the_checkout_is_a_warning_not_silence(self):
+    def test_a_foreign_commit_made_in_the_checkout_is_never_silent(self):
         before = guard.outside_snapshot([self.qa])
         other_session_commit(self.qa, "rel.py", "r = 1\n", "chore: release")
         problems, warnings = self.review(before)

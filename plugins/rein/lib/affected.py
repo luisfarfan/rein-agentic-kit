@@ -322,17 +322,50 @@ def _shell_words(template: str) -> list:
     return pieces
 
 
-def _fill(word: str, target: str) -> str:
-    """`word` with `{target}` replaced by `target`, escaped for the quoting it sits in."""
+def _quoted_segments(word: str) -> list:
+    """The text between quotes in `word`, one entry per quoted run."""
+    segments, quote, current = [], None, []
+    i = 0
+    while i < len(word):
+        c = word[i]
+        if quote:
+            if c == "\\" and quote == '"' and i + 1 < len(word):
+                current.append(word[i:i + 2])
+                i += 2
+                continue
+            if c == quote:
+                segments.append("".join(current))
+                quote, current = None, []
+            else:
+                current.append(c)
+        elif c == "\\" and i + 1 < len(word):
+            i += 2
+            continue
+        elif c in "'\"":
+            quote = c
+        i += 1
+    return segments
+
+
+def _is_script(word: str) -> bool:
+    """`{target}` sits in a quoted string that holds more than the placeholder and flag-like glue:
+    a script (`sh -c 'pytest {target}'`), one argument whatever the number of files."""
+    return any("{target}" in seg and re.search(r"\s", seg.replace("{target}", ""))
+               for seg in _quoted_segments(word))
+
+
+def _fill(word: str, value: str, prequoted: bool = False) -> str:
+    """`word` with `{target}` replaced by `value`, escaped for the quoting it sits in. `value` is a
+    path, or with `prequoted` text already quoted for a shell (several paths for a script)."""
     out, quote, i = [], None, 0
     while i < len(word):
         if word.startswith("{target}", i):
             if quote == "'":
-                out.append(target.replace("'", "'\\''"))
+                out.append(value.replace("'", "'\\''"))
             elif quote == '"':
-                out.append(re.sub(r'(["\\$`])', r"\\\1", target))
+                out.append(re.sub(r'(["\\$`])', r"\\\1", value))
             else:
-                out.append(shlex.quote(target))
+                out.append(value if prequoted else shlex.quote(value))
             i += len("{target}")
             continue
         c = word[i]
@@ -358,7 +391,8 @@ def expand_target(template: str, targets: list) -> str:
     """`template` with its `{target}` given every file, judged per shell word. A word that is just
     `{target}` becomes the files joined by spaces (`pytest -q a b`); a word that carries it glued to
     something (`--include={target}`, `--include="{target}"`) is repeated whole per file, each file
-    escaped for the quoting around it. Operators (`;`, `&&`, `|`...) and every other word stay as
+    escaped for the quoting around it; one inside a quoted script (`sh -c 'pytest {target}'`) is
+    replaced there once by all the files. Operators (`;`, `&&`, `|`...) and every other word stay as
     written."""
     out = []
     for text, is_word in _shell_words(template):
@@ -366,6 +400,8 @@ def expand_target(template: str, targets: list) -> str:
             out.append(text)
         elif text == "{target}":
             out.append(_quoted(targets))
+        elif _is_script(text):  # one script argument: every file goes inside it, once
+            out.append(_fill(text, _quoted(targets), prequoted=True))
         else:
             out.append(" ".join(_fill(text, t) for t in targets))
     return "".join(out)
