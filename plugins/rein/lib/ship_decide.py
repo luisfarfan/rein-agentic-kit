@@ -53,6 +53,9 @@ class ShipConfig:
     # Seconds before the first fresh start that probes whether the owner has answered the dialog Orca
     # aborted a launch on; each further probe waits twice as long, up to 16 times this.
     trust_probe_seconds: float = 30
+    # Where a human_review gate's review artifact goes, relative to the plan root ("" = the plan's own
+    # change folder: openspec/changes/<change>/, else .rein/review/<change>/).
+    review_dir: str = ""
     risky_paths: list = field(default_factory=lambda: list(_DEFAULT_RISKY))
     override: tuple | None = None
 
@@ -72,6 +75,7 @@ class ShipConfig:
             "largeChangeFiles": "large_change_files",
             "stallMinutes": "stall_minutes",
             "trustProbeSeconds": "trust_probe_seconds",
+            "reviewDir": "review_dir",
             "riskyPaths": "risky_paths",
         }
         kwargs = {}
@@ -84,6 +88,8 @@ class ShipConfig:
             if attr == "stall_minutes" and not (value == 0 or _positive_number(value)):
                 continue
             if attr == "trust_probe_seconds" and not _positive_number(value):
+                continue
+            if attr == "review_dir" and not (isinstance(value, str) and value.strip()):
                 continue
             kwargs[attr] = list(value) if attr == "risky_paths" else value
         return cls(**kwargs)

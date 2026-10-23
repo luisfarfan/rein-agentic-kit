@@ -286,6 +286,8 @@ Everything is optional. Drop a `flow.config.json` at your project root to overri
     "maxAuditRounds": 2,
     "taskTimeoutMinutes": 45,
     "stallMinutes": 10,
+    "trustProbeSeconds": 30,
+    "reviewDir": "",
     "gateTimeoutSeconds": 900,
     "largeChangeFiles": 25,
     "riskyPaths": ["**/auth/**", "**/payments/**", "**/migrations/**"]
@@ -301,12 +303,28 @@ gate (wait / resend the brief / retry) for a worker with no sign of work that lo
 answer, or its terminal (`orca terminal read`) shows its agent's startup dialog (Codex's "Hooks need
 review", a folder-trust prompt): the gate names it ("the agent waits for you to trust its hooks in
 <path>"). A worker that fails, or a launch Orca aborts, on such a dialog opens one `setup` question
-instead of spending retries against it. Rein never answers the dialog nor edits the agent's trust
-settings: the owner does, then retries; `0` turns it off (`rein quick watch` says the same about
+instead of spending retries against it. When Orca aborts the start (it reports e.g.
+`agent-hooks-review-prompt`) the question names that dialog, the repo and the worktree path, and
+Rein opens a terminal of yours with the task's agent in that worktree (`orca terminal create
+--worktree path:<wt> --command <agent>`; Orca does not close it) where you answer the dialog.
+Meanwhile Rein probes with a fresh start after `trustProbeSeconds` (30, doubling up to 16x); the
+first start that is no longer aborted carries on by itself, with no retry spent and no second bell
+(the probes' questions repeat quietly). Rein never answers the dialog nor edits the agent's trust
+settings: the owner does; `0` turns it off (`rein quick watch` says the same about
 a quick task, and `rein quick resend` types its brief again), `gateTimeoutSeconds` is a gate slot's timeout until that slot has passed in the repo
 (raise it for a slow suite); after that each slot gets twice its slowest of the last five passes,
 between 2 and 30 minutes, so a hung suite is stopped long before the old 6× bound, and a change that touches `riskyPaths` or more than `largeChangeFiles`
-files gets an Opus audit.
+files gets an Opus audit. `reviewDir` (inside the plan root) is where a `Human review` task's
+review sheet `review-<task>.md` goes when its gate opens; by default the plan's own change folder
+(`openspec/changes/<change>/`, else `.rein/review/<change>/`), never a scratch directory, and the
+owner's question gives the path.
+
+### Plan roots in a temporary directory
+
+`rein ship` keeps its state, gate log and answers in `<root>/.rein/`; a root under `/tmp`,
+`/private/tmp`, `/var/folders` or `$TMPDIR` loses all of it on reboot. `rein ship` refuses such a
+root unless you pass `--allow-temp-root`; `rein quick` (from a temp checkout) and
+`rein plan-check --root` warn.
 
 ### Per-worktree environment (`gate.env`)
 
@@ -329,7 +347,14 @@ changes. Creating the database on first use is the repo's job (its test setup).
 ### Writes outside the worktree (`gate.outsideIgnore`)
 
 When a worker (or quick agent) is launched Rein notes the git state of every other checkout Orca
-knows; any change there by the end of its task fails it, with the files named. A repo's own git
+knows; by the end of its task, file content that differs there fails it, with the files named
+(a file dirty at launch and committed unchanged by someone else is not a difference). Other sessions
+work in those checkouts too, so a commit only counts when the worker could have made it: created in
+that checkout (its reflog), under the checkout's own `user.email`, and not already reachable from a
+ref seen at launch. A fetch, a fast-forward or merge of work that existed at launch, or a commit by
+another identity is not the worker's. What cannot be told (HEAD switched to unrelated history, work made
+after launch that arrived by a merge) is a visible `guard warning` for the owner in ship and quick,
+not a failure. A repo's own git
 hooks can write there without the worker doing anything: beads (`bd hooks run post-checkout`,
 `pre-commit`, lefthook's `beads-export`) rewrites `.beads/` in the MAIN checkout on every commit
 or checkout made in a worktree. Leave such paths out with globs relative to the watched repo, in

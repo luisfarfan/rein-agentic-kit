@@ -161,6 +161,24 @@ def build_task_spec(task: ss.TaskState, plan: dict, env_lines: list = (), allowe
     return "\n".join(lines)
 
 
+def build_review_artifact(change: str, task: ss.TaskState, entry: dict, worktree: str, commits: list) -> str:
+    """The sign-off sheet a human_review gate asks the owner to check: what the task was, what
+    changed, how to answer. Kept with the plan so it survives a restart."""
+    lines = ["# Review: %s -- %s" % (task.id, entry.get("title") or task.id), "",
+             "Change: %s  \nRepo: %s  \nWorktree: %s" % (change, task.repo, worktree or "(unknown)"), ""]
+    if entry.get("acceptance"):
+        lines += ["## Acceptance criteria", ""] + ["- [ ] %s" % c for c in entry["acceptance"]] + [""]
+    if task.verification:
+        lines += ["## Verification", "", "`%s`" % task.verification, ""]
+    if task.touched:
+        lines += ["## Files this task changed", ""] + ["- %s" % f for f in task.touched[:100]] + [""]
+    if commits:
+        lines += ["## Commits", ""] + ["- %s" % c for c in commits[:50]] + [""]
+    lines += ["## Answer", "",
+              "Check the list above by hand, then `rein answer %s approve` (or `reject`)." % change, ""]
+    return "\n".join(lines)
+
+
 def gate_config_allowed(plan: dict, state, task, default_repo: str = "") -> list:
     """The gate-config paths `task` may change: its own `Gate config:` field, plus those of the
     tasks of its repo already done (their change is in the diff since the base). A pending
@@ -1289,6 +1307,11 @@ class _Driver:
         for entry in list(self.state.pending_gates):
             task_id = entry.get("task_id")
             kind = entry.get("kind")
+            if kind == "human_review" and "Review sheet:" not in str(entry.get("question")):
+                sheet = self.review_artifact(entry)
+                if sheet:  # kept: a failed gate-create asks again with the same path
+                    entry["question"] = "%s Review sheet: %s" % (entry.get("question"), sheet)
+                    self.save()
             try:
                 if not entry.get("holder_task"):
                     holder = oc.task_id_of(self.client.task_create(
@@ -1323,6 +1346,43 @@ class _Driver:
                 self.say("still waiting for the owner (%s): the same question as before" % kind)
             else:
                 self.ring("waiting for the owner (%s): %s" % (kind, str(entry.get("question"))[:200]))
+
+    def review_dir(self) -> str:
+        """Where review artifacts live: `ship.reviewDir` (inside the plan root), else the plan's own
+        change folder (`openspec/changes/<change>/`), else `.rein/review/<change>/`. Never a temp dir
+        of the session: it sits with the plan."""
+        root = os.path.abspath(self.root)
+        configured = (self.cfg.review_dir or "").strip()
+        if configured:
+            path = os.path.normpath(os.path.join(root, configured))
+            if path == root or path.startswith(root + os.sep):
+                return path
+            self.say("ship.reviewDir %r is outside the plan root; using the default" % configured)
+        plan_dir = os.path.dirname(os.path.abspath(self.state.plan_path or ""))
+        if os.path.basename(plan_dir) == self.change and os.path.basename(os.path.dirname(plan_dir)) == "changes" \
+                and "openspec" in plan_dir.split(os.sep):
+            return plan_dir
+        return os.path.join(root, ".rein", "review", self.change)
+
+    def review_artifact(self, entry) -> str:
+        """Write the review sheet of the human_review gate `entry` is about; its path, or "" when it
+        could not be written (the gate is asked all the same)."""
+        task = self.state.tasks.get(entry.get("task_id"))
+        if task is None or getattr(self, "dry_run", False):
+            return ""
+        plan_entry = next((t for t in (self.plan or {}).get("tasks") or [] if t.get("id") == task.id), {})
+        worktree = self.state.worktree_paths.get(task.repo, "")
+        base = task.launch_head
+        commits = fix_log(worktree, base) if worktree and base and os.path.isdir(worktree) else []
+        path = os.path.join(self.review_dir(), "review-%s.md" % task.id)
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(build_review_artifact(self.change, task, plan_entry, worktree, commits))
+        except OSError as exc:
+            self.say("could not write the review sheet %s: %s" % (path, exc))
+            return ""
+        return path
 
     def base_ref(self, repo: str) -> str:
         """What the repo's worktree branched from: Orca's worktreeBaseRef, else origin/develop."""
