@@ -23,6 +23,34 @@ from test_quick_driver import DoneCase  # noqa: E402
 from test_ship import Drained, FakeOrca, ShipCase, scripted_gate  # noqa: E402
 
 
+class Script:
+    """FakeOrca's `pending` as a state machine instead of a count of polls: a task's gate runs on a
+    background thread, so how many `check` calls pass before a gate exists depends on timing. Each
+    poll delivers the workers' done messages not delivered yet, then runs `act(fake)` (resolve the
+    gate that exists by now, ...); `Drained` ends the run once `until(fake)` holds, or past `limit`."""
+
+    def __init__(self, fake, until, act=None, limit=400):
+        self.fake, self.until, self.act, self.limit, self.polls = fake, until, act, limit, 0
+
+    def __bool__(self):
+        return True
+
+    def pop(self, _index=0):
+        def step(fake):
+            self.polls += 1
+            if self.until(fake) or self.polls > self.limit:
+                raise Drained()
+            if self.act:
+                self.act(fake)
+            out = []
+            for did, d in fake.dispatches.items():
+                if not d["reported"]:
+                    d["reported"] = True
+                    out.append(fake.done_message(did))
+            return out
+        return step
+
+
 def sweep(path):
     """The worker edits app.py outside its worktree; another identity then commits everything."""
     with open(os.path.join(path, "app.py"), "w") as fh:
@@ -110,7 +138,7 @@ class Ship(ShipCase):
     def test_a_swept_external_edit_holds_the_task_for_the_owner(self):
         fake = self.fake()
         fake.autocomplete = False
-        fake.pending = [lambda f: [f.done_message(d) for d in f.dispatches]] + [lambda f: []] * 4
+        fake.pending = Script(fake, until=lambda f: len(f.gates) >= 1)
         with self.assertRaises(Drained):
             self.run_ship(fake, self.gates())
         state = ship_state.load(self.state_file)

@@ -23,8 +23,8 @@ import guard  # noqa: E402
 import ship_state  # noqa: E402
 from test_guard import make_repo, run_git  # noqa: E402
 from test_quick_driver import DoneCase  # noqa: E402
-from test_round3 import Ship as Round3Ship, sweep  # noqa: E402
-from test_ship import Drained  # noqa: E402
+from test_round3 import Script, Ship as Round3Ship, sweep  # noqa: E402
+from test_ship import Drained, _flag  # noqa: E402
 
 
 def read(path, rel="app.py"):
@@ -83,23 +83,27 @@ class QuickNoLocalDiff(DoneCase):
 class ShipRetry(Round3Ship):
     """An external write is judged against the task's retained base through every retry."""
 
-    def drive(self, fake, gates, extra):
+    def drive(self, fake, gates, until, act=None):
         fake.autocomplete = False
-        undelivered = lambda f: [f.done_message(d) for d, v in f.dispatches.items() if not v["reported"]
-                                 and not v.update(reported=True)]  # noqa: E731
-        fake.pending = [undelivered, lambda f: []] + extra
+        fake.pending = Script(fake, until, act)
         with self.assertRaises(Drained):
             self.run_ship(fake, gates)
+        self.assertLess(fake.pending.polls, fake.pending.limit, "the script ran out before its end state")
         return ship_state.load(self.state_file)
 
     def test_an_owner_retry_without_restoring_does_not_close_the_task(self):
         fake = self.fake()
-        extra = [lambda f: (f.resolve_gate(0, "retry"), [])[1], undelivered_msgs, lambda f: [], lambda f: [],
-                 lambda f: []]
-        state = self.drive(fake, self.gates(), extra)
+        answered = []
+
+        def act(f):  # the owner answers `retry` to the first outside gate, and only to that one
+            if f.gates and not answered and f.gates[0]["status"] == "pending":
+                answered.append(1)
+                f.resolve_gate(0, "retry")
+        state = self.drive(fake, self.gates(), until=lambda f: len(f.gates) >= 2, act=act)
         self.assertNotEqual(state.tasks["T001"].status, "done")
         self.assertEqual(read(self.qa), "x = 999\n")
-        self.assertGreaterEqual(len([c for c in fake.calls if c[:2] == ["orchestration", "gate-create"]]), 2)
+        self.assertEqual(len(answered), 1)
+        self.assertEqual(len([s for s in fake.starts() if "T001" in fake.tasks[_flag(s, "--task")]["title"]]), 2)
 
     def test_an_automatic_retry_after_a_guard_rejection_does_not_clean_the_slate(self):
         calls = []
@@ -112,9 +116,10 @@ class ShipRetry(Round3Ship):
                         fh.write("bad = 1\n")
             return 0, "ok"
         fake = self.fake()
-        extra = [undelivered_msgs, lambda f: [], undelivered_msgs, lambda f: [], lambda f: []]
-        state = self.drive(fake, gates, extra)
+        # every attempt is rejected (the file stays): the task ends in the owner's retry_exhausted gate
+        state = self.drive(fake, gates, until=lambda f: len(f.gates) >= 1)
         self.assertNotEqual(state.tasks["T001"].status, "done", self.out)
+        self.assertGreaterEqual(len(calls), 3)
         self.assertEqual(read(self.qa, "bad.py"), "bad = 1\n")
 
     def test_restoring_the_external_checkout_lets_the_retry_close(self):
@@ -133,15 +138,6 @@ class ShipRetry(Round3Ship):
         fake.on_audit = self.approve_audit()
         self.assertEqual(self.run_ship(fake, gates), 0, self.out)
         self.assertFalse(os.path.exists(os.path.join(self.qa, "bad.py")))
-
-
-def undelivered_msgs(f):
-    out = []
-    for d, v in f.dispatches.items():
-        if not v["reported"]:
-            v["reported"] = True
-            out.append(f.done_message(d))
-    return out
 
 
 class ScriptFlag(unittest.TestCase):
