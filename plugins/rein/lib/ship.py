@@ -79,9 +79,11 @@ DECISION_QUESTION_CAP = 600  # how much of a gate's question the audit brief quo
 OWNER_DECISIONS_LIMIT = 3000
 
 
-def _cited_ids(entry: dict) -> set:
-    """The decision ids (`D6`) a task's own text cites: its title, acceptance, verification and notes."""
-    parts = []
+def _cited_ids(entry: dict, *extra: str) -> set:
+    """The decision ids (`D6`) a task's own text cites: its title, acceptance, verification and notes,
+    plus `extra` -- for a generated task (an audit or gate fix) the findings, the failure and the
+    Verification it was given, which no plan entry holds."""
+    parts = [x for x in extra if isinstance(x, str)]
     for value in (entry or {}).values():
         if isinstance(value, str):
             parts.append(value)
@@ -162,7 +164,8 @@ def build_task_spec(task: ss.TaskState, plan: dict, env_lines: list = (), allowe
                      "file Rein judges the work with stays off limits." % ", ".join(allowed_config))
     if plan.get("why"):
         lines += ["", "Why: %s" % plan["why"]]
-    decisions = _decisions_block(plan.get("decisions") or [], _cited_ids(entry), str(plan.get("path") or ""))
+    decisions = _decisions_block(plan.get("decisions") or [], _cited_ids(
+        entry, task.audit_findings, task.last_failure, task.verification), str(plan.get("path") or ""))
     if decisions:
         lines += ["", "Decisions (binding):", decisions]
     if plan.get("scopeOut"):
@@ -1053,11 +1056,17 @@ class _Driver:
         ctx = getattr(self, "ctx", None) or {}
         root = getattr(self, "root", "")
         resolved = _detect.resolve(root) if root and os.path.isdir(root) else {}
+        repos = ctx.get("repos") or {}
         names = {t.get("repo") or ctx.get("default_repo", "")
                  for t in ((getattr(self, "plan", None) or ctx.get("plan") or {}).get("tasks") or [])}
         names.add(ctx.get("default_repo", ""))
-        paths = _guard.watched_checkouts(ctx.get("repos") or {}, sorted(n for n in names if n),
-                                         [root] if root else [])
+        top = _guard.git_toplevel(root) if root else ""
+        if top:  # the plan's root by the checkout git says it is in, whatever its folder is called
+            names.add(top)
+        # `gate.outsideWatch` is read from the plan root and from the checkout of every repo a task names
+        task_repos = [str((repos.get(n) or {}).get("path") or "") for n in names]
+        paths = _guard.watched_checkouts(repos, sorted(n for n in names if n),
+                                         ([root] if root else []) + [p for p in task_repos if p])
         globs = _guard.outside_ignore_globs(resolved) if resolved else []
         return _guard.outside_snapshot([p for p in paths if p and os.path.realpath(p) != mine], globs)
 

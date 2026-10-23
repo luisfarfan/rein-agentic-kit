@@ -191,10 +191,11 @@ rein quick done [--accept-outside] [--accept-path <abs path>]... [--accept-commi
 rein accept-outside [--root <plan repo>] (--path <abs path> | --commit <sha>)...
                  # ship's counterpart: records, in <plan repo>/.rein/outside-accept.json, changes in a
                  # watched checkout that are another session's, so no task of that plan is rejected for them
-rein quick watch # tell the orchestrator what each quick needs: a QUESTION (told once; one the agent no longer
-                 # waits on -- it asked again, reported or committed after it -- is not told at all),
+rein quick watch # tell the orchestrator what each quick needs: a QUESTION (told once; that the agent no longer
+                 # waits on it is never inferred from other activity: close it with `rein quick resolve --id qN`,
+                 # or the agent replaces it with `rein quick ask --replaces qN`),
                  # a REPORT, a STALLED agent. What was told and is still open is listed as STILL OPEN
-                 # by `--once`, never mixed with news. It never rewrites a record that is fine.
+                 # by `--once` (with what happened since, as a hint), never mixed with news. It never rewrites a record that is fine.
 rein quick close [<workspace path or quick-<slug> name>] [--dry-run] [--yes]
                  # remove the worktrees of finished quick tasks (all when no argument) and their
                  # records, only if clean and integrated into origin/<base>; blocked ones are kept

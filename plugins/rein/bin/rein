@@ -85,7 +85,8 @@ Subcommands:
                       you talk to. Default: its own worktree; --here uses the checkout
                       you are in (main or a linked worktree) on its current branch, even
                       a local-only one. Exit 0 started / 1 failed / 2 usage / 126 environment
-  rein quick ask "<question>"
+  rein quick ask "<question>" [--replaces q1]
+  rein quick resolve [<path or quick-<slug>>] --id q1   (close a question answered in the agent's terminal)
                       run by that agent when it needs the owner: the question goes to
                       .rein/quick.json for the orchestrator; it then waits for the answer
   rein quick answer [<path or quick-<slug>>] "<text>" [--id q1]
@@ -1149,7 +1150,7 @@ def cmd_done(argv: list[str]) -> int:
                           push=push)
 
 
-_INBOX_USAGE = ('usage: rein quick ask "<question>"  |  rein quick answer [<path or quick-<slug>>] "<text>" '
+_INBOX_USAGE = ('usage: rein quick ask "<question>" [--replaces q1]  |  rein quick resolve [<path or quick-<slug>>] --id q1  |  rein quick answer [<path or quick-<slug>>] "<text>" '
                 '[--id q1]  |  rein quick watch [<path or quick-<slug>>] [--once]  |  '
                 'rein quick resend [<path or quick-<slug>>] [--terminal <handle>]  |  '
                 'rein quick report "<text or file>"  |  rein quick allow-config <path or quick-<slug>> <path,...>')
@@ -1157,17 +1158,26 @@ _INBOX_USAGE = ('usage: rein quick ask "<question>"  |  rein quick answer [<path
 
 def _quick_inbox(argv: list[str]):
     """`rein quick ask|answer|watch ...`, or None when argv is not one of them."""
-    if not argv or argv[0] not in ("ask", "answer", "watch", "resend", "report", "allow-config"):
+    if not argv or argv[0] not in ("ask", "answer", "watch", "resend", "report", "allow-config", "resolve"):
         return None
     sub, rest = argv[0], argv[1:]
     words = [a for i, a in enumerate(rest)
              if not a.startswith("-") and not (i and rest[i - 1] in ("--id", "--terminal"))]
     flags = [a for a in rest if a.startswith("-")]
     if sub == "ask":
-        if len(words) != 1 or flags:
+        replaces, rest2, bad_replaces = _take_values(rest, "--replaces")
+        words2 = [a for a in rest2 if not a.startswith("-")]
+        if bad_replaces or len(words2) != 1 or any(a.startswith("-") for a in rest2):
             print(_INBOX_USAGE)
             return 2
-        return _inbox.ask(".", words[0])
+        return _inbox.ask(".", words2[0], replaces=replaces)
+    if sub == "resolve":
+        ids, rest2, bad_ids = _take_values(rest, "--id")
+        words2 = [a for a in rest2 if not a.startswith("-")]
+        if bad_ids or len(words2) > 1 or any(a.startswith("-") for a in rest2):
+            print(_INBOX_USAGE)
+            return 2
+        return _inbox.resolve(words2[0] if words2 else "", ids, _quick.OrcaClient(), cwd=".")
     if sub == "report":
         if len(words) != 1 or flags:
             print(_INBOX_USAGE)
@@ -1195,6 +1205,12 @@ def _quick_inbox(argv: list[str]):
         print(_INBOX_USAGE)
         return 2
     return _inbox.watch(words[0] if words else "", _quick.OrcaClient(), cwd=".", once="--once" in flags)
+
+
+def _take_values(argv: list, flag: str) -> tuple:
+    """`(values of the repeatable flag, the rest of argv, bad)`."""
+    first, _second, rest, bad = _take_accepts(argv, (flag, "--\0"))
+    return first, rest, bad
 
 
 def _take_accepts(argv: list, flags: tuple) -> tuple:

@@ -43,7 +43,10 @@ def questions(record: dict) -> list:
 
 
 def open_questions(record: dict) -> list:
-    return [q for q in questions(record) if q.get("answer") is None]
+    """The questions the agent is still waiting on: no answer, not closed by the owner, not replaced
+    by a question of the agent's own that names them (`rein quick ask --replaces`)."""
+    return [q for q in questions(record)
+            if q.get("answer") is None and not q.get("closed_at") and not q.get("replaced_by")]
 
 
 owner_decisions = quick.owner_decisions
@@ -75,7 +78,7 @@ def targets(arg: str, client: OrcaClient, cwd: str = ".") -> list:
 # --- the agent's side ----------------------------------------------------------
 
 def ask(cwd: str, text: str, *, now: Callable[[], float] = time.time,
-        say: Callable[[str], None] = print) -> int:
+        say: Callable[[str], None] = print, replaces=()) -> int:
     """`rein quick ask "<question>"`: 0 recorded, 2 no question or no quick task here."""
     if not text.strip():
         say("rein quick ask needs the question")
@@ -89,6 +92,9 @@ def ask(cwd: str, text: str, *, now: Callable[[], float] = time.time,
     def add(record):
         asked = questions(record)
         added["id"] = "q%d" % (len(asked) + 1)
+        for q in asked:  # the agent says this question takes the place of those
+            if q.get("id") in replaces and q.get("answer") is None:
+                q["replaced_by"] = added["id"]
         record["questions"] = asked + [{"id": added["id"], "text": text.strip(), "asked_at": now(),
                                         "answer": None, "answered_at": None}]
     record, why = qd.update_record(workspace, add)
@@ -99,6 +105,35 @@ def ask(cwd: str, text: str, *, now: Callable[[], float] = time.time,
     say("pregunta %s registrada: el orquestador avisa al dueño. Detente y espera su respuesta, que llegará "
         "a esta terminal; no sigas con lo que dependa de ella." % qid)
     return 0
+
+
+def resolve(arg: str, qids, client: OrcaClient, *, cwd: str = ".", now: Callable[[], float] = time.time,
+            say: Callable[[str], None] = print) -> int:
+    """`rein quick resolve [<workspace>] --id <qN>...`: the owner closes questions the agent no longer
+    waits on (answered in its terminal). Nothing is typed to the agent. 0 closed, 1 no such open
+    question, 2 usage or ambiguous."""
+    qids = [q for q in qids or () if q]
+    if not qids:
+        say("rein quick resolve needs the question id(s): --id q1")
+        return 2
+    found = [p for p in targets(arg, client, cwd) if any(q.get("id") in qids for q in open_questions(qd._load_record(p)[0] or {}))]
+    if not found:
+        say("no open question %s%s" % (", ".join(qids), " in %s" % arg if arg else ""))
+        return 1
+    if len(found) > 1:
+        say("several quick tasks have those questions; name one: %s" % ", ".join(found))
+        return 2
+    closed = []
+
+    def close(record):
+        for q in open_questions(record):
+            if q.get("id") in qids:
+                q["closed_at"] = now()
+                closed.append(q.get("id"))
+        return bool(closed)
+    qd.update_record(found[0], close)
+    say("closed %s in %s (the agent was not told anything)" % (", ".join(map(str, closed)), found[0]))
+    return 0 if closed else 1
 
 
 REPORT_FILE = quick.REPORT_FILE
@@ -354,21 +389,24 @@ def _stall_of(workspace: str, record: dict, now: float):
                record.get("terminal") or "(unknown)", workspace))
 
 
-def superseded(workspace: str, record: dict, q: dict) -> bool:
-    """The agent is no longer waiting on `q` although it has no answer in the record: after it asked,
-    it asked something else, reported, or committed -- the owner answered in its terminal. An open
-    question the agent still waits on is none of these."""
+def activity_since(workspace: str, record: dict, q: dict) -> str:
+    """What happened in the quick after `q` was asked -- another question, a report, a commit --
+    or "". It proves nothing about `q` (anyone may commit in a checkout; a second question does not
+    withdraw the first), so it is only said, next to the question, never used to hide it."""
     asked = float(q.get("asked_at") or 0)
     if not asked:
-        return False
+        return ""
+    seen = []
     if any(float(o.get("asked_at") or 0) > asked for o in questions(record) if o is not q):
-        return True
+        seen.append("another question")
     if any(float(r.get("at") or 0) > asked for r in reports(record)):
-        return True
+        seen.append("a report")
     base = str(record.get("base_sha") or "")
     code, out = qd.run_git(workspace, "log", "-1", "--format=%H %ct")
     sha, _, when = out.strip().partition(" ")
-    return code == 0 and bool(sha) and sha != base and when.isdigit() and float(when) > asked
+    if code == 0 and sha and sha != base and when.isdigit() and float(when) > asked:
+        seen.append("a commit")
+    return ", ".join(seen)
 
 
 def _poll(arg: str, client: OrcaClient, cwd: str, printed: set, now: float = 0.0, still_open=None) -> bool:
@@ -381,12 +419,10 @@ def _poll(arg: str, client: OrcaClient, cwd: str, printed: set, now: float = 0.0
             shown = True
         told = []
         for q in open_questions(record or {}):
-            if superseded(workspace, record, q):
-                continue
             key = (os.path.realpath(workspace), q.get("id"))
             if q.get("announced") or key in printed:  # told once; a later watch waits for something new
                 if still_open is not None:
-                    still_open.append((workspace, q))
+                    still_open.append((workspace, q, activity_since(workspace, record, q)))
                 continue
             printed.add(key)
             _announce(workspace, q)
@@ -430,7 +466,10 @@ def watch(arg: str, client: OrcaClient, *, cwd: str = ".", once: bool = False,
         if _poll(arg, client, cwd, printed, clock(), waiting):
             return 0
         if once:
-            for workspace, q in waiting:  # told before, still unanswered: listed, never mixed with news
+            for workspace, q, since in waiting:  # told before, still unanswered: listed, never mixed with news
                 print("STILL OPEN %s %s: %s" % (workspace, q.get("id"), str(q.get("text") or "")[:100]))
+                if since:  # not proof that it was answered: the owner says so
+                    print("  (since it was asked: %s. If you answered it in the agent's terminal: "
+                          "rein quick resolve %s --id %s)" % (since, workspace, q.get("id")))
             return 1
         sleep(WATCH_POLL_SECONDS)

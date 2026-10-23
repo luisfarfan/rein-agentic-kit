@@ -417,6 +417,21 @@ def outside_watch_names(resolved) -> list:
     return [n.strip() for n in declared if isinstance(n, str) and n.strip()]
 
 
+def git_toplevel(path: str) -> str:
+    """The top of the git checkout `path` is in, or "" when it is in none."""
+    if not path or not os.path.isdir(path):
+        return ""
+    code, out = _git(path, "rev-parse", "--show-toplevel")
+    return os.path.realpath(out.strip()) if code == 0 and out.strip() else ""
+
+
+def entry_id(path: str) -> str:
+    """The identity of a git entry named by `path`: its directory resolved, its last component not.
+    A symlink is its own entry (git tracks the link, not its target): `A -> t` and `B -> t` are two."""
+    path = os.path.abspath(path)
+    return os.path.join(os.path.realpath(os.path.dirname(path)), os.path.basename(path))
+
+
 def _raw_config(directory: str) -> dict:
     try:
         with open(os.path.join(directory, _detect.CONFIG_NAME), encoding="utf-8") as fh:
@@ -609,10 +624,10 @@ def outside_changes(before: dict, ignore=(), warnings=None, unresolved=None, acc
                    and not _outside_ignored(rel, globs)
                    and old.get(rel, "clean") != now.get(rel, "clean")]
         what, doubts, held = [], [], []
-        agreed = {os.path.realpath(p) for p in (accept or {}).get("paths") or ()}
+        agreed = {entry_id(p) for p in (accept or {}).get("paths") or ()}
         if agreed:
             for rel in list(changed):
-                full = os.path.realpath(os.path.join(path, rel))
+                full = os.path.join(path, rel)  # `path` is the checkout's real path; rel is git's own entry
                 if full in agreed:
                     changed.remove(rel)
                     if accepted is not None:
@@ -651,7 +666,7 @@ def unmatched_accepts(accept, accepted) -> list:
     left = []
     ids = {a.get("id", "") for a in accepted or ()}
     for p in (accept or {}).get("paths") or ():
-        if os.path.realpath(p) not in ids:
+        if entry_id(p) not in ids:
             left.append("--accept-path %s is not a path that changed in the watched checkouts" % p)
     for c in (accept or {}).get("commits") or ():
         if not any(i.startswith(c.lower()) for i in ids):
@@ -677,7 +692,7 @@ def load_accepts(root: str) -> dict:
 def record_accepts(root: str, paths=(), commits=()) -> dict:
     """Add the owner's acceptances to `root`'s file; returns what is recorded now."""
     cur = load_accepts(root)
-    cur["paths"] = sorted(set(cur["paths"]) | {os.path.realpath(p) for p in paths})
+    cur["paths"] = sorted(set(cur["paths"]) | {entry_id(p) for p in paths})
     cur["commits"] = sorted(set(cur["commits"]) | {c.lower() for c in commits})
     os.makedirs(os.path.dirname(accept_file(root)), exist_ok=True)
     with open(accept_file(root), "w", encoding="utf-8") as fh:

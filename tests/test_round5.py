@@ -182,6 +182,73 @@ class ShipScope(ShipCase):
         self.assertEqual(len(self.specs(fake)), 1, self.out)
         self.assertEqual(ship_state.load(self.state_file).tasks["T001"].status, "done")
 
+    def retried_after_a_write(self, fake, target_repo_path, rel="OWNER_ONLY.md"):
+        """The worker writes `rel` in `target_repo_path` during its first gate; its retry restores it."""
+        calls = []
+
+        def gates(p, unit_only, timeout=None, **kw):
+            if kw.get("tier") == "task":
+                calls.append(p)
+                if len(calls) == 1:
+                    write(target_repo_path, rel, "not yours\n")
+                elif len(calls) == 2:
+                    os.remove(os.path.join(target_repo_path, rel))
+            return 0, "ok"
+        self.run_ship(fake, gates)
+        return self.specs(fake)
+
+    def fake_with(self, paths):
+        """FakeOrca whose repo list gives the repos in `paths` ({name: checkout})."""
+        self.write_plan(self.PLAN)
+        fake = FakeOrca(self.root, repos=tuple(["proxima-api"] + [n for n in paths if n != "proxima-api"]))
+        original = fake._answer
+
+        def answer(a):
+            out = original(a)
+            if a[:2] == ["repo", "list"]:
+                for r in out["repos"]:
+                    if r["displayName"] in paths:
+                        r["path"] = paths[r["displayName"]]
+            return out
+        fake._answer = answer
+        fake.on_audit = self.approve_audit()
+        return fake
+
+    def test_a_sibling_declared_in_the_task_repo_is_watched(self):  # review5 A1: was exit 0 with the write kept
+        api = os.path.join(self.tmp.name, "proxima-api")
+        qa = os.path.join(self.tmp.name, "proxima-qa")
+        make_repo(api, config={"commands": {"test": "true"}, "gate": {"outsideWatch": ["proxima-qa"]}}, hook=False)
+        make_repo(qa, hook=False)
+        fake = self.fake_with({"proxima-api": api, "proxima-qa": qa})
+        specs = self.retried_after_a_write(fake, qa)
+        self.assertEqual(len(specs), 2, self.out)
+        self.assertIn("OWNER_ONLY.md", specs[1])
+
+    def test_the_plan_root_is_watched_by_its_git_checkout_not_by_its_folder_name(self):  # review5 A1
+        make_repo(self.root, hook=False)  # the root is a real checkout registered as `engineering`
+        fake = self.fake_with({"proxima-api": os.path.join(self.tmp.name, "proxima-api"), "engineering": self.root})
+        make_repo(os.path.join(self.tmp.name, "proxima-api"), hook=False)
+        self.assertNotEqual(os.path.basename(self.root), "engineering")
+        specs = self.retried_after_a_write(fake, self.root)
+        self.assertEqual(len(specs), 2, self.out)
+        self.assertIn("OWNER_ONLY.md", specs[1])
+
+    def test_an_unrelated_repo_is_still_not_watched(self):
+        api = os.path.join(self.tmp.name, "proxima-api")
+        other = os.path.join(self.tmp.name, "proxima-admin")
+        make_repo(api, hook=False)
+        make_repo(other, hook=False)
+        fake = self.fake_with({"proxima-api": api, "proxima-admin": other})
+        calls = []
+
+        def gates(p, unit_only, timeout=None, **kw):
+            if kw.get("tier") == "task" and not calls:
+                calls.append(1)
+                write(other, "AGENTS.md", "regenerated\n")
+            return 0, "ok"
+        self.run_ship(fake, gates)
+        self.assertEqual(len(self.specs(fake)), 1, self.out)
+
     def test_the_owner_names_the_change_and_the_task_closes_with_it_logged(self):
         self.watch("proxima-qa")
         fake = self.fake()
@@ -273,33 +340,63 @@ import quick_inbox  # noqa: E402
 from orca_client import OrcaClient  # noqa: E402
 
 
+class SymlinkIdentity(DoneCase):
+    """review5 A2: a symlink is its own git entry; naming A never accepts B although both point at one target."""
+
+    def setUp(self):
+        super().setUp()
+        self.admin = os.path.join(self.root, "proxima-admin")
+        make_repo(self.admin, hook=False)
+        write(self.admin, "target.txt", "t\n")
+        os.symlink("old-a", os.path.join(self.admin, "A"))
+        os.symlink("old-b", os.path.join(self.admin, "B"))
+        run_git(self.admin, "add", "-A")
+        run_git(self.admin, "commit", "-q", "-m", "chore: links")
+        self.make_repo(outside_before=guard.outside_snapshot([self.admin]))
+        for name in ("A", "B"):  # two independent git changes, same destination
+            os.remove(os.path.join(self.admin, name))
+            os.symlink("target.txt", os.path.join(self.admin, name))
+        self.write("src/foo.ts", "v2\n")
+
+    def test_naming_one_link_does_not_accept_the_other(self):
+        code, _, _ = self.done(accept_paths=[os.path.join(self.admin, "A")])
+        self.assertEqual(code, 1, self.text())
+        self.assertIn("changed: B", self.text())
+
+    def test_each_link_is_logged_by_its_own_name(self):
+        code, _, _ = self.done(accept_paths=[os.path.join(self.admin, "A"), os.path.join(self.admin, "B")])
+        self.assertEqual(code, 0, self.text())
+        accepted = last_log(self.ws)["guardAccepted"]
+        self.assertIn(os.path.join(self.admin, "A"), accepted)
+        self.assertIn(os.path.join(self.admin, "B"), accepted)
+        self.assertNotIn("target.txt", accepted.replace("link:target.txt", ""))
+
+    def test_naming_the_target_file_does_not_accept_a_link_to_it(self):
+        code, _, _ = self.done(accept_paths=[os.path.join(self.admin, "target.txt")])
+        self.assertEqual(code, 1, self.text())
+
+
 class WatchAndOldQuestions(InboxCase):
-    """C: a question the owner answered in the agent's terminal (no `rein quick answer`) is not
-    announced again by every watch, never buries a real event, and watch leaves the record alone."""
+    """C: noise control without hiding a wait. A question is told once; later activity (a commit by
+    anyone, a report, another question) never closes it -- only an answer, `rein quick resolve` or
+    `rein quick ask --replaces` does; watch leaves the records of quicks that are fine alone."""
 
     def bytes_of(self):
         with open(os.path.join(self.ws, _quick.RECORD), "rb") as fh:
             return fh.read()
 
-    def watch(self):
+    def watch(self, workspaces=None):
         out = io.StringIO()
-        client = OrcaClient(executable="ORCA", runner=InboxOrca(worktrees=[self.ws]))
+        client = OrcaClient(executable="ORCA", runner=InboxOrca(worktrees=workspaces or [self.ws]))
         with contextlib.redirect_stdout(out):
             code = quick_inbox.watch("", client, cwd=self.ws, once=True, clock=lambda: 1e10)
         return code, out.getvalue()
 
-    def commit_now(self):
-        run_git(self.ws, "commit", "-q", "--allow-empty", "-m", "fix: the agent went on")
-
-    def test_a_question_followed_by_a_commit_is_superseded_not_announced(self):
-        quick_inbox.ask(self.ws, "¿payload?", now=lambda: 1.0, say=self.out.append)
-        self.commit_now()  # the owner answered in the terminal and the agent committed
-        code, out = self.watch()
-        self.assertEqual((code, out), (1, ""))
+    def commit_now(self, identity=None):
+        args = ["-c", "user.email=%s" % identity] if identity else []
+        run_git(self.ws, *args, "commit", "-q", "--allow-empty", "-m", "chore: somebody else's edit")
 
     def test_the_record_of_a_quick_that_is_fine_is_not_rewritten_by_a_watch(self):
-        quick_inbox.ask(self.ws, "¿payload?", now=lambda: 1.0, say=self.out.append)
-        self.commit_now()
         write(self.ws, "src.py", "x = 1\n")  # edits in progress: a sign of work
         before = self.bytes_of()
         mtime = os.stat(os.path.join(self.ws, _quick.RECORD)).st_mtime_ns
@@ -308,19 +405,66 @@ class WatchAndOldQuestions(InboxCase):
         self.assertEqual(self.bytes_of(), before)
         self.assertEqual(os.stat(os.path.join(self.ws, _quick.RECORD)).st_mtime_ns, mtime)
 
-    def test_a_question_the_agent_still_waits_on_is_announced_once(self):
-        quick_inbox.ask(self.ws, "¿payload?", now=lambda: 9e9, say=self.out.append)  # after the last commit
+    def test_a_question_is_announced_once_then_listed_as_still_open(self):
+        quick_inbox.ask(self.ws, "¿payload?", now=lambda: 9e9, say=self.out.append)
         code, out = self.watch()
         self.assertEqual(code, 0)
         self.assertIn("QUESTION", out)
         code, out = self.watch()
         self.assertEqual(code, 1)
         self.assertNotIn("QUESTION", out)
-        self.assertIn("STILL OPEN", out)  # listed, not announced as news
+        self.assertIn("STILL OPEN", out)
+
+    def test_a_commit_by_another_identity_does_not_answer_a_question(self):
+        quick_inbox.ask(self.ws, "¿Autoriza el cambio? Sigo esperando", now=lambda: 1.0, say=self.out.append)
+        self.watch()  # told
+        self.commit_now("other@o")  # another session, nobody answered
+        code, out = self.watch()
+        self.assertEqual(code, 1)
+        self.assertIn("STILL OPEN %s q1" % self.ws, out)
+        self.assertIn("a commit", out)  # the uncertainty is shown
+        self.assertIn("rein quick resolve", out)
+
+    def test_two_independent_questions_are_both_announced(self):
+        quick_inbox.ask(self.ws, "¿Autoriza A?", now=lambda: 9e9, say=self.out.append)
+        quick_inbox.ask(self.ws, "¿Qué dato uso para B?", now=lambda: 9e9 + 5, say=self.out.append)
+        code, out = self.watch()
+        self.assertEqual(code, 0)
+        self.assertIn("Autoriza A", out)
+        self.assertIn("dato uso para B", out)
+
+    def test_resolve_closes_exactly_the_named_question_and_tells_the_agent_nothing(self):
+        quick_inbox.ask(self.ws, "uno", now=lambda: 9e9, say=self.out.append)
+        quick_inbox.ask(self.ws, "dos", now=lambda: 9e9 + 1, say=self.out.append)
+        orca = InboxOrca(worktrees=[self.ws])
+        client = OrcaClient(executable="ORCA", runner=orca)
+        self.assertEqual(quick_inbox.resolve(self.ws, ["q1"], client, say=self.out.append), 0)
+        self.assertEqual(orca.sent(), [])
+        code, out = self.watch()
+        self.assertIn("dos", out)
+        self.assertNotIn("uno", out)
+        self.assertEqual(quick_inbox.resolve(self.ws, ["q1"], client, say=self.out.append), 1, "already closed")
+
+    def test_the_agent_can_replace_a_question_explicitly(self):
+        quick_inbox.ask(self.ws, "vieja", now=lambda: 9e9, say=self.out.append)
+        quick_inbox.ask(self.ws, "nueva", now=lambda: 9e9 + 1, say=self.out.append, replaces=["q1"])
+        code, out = self.watch()
+        self.assertIn("nueva", out)
+        self.assertNotIn("vieja", out)
+
+    def test_the_cli_routes_resolve_and_replaces(self):
+        from unittest import mock
+        with mock.patch.object(rein_cli._inbox, "resolve", return_value=0) as res, \
+                mock.patch.object(rein_cli._quick, "OrcaClient"):
+            rein_cli.cmd_quick(["resolve", "--id", "q1", "--id=q2"])
+        self.assertEqual(res.call_args[0][:2], ("", ["q1", "q2"]))
+        with mock.patch.object(rein_cli._inbox, "ask", return_value=0) as ask:
+            rein_cli.cmd_quick(["ask", "nueva", "--replaces", "q1"])
+        self.assertEqual((ask.call_args[0][1], ask.call_args[1]["replaces"]), ("nueva", ["q1"]))
 
     def test_an_old_question_does_not_bury_a_real_report_of_another_quick(self):
         quick_inbox.ask(self.ws, "¿payload?", now=lambda: 1.0, say=self.out.append)
-        self.commit_now()
+        self.watch()  # told once
         other = os.path.join(self.tmp, "quick-other")
         os.makedirs(other)
         run_git(other, "init", "-q")
@@ -331,21 +475,10 @@ class WatchAndOldQuestions(InboxCase):
         with open(os.path.join(other, _quick.RECORD), "w") as fh:
             json.dump(record, fh)
         quick_inbox.report(other, "listo: cambié x", now=lambda: 5.0, say=self.out.append)
-        client = OrcaClient(executable="ORCA", runner=InboxOrca(worktrees=[self.ws, other]))
-        out = io.StringIO()
-        with contextlib.redirect_stdout(out):
-            code = quick_inbox.watch("", client, cwd=self.ws, once=True, clock=lambda: 1e10)
+        code, out = self.watch([self.ws, other])
         self.assertEqual(code, 0)
-        self.assertEqual(out.getvalue().count("QUESTION"), 0)
-        self.assertIn("REPORT %s r1" % other, out.getvalue())
-
-    def test_a_newer_question_supersedes_the_older_one(self):
-        quick_inbox.ask(self.ws, "primera", now=lambda: 9e9, say=self.out.append)
-        quick_inbox.ask(self.ws, "segunda", now=lambda: 9e9 + 5, say=self.out.append)
-        code, out = self.watch()
-        self.assertEqual(code, 0)
-        self.assertIn("segunda", out)
-        self.assertNotIn("primera", out)
+        self.assertEqual(out.count("QUESTION"), 0)
+        self.assertIn("REPORT %s r1" % other, out)
 
 
 import ship  # noqa: E402
@@ -377,3 +510,32 @@ class FixTaskBrief(ShipCase):
         self.assertIn("exactly as given", spec)
         self.assertIn("Verification command: `pnpm exec ng test --watch=false` (the repo's full test suite)", spec)
         self.assertIn("when that is itself the whole suite", spec)
+
+
+class SyntheticTaskDecisions(unittest.TestCase):
+    """review5 B: the decisions a generated task cites (in its findings, failure or Verification) are in its brief."""
+
+    PLAN = {"path": "/abs/proxima-engineering/tasks.md", "why": "w", "tasks": [],
+            "decisions": [{"id": "D%d" % i, "title": "Decision %d" % i, "rationale": "because " * 40}
+                          for i in range(1, 8)]}
+
+    def spec(self, **kw):
+        task = ship.ss.TaskState(id="AUDIT1-proxima-api", repo="proxima-api", deps=[], human_review=False,
+                                 verification=kw.pop("verification", ""), type="audit-fix")
+        for k, v in kw.items():
+            setattr(task, k, v)
+        return ship.build_task_spec(task, self.PLAN)
+
+    def test_a_citation_in_the_audit_findings(self):
+        spec = self.spec(audit_findings="BLOCKING: src/x.py violates D7; follow D7 when fixing")
+        self.assertIn("- D7: Decision 7", spec)
+
+    def test_a_citation_in_the_last_failure(self):
+        self.assertIn("- D6: Decision 6", self.spec(last_failure="the gate failed: D6 says no cache"))
+
+    def test_a_citation_in_the_verification(self):
+        self.assertIn("- D5: Decision 5", self.spec(verification="`pnpm test` (the check D5 asks for)"))
+
+    def test_what_is_cited_nowhere_is_still_cut_with_the_path(self):
+        spec = self.spec(audit_findings="BLOCKING: D7")
+        self.assertIn("/abs/proxima-engineering/tasks.md", spec)
