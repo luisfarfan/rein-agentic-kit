@@ -24,7 +24,9 @@ import roles  # noqa: E402
 # quick: +70 for the watch that relays a quick agent's questions and startup stalls.
 # rein-plan: +10 for the `Gate config:` field the guard requires to change gate config.
 # ship: +20 for offering `rein done --push`.
-BUDGETS = {"rein-plan": 710, "ship": 440, "answer": 200, "quick": 300}
+# rein-plan: +15 for showing the owner plan-check's warnings (a plan root in a temp dir).
+# ship: +25 for the temp-root refusal and --allow-temp-root.
+BUDGETS = {"rein-plan": 725, "ship": 465, "answer": 200, "quick": 300}
 
 
 def _skill_files() -> list:

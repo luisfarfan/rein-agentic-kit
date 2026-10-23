@@ -21,7 +21,9 @@ It applies to every task.
 1. Confirm the plan exists: `rein tasks <root> --change <change>` (root `.` or the user's
    `--root`). None: stop, suggest `/rein:rein-plan`.
 2. Run `rein ship <change> --root <root> --detach`. If it refuses (a tab is already running, or a
-   preflight error), show its output; never retry, and never run the loop in this session.
+   preflight error, or a plan root in a temporary directory whose `.rein/` state a reboot would
+   lose), show its output; never retry, and never run the loop in this session. Only the owner
+   may accept the temporary root: then add `--allow-temp-root`.
 3. Immediately run `rein watch <change> --root <root>` as a BACKGROUND command. Tell the owner
    to stay in this session: Rein's decision gate questions will appear here.
 4. When the watcher wakes, act on its first word:

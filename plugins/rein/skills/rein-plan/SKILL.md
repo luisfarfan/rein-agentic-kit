@@ -53,8 +53,9 @@ Usage: `/rein:rein-plan <change-name> [description]`
       `openspec validate --strict` and report its output VERBATIM, labeled as openspec's own;
       this skill reimplements none of openspec's structural checks. A missing `openspec` binary
       skips this half silently: not a failure.
-   b. Save the draft to a scratch file (`mktemp`) and run `rein plan-check --gate <file>`.
-      Exit 1 means a BLOCKING finding; `IMPORTANT` ones are shown beside the plan.
+   b. Save the draft to a scratch file (`mktemp`) and run `rein plan-check --gate <file> --root <plan root>`.
+      Exit 1 means a BLOCKING finding; `IMPORTANT` ones are shown beside the plan. Show the owner
+      any `warnings` (a temporary plan root loses `.rein/` on reboot; ship refuses it).
    c. Critique every task yourself against the two classes no command can decide:
       - a criterion no command can check
       - a criterion that contradicts a stated decision

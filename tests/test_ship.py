@@ -1903,7 +1903,7 @@ class TestCli(unittest.TestCase):
             with open(os.path.join(d, "tasks.md"), "w") as fh:
                 fh.write("# Change: demo\n\n- [ ] T001 a\n  - Verification: `pnpm test`\n")
             env = {k: v for k, v in os.environ.items() if k != "ORCA_TERMINAL_HANDLE"}
-            proc = subprocess.run([sys.executable, self.BIN, "ship", "demo", "--root", d],
+            proc = subprocess.run([sys.executable, self.BIN, "ship", "demo", "--root", d, "--allow-temp-root"],
                                   capture_output=True, text=True, env=env)
             self.assertEqual(proc.returncode, 126)
             self.assertIn("ORCA_TERMINAL_HANDLE", proc.stdout)

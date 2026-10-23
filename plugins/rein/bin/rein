@@ -59,7 +59,11 @@ Subcommands:
   rein baseline       mark/show/clear the reference run compared against
   rein ship <change>  drive a plan through Orca workers: dispatch, gate, audit.
                       [--root <plan repo>] [--agent <id> [--model <m>]] [--dry-run | --detach]
+                      [--allow-temp-root]
                       --agent alone uses that agent's default model.
+                      A plan root in a temporary directory (/tmp, /var/folders, $TMPDIR) loses
+                      its .rein/ state on reboot: ship refuses it unless --allow-temp-root;
+                      quick and plan-check warn.
                       --detach opens a new Orca tab that runs the loop, then returns
                       exit 0 shipped and approved / 1 failed tasks or rejected audit /
                       2 usage / 126 preflight or environment. Never pushes or merges
@@ -159,6 +163,7 @@ import ship as _ship  # noqa: E402
 import ship_answer as _answer  # noqa: E402
 import ship_done as _done  # noqa: E402
 import ship_watch as _watch  # noqa: E402
+import tmproot as _tmproot  # noqa: E402
 import token_report as _tr  # noqa: E402
 import verify as _verify  # noqa: E402
 
@@ -574,7 +579,9 @@ def cmd_plan_check(argv: list[str]) -> int:
     run_ids = [t.strip() for t in only_raw.split(",") if t.strip()] if only_raw else []
     decision = _plan_check.decide_plan_check(findings, run_ids)
 
-    print(json.dumps({"path": path, "error": error, "findings": findings,
+    # Only the root the caller names: the draft itself usually sits in a scratch file, which is temporary.
+    warnings = [w for w in (_tmproot.warning(_opt(argv, "root")),) if w]
+    print(json.dumps({"path": path, "error": error, "findings": findings, "warnings": warnings,
                       "decision": decision["decision"], "reason": decision["reason"]}, indent=2))
 
     # A file that could not be read is a setup problem, not a clean plan. This
@@ -995,11 +1002,11 @@ def cmd_ship(argv: list[str]) -> int:
     Put the change name first: `_positional` treats the word after a bare flag
     as that flag's value, so `--dry-run <change>` is filtered out below.
     """
-    change = _positional([a for a in argv if a not in ("--dry-run", "--detach")])
+    change = _positional([a for a in argv if a not in ("--dry-run", "--detach", "--allow-temp-root")])
     agent, model = _opt(argv, "agent"), _opt(argv, "model")
     detach = "--detach" in argv
     usage = ("usage: rein ship <change> [--root <plan repo>] [--agent <id> [--model <m>]] "
-             "[--dry-run | --detach]  (--detach and --dry-run cannot be combined)")
+             "[--dry-run | --detach] [--allow-temp-root]  (--detach and --dry-run cannot be combined)")
     if _flag_missing_value(argv, ("--agent", "--model")):
         print(usage)
         return 2
@@ -1013,8 +1020,16 @@ def cmd_ship(argv: list[str]) -> int:
         print(usage)
         return 2
     root = _opt(argv, "root", ".")
+    temp = _tmproot.warning(root)
+    if temp:
+        if "--dry-run" not in argv and "--allow-temp-root" not in argv:
+            print("rein ship refuses a plan root in a temporary directory: %s.\nMove the plan to a checkout "
+                  "that survives a restart, or pass --allow-temp-root to run anyway." % temp)
+            return 2
+        print("warning: %s" % temp)
     if detach:
-        return _ship.detach_ship(root, change, _ship.OrcaClient(), override=(agent, model) if agent else None)
+        return _ship.detach_ship(root, change, _ship.OrcaClient(), override=(agent, model) if agent else None,
+                                 allow_temp_root="--allow-temp-root" in argv)
     env = dict(os.environ)
     dry_run = "--dry-run" in argv
     if dry_run:
@@ -1209,6 +1224,9 @@ def cmd_quick(argv: list[str]) -> int:
         elif not a.startswith("-"):
             words.append(a)
     sentence = words[0] if words else ""
+    temp = _tmproot.warning(".")
+    if temp and sentence != "done":
+        print("warning: %s" % temp)
     agent, model = values.get("agent", ""), values.get("model", "")
     # A lone --agent is fine (the driver supplies its default model); a lone --model is not.
     if bad or len(words) != 1 or ("model" in values and "agent" not in values) or (dirty_ok and not here) \

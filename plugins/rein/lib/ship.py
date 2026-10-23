@@ -1995,7 +1995,8 @@ def ship_tab_title(change: str) -> str:
     return "rein ship %s" % change
 
 
-def detach_ship(root: str, change: str, client: OrcaClient, *, override: tuple | None = None) -> int:
+def detach_ship(root: str, change: str, client: OrcaClient, *, override: tuple | None = None,
+                allow_temp_root: bool = False) -> int:
     """Open a new Orca terminal in the plan repo that runs `rein ship <change>`, then return.
 
     Plan errors surface here (exit 126) before any terminal exists, and a live
@@ -2020,6 +2021,8 @@ def detach_ship(root: str, change: str, client: OrcaClient, *, override: tuple |
         argv = [sys.executable, BIN, "ship", change, "--root", root]
         if override:
             argv += ["--agent", override[0], "--model", override[1]]
+        if allow_temp_root:  # the owner already accepted it for this run
+            argv.append("--allow-temp-root")
         handle = oc.terminal_handle_of(client.terminal_create(
             "path:%s" % root, title, shlex.join(argv)))
     except OrcaError as exc:
