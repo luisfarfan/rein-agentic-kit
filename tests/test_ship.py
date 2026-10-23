@@ -835,6 +835,22 @@ class TestNextAction(ShipCase):
                  "workerState": "working", "dispatchStatus": "dispatched",
                  "projection": {"nextAction": na}} for did, na in items]
 
+    def test_none_is_silent_and_unknown_kind_is_reported_once(self):
+        self.running_state()
+        fake = FakeOrca(self.root, autocomplete=False)
+        fake.rows_override = self.rows(
+            ("d1", {"kind": "none"}),
+            ("d_unknown", {"kind": "future_action"}),
+        )
+        fake.pending = [lambda f: []] * 7
+        with self.assertRaises(Drained):
+            self.run_ship(fake, scripted_gate())
+        self.assertNotIn("ignoring unknown nextAction 'none'", self.out)
+        self.assertEqual(self.out.count("ignoring unknown nextAction 'future_action' for d_unknown"), 1)
+        self.assertEqual([c for c in fake.calls if c[1:2] in
+                          (["worker-none"], ["worker-future_action"], ["gate-create"])], [])
+        self.assertEqual(ship_state.load(self.state_file).tasks["T001"].status, "running")
+
     def test_only_release_and_retain_are_executed(self):
         self.running_state()
         fake = FakeOrca(self.root, autocomplete=False)

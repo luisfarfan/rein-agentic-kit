@@ -1891,7 +1891,7 @@ class _Driver:
             action = (row.get("projection") or {}).get("nextAction")
             kind = action.get("kind") if isinstance(action, dict) else ""
             did = str(row.get("dispatchId") or "")
-            if not kind or did == self.state.audit_dispatch or did in recovered:
+            if not kind or kind == "none" or did == self.state.audit_dispatch or did in recovered:
                 continue  # a recovered worker was already released by decide; `rows` is a stale snapshot
             if kind not in SAFE_NEXT_ACTIONS:
                 if (did, kind) not in self.noted:  # never acted on: only release/retain run
