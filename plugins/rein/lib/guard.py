@@ -354,17 +354,17 @@ def _git_or_raise(path: str, *args: str) -> str:
     return out
 
 
-# When a hook could not run, as opposed to ran and rejected the tree. Exits 126/127 say it; so do a few
-# messages of a MISSING TOOL, each anchored to its exact form on a line of its own -- never a free
-# substring (`ENOENT` inside a file name, `not found` inside a diagnostic). A linter's rejection signal
-# always wins over all of them: a hook that ran and rejected the tree is red.
+# When a hook could not run, as opposed to ran and rejected the tree: ONLY when its tool is unambiguously
+# missing -- exit 126/127, or the shell's `x: command not found` / `x: not found`, or pnpm's
+# `Command "x" not found` / ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL, each on a line of its own. Everything
+# else is red, including `Cannot find module`, `ModuleNotFoundError` and `No such file or directory`:
+# those are as often the code's own bad import as a missing dependency, and the dependencies of the
+# worker are already in the clone. A linter's rejection signal always wins: a hook that ran and rejected
+# the tree is red.
 _MISSING_TOOL = [re.compile(p, re.M) for p in (
-    r"^[\W_]*(?:\S+: )+(?:line \d+: )?\S+: (?:command )?not found\s*$",               # sh: eslint: command not found
-    r"^[\W_]*(?:\S+: )+line \d+: \S+: No such file or directory\s*$",                 # the hook's own executable
+    r"^[\W_]*(?:\S+: )+(?:line \d+: )?\S+: (?:command )?not found\s*$",               # sh: x: command not found / sh: 1: x: not found
     r"^[\W_]*(?:ERR_PNPM_\w+\s+)?Command \"[^\"]+\" not found\s*$",                  # pnpm exec
     r"^[\W_]*ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL\b",
-    r"^[\W_]*ModuleNotFoundError: No module named\b",
-    r"^[\W_]*Error: Cannot find module\b",
 )]
 _REJECTION = [re.compile(p, re.M | re.I) for p in (
     r"^\s*\d+:\d+\s+(?:error|warning)\b",                       # eslint stylish
@@ -403,7 +403,7 @@ def _clone_command(source: str, target: str) -> list:
     return ["cp", "-a", "--reflink=always", source, target]   # reflink: btrfs, xfs, ...
 
 
-def _clone_dependencies(source: str, into: str) -> None:
+def _clone_dependencies(source: str, into: str) -> list:
     """Give the temporary checkout the worker's gitignored folders (`node_modules`, `.venv`, ...) as
     copy-on-write clones, so a hook finds the tools it has in the worktree while nothing it writes can
     reach the worker: a write lands in the clone, and one outside those folders lands in the checkout,
@@ -412,6 +412,7 @@ def _clone_dependencies(source: str, into: str) -> None:
     code, out = _git(source, "ls-files", "--others", "--ignored", "--exclude-standard", "--directory")
     if code != 0:
         raise GuardError("cannot list the ignored folders of %s" % source)
+    cloned = []
     for line in out.splitlines():
         if not line.endswith("/"):
             continue
@@ -422,6 +423,7 @@ def _clone_dependencies(source: str, into: str) -> None:
         if os.path.lexists(link) or not os.path.isdir(target):
             continue
         os.makedirs(os.path.dirname(link), exist_ok=True)
+        cloned.append(rel)
         try:
             proc = subprocess.run(_clone_command(target, link), capture_output=True, text=True,
                                   timeout=CLONE_TIMEOUT)
@@ -429,6 +431,95 @@ def _clone_dependencies(source: str, into: str) -> None:
             raise NoClone("%s: %s" % (rel, exc))
         if proc.returncode != 0:
             raise NoClone("%s: %s" % (rel, (proc.stderr or proc.stdout).strip()[:200] or "exit %d" % proc.returncode))
+    return cloned
+
+
+class Unrelocatable(Exception):
+    """A symlink in a cloned dependency folder points into the worker and cannot be moved to the clone."""
+
+
+def _relocate_links(worker: str, work: str, folders: list) -> int:
+    """Walk the symlinks of the cloned `folders` (never following them). One whose target, absolute or
+    relative, lands inside the worker's worktree is made to land on the same path of the temporary
+    checkout `work`: a clone preserves an absolute link, and a hook writing through it would write to the
+    worker. A relative link that stays inside the worktree already resolves inside `work`; one that
+    leaves the worktree (a store, a global tool) is left as it is. Returns how many were moved.
+    Unrelocatable when one cannot be moved safely."""
+    roots = {worker, os.path.realpath(worker)}
+    moved = 0
+
+    def inside(path):
+        return next((r for r in roots if path == r or path.startswith(r + os.sep)), None)
+
+    for rel in folders:
+        for here, dirs, files in os.walk(os.path.join(work, rel), followlinks=False):
+            for name in dirs + files:
+                link = os.path.join(here, name)
+                if not os.path.islink(link):
+                    continue
+                target = os.readlink(link)
+                if not os.path.isabs(target):
+                    continue  # a relative link resolves from where it sits: inside `work` for a link inside it
+                root = inside(os.path.normpath(target))
+                if root is None:
+                    continue
+                new = os.path.join(work, os.path.relpath(os.path.normpath(target), root))
+                try:
+                    os.unlink(link)
+                    os.symlink(new, link)
+                except OSError as exc:
+                    raise Unrelocatable("%s -> %s: %s" % (os.path.join(rel, os.path.relpath(link, os.path.join(work, rel))), target, exc))
+                moved += 1
+    return moved
+
+
+def _worker_state(path: str, keep: int = 5 << 20) -> dict:
+    """The worker's worktree as git sees it: `git status --porcelain` and the bytes of every path it lists
+    (up to `keep` bytes in all, so Rein's own damage can be undone). Compared before and after a re-run."""
+    code, out = _git(path, "status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames")
+    if code != 0:
+        raise GuardError("git status failed in %s" % path)
+    entries, files, used = [], {}, 0
+    for item in [i for i in out.split("\0") if i]:
+        rel = item[3:]
+        if rel.startswith(".rein/"):
+            continue
+        entries.append(item)
+        full = os.path.join(path, rel)
+        if os.path.isfile(full) and not os.path.islink(full):
+            try:
+                size = os.path.getsize(full)
+                if used + size <= keep:
+                    with open(full, "rb") as fh:
+                        files[rel] = fh.read()
+                    used += size
+            except OSError:
+                pass
+    prints = {rel: _fingerprint(path, rel) for rel in (i[3:] for i in entries)}
+    return {"status": entries, "prints": prints, "files": files}
+
+
+def _restore_worker(path: str, before: dict, after: dict) -> list:
+    """Undo what the re-run changed in the worker's worktree. The paths it could not put back."""
+    stuck = []
+    changed = [rel for rel in set(before["prints"]) | set(after["prints"])
+               if before["prints"].get(rel) != after["prints"].get(rel)]
+    for rel in sorted(changed):
+        full = os.path.join(path, rel)
+        try:
+            if rel in before["files"]:
+                with open(full, "wb") as fh:
+                    fh.write(before["files"][rel])
+            elif rel in before["prints"]:
+                stuck.append(rel)  # it was dirty and too big to keep
+            elif _git(path, "ls-files", "--error-unmatch", rel)[0] == 0:
+                if _git(path, "checkout", "HEAD", "--", rel)[0] != 0:
+                    stuck.append(rel)
+            elif os.path.lexists(full):
+                os.unlink(full)
+        except OSError:
+            stuck.append(rel)
+    return stuck
 
 
 def _hook_log(said: str) -> str:
@@ -457,19 +548,38 @@ def _rerun_pre_commit(path: str, sha: str, env=None) -> tuple:
         if code != 0:
             raise GuardError("cannot make a temporary checkout of %s in %s" % (parts[1][:8], path))
         _git_or_raise(work, "read-tree", "-u", "--reset", sha)
+        before = _worker_state(path)  # the worker as it is: the re-run must leave it exactly so
         try:
-            _clone_dependencies(path, work)
+            folders = _clone_dependencies(path, work)
+            _relocate_links(path, work, folders)
         except NoClone as exc:
             return "unchecked", ("the dependency folders of the worktree could not be cloned copy-on-write into "
                                  "the re-check (%s), and Rein does not copy them for real; run the hook by hand" % exc)
+        except Unrelocatable as exc:
+            return "unchecked", ("a symlink in the cloned dependency folders points into the worktree and could "
+                                 "not be moved to the re-check (%s); run the hook by hand" % exc)
+        timed_out = False
         try:
             proc = subprocess.run(["git", "-C", work, "hook", "run", "--ignore-missing", "pre-commit"],
                                   capture_output=True, text=True, timeout=HOOK_TIMEOUT,
                                   env=_clean_git_env(env), stdin=subprocess.DEVNULL)
         except subprocess.TimeoutExpired:
-            return "unchecked", "the pre-commit hook did not finish in %ds" % HOOK_TIMEOUT
+            timed_out = True
         except OSError as exc:
             raise GuardError("cannot run the pre-commit hook in %s: %s" % (path, exc))
+        # Defence in depth: the re-run must not have touched the worker. If it did, that is Rein's error,
+        # never the worker's: put it back, so the next look does not blame the worker, and say so.
+        after = _worker_state(path)
+        if before["prints"] != after["prints"] or before["status"] != after["status"]:
+            stuck = _restore_worker(path, before, after)
+            touched = sorted(rel for rel in set(before["prints"]) | set(after["prints"])
+                             if before["prints"].get(rel) != after["prints"].get(rel))
+            return "red", ("REIN ERROR, not the worker's: Rein's own re-run of the pre-commit hook modified the "
+                           "worker's worktree (%s)%s; this commit's hook result is void"
+                           % (", ".join(touched[:5]) or "git status changed",
+                              "; Rein put it back" if not stuck else "; could NOT put back %s" % ", ".join(stuck[:5])))
+        if timed_out:
+            return "unchecked", "the pre-commit hook did not finish in %ds" % HOOK_TIMEOUT
         said = ((proc.stderr or "") + (proc.stdout or "")).strip()
         if proc.returncode != 0:
             log = _hook_log(said)

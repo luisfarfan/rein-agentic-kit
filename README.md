@@ -457,30 +457,40 @@ auditor's verdict is read:
   `pre-commit` runs in a temporary detached checkout of the commit's parent with the commit's tree staged
   on top. The worker's gitignored folders (`node_modules`, `.venv` …) are given to that checkout as
   **copy-on-write clones** (APFS `cp -c`, or `--reflink` on Linux), so a hook such as lefthook's
-  `pnpm exec eslint {staged_files}` finds the tools the worktree has, and nothing the hook writes can
-  reach the worker: a write into a clone stays in the clone, and one anywhere else lands in the
-  temporary checkout, where it counts as a change (below). A clone of a medium `node_modules` (25 000
-  files, 195 MB) took about 2.6 s on APFS, once per re-run commit. If the filesystem cannot clone (another
-  volume, no reflink) Rein does not copy the folders for real: the hook is **unchecked**, and the message
-  says why. Three results, never mixed:
+  `pnpm exec eslint {staged_files}` finds the tools the worktree has. Nothing the hook writes can reach
+  the worker: a write into a clone stays in the clone, and one anywhere else lands in the temporary
+  checkout, where it counts as a change (below). After cloning, Rein walks the symlinks of the cloned
+  folders (without following them): one whose target, absolute or relative, resolves inside the worker's
+  worktree is moved to the same path of the temporary checkout (a clone preserves an absolute link, and a
+  hook writing through it would write to the worker); if one cannot be moved safely the hook is
+  unchecked. As a last defence Rein fingerprints the worker's worktree (`git status` plus the content of
+  every path it lists) before and after the re-run: if it changed anyway, that is **Rein's error**, not
+  the worker's — the result is red with a message that says so and names the path, and Rein puts the
+  files back so the next `done` never blames the worker. Costs, on APFS: cloning a medium `node_modules`
+  (25 000 files, 195 MB) took about 2.6 s; a real pnpm one (17 257 files, 387 MB, 1 298 symlinks) cloned in
+  3.0 s and its symlinks were walked in 0.14 s — once per re-run commit. If the filesystem cannot clone
+  (another volume, no reflink) Rein does not copy the folders for real: the hook is **unchecked**, and the
+  message says why. Three results, never mixed:
   - **red**: the hook ran on the commit's tree and rejected it (the message carries its error lines and
     the path of its full output) — a linter's rejection signal (`1:1 error …`, `file:line:col …`,
     `N problems`) always wins, whatever else the output says — **or** it left the tree changed (an
     autofix such as lint-staged, or any write into the checkout): the commit as made does not pass its
     hook, and the message shows the diff of what the hook would have fixed (amend the commit; Rein
-    changes nothing);
+    changes nothing). That includes `Cannot find module`, `ModuleNotFoundError` and `No such file or
+    directory`: they are as often the code's own bad import as a missing dependency, and the worker's
+    dependencies are already in the clone, so a module that is still missing there is, in almost every
+    case, the code's error. The accepted cost: if a Python or Node module is genuinely absent even from
+    the cloned dependencies, it shows as red, with its output and log;
   - **green**: it ran and left the tree as it found it;
-  - **unchecked**: it could not be run reliably, and only for these reasons: exit 126/127; or a line that
-    is exactly a missing-tool message (`sh: eslint: command not found`, `sh: 1: eslint: not found`, pnpm's
-    `Command "x" not found` / `ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL`, the hook script's own `…: line N: x:
-    No such file or directory`, Python's `ModuleNotFoundError: No module named`, Node's `Error: Cannot
-    find module`); a timeout (120 s); a root commit; a commit past the newest 25; a git too old for
-    `git hook` (< 2.36); or no copy-on-write clone. A file called `ENOENT.ts` inside a lint error is just
-    a file name: the hook ran, so it is red. Unchecked is never a pass and never a red: `rein quick done`
-    exits 1 naming each commit, and the owner, having run the hook by hand, answers `--accept-hook <sha>`
-    (logged by commit); ship holds the task in the `outside` gate (`accept` · `retry` · `skip`, no retry is
-    spent on it) or `rein accept-outside --hook <sha>` remembers the answer for the run. Nothing retries
-    it by itself, and an accept never turns a red green.
+  - **unchecked**: it could not be run reliably, and only because its tool is unambiguously missing —
+    exit 126/127, or a line that is exactly `sh: x: command not found` / `sh: 1: x: not found`, or pnpm's
+    `Command "x" not found` / `ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL` — or because the re-run itself could not
+    be made: a timeout (120 s), a root commit, a commit past the newest 25, a git too old for `git hook`
+    (< 2.36), no copy-on-write clone, or a symlink that cannot be relocated. Unchecked is never a pass and
+    never a red: `rein quick done` exits 1 naming each commit, and the owner, having run the hook by hand,
+    answers `--accept-hook <sha>` (logged by commit); ship holds the task in the `outside` gate
+    (`accept` · `retry` · `skip`, no retry is spent on it) or `rein accept-outside --hook <sha>`
+    remembers the answer for the run. Nothing retries it by itself, and an accept never turns a red green.
 
   Other hooks (`pre-push`, `post-commit` …) are not re-run.
 - **After an auditor.** Before the auditor starts, Rein notes the protected config of the worktrees and
@@ -700,7 +710,7 @@ none and goes on; a Codex-only run leaves no row) and prints the usage delta per
   `pre-commit` re-run has the worker's ignored folders (cloned) but not its whole environment, and each
   re-run costs a clone and a hook run (up to 25 commits): a hook that needs something else it has only in
   the worktree can fail in the clean checkout, and Rein calls that red unless it is exit 126/127 or an
-  exact missing-tool line. The auditor is checked for protected config and writes outside its worktree
+  exact missing-tool line (shell or pnpm). The auditor is checked for protected config and writes outside its worktree
   (and, in ship, in the run's other worktrees), not for other edits inside its own.
 - **Audience.** The owner. No compatibility promises.
 

@@ -1039,5 +1039,108 @@ class ShipAuditFrozenIgnoresOfOtherWorktrees(ShipCase):
         self.assertEqual(ship_state.load(self.state_file).audit_result, "rejected")
 
 
+# --- 6d -----------------------------------------------------------------------------------------
+
+@unittest.skipUnless(shutil.which("node"), "node is not installed")
+class RealNodeMissingRequire(unittest.TestCase):
+    """C1: a bad import in the code the hook checks is the code's error, not a missing tool."""
+
+    def test_a_require_of_a_missing_source_is_red_and_no_accept_saves_it(self):
+        tmp = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, True)
+        repo = os.path.join(tmp, "repo")
+        base = make_repo(repo, hook=False)
+        install_hook(repo, "pre-commit", "#!/bin/sh\nnode src/bad.cjs\n")
+        commit(repo, "src/bad.cjs", "require('./missing-source.cjs')\n", "feat: bad import")
+        sha = run_git(repo, "rev-parse", "HEAD").strip()
+        proc = subprocess.run(["node", "src/bad.cjs"], cwd=repo, capture_output=True, text=True)
+        self.assertEqual(proc.returncode, 1)  # the hook, run for real, rejects the program
+        self.assertIn("Cannot find module", proc.stderr)
+        unchecked, accepted = [], []
+        problems = guard.check(repo, base, {}, accept_hooks=[sha], unchecked=unchecked, hook_accepted=accepted)
+        self.assertEqual((len(problems), unchecked, accepted), (1, [], []), problems)
+        self.assertIn("does not pass the repo's pre-commit hook", problems[0])
+
+    def test_the_other_ambiguous_forms_are_red_too(self):
+        tmp = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, True)
+        repo = os.path.join(tmp, "repo")
+        base = make_repo(repo, hook=False)
+        for body in ("echo \"ModuleNotFoundError: No module named 'x'\"; exit 1\n",
+                     "echo 'Error: Cannot find module ./x imported from src/a.ts'; exit 1\n",
+                     "echo '.git/hooks/pre-commit: line 2: ./tool: No such file or directory'; exit 1\n"):
+            with self.subTest(body=body):
+                run_git(repo, "reset", "-q", "--hard", base)
+                install_hook(repo, "pre-commit", "#!/bin/sh\n" + body)
+                commit(repo, "src/a.ts", "x\n", "feat: a")
+                unchecked = []
+                self.assertEqual(len(guard.check(repo, base, {}, unchecked=unchecked)), 1)
+                self.assertEqual(unchecked, [])
+
+
+@CLONE
+class LinksIntoTheWorker(unittest.TestCase):
+    """C2: a symlink inside the cloned dependencies that points into the worker is moved to the re-check."""
+
+    def setUp(self):
+        self.tmp = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.repo = os.path.join(self.tmp, "repo")
+        self.base = js_repo(self.repo)
+        os.makedirs(os.path.join(self.repo, "src"), exist_ok=True)
+        commit(self.repo, "src/bar.ts", "original\n", "chore: bar")
+        self.base = run_git(self.repo, "rev-parse", "HEAD").strip()
+        os.symlink(os.path.join(self.repo, "src"), os.path.join(self.repo, "node_modules", "linked-source"))
+
+    def bar(self):
+        with open(os.path.join(self.repo, "src", "bar.ts")) as fh:
+            return fh.read()
+
+    def test_an_absolute_link_to_the_workers_src_is_relocated_and_the_worker_is_untouched(self):
+        install_hook(self.repo, "pre-commit", "#!/bin/sh\nprintf changed-by-hook > node_modules/linked-source/bar.ts\nexit 0\n")
+        commit(self.repo, "src/bar.ts", "committed\n", "feat: bar")
+        problems = guard.check(self.repo, self.base, {}, unchecked=[])
+        self.assertTrue(any("only after the hook rewrites src/bar.ts" in p for p in problems), problems)  # via the re-check's own copy
+        self.assertEqual(self.bar(), "committed\n")
+        self.assertEqual(run_git(self.repo, "status", "--porcelain=v1"), "")
+
+    def test_a_legitimate_link_between_dependencies_still_works(self):
+        os.makedirs(os.path.join(self.repo, "node_modules", "real"))
+        tool = os.path.join(self.repo, "node_modules", "real", "eslint")
+        shutil.copy(os.path.join(self.repo, "node_modules", ".bin", "eslint"), tool)
+        os.remove(os.path.join(self.repo, "node_modules", ".bin", "eslint"))
+        os.symlink(tool, os.path.join(self.repo, "node_modules", ".bin", "eslint"))  # absolute, inside the folder
+        commit(self.repo, "src/a.ts", "export const a = 1\n", "feat: a")
+        self.assertEqual(guard.check(self.repo, self.base, {}, unchecked=[]), [])
+
+    def test_a_link_that_cannot_be_moved_is_unchecked(self):
+        commit(self.repo, "src/a.ts", "export const a = 1\n", "feat: a")
+        unchecked = []
+        with mock.patch.object(guard, "_relocate_links", side_effect=guard.Unrelocatable("x -> /y: denied")):
+            self.assertEqual(guard.check(self.repo, self.base, {}, unchecked=unchecked), [])
+        self.assertIn("could not be moved", unchecked[0]["text"])
+
+    def test_if_a_write_still_reaches_the_worker_it_is_reins_error_and_is_put_back(self):
+        install_hook(self.repo, "pre-commit", "#!/bin/sh\nprintf changed-by-hook > node_modules/linked-source/bar.ts\nexit 0\n")
+        commit(self.repo, "src/bar.ts", "committed\n", "feat: bar")
+        write(self.repo, "wip.txt", "the workers own uncommitted work\n")
+        with mock.patch.object(guard, "_relocate_links", return_value=0):  # the first defence fails
+            problems = guard.check(self.repo, self.base, {}, unchecked=[])
+        self.assertTrue(any("REIN ERROR, not the worker's" in p for p in problems), problems)
+        self.assertIn("src/bar.ts", " ".join(problems))
+        self.assertEqual(self.bar(), "committed\n")  # put back
+        self.assertEqual(run_git(self.repo, "status", "--porcelain=v1"), "?? wip.txt\n")
+        self.assertFalse(any("it changes" in p for p in guard.check(self.repo, self.base, {}, unchecked=[])
+                             if "REIN ERROR" not in p))
+
+    def test_a_relative_link_inside_the_worktree_stays_inside_the_recheck(self):
+        os.symlink("../src", os.path.join(self.repo, "node_modules", "rel-source"))
+        install_hook(self.repo, "pre-commit", "#!/bin/sh\nprintf changed-by-hook > node_modules/rel-source/bar.ts\nexit 0\n")
+        commit(self.repo, "src/bar.ts", "committed\n", "feat: bar")
+        problems = guard.check(self.repo, self.base, {}, unchecked=[])
+        self.assertTrue(any("rewrites" in p for p in problems), problems)
+        self.assertEqual(self.bar(), "committed\n")
+
+
 if __name__ == "__main__":
     unittest.main()
