@@ -539,3 +539,88 @@ class SyntheticTaskDecisions(unittest.TestCase):
     def test_what_is_cited_nowhere_is_still_cut_with_the_path(self):
         spec = self.spec(audit_findings="BLOCKING: D7")
         self.assertIn("/abs/proxima-engineering/tasks.md", spec)
+
+
+class ResolveIdentity(InboxCase):
+    """review5b: `rein quick resolve` settles WHICH quick first; a question of another quick is never closed."""
+
+    def make_quick(self, path):
+        os.makedirs(path)
+        run_git(path, "init", "-q")
+        run_git(path, "commit", "-q", "--allow-empty", "-m", "base")
+        sha = run_git(path, "rev-parse", "HEAD").strip()
+        os.makedirs(os.path.join(path, ".rein"))
+        with open(os.path.join(path, _quick.RECORD), "w") as fh:
+            json.dump(_quick.new_record("api", path, "develop", sha, "codex", "gpt", "otra", "", 1.0), fh)
+        return path
+
+    def state(self, path):
+        with open(os.path.join(path, _quick.RECORD)) as fh:
+            return json.load(fh).get("questions", [])
+
+    def cli(self, argv, cwd, worktrees):
+        from unittest import mock
+        client = OrcaClient(executable="ORCA", runner=InboxOrca(worktrees=worktrees))
+        out, old = io.StringIO(), os.getcwd()
+        os.chdir(cwd)
+        try:
+            with mock.patch.object(rein_cli._quick, "OrcaClient", return_value=client), \
+                    contextlib.redirect_stdout(out):
+                code = rein_cli.cmd_quick(argv)
+        finally:
+            os.chdir(old)
+        return code, out.getvalue()
+
+    def test_inside_a_quick_a_replaced_id_is_an_error_and_never_jumps_to_another_quick(self):
+        other = self.make_quick(os.path.join(self.tmp, "elsewhere", "quick-b"))
+        quick_inbox.ask(self.ws, "vieja", now=lambda: 9e9, say=self.out.append)
+        quick_inbox.ask(self.ws, "nueva", now=lambda: 9e9 + 1, say=self.out.append, replaces=["q1"])
+        quick_inbox.ask(other, "de B", now=lambda: 9e9, say=self.out.append)  # B.q1 is open
+        code, out = self.cli(["resolve", "--id", "q1"], self.ws, [self.ws, other])
+        self.assertEqual(code, 1, out)
+        self.assertIn("no open question q1", out)
+        self.assertIsNone(self.state(other)[0].get("closed_at"))
+        self.assertIsNone(self.state(self.ws)[0].get("closed_at"))
+
+    def test_inside_a_quick_the_implicit_target_is_that_quick(self):
+        other = self.make_quick(os.path.join(self.tmp, "elsewhere", "quick-b"))
+        quick_inbox.ask(self.ws, "mía", now=lambda: 9e9, say=self.out.append)
+        quick_inbox.ask(other, "de B", now=lambda: 9e9, say=self.out.append)
+        code, out = self.cli(["resolve", "--id", "q1"], self.ws, [self.ws, other])
+        self.assertEqual(code, 0, out)
+        self.assertTrue(self.state(self.ws)[0].get("closed_at"))
+        self.assertIsNone(self.state(other)[0].get("closed_at"))
+
+    def test_a_name_that_matches_several_quicks_is_ambiguous_before_looking_at_the_id(self):
+        one = self.make_quick(os.path.join(self.tmp, "p1", "quick-fix"))
+        two = self.make_quick(os.path.join(self.tmp, "p2", "quick-fix"))
+        quick_inbox.ask(one, "uno", now=lambda: 9e9, say=self.out.append)  # only p1 holds q1
+        neutral = tempfile.mkdtemp()
+        self.addCleanup(__import__("shutil").rmtree, neutral, True)
+        code, out = self.cli(["resolve", "quick-fix", "--id", "q1"], neutral, [one, two])
+        self.assertEqual(code, 2, out)
+        self.assertIn("ambiguous", out)
+        self.assertIsNone(self.state(one)[0].get("closed_at"))
+
+    def test_global_selection_needs_one_workspace(self):
+        one = self.make_quick(os.path.join(self.tmp, "p1", "quick-a"))
+        two = self.make_quick(os.path.join(self.tmp, "p2", "quick-b"))
+        quick_inbox.ask(one, "uno", now=lambda: 9e9, say=self.out.append)
+        neutral = tempfile.mkdtemp()
+        self.addCleanup(__import__("shutil").rmtree, neutral, True)
+        code, out = self.cli(["resolve", "--id", "q1"], neutral, [one, two])
+        self.assertEqual(code, 2, out)
+        self.assertIsNone(self.state(one)[0].get("closed_at"))
+        code, out = self.cli(["resolve", one, "--id", "q1"], neutral, [one, two])  # by path: fine
+        self.assertEqual(code, 0, out)
+
+    def test_replaces_with_an_id_that_is_not_open_here_fails_and_records_nothing(self):
+        quick_inbox.ask(self.ws, "uno", now=lambda: 9e9, say=self.out.append)
+        quick_inbox.answer(self.ws, "ok", OrcaClient(executable="ORCA", runner=InboxOrca()),
+                           now=lambda: 9e9 + 1, say=self.out.append)
+        for bad in ("q9", "q1"):  # unknown, then answered
+            with self.subTest(bad=bad):
+                code, out = self.cli(["ask", "otra", "--replaces", bad], self.ws, [self.ws])
+                self.assertEqual(code, 2, out)
+                self.assertIn("nothing was recorded", out)
+                self.assertEqual(len(self.state(self.ws)), 1)

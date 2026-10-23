@@ -91,6 +91,10 @@ def ask(cwd: str, text: str, *, now: Callable[[], float] = time.time,
 
     def add(record):
         asked = questions(record)
+        gone = [r for r in replaces if r not in {q.get("id") for q in open_questions(record)}]
+        if gone:  # a replacement for nothing is a mistake to say, not to skip
+            added["error"] = gone
+            return False
         added["id"] = "q%d" % (len(asked) + 1)
         for q in asked:  # the agent says this question takes the place of those
             if q.get("id") in replaces and q.get("answer") is None:
@@ -100,6 +104,10 @@ def ask(cwd: str, text: str, *, now: Callable[[], float] = time.time,
     record, why = qd.update_record(workspace, add)
     if record is None:
         say(why)
+        return 2
+    if added.get("error"):
+        say("--replaces %s: not an open question of this quick task; nothing was recorded"
+            % ", ".join(map(str, added["error"])))
         return 2
     qid = added["id"]
     say("pregunta %s registrada: el orquestador avisa al dueño. Detente y espera su respuesta, que llegará "
@@ -116,13 +124,25 @@ def resolve(arg: str, qids, client: OrcaClient, *, cwd: str = ".", now: Callable
     if not qids:
         say("rein quick resolve needs the question id(s): --id q1")
         return 2
-    found = [p for p in targets(arg, client, cwd) if any(q.get("id") in qids for q in open_questions(qd._load_record(p)[0] or {}))]
+    # Which quick comes first, from its identity alone: never from which one happens to hold the id.
+    here = workspace_of(cwd)
+    if not arg and here and os.path.isfile(os.path.join(here, quick.RECORD)):
+        found = [here]  # inside a quick, the implicit target is that quick
+    else:
+        found = targets(arg, client, cwd)
     if not found:
-        say("no open question %s%s" % (", ".join(qids), " in %s" % arg if arg else ""))
+        say("no quick task%s" % (" for %r" % arg if arg else " here"))
         return 1
     if len(found) > 1:
-        say("several quick tasks have those questions; name one: %s" % ", ".join(found))
+        say("%s is ambiguous: several quick tasks match; name one by its path: %s"
+            % (repr(arg) if arg else "no workspace was given and", ", ".join(found)))
         return 2
+    held = [q.get("id") for q in open_questions(qd._load_record(found[0])[0] or {})]
+    missing = [q for q in qids if q not in held]
+    if missing:
+        say("%s has no open question %s (open there: %s); nothing was closed"
+            % (found[0], ", ".join(missing), ", ".join(map(str, held)) or "none"))
+        return 1
     closed = []
 
     def close(record):
