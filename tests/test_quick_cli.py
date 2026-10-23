@@ -81,12 +81,12 @@ class TestQuickCli(unittest.TestCase):
             code, _ = _run(["done"])
             self.assertEqual(code, 126)
             done.assert_called_once_with(cwd=".", client=client, accept_outside=False,
-                                         accept_paths=[], accept_commits=[])
+                                         accept_paths=[], accept_commits=[], accept_hooks=[])
             start.assert_not_called()
             done.reset_mock()
             _run(["done", "--accept-outside"])
             done.assert_called_once_with(cwd=".", client=client, accept_outside=True,
-                                         accept_paths=[], accept_commits=[])
+                                         accept_paths=[], accept_commits=[], accept_hooks=[])
 
     def test_quick_lone_agent_routes_with_empty_model(self):
         client = object()

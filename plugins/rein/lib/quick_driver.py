@@ -576,29 +576,30 @@ def _restore_handlers(previous: dict) -> None:
         signal.signal(sig, signal.SIG_DFL if old is None else old)
 
 
-def _audit_guard(before: dict, workspace: str, record: dict, accept_outside: bool, say) -> tuple:
+def _audit_guard(before: dict, workspace: str, record: dict, accept_outside: bool, say, accept=None) -> tuple:
     """`(problems, pending, broken)`: what the auditor did that the guard forbids since `before`
     (`_audit_snapshot`): protected config it edited, anything written outside its worktree. The same
-    checks as for the agent's own work. The owner's way out is the one `done` already has: re-run it
-    with `--accept-path/--accept-commit` (they match against the baseline from the task's start, which
-    the re-run checks again) or `--accept-outside`; the standing approval then needs no new audit."""
+    checks as for the agent's own work, with the same exits: `accept` (the owner's `--accept-path` /
+    `--accept-commit`, matched against this baseline, whose unmatched names `done`'s own guard reports)
+    and `--accept-outside`; reverting also clears it."""
     if before.get("error"):
         return [], [], before["error"]
     problems, broken = _guard.run_guard(_guard.config_drift, before["config"], workspace, record["base_sha"])
     outside, pending, _accepted, broken2 = _outside_verdict(dict(record, outside_before=before["outside"]),
-                                                            accept_outside, say, None)
+                                                            accept_outside, say, accept, unmatched=False)
     return problems + outside, pending, broken or broken2
 
 
 def _audit_snapshot(workspace: str, record: dict, resolved: dict) -> dict:
-    """Before the auditor starts: the protected config as it is, and the watched checkouts as they are."""
+    """Before the auditor starts: the protected config as it is, and the watched checkouts as they are,
+    each with exactly the ignores it had when the task started (never another repo's, never widened)."""
     try:
         config = _guard.config_snapshot(workspace, record["base_sha"], resolved)
     except Exception as exc:  # noqa: BLE001 -- a look it cannot take is a guard that could not run
         return {"error": "guard could not run: %s: %s" % (type(exc).__name__, exc)}
     seen = record.get("outside_before") or {}
-    globs = sorted({g for snap in seen.values() if isinstance(snap, dict) for g in snap.get("ignore") or []})
-    return {"config": config, "outside": _guard.outside_snapshot(list(seen), globs)}
+    frozen = {real: list(snap.get("ignore") or []) for real, snap in seen.items() if isinstance(snap, dict)}
+    return {"config": config, "outside": _guard.outside_snapshot(list(seen), ignore_for=frozen)}
 
 
 def _audit(workspace: str, record: dict, changed: list, limits: dict, client: OrcaClient,
@@ -665,6 +666,14 @@ def _audit(workspace: str, record: dict, changed: list, limits: dict, client: Or
     found = str(episode.get("verdict"))
     problems, pending, broken = _audit_guard(guard_before, workspace, record, accept_outside, say)
     if problems or pending or broken:
+        # Kept in the record: a later `done` checks it before any standing approval is reused.
+        def keep(fresh):
+            fresh["audit_breach"] = guard_before
+        try:
+            if not guard_before.get("error"):
+                update_record(workspace, keep)
+        except OSError as error:
+            say("cannot update %s in %s: %s" % (quick.RECORD, workspace, error))
         say("the audit recorded %s, but it is not taken: Rein's guard says the auditor broke a rule" % found)
         for problem in problems:
             say("guard: %s" % problem)
@@ -706,7 +715,7 @@ def _audit(workspace: str, record: dict, changed: list, limits: dict, client: Or
     return 126
 
 
-def _outside_verdict(record: dict, accept_outside: bool, say, accept=None) -> tuple:
+def _outside_verdict(record: dict, accept_outside: bool, say, accept=None, unmatched: bool = True) -> tuple:
     """`(problems, pending, accepted, broken)` of the other checkouts since this quick started.
     `pending` could hide the agent's write and is red until `accept_outside`; `accepted` is what the
     owner took as other activity, or named by path/commit (`accept`: the changes that really happened
@@ -715,7 +724,7 @@ def _outside_verdict(record: dict, accept_outside: bool, say, accept=None) -> tu
     doubts, held, named = [], [], []
     problems, broken = _guard.run_guard(_guard.outside_changes, record.get("outside_before") or {},
                                         warnings=doubts, unresolved=held, accept=accept, accepted=named)
-    if accept and not broken:
+    if accept and not broken and unmatched:
         problems += _guard.unmatched_accepts(accept, named)
     for doubt in doubts:  # not provably this agent's: told, not failed
         say("guard warning: %s" % doubt)
@@ -740,7 +749,7 @@ def _outside_verdict(record: dict, accept_outside: bool, say, accept=None) -> tu
 def done_quick(*, cwd: str = ".", client: OrcaClient, run=verify.run_one,
                clock: Callable[[], float] = time.time, env: dict = os.environ,
                say: Callable[[str], None] = print, accept_outside: bool = False,
-               accept_paths=(), accept_commits=()) -> int:
+               accept_paths=(), accept_commits=(), accept_hooks=()) -> int:
     # 1. The workspace and its record
     code, top = run_git(cwd, "rev-parse", "--show-toplevel")
     workspace = top.strip()
@@ -753,6 +762,7 @@ def done_quick(*, cwd: str = ".", client: OrcaClient, run=verify.run_one,
         return 2
     accept = {"paths": [os.path.abspath(p) for p in accept_paths],
               "commits": [c.lower() for c in accept_commits]} if (accept_paths or accept_commits) else None
+    hooks = [h.lower() for h in accept_hooks]
     # The agent is done, so the worktree's setup is too: its idle "Setup" tab can go.
     oc.close_idle_setup_tabs(client, workspace, say=say)
 
@@ -819,13 +829,37 @@ def done_quick(*, cwd: str = ".", client: OrcaClient, run=verify.run_one,
     say(quick.summary(results, outputs, notes, audit_pending=pending))
     # The guard: the gate config untouched (unless the task asked for it) and every commit through
     # the repo's commit-msg hook. A breach is red, with its reason.
+    unchecked, hook_accepted = [], []
     problems, broken = _guard.run_guard(_guard.check, workspace, record["base_sha"], resolved,
-                                        _guard.declared_paths(record.get("allow_config") or []))
+                                        _guard.declared_paths(record.get("allow_config") or []),
+                                        accept_hooks=hooks, unchecked=unchecked, hook_accepted=hook_accepted)
+    if hooks and not broken:
+        problems += _guard.unmatched_hook_accepts(hooks, hook_accepted)
     outside, pending, accepted, broken2 = _outside_verdict(record, accept_outside, say, accept)
     problems += outside
     broken = broken or broken2
+    # A rejection of the auditor kept from an earlier `done` is checked before any approval is reused.
+    breach = record.get("audit_breach")
+    if isinstance(breach, dict):
+        again, again_pending, broken3 = _audit_guard(breach, workspace, record, accept_outside, say, accept)
+        problems += ["(audit) %s" % p for p in again]
+        pending = pending + again_pending
+        broken = broken or broken3
+        if not (again or again_pending or broken3):
+            try:
+                update_record(workspace, lambda fresh: fresh.pop("audit_breach", None) and None)
+            except OSError as error:
+                say("cannot update %s in %s: %s" % (quick.RECORD, workspace, error))
+    accepted = accepted + ["hook %s in %s (%s)" % (h["id"][:12], h["checkout"], h.get("note", "")) for h in hook_accepted]
+    for h in hook_accepted:
+        say("guard: accepted by the owner, by name: pre-commit hook of commit %s" % h["id"][:12])
+    for item in unchecked:  # not provably wrong, not provably right: the owner ran it by hand or it stays open
+        say("guard: UNCHECKED: %s" % item["text"])
     for problem in problems:
         say("guard: %s" % problem)
+    if unchecked:
+        say("not green: run the repo's pre-commit hook on that commit by hand (in the worktree, with its "
+            "dependencies), then `rein quick done --accept-hook <sha>` for each commit you checked")
     if problems and any("wrote outside its worktree" in p for p in problems):
         say("if that is another session's work, not the agent's, accept exactly it: "
             "`rein quick done --accept-path <checkout>/<path>` / `--accept-commit <sha>` (repeatable; "
@@ -836,7 +870,7 @@ def done_quick(*, cwd: str = ".", client: OrcaClient, run=verify.run_one,
     if broken:
         say("%s (not a verdict on the code: fix the environment and run `rein quick done` again)" % broken)
     # Logged once the guard has spoken: the line keeps the verdict `done` actually gives.
-    if outcome == "red" or ((problems or pending) and outcome != "setup"):
+    if outcome == "red" or ((problems or pending or unchecked) and outcome != "setup"):
         verdict_code = 1
     elif outcome == "setup" or broken:
         verdict_code = 126
@@ -844,8 +878,9 @@ def done_quick(*, cwd: str = ".", client: OrcaClient, run=verify.run_one,
         verdict_code = 0
     entry = dict(_gate_log.summarize(report), kind="quick", repo=repo, tier="task+full-suite" if full_suite else "task",
                  env=sorted(gate_vars), affected=planned.get("affected"), base=record["base_sha"], exit=verdict_code)
-    if problems or pending or broken:
-        entry["guard"] = "; ".join(problems + pending + ([broken] if broken else []))[:600]
+    if problems or pending or broken or unchecked:
+        entry["guard"] = "; ".join(problems + pending + [u["text"] for u in unchecked]
+                                   + ([broken] if broken else []))[:600]
     if accepted:
         entry["guardAccepted"] = "; ".join(accepted)[:600]  # the owner's explicit answer, kept for audit
     _gate_log.append(_gate_log.root_log_path(workspace), entry)

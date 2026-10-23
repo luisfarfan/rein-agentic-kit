@@ -824,10 +824,12 @@ def _on_gate_verdict(state: ShipState, event: GateVerdict, cfg: ShipConfig, acti
         task.status = "gated"
         task.last_failure = "unresolved activity outside the worktree"
         _open(state, actions, task.id,
-              "Task %s passed its gate, but the guard saw activity outside its worktree that may include "
-              "what the worker wrote there and cannot be told apart from other sessions' work: %s. Check "
-              "those checkouts. accept = it is other activity, close the task; retry = a fresh worker "
-              "(revert what the worker wrote first); skip = fail the task."
+              "Task %s passed its gate, but the guard has something it cannot settle: %s. For activity "
+              "outside the worktree (it may include what the worker wrote there and cannot be told apart from "
+              "other sessions' work) check those checkouts; for a pre-commit hook that could not be re-run, run "
+              "it by hand on that commit, or `rein accept-outside --hook <sha>` to remember it for this "
+              "run. accept = it is fine, close the task; retry = a fresh worker (revert what the worker wrote "
+              "first); skip = fail the task."
               % (task.id, "; ".join(event.unresolved)[:QUESTION_DETAIL]), ["accept", "retry", "skip"], "outside")
         return
     if event.exit_code == 0:

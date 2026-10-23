@@ -1073,7 +1073,16 @@ class _Driver:
             except Exception as exc:  # noqa: BLE001 -- a look it cannot take is a guard that could not run, never "clean"
                 return {"error": "guard could not run: %s: %s" % (type(exc).__name__, exc)}
             bases[path] = base
-        return {"config": config, "bases": bases, "outside": self.outside_snapshot(repo)}
+        outside = self.outside_snapshot(repo)
+        # The other worktrees of this very run (not the auditor's own): their ordinary files are watched
+        # like any checkout, with the root's `gate.outsideIgnore` and their own.
+        mine = os.path.realpath(self.state.worktree_paths.get(repo, "") or "/nonexistent")
+        others = [p for p in self.state.worktree_paths.values()
+                  if p and os.path.exists(os.path.join(p, ".git")) and os.path.realpath(p) != mine]
+        root = getattr(self, "root", "")
+        globs = _guard.outside_ignore_globs(_detect.resolve(root)) if root and os.path.isdir(root) else []
+        outside.update(_guard.outside_snapshot(others, globs))
+        return {"config": config, "bases": bases, "outside": outside}
 
     def audit_guard_verdict(self) -> list:
         """What the auditor did that the guard forbids since `audit_guard_snapshot`, one line each; []
@@ -1124,7 +1133,19 @@ class _Driver:
         paths = _guard.watched_checkouts(repos, sorted(n for n in names if n),
                                          ([root] if root else []) + [p for p in task_repos if p])
         globs = _guard.outside_ignore_globs(resolved) if resolved else []
-        return _guard.outside_snapshot([p for p in paths if p and os.path.realpath(p) != mine], globs)
+        return _guard.outside_snapshot([p for p in paths if p and os.path.realpath(p) != mine], globs,
+                                       ignore_for=self.frozen_ignores())
+
+    def frozen_ignores(self) -> dict:
+        """`{checkout: globs}` as the tasks' own launch snapshots froze them: a later snapshot (the
+        auditor's) must not re-read configs the workers could have edited, nor mix one repo's ignores
+        into another's."""
+        frozen = {}
+        for task in self.state.tasks.values():
+            for real, snap in (getattr(task, "outside_before", None) or {}).items():
+                if isinstance(snap, dict) and not snap.get("error"):
+                    frozen.setdefault(real, list(snap.get("ignore") or []))
+        return frozen
 
     def tidy_setup_tabs(self, repo: str) -> None:
         """Close the idle "Setup" tab Orca's setup run left in `repo`'s worktree.
@@ -1608,17 +1629,23 @@ class _Driver:
                         detail = _fit_blocks([(block.split("\n", 1)[0], block.split("\n")[1:]),
                                               ("gate", detail.split("\n"))], _FAILURE_CAP)
             if code != 126:
-                problems, broken = _guard.run_guard(_guard.check, path, guard_base, _detect.resolve(path), allowed,
-                                                    inherited=inherited)
-                doubts = []
                 agreed = _guard.load_accepts(getattr(self, "root", "")) if getattr(self, "root", "") else {}
+                unchecked, hook_ok = [], []
+                problems, broken = _guard.run_guard(_guard.check, path, guard_base, _detect.resolve(path), allowed,
+                                                    inherited=inherited, accept_hooks=agreed.get("hooks") or (),
+                                                    unchecked=unchecked, hook_accepted=hook_ok)
+                # A pre-commit hook Rein could not re-run reliably is neither red nor green: the owner
+                # answers (the `outside` gate: accept / retry / skip), and no retry is spent on it.
+                held += ["pre-commit hook unchecked, %s" % u["text"] for u in unchecked]
+                doubts = []
                 named = []
                 outside, broken2 = _guard.run_guard(_guard.outside_changes, outside_before,
                                                     ignore=[plan_file] if plan_file else [], warnings=doubts,
                                                     unresolved=held, accept=agreed, accepted=named)
-                if named:  # the owner named these changes (`rein accept-outside`): verified now, kept in the log
+                named_all = named + hook_ok
+                if named_all:  # the owner named these (`rein accept-outside`): verified now, kept in the log
                     entry["guardAccepted"] = "; ".join(
-                        "%s %s in %s" % (n["kind"], n["id"], n["checkout"]) for n in named)[:600]
+                        "%s %s in %s" % (n["kind"], n["id"], n["checkout"]) for n in named_all)[:600]
                     for n in named:
                         warn("%s guard: accepted by the owner, by name: %s %s" % (task_id, n["kind"], n["id"]))
                 problems += outside

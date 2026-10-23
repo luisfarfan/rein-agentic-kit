@@ -352,14 +352,64 @@ def _git_or_raise(path: str, *args: str) -> str:
     return out
 
 
-def _rerun_pre_commit(path: str, sha: str, env=None) -> str:
-    """Run the repo's `pre-commit` hook as `sha` would have met it: a temporary detached checkout
-    of its parent with `sha`'s tree staged on top (the worker's worktree is never touched). "" when
-    the hook passes, else one line why it did not. GuardError when the re-run cannot be set up."""
+# What a hook prints when it could not run (a missing tool or dependency, the network), as opposed to
+# when it ran and rejected the commit. A heuristic, said as such: the exits 126/127 always count.
+_ENV_FAILURE = re.compile(
+    r"command not found|: not found|No such file or directory|ENOENT|Cannot find (?:module|package)|"
+    r"ModuleNotFoundError|No module named|Command \"[^\"]+\" not found|ERR_PNPM_[A-Z_]*(?:NOT_FOUND|EXEC_FIRST_FAIL|FETCH|NO_MATCHING)|"
+    r"Failed to (?:download|install|fetch|resolve)|error sending request|Temporary failure in name resolution|"
+    r"Connection (?:refused|timed out|reset)|ECONNREFUSED|ETIMEDOUT|getaddrinfo", re.I)
+_RELEVANT = re.compile(r"error|fail|\u2717|\u2716|not found|cannot|denied|forbidden|\bE\d{3}\b|^\s*\S+:\d+(?::\d+)?\b", re.I)
+_ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+
+
+def _relevant_lines(said: str, limit: int = 10, chars: int = 900) -> str:
+    """The lines of a hook's output that say why it failed (not its banner and summary), or the last
+    few when none does: ` | `-joined."""
+    lines = [_ANSI.sub("", l).strip() for l in said.splitlines()]
+    lines = [l for l in lines if l]
+    picked = [l for l in lines if _RELEVANT.search(l)] or lines[-6:]
+    return " | ".join(picked[:limit])[:chars]
+
+
+def _link_dependencies(source: str, into: str) -> None:
+    """Make the temporary checkout see what the worker's worktree has but git does not track -- the
+    dependency folders (node_modules, .venv, ...) and other ignored directories -- by symlink, so a hook
+    that needs them runs as it does there. Nothing is copied and nothing in `source` is changed by the
+    linking; a hook that writes into a linked folder (a cache) writes to the original."""
+    code, out = _git(source, "ls-files", "--others", "--ignored", "--exclude-standard", "--directory")
+    if code != 0:
+        raise GuardError("cannot list the ignored folders of %s" % source)
+    for line in out.splitlines():
+        if not line.endswith("/"):
+            continue
+        rel = line.rstrip("/")
+        if rel in (".rein", ".git") or rel.startswith((".rein/", ".git/")):
+            continue
+        target, link = os.path.join(source, rel), os.path.join(into, rel)
+        if os.path.lexists(link) or not os.path.isdir(target):
+            continue
+        os.makedirs(os.path.dirname(link), exist_ok=True)
+        os.symlink(os.path.realpath(target), link)
+
+
+def _hook_log(said: str) -> str:
+    fd, path = tempfile.mkstemp(prefix="rein-pre-commit-log-", suffix=".txt")
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(said)
+    return path
+
+
+def _rerun_pre_commit(path: str, sha: str, env=None) -> tuple:
+    """Run the repo's `pre-commit` hook as `sha` would have met it: a temporary detached checkout of its
+    parent with `sha`'s tree staged on top and the worker's ignored dependency folders linked in (the
+    worker's worktree is never modified). `("pass", "")`, `("red", why)` when the hook ran on the tree
+    and rejected it or changed it (an autofix: the commit as made did not pass), `("unchecked", why)`
+    when it could not be run reliably (no parent, timeout, a tool or dependency missing, the network).
+    GuardError when the checkout cannot be set up at all."""
     parts = _git_or_raise(path, "rev-list", "--parents", "-n", "1", sha).split()
     if len(parts) < 2:
-        return ("commit %s has no parent, so its pre-commit hook cannot be re-run on what it staged; "
-                "the hook is unchecked for it" % sha[:8])
+        return "unchecked", "it has no parent, so its pre-commit hook cannot be re-run on what it staged"
     tmp = tempfile.mkdtemp(prefix="rein-pre-commit-")
     work = os.path.join(tmp, "wt")
     try:
@@ -369,55 +419,92 @@ def _rerun_pre_commit(path: str, sha: str, env=None) -> str:
         if code != 0:
             raise GuardError("cannot make a temporary checkout of %s in %s" % (parts[1][:8], path))
         _git_or_raise(work, "read-tree", "-u", "--reset", sha)
+        _link_dependencies(path, work)
         try:
             proc = subprocess.run(["git", "-C", work, "hook", "run", "--ignore-missing", "pre-commit"],
                                   capture_output=True, text=True, timeout=HOOK_TIMEOUT,
                                   env=_clean_git_env(env), stdin=subprocess.DEVNULL)
         except subprocess.TimeoutExpired:
-            return "commit %s: the repo's pre-commit hook did not finish in %ds; it is unchecked" % (
-                sha[:8], HOOK_TIMEOUT)
+            return "unchecked", "the pre-commit hook did not finish in %ds" % HOOK_TIMEOUT
         except OSError as exc:
             raise GuardError("cannot run the pre-commit hook in %s: %s" % (path, exc))
-        if proc.returncode == 0:
-            return ""
         said = ((proc.stderr or "") + (proc.stdout or "")).strip()
-        tail = " | ".join(line.strip() for line in said.splitlines()[-3:] if line.strip())
-        subject = (_git(path, "log", "-1", "--format=%s", sha)[1].strip() or "")[:100]
-        return ("commit %s %r does not pass the repo's pre-commit hook (exit %d) when Rein re-runs it on what "
-                "that commit staged%s; fix the commit, never bypass the hook (if the hook needs installed "
-                "dependencies a clean checkout lacks, Rein cannot tell that from a failure: run it by hand "
-                "and ask the owner)" % (sha[:8], subject, proc.returncode, ": " + tail[:300] if tail else ""))
+        if proc.returncode != 0:
+            log = _hook_log(said)
+            if proc.returncode in (126, 127) or _ENV_FAILURE.search(said):
+                return "unchecked", ("the pre-commit hook could not run in the re-check (exit %d: %s); "
+                                     "full output: %s" % (proc.returncode, _relevant_lines(said), log))
+            return "red", ("does not pass the repo's pre-commit hook (exit %d): %s; full output: %s"
+                           % (proc.returncode, _relevant_lines(said), log))
+        # Exit 0 is only the commit's verdict if the hook left the tree as it found it: an autofix
+        # (lint-staged, `stage_fixed`) that rewrote it passed its own repair, not the commit.
+        _, staged = _git(work, "diff", "--cached", "--name-only", sha)
+        _, loose = _git(work, "diff", "--name-only")
+        changed = sorted(set(staged.split()) | set(loose.split()))
+        if changed:
+            _, diff = _git(work, "diff", sha)
+            return "red", ("passes its pre-commit hook only after the hook rewrites %s -- the commit as made "
+                           "does not; amend it with the hook's fix: %s"
+                           % (", ".join(changed[:5]), " ".join(diff.split("\n")[:20])[:700]))
+        return "pass", ""
     finally:
         _git(path, "worktree", "remove", "--force", work)
         shutil.rmtree(tmp, ignore_errors=True)
         _git(path, "worktree", "prune")
 
 
-def pre_commit_failures(path: str, base: str, env=None) -> list:
-    """One line per commit in `base..HEAD` (merges aside) whose `pre-commit` hook fails when Rein runs it
-    again on what that commit staged -- the hook a `git commit --no-verify` skips. Nothing when the
-    repo has no such hook. What cannot be re-run reliably is never green: a hook that times out, a
-    root commit, more commits than MAX_PRE_COMMIT, or a git without `git hook` is a line of its own."""
+def pre_commit_failures(path: str, base: str, env=None, accept_hooks=(), unchecked=None, accepted=None) -> list:
+    """One line per commit in `base..HEAD` (merges aside) whose `pre-commit` hook rejects it -- or
+    rewrites it -- when Rein runs the hook again on what that commit staged: the hook a
+    `git commit --no-verify` skips. Nothing when the repo has no such hook.
+
+    What cannot be re-run reliably is not a red: it goes to `unchecked` as `{"sha", "text"}` when the
+    caller passes a list (quick and ship then hold for the owner's explicit answer, never green), else it
+    is a problem (fail closed). `accept_hooks` (sha prefixes, 7+) is the owner's exit for exactly those
+    commits; each use is appended to `accepted` for the log. Never applies to a red."""
     code, out = _git(path, "rev-list", "--no-merges", "%s..HEAD" % base)  # newest first
     if code != 0:
         raise GuardError("cannot list the commits since %s in %s" % (base, path))
     every = [c for c in out.split() if c]
     if not every or not _has_hook(path, "pre-commit"):
         return []
-    if not _git_runs_hooks(path):
-        return ["the repo has a pre-commit hook but this git cannot run it again (`git hook` needs "
-                "git >= 2.36), so the change's commits are unchecked against it; upgrade git"]
-    commits = every[:MAX_PRE_COMMIT]
     problems = []
-    if len(every) > len(commits):
-        problems.append("the change has %d commits; only the newest %d were run through the pre-commit hook, "
-                        "%d were not checked: squash them, or check them by hand"
-                        % (len(every), len(commits), len(every) - len(commits)))
+    wanted = [a.lower() for a in accept_hooks or ()]
+
+    def doubt(sha, why):
+        if any(sha.startswith(w) for w in wanted):
+            if accepted is not None:
+                accepted.append({"kind": "hook", "id": sha, "checkout": path, "note": why[:200]})
+            return
+        text = "commit %s: %s" % (sha[:8], why)
+        if unchecked is None:
+            problems.append(text + " (unchecked)")
+        else:
+            unchecked.append({"sha": sha, "text": text})
+
+    if not _git_runs_hooks(path):
+        for sha in every:
+            doubt(sha, "the repo has a pre-commit hook but this git cannot run it again (`git hook` needs "
+                       "git >= 2.36)")
+        return problems
+    commits = every[:MAX_PRE_COMMIT]
+    for sha in every[MAX_PRE_COMMIT:]:
+        doubt(sha, "past the newest %d commits its pre-commit hook is not re-run" % MAX_PRE_COMMIT)
     for sha in commits:
-        why = _rerun_pre_commit(path, sha, env)
-        if why:
-            problems.append(why)
+        verdict, why = _rerun_pre_commit(path, sha, env)
+        if verdict == "red":
+            subject = (_git(path, "log", "-1", "--format=%s", sha)[1].strip() or "")[:100]
+            problems.append("commit %s %r %s" % (sha[:8], subject, why))
+        elif verdict == "unchecked":
+            doubt(sha, why)
     return problems
+
+
+def unmatched_hook_accepts(accept_hooks, accepted) -> list:
+    """The `--accept-hook` the owner named that matched no commit whose hook was unchecked."""
+    ids = [a.get("id", "") for a in accepted or () if a.get("kind") == "hook"]
+    return ["--accept-hook %s is not a commit whose pre-commit hook was unchecked" % h
+            for h in accept_hooks or () if not any(i.startswith(h.lower()) for i in ids)]
 
 
 OUTSIDE_PATH_CAP = 5000  # watched (not ignored) dirty or untracked paths per checkout; past it, GuardError
@@ -566,11 +653,13 @@ def watched_checkouts(repos, names, config_dirs=()) -> list:
     return paths
 
 
-def outside_snapshot(paths, ignore_globs=()) -> dict:
+def outside_snapshot(paths, ignore_globs=(), ignore_for=None) -> dict:
     """`{realpath: {head, paths: {rel: fingerprint}, ignore: [glob]}}` of the git checkouts in
     `paths`: HEAD, and the content of every path that is dirty or untracked there (a clean tracked
     path is HEAD's). `ignore` is the checkout's own `gate.outsideIgnore` plus `ignore_globs` (the
-    plan root's), fixed now: a worker that edits a config later widens nothing.
+    plan root's), fixed now: a worker that edits a config later widens nothing. `ignore_for`
+    (`{realpath: globs}`) gives a checkout exactly those globs instead -- the ones frozen when the task
+    started -- so a later snapshot never takes one repo's ignores for another's, nor widens them.
 
     A path that does not exist has nothing to protect and is left out. One that exists but cannot
     be read is kept as `{"error": why}`: taken at launch, the snapshot must not raise (nothing is
@@ -584,7 +673,10 @@ def outside_snapshot(paths, ignore_globs=()) -> dict:
             code, head = _git(path, "rev-parse", "HEAD")
             if code != 0:
                 raise GuardError("git cannot read %s" % path)
-            ignore = list(dict.fromkeys(_repo_outside_ignore(path) + list(ignore_globs or ())))
+            if ignore_for is not None and real in ignore_for:
+                ignore = list(ignore_for[real])
+            else:
+                ignore = list(dict.fromkeys(_repo_outside_ignore(path) + list(ignore_globs or ())))
             snap[real] = {"head": head.strip(), "refs": _ref_tips(path), "paths": {
                 rel: _fingerprint(path, rel) for rel in _watched_paths(path, ignore)}}
             if ignore:
@@ -787,16 +879,17 @@ def load_accepts(root: str) -> dict:
         with open(accept_file(root), encoding="utf-8") as fh:
             data = json.load(fh)
     except (OSError, ValueError):
-        return {"paths": [], "commits": []}
+        return {"paths": [], "commits": [], "hooks": []}
     clean = lambda key: [x for x in data.get(key, []) if isinstance(x, str) and x] if isinstance(data, dict) else []  # noqa: E731
-    return {"paths": clean("paths"), "commits": clean("commits")}
+    return {"paths": clean("paths"), "commits": clean("commits"), "hooks": clean("hooks")}
 
 
-def record_accepts(root: str, paths=(), commits=()) -> dict:
+def record_accepts(root: str, paths=(), commits=(), hooks=()) -> dict:
     """Add the owner's acceptances to `root`'s file; returns what is recorded now."""
     cur = load_accepts(root)
     cur["paths"] = sorted(set(cur["paths"]) | {entry_id(p) for p in paths})
     cur["commits"] = sorted(set(cur["commits"]) | {c.lower() for c in commits})
+    cur["hooks"] = sorted(set(cur["hooks"]) | {c.lower() for c in hooks})
     os.makedirs(os.path.dirname(accept_file(root)), exist_ok=True)
     with open(accept_file(root), "w", encoding="utf-8") as fh:
         json.dump(cur, fh, indent=1)
@@ -812,7 +905,8 @@ def run_guard(fn, *args, **kw) -> tuple:
         return [], "guard could not run: %s: %s" % (type(exc).__name__, exc)
 
 
-def check(path: str, base: str, resolved: dict, allowed=(), env=None, inherited=()) -> list:
+def check(path: str, base: str, resolved: dict, allowed=(), env=None, inherited=(), accept_hooks=(),
+          unchecked=None, hook_accepted=None) -> list:
     """Every rule the change since `base` breaks, one line each; [] when it breaks none. GuardError
     when it cannot tell. `inherited`: the plan root's `gate.protected` globs."""
     if not base:
@@ -826,7 +920,7 @@ def check(path: str, base: str, resolved: dict, allowed=(), env=None, inherited=
                 "that declares the file -- a plan task's `Gate config:` field, `rein quick "
                 "--allow-config` -- may change it)" % f
                 for f in config_changes(changed, patterns, allowed)]
-    return problems + commit_msg_failures(path, base, env) + pre_commit_failures(path, base, env)
+    return problems + commit_msg_failures(path, base, env) + pre_commit_failures(path, base, env, accept_hooks, unchecked, hook_accepted)
 
 
 def config_snapshot(path: str, base: str, resolved: dict, inherited=()) -> dict:

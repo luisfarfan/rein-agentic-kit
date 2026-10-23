@@ -27,7 +27,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(HERE), "plugins", "rein", "lib")
 import gate_log  # noqa: E402
 import guard  # noqa: E402
 import ship_state  # noqa: E402
-from test_guard import commit, make_repo, run_git  # noqa: E402
+from test_guard import commit as _commit, make_repo, run_git  # noqa: E402
 from test_guard_outside import write  # noqa: E402
 from test_quick_driver import DoneCase, TERMINAL, _AuditOrca  # noqa: E402
 from test_ship import Drained, FakeOrca, ShipCase, scripted_gate  # noqa: E402
@@ -38,6 +38,11 @@ PRE_COMMIT = """#!/bin/sh
 if git diff --cached | grep -q '^+.*FORBIDDEN'; then echo "a forbidden token is staged"; exit 1; fi
 exit 0
 """
+
+
+def commit(path, rel, text, msg):
+    os.makedirs(os.path.dirname(os.path.join(path, rel)), exist_ok=True)
+    _commit(path, rel, text, msg)
 
 
 def install_hook(path, name, body):
@@ -115,7 +120,8 @@ class PreCommit(unittest.TestCase):
         with mock.patch.object(guard, "MAX_PRE_COMMIT", 1):
             problems = guard.check(self.repo, self.base, {})
         self.assertEqual(len(problems), 1, problems)
-        self.assertIn("1 were not checked", problems[0])
+        self.assertIn("past the newest 1 commits", problems[0])
+        self.assertIn("unchecked", problems[0])
 
     def test_a_git_that_cannot_run_hooks_is_reported_when_the_hook_exists(self):
         commit(self.repo, "a.py", "x = 1\n", "feat: one")
@@ -460,6 +466,372 @@ class LedgerJson(unittest.TestCase):
         proc = self.cli()
         self.assertEqual(proc.returncode, 0)
         self.assertIn("ledger is empty", proc.stdout)
+
+
+# --- 6b -----------------------------------------------------------------------------------------
+
+ESLINT = """#!/bin/sh
+if grep -q FORBIDDEN "$@"; then echo "src/a.ts:1:1  error  forbidden token  no-forbidden"; exit 1; fi
+exit 0
+"""
+SH_HOOK = """#!/bin/sh
+./node_modules/.bin/eslint $(git diff --cached --name-only)
+"""
+LEFTHOOK_YML = """pre-commit:
+  jobs:
+    - name: eslint
+      glob: "*.ts"
+      run: pnpm exec eslint {staged_files}
+"""
+
+
+def add_deps(path):
+    """A gitignored node_modules with a local `eslint`, as the worker's worktree has after its setup."""
+    bin_dir = os.path.join(path, "node_modules", ".bin")
+    os.makedirs(bin_dir, exist_ok=True)
+    tool = os.path.join(bin_dir, "eslint")
+    with open(tool, "w") as fh:
+        fh.write(ESLINT)
+    os.chmod(tool, 0o755)
+
+
+def js_repo(path, hook_body=SH_HOOK):
+    base = make_repo(path, hook=False)
+    put(path, ".gitignore", "node_modules/\n.rein/\n")
+    run_git(path, "add", ".gitignore")
+    run_git(path, "commit", "-q", "--no-verify", "-m", "chore: ignore")
+    base = run_git(path, "rev-parse", "HEAD").strip()
+    add_deps(path)
+    install_hook(path, "pre-commit", hook_body)
+    return base
+
+
+class DependenciesAndUncertainty(unittest.TestCase):
+    def setUp(self):
+        self.tmp = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.repo = os.path.join(self.tmp, "repo")
+        self.base = js_repo(self.repo)
+
+    def test_a_hook_that_needs_the_workers_dependencies_runs_with_them_and_passes(self):
+        commit(self.repo, "src/a.ts", "export const a = 1\n", "feat: a")  # --no-verify
+        self.assertEqual(guard.check(self.repo, self.base, {}), [])
+
+    def test_a_hook_that_really_rejects_the_tree_is_red_with_its_error_lines_and_a_log(self):
+        commit(self.repo, "src/a.ts", "FORBIDDEN\n", "feat: bad")
+        [problem] = guard.check(self.repo, self.base, {})
+        self.assertIn("does not pass the repo's pre-commit hook", problem)
+        self.assertIn("forbidden token", problem)
+        log = problem.rsplit("full output: ", 1)[1]
+        self.assertIn("forbidden token", open(log).read())
+        os.remove(log)
+
+    def test_the_workers_dependency_folder_is_not_modified(self):
+        commit(self.repo, "src/a.ts", "export const a = 1\n", "feat: a")
+        before = sorted(os.listdir(os.path.join(self.repo, "node_modules", ".bin")))
+        guard.check(self.repo, self.base, {})
+        self.assertEqual(sorted(os.listdir(os.path.join(self.repo, "node_modules", ".bin"))), before)
+        self.assertEqual(run_git(self.repo, "status", "--porcelain=v1"), "")
+
+    def test_a_missing_dependency_is_unchecked_not_red(self):
+        shutil.rmtree(os.path.join(self.repo, "node_modules"))
+        commit(self.repo, "src/a.ts", "export const a = 1\n", "feat: a")
+        sha = run_git(self.repo, "rev-parse", "HEAD").strip()
+        unchecked = []
+        problems = guard.check(self.repo, self.base, {}, unchecked=unchecked)
+        self.assertEqual(problems, [])
+        [item] = unchecked
+        self.assertEqual(item["sha"], sha)
+        self.assertIn("could not run", item["text"])
+        # Without somewhere to put it, it fails closed rather than passing.
+        self.assertEqual(len(guard.check(self.repo, self.base, {})), 1)
+
+    def test_the_owner_accepts_an_unchecked_commit_by_sha_and_it_is_recorded(self):
+        shutil.rmtree(os.path.join(self.repo, "node_modules"))
+        commit(self.repo, "src/a.ts", "export const a = 1\n", "feat: a")
+        sha = run_git(self.repo, "rev-parse", "HEAD").strip()
+        unchecked, accepted = [], []
+        self.assertEqual(guard.check(self.repo, self.base, {}, accept_hooks=[sha[:9]], unchecked=unchecked,
+                                     hook_accepted=accepted), [])
+        self.assertEqual(unchecked, [])
+        self.assertEqual([a["id"] for a in accepted], [sha])
+        self.assertEqual(guard.unmatched_hook_accepts(["deadbeefdead"], accepted),
+                         ["--accept-hook deadbeefdead is not a commit whose pre-commit hook was unchecked"])
+
+    def test_an_accept_never_turns_a_red_green(self):
+        commit(self.repo, "src/a.ts", "FORBIDDEN\n", "feat: bad")
+        sha = run_git(self.repo, "rev-parse", "HEAD").strip()
+        self.assertEqual(len(guard.check(self.repo, self.base, {}, accept_hooks=[sha], unchecked=[])), 1)
+
+
+@unittest.skipUnless(shutil.which("lefthook") and shutil.which("pnpm"), "lefthook and pnpm are not installed")
+class LefthookWithPnpm(unittest.TestCase):
+    """The repos Rein is used on: lefthook running `pnpm exec eslint {staged_files}`."""
+
+    def setUp(self):
+        self.tmp = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.repo = os.path.join(self.tmp, "repo")
+        make_repo(self.repo, hook=False)
+        put(self.repo, ".gitignore", "node_modules/\n.rein/\n")
+        put(self.repo, "package.json", '{"name": "x", "private": true}\n')
+        put(self.repo, "lefthook.yml", LEFTHOOK_YML)
+        run_git(self.repo, "add", "-A")
+        run_git(self.repo, "commit", "-q", "--no-verify", "-m", "chore: tooling")
+        self.base = run_git(self.repo, "rev-parse", "HEAD").strip()
+        subprocess.run(["lefthook", "install"], cwd=self.repo, check=True, capture_output=True)
+        add_deps(self.repo)
+
+    def test_a_valid_commit_with_dependencies_in_the_worktree_is_green(self):
+        commit(self.repo, "src/a.ts", "export const a = 1\n", "feat: a")
+        unchecked = []
+        self.assertEqual(guard.check(self.repo, self.base, {}, unchecked=unchecked), [])
+        self.assertEqual(unchecked, [])
+
+    def test_a_commit_the_linter_rejects_is_red(self):
+        commit(self.repo, "src/a.ts", "FORBIDDEN\n", "feat: bad")
+        problems = guard.check(self.repo, self.base, {}, unchecked=[])
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("forbidden token", problems[0])
+
+    def test_without_the_dependencies_it_is_unchecked_and_names_the_cause(self):
+        shutil.rmtree(os.path.join(self.repo, "node_modules"))
+        commit(self.repo, "src/a.ts", "export const a = 1\n", "feat: a")
+        unchecked = []
+        self.assertEqual(guard.check(self.repo, self.base, {}, unchecked=unchecked), [])
+        [item] = unchecked
+        self.assertIn("eslint", item["text"])  # the cause survives, not just lefthook's banner
+
+
+class AutofixHook(unittest.TestCase):
+    FIX = """#!/bin/sh
+for f in $(git diff --cached --name-only); do
+  sed 's/BAD/GOOD/' "$f" > "$f.tmp" && mv "$f.tmp" "$f" && git add "$f"
+done
+exit 0
+"""
+
+    def setUp(self):
+        self.tmp = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.repo = os.path.join(self.tmp, "repo")
+        self.base = make_repo(self.repo, hook=False)
+        install_hook(self.repo, "pre-commit", self.FIX)
+
+    def test_a_commit_the_hook_would_have_rewritten_is_red_with_the_fix(self):
+        commit(self.repo, "src.txt", "BAD\n", "feat: skipped the autofix")  # --no-verify
+        [problem] = guard.check(self.repo, self.base, {})
+        self.assertIn("only after the hook rewrites src.txt", problem)
+        self.assertIn("+GOOD", problem)
+        self.assertEqual(run_git(self.repo, "show", "HEAD:src.txt"), "BAD\n")  # nothing was changed for it
+        self.assertEqual(run_git(self.repo, "status", "--porcelain=v1"), "")
+
+    def test_a_commit_made_through_the_hook_is_already_fixed_and_green(self):
+        put(self.repo, "src.txt", "BAD\n")
+        run_git(self.repo, "add", "src.txt")
+        run_git(self.repo, "commit", "-q", "-m", "feat: through the hook")
+        self.assertEqual(run_git(self.repo, "show", "HEAD:src.txt"), "GOOD\n")
+        self.assertEqual(guard.check(self.repo, self.base, {}), [])
+
+
+class QuickUncheckedHook(DoneCase):
+    def setUp(self):
+        super().setUp()
+        self.make_repo()
+        put(self.ws, ".gitignore", ".rein/\nnode_modules/\n")
+        self.git("add", "-A")
+        self.git("commit", "-q", "--no-verify", "-m", "chore: ignore deps")
+        base = subprocess.run(["git", "-C", self.ws, "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+        rec = json.load(open(os.path.join(self.ws, ".rein", "quick.json")))
+        rec["base_sha"] = base
+        put(self.ws, ".rein/quick.json", json.dumps(rec))
+        install_hook(self.ws, "pre-commit", SH_HOOK)  # needs ./node_modules/.bin/eslint, which is missing
+        self.write("src/bar.ts", "export const b = 2\n")
+        self.git("add", "-A")
+        self.git("commit", "-q", "--no-verify", "-m", "fix: bar")
+        self.sha = subprocess.run(["git", "-C", self.ws, "rev-parse", "HEAD"], capture_output=True,
+                                  text=True).stdout.strip()
+
+    def test_it_is_not_green_and_not_red_and_names_the_exit(self):
+        code, _, _ = self.done()
+        self.assertEqual(code, 1, self.text())
+        self.assertIn("UNCHECKED", self.text())
+        self.assertNotIn("does not pass the repo's pre-commit hook", self.text())
+        self.assertIn("--accept-hook", self.text())
+        self.assertIn("could not run in the re-check", last_log(self.ws)["guard"])
+
+    def test_it_never_retries_by_itself_and_the_same_answer_comes_back(self):
+        self.assertEqual(self.done()[0], 1)
+        self.assertEqual(self.done()[0], 1)
+
+    def test_accept_hook_makes_it_green_and_is_logged_by_commit(self):
+        code, _, _ = self.done(accept_hooks=[self.sha[:10]])
+        self.assertEqual(code, 0, self.text())
+        self.assertIn(self.sha[:12], last_log(self.ws)["guardAccepted"])
+
+    def test_naming_a_commit_that_was_not_unchecked_is_an_error(self):
+        code, _, _ = self.done(accept_hooks=["deadbeefdead"])
+        self.assertEqual(code, 1, self.text())
+        self.assertIn("--accept-hook deadbeefdead", self.text())
+
+    def test_with_the_dependencies_present_it_is_green(self):
+        add_deps(self.ws)
+        self.assertEqual(self.done()[0], 0, self.text())
+
+
+class ShipUncheckedHook(ShipCase):
+    PLAN = ("# Change: demo\n\n- [ ] T001 Add the api endpoint\n  - Repo: proxima-api\n"
+            "  - Verification: `pnpm test`\n")
+
+    def test_the_task_is_held_for_the_owner_and_no_retry_is_spent(self):
+        self.write_plan(self.PLAN)
+        path = self.wtpath("proxima-api")
+        base = js_repo(path)
+        shutil.rmtree(os.path.join(path, "node_modules"))
+        run_git(path, "update-ref", "refs/remotes/origin/develop", base)
+        calls = []
+
+        def gates(p, unit_only, timeout=None, **kw):
+            if kw.get("tier") == "task":
+                calls.append(p)
+                if len(calls) == 1:
+                    commit(path, "src/a.ts", "export const a = 1\n", "feat: endpoint")
+            return 0, "ok"
+        fake = FakeOrca(self.root, repos=("proxima-api",))
+        fake.on_audit = self.approve_audit()
+        fake.auto_resolve = "accept"
+        self.run_ship(fake, gates)
+        [gate] = [g for g in fake.gates if "pre-commit hook" in g["question"]]
+        self.assertEqual(gate["options"], '["accept", "retry", "skip"]')
+        self.assertEqual(len(calls), 1, self.out)  # one worker, one gate: nothing was retried
+        self.assertEqual(ship_state.load(self.state_file).tasks["T001"].status, "done")
+
+    def test_accept_outside_hook_remembers_the_owners_answer_for_the_run(self):
+        self.write_plan(self.PLAN)
+        path = self.wtpath("proxima-api")
+        base = js_repo(path)
+        shutil.rmtree(os.path.join(path, "node_modules"))
+        run_git(path, "update-ref", "refs/remotes/origin/develop", base)
+        commit(path, "src/a.ts", "export const a = 1\n", "feat: endpoint")
+        sha = run_git(path, "rev-parse", "HEAD").strip()
+        guard.record_accepts(self.root, hooks=[sha[:10]])
+        unchecked, accepted = [], []
+        problems = guard.check(path, base, {}, accept_hooks=guard.load_accepts(self.root)["hooks"],
+                               unchecked=unchecked, hook_accepted=accepted)
+        self.assertEqual((problems, unchecked, [a["id"] for a in accepted]), ([], [], [sha]))
+
+
+class AcceptOutsideHookCli(unittest.TestCase):
+    def test_records_a_hook_acceptance(self):
+        root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, root, True)
+        proc = subprocess.run([sys.executable, REIN, "accept-outside", "--root", root, "--hook", "abcdef1234"],
+                              capture_output=True, text=True, timeout=30)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertEqual(guard.load_accepts(root)["hooks"], ["abcdef1234"])
+        short = subprocess.run([sys.executable, REIN, "accept-outside", "--root", root, "--hook", "abc"],
+                               capture_output=True, text=True, timeout=30)
+        self.assertEqual(short.returncode, 2)
+
+
+class QuickAuditRound6b(DoneCase):
+    def setUp(self):
+        super().setUp()
+        self.admin = os.path.join(self.root, "proxima-admin")
+        self.other = os.path.join(self.root, "proxima-api")
+
+    def auditor(self, *effects):
+        approve = self.reviewer("APPROVED")
+
+        def play():
+            for effect in effects:
+                effect()
+            approve()
+        return play
+
+    def test_r3_one_repos_ignore_is_not_another_repos(self):
+        make_repo(self.admin, config={"gate": {"outsideIgnore": ["generated/"]}}, hook=False)
+        put(self.admin, "generated/file.txt", "1\n") if os.makedirs(os.path.join(self.admin, "generated")) is None else None
+        make_repo(self.other, hook=False)
+        os.makedirs(os.path.join(self.other, "generated"))
+        put(self.other, "generated/file.txt", "1\n")
+        run_git(self.other, "add", "-A")
+        run_git(self.other, "commit", "-q", "--no-verify", "-m", "chore: generated")
+        before = guard.outside_snapshot([self.admin, self.other])
+        self.assertEqual(before[self.admin]["ignore"], ["generated/"])
+        self.assertNotIn("ignore", before[self.other])
+        self.make_repo(outside_before=before)
+        self.write("src/auth/login.ts", "v2\n")
+        orca = _AuditOrca(on_start=self.auditor(lambda: put(self.other, "generated/file.txt", "2\n")))
+        code, _, _ = self.done(orca=orca, env=TERMINAL)
+        self.assertEqual(code, 1, self.text())
+        self.assertIn("generated/file.txt", self.text())
+
+    def test_r3_the_repos_own_ignore_still_applies_to_it(self):
+        make_repo(self.admin, config={"gate": {"outsideIgnore": ["generated/"]}}, hook=False)
+        os.makedirs(os.path.join(self.admin, "generated"))
+        put(self.admin, "generated/file.txt", "1\n")
+        before = guard.outside_snapshot([self.admin])
+        self.make_repo(outside_before=before)
+        self.write("src/auth/login.ts", "v2\n")
+        orca = _AuditOrca(on_start=self.auditor(lambda: put(self.admin, "generated/file.txt", "2\n")))
+        self.assertEqual(self.done(orca=orca, env=TERMINAL)[0], 0, self.text())
+
+    def test_r4_a_workers_allow_config_does_not_let_the_auditor_edit_it(self):
+        self.make_repo(allow_config=["flow.config.json"])
+        self.write("src/auth/login.ts", "v2\n")
+        cfg = json.loads(open(os.path.join(self.ws, "flow.config.json")).read())
+        cfg["gate"] = {"affectedMax": 3}
+        orca = _AuditOrca(on_start=self.auditor(lambda: put(self.ws, "flow.config.json", json.dumps(cfg))))
+        self.assertEqual(self.done(orca=orca, env=TERMINAL)[0], 1, self.text())
+        self.out.clear()
+        code, _, orca2 = self.done(orca=_AuditOrca(), env=TERMINAL)  # not reverted, not accepted
+        self.assertEqual(code, 1, self.text())
+        self.assertIn("(audit)", self.text())
+        self.assertNotIn("auditoría vigente", self.text())
+        self.assertEqual(orca2.called("orchestration", "worker-start"), [])
+        put(self.ws, "flow.config.json", json.dumps(dict(cfg, gate={})))  # back to what it was for the gates
+        cfg.pop("gate")
+        put(self.ws, "flow.config.json", json.dumps(cfg))
+        self.out.clear()
+        self.assertEqual(self.done(orca=_AuditOrca(), env=TERMINAL)[0], 0, self.text())
+        self.assertNotIn("audit_breach", json.load(open(os.path.join(self.ws, ".rein", "quick.json"))))
+
+
+class ShipAuditOtherWorktrees(ShipCase):
+    PLAN = ("# Change: demo\n\n- [ ] T001 Add the api endpoint\n  - Repo: proxima-api\n"
+            "  - Verification: `pnpm test`\n\n- [ ] T002 Add the admin screen\n  - Repo: proxima-admin\n"
+            "  - Verification: `pnpm test`\n")
+
+    def test_r5_the_auditor_writing_into_another_worktree_of_the_run_is_held(self):
+        self.write_plan(self.PLAN)
+        for repo in ("proxima-api", "proxima-admin"):
+            path = self.wtpath(repo)
+            base = make_repo(path, hook=False)
+            run_git(path, "update-ref", "refs/remotes/origin/develop", base)
+        fake = FakeOrca(self.root, repos=("proxima-api", "proxima-admin"))
+        approve = self.approve_audit()
+
+        def on_audit():
+            put(self.wtpath("proxima-admin"), "app.py", "x = 'audited'\n")
+            approve()
+            fake.auto_resolve = "reject"
+        fake.on_audit = on_audit
+        self.run_ship(fake, scripted_gate())
+        [gate] = [g for g in fake.gates if "guard found the auditor" in g["question"]]
+        self.assertIn("app.py", gate["question"])
+        self.assertEqual(ship_state.load(self.state_file).audit_result, "rejected")
+
+    def test_r5_the_auditors_own_worktree_is_not_watched_as_outside(self):
+        self.write_plan(self.PLAN)
+        for repo in ("proxima-api", "proxima-admin"):
+            path = self.wtpath(repo)
+            base = make_repo(path, hook=False)
+            run_git(path, "update-ref", "refs/remotes/origin/develop", base)
+        fake = FakeOrca(self.root, repos=("proxima-api", "proxima-admin"))
+        fake.on_audit = self.approve_audit()  # writes reviewed.txt in the auditor's own worktree
+        self.assertEqual(self.run_ship(fake, scripted_gate()), 0, self.out)
+        self.assertEqual(ship_state.load(self.state_file).audit_result, "approved")
 
 
 if __name__ == "__main__":

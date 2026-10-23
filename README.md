@@ -170,7 +170,7 @@ rein watch <change> [--root <plan repo>] [--once] [--skip <id,id>]
                  # session. Nothing is hidden across restarts.
                  # --skip hides deferred gate ids (FINISHED/STOPPED/new gates still wake it).
                  # --once polls once: exit 1 if nothing pending · 126 Orca cannot be asked · 2 usage
-rein accept-outside [--root <plan repo>] (--path <abs path> | --commit <sha>)...
+rein accept-outside [--root <plan repo>] (--path <abs path> | --commit <sha> | --hook <sha>)...
                  # ship: record, in <plan repo>/.rein/outside-accept.json, that a change in a watched
                  # checkout is another session's work, so no task of that plan is held for it.
                  # Verified when each task is judged, and logged (see "Writes outside the worktree")
@@ -218,13 +218,15 @@ rein quick allow-config <path or quick-<slug>> <path,...>
 rein quick resend [<path or quick-<slug>>] [--terminal <handle>]
                  # type the task's brief into the agent's terminal again (e.g. after a startup dialog
                  # swallowed it). Exit: 0 sent · 1 no quick task · 2 ambiguous · 126 Orca
-rein quick done [--accept-outside] [--accept-path <abs path>]... [--accept-commit <sha>]...
+rein quick done [--accept-outside] [--accept-path <abs path>]... [--accept-commit <sha>]... [--accept-hook <sha>]...
                  # run by that agent on "listo": lint/typecheck plus the tests the change reaches
                  # (gate.affected), stopping at the first failure, with gate.env and the gate cache;
                  # a risky path runs the full suite instead, then an audit. Never commits or pushes.
                  # --accept-outside: the owner has checked uncertain activity in another checkout.
                  # --accept-path / --accept-commit (repeatable): the owner's registered exit for a REAL
                  # change in a watched checkout that is another session's.
+                 # --accept-hook <sha> (repeatable, 7+ chars): the commit's pre-commit hook could not be
+                 # re-run by Rein (see "Guardrails") and you ran it by hand. Logged by commit.
                  # Exit: 0 green · 1 red or unresolved outside activity · 2 no quick task here ·
                  #       126 setup (not a verdict)
 rein quick close [<workspace path or quick-<slug> name>] [--dry-run] [--yes]
@@ -453,18 +455,36 @@ auditor's verdict is read:
 - **Hooks.** Each commit of the change must pass the repo's own `commit-msg` hook and its `pre-commit`
   hook, both re-run by Rein with the bypass variables removed. `commit-msg` runs on the commit's message.
   `pre-commit` runs in a temporary detached checkout of the commit's parent with the commit's tree staged
-  on top (the worker's worktree is never touched), so a commit made with `--no-verify` is caught. At most
-  25 commits are re-run per check; a hook that times out (120 s), a root commit, more commits than that,
-  or a git too old for `git hook` (< 2.36) is reported as unchecked, never as a pass. Other hooks
-  (`pre-push`, `post-commit` …) are not re-run. A `pre-commit` hook that needs something a clean
-  checkout lacks (installed dependencies) fails there for that reason, and Rein cannot tell that from a
-  real failure: its message says so.
+  on top and the worker's gitignored folders (`node_modules`, `.venv` …) linked in, so a hook such as
+  lefthook's `pnpm exec eslint {staged_files}` finds the tools it has in the worktree; the worktree itself
+  is never modified (a hook that writes a cache into a linked folder writes to the original). Three
+  results, never mixed:
+  - **red**: the hook ran on the commit's tree and rejected it (the message carries its error lines and
+    the path of its full output), **or** it passed only after rewriting files (an autofix such as
+    lint-staged): the commit as made does not pass its hook, and the message shows the diff of what the
+    hook would have fixed (amend the commit; Rein changes nothing);
+  - **green**: it ran and left the tree as it found it;
+  - **unchecked**: it could not be run reliably: exit 126/127 or output of a missing tool, dependency or
+    network (`command not found`, `ENOENT`, `Cannot find module`, pnpm's `Command "x" not found` …, a
+    heuristic), a timeout (120 s), a root commit, a commit past the newest 25, or a git too old for
+    `git hook` (< 2.36). Unchecked is never a pass and never a red: `rein quick done` exits 1 naming each
+    commit, and the owner, having run the hook by hand, answers `--accept-hook <sha>` (logged by
+    commit); ship holds the task in the `outside` gate (`accept` · `retry` · `skip`, no retry is spent on
+    it) or `rein accept-outside --hook <sha>` remembers the answer for the run. Nothing retries it by
+    itself, and an accept never turns a red green.
+
+  Other hooks (`pre-push`, `post-commit` …) are not re-run.
 - **After an auditor.** Before the auditor starts, Rein notes the protected config of the worktrees and
   the state of the watched checkouts; when the verdict is read it compares. If the auditor edited
   protected config or wrote outside its worktree (same rules, same `--accept-*` exits as for workers),
-  the verdict is **not taken**, whatever it says. In `rein quick done` the run exits 1 (or 126 when the
-  guard itself could not run) with the reasons and the exits below; in `rein ship` an `audit_guard` gate
-  opens (below). What an auditor does *inside* its worktree beyond protected config is not checked.
+  the verdict is **not taken**, whatever it says. Writes outside cover the watched checkouts with the
+  ignores each had when the task started (one repo's `gate.outsideIgnore` never applies to another) and,
+  in ship, the ordinary files of the *other* worktrees of the run (only the auditor's own is left out).
+  In `rein quick done` the run exits 1 (or 126 when the guard itself could not run) with the reasons and
+  the exits below, and the rejection is kept in the quick's record: every later `done` re-checks it
+  before reusing the approval, until it is reverted or accepted; in `rein ship` an `audit_guard` gate
+  opens (below). What an auditor does *inside* its worktree beyond protected config and the other
+  worktrees is not checked.
 
 The configuration Rein judges with, and protects from a worker, is `flow.config.json`, the config of a
 task runner a gate command comes from or calls (`mise.toml`, `Makefile`, `justfile`,
@@ -544,7 +564,7 @@ A ship run opens an Orca **decision gate** whenever it needs you; answer with `r
 |---|---|---|
 | question | a worker asks | free text |
 | `retry_exhausted` | a task is red after `maxRetries` | `retry` · `skip` |
-| `outside` | the guard left activity outside the worktree unresolved | `accept` · `retry` · `skip` |
+| `outside` | the guard left something unresolved: activity outside the worktree, or a `pre-commit` hook it could not re-run | `accept` · `retry` · `skip` |
 | `timeout` | a task passed `taskTimeoutMinutes` | `retry` · `skip` |
 | `stalled` | no sign of work `stallMinutes` after launch | `wait` · `resend` · `retry` |
 | `setup` | a worker failed or was aborted on a startup dialog | `retry` · `skip` |
@@ -560,7 +580,7 @@ A ship run opens an Orca **decision gate** whenever it needs you; answer with `r
 keeping the first look as the baseline (what was not reverted stays red; `rein accept-outside --path/--commit`
 names a change that is another session's), `reject` ends the audit rejected. In `rein quick done` the way
 out is the one a worker's write has: revert it and run `rein quick done` again (the standing approval
-needs no new audit), or name it with `--accept-path` / `--accept-commit` (`--accept-outside` for the
+needs no new audit once the kept rejection is clear), or name it with `--accept-path` / `--accept-commit` (`--accept-outside` for the
 uncertain kind). The attempt is in the gate log either way.
 
 **Human review.** A task with `Human review: true` and no Verification is decided by you alone: no
@@ -665,10 +685,12 @@ none and goes on; a Codex-only run leaves no row) and prints the usage delta per
 - **Help is incomplete.** `rein --help` omits flags the parsers accept (`gate --only/--timeout/--json/--render/
   --browser-tools/--url/--change`, `verify --plan`) and the `serve-probe` command; the CLI block above has them.
   `rein <cmd> --help` prints the usage line for most commands and runs the command for a few (`gate`, `next`).
-- **The hook and auditor checks have edges.** Only `commit-msg` and `pre-commit` are re-run, and
-  `pre-commit` in a clean checkout of each commit (see "Guardrails"): a hook that depends on the
-  worker's installed dependencies can fail there without the commit being wrong. The auditor is checked
-  for protected config and writes outside its worktree, not for other edits inside it.
+- **The hook and auditor checks have edges.** Only `commit-msg` and `pre-commit` are re-run. The
+  `pre-commit` re-run sees the worker's ignored folders by link, not its whole environment: whether a
+  failure is the code's or the environment's is told by exit codes and output patterns (a heuristic), so a
+  hook that fails oddly in a clean checkout can land as red, and one that hides a missing tool behind a
+  plain failure can too. The auditor is checked for protected config and writes outside its worktree
+  (and, in ship, in the run's other worktrees), not for other edits inside its own.
 - **Audience.** The owner. No compatibility promises.
 
 See [docs/decisions.md](docs/decisions.md) for why, and the

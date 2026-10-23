@@ -274,7 +274,7 @@ class AcceptCli(unittest.TestCase):
         code, out = self.run_cli(["--root", root, "--path", "/a/b/AGENTS.md", "--commit", "abcdef1234"])
         self.assertEqual(code, 0, out)
         self.assertEqual(guard.load_accepts(root), {"paths": [os.path.realpath("/a/b/AGENTS.md")],
-                                                    "commits": ["abcdef1234"]})
+                                                    "commits": ["abcdef1234"], "hooks": []})
         for bad in ([], ["--path", "relative.md"], ["--commit", "abc"], ["--root"], ["--path"]):
             with self.subTest(bad=bad):
                 self.assertEqual(self.run_cli(["--root", root] + bad if bad[:1] != ["--root"] else bad)[0], 2)
