@@ -9,7 +9,7 @@ from flow.config.json, per language, or is detected:
 - `pytest`: changed test files, plus tests mapped from each changed module by
   name (`tests/**/test_<module>.py`, preferring a directory that mirrors the
   module's), plus tests that import the module (a grep of its dotted path).
-  They run through `commands.testOne`, `{target}` receiving every file.
+  They run through `commands.testOne`, `{target}` receiving every file (a flag glued to it is repeated per file).
 - `vitest` / `jest`: the runner's own dependency graph (`vitest related --run`,
   `jest --findRelatedTests`) over the changed source files. Detected only when the
   repo's test command (or the package script it names) is exactly one direct
@@ -287,6 +287,24 @@ def _quoted(paths: list) -> str:
     return " ".join(shlex.quote(p) for p in paths)
 
 
+_TARGET_WORD = re.compile(r"\S*\{target\}\S*")
+
+
+def expand_target(template: str, targets: list) -> str:
+    """`template` with its `{target}` given every file. A `{target}` standing alone becomes the files
+    joined by spaces (`pytest -q a b`); one glued to a flag (`--include={target}`) repeats that whole
+    word per file (`--include=a --include=b`), since `--include=a b` is a flag plus a stray argument."""
+    def word(match):
+        text = match.group(0)
+        if text == "{target}":
+            return _quoted(targets)
+        if "'" in text or '"' in text:  # quoted by the template itself: only plain paths fit in it
+            return " ".join(text.replace("{target}", t) if re.fullmatch(r"[\w@%+=:,./-]+", t) else shlex.quote(
+                text.replace("{target}", t)) for t in targets)
+        return " ".join(shlex.quote(text.replace("{target}", t)) for t in targets)
+    return _TARGET_WORD.sub(word, template)
+
+
 def _relative(changed: list, sub: str) -> list:
     if not sub:
         return [posixpath.normpath(p) for p in changed]
@@ -338,7 +356,7 @@ def compute(root: str, resolved: dict, changed: list) -> dict:
                 targets = sorted(set(targets) | set(py))
         if why:
             return full(why)
-        return run(targets, one.replace("{target}", _quoted(targets)), one)
+        return run(targets, expand_target(one, targets), one)
     if how in ("vitest", "jest"):
         sources, why = _js_sources(base, rel)
         if why:

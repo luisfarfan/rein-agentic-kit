@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import shutil
 import sys
 import tempfile
@@ -92,6 +93,47 @@ class TestPytest(Repo):
         self.write("tests/unit/my tests/test_x.py", "")
         out = self.compute(["tests/unit/my tests/test_x.py"])
         self.assertIn("'tests/unit/my tests/test_x.py'", out["command"])
+
+
+class TestMultipleTargets(Repo):
+    """`{target}` receives every affected file: a flag glued to it (`--include={target}`) is repeated
+    per file, because `--include=a b` is a flag and a stray argument; a loose one is joined by spaces."""
+
+    def setUp(self):
+        super().setUp()
+        for name in ("a", "b"):
+            self.write("src/%s.ts" % name)
+            self.write("src/%s.spec.ts" % name)
+        self.changed = ["src/a.ts", "src/b.ts"]
+
+    def command(self, test_one):
+        cfg = {"stack": "node", "packageManager": "pnpm",
+               "commands": {"test": "pnpm exec ng test", "testOne": test_one},
+               "gate": {"affected": "testOne"}}
+        return self.compute(self.changed, cfg)["command"]
+
+    def test_a_glued_flag_is_repeated_per_file_for_ng_test(self):
+        self.assertEqual(self.command("pnpm exec ng test --watch=false --include={target}"),
+                         "pnpm exec ng test --watch=false --include=src/a.spec.ts --include=src/b.spec.ts")
+
+    def test_a_loose_target_is_joined_with_spaces_for_pytest(self):
+        self.write("tests/test_a.py")
+        self.write("tests/test_b.py")
+        self.changed = ["tests/test_a.py", "tests/test_b.py"]
+        cfg = {**PY, "commands": {"test": "uv run pytest -q", "testOne": "uv run pytest -q {target}"}}
+        self.assertEqual(self.compute(self.changed, cfg)["command"],
+                         "uv run pytest -q tests/test_a.py tests/test_b.py")
+
+    def test_one_file_is_unchanged(self):
+        self.changed = ["src/a.ts"]
+        self.assertEqual(self.command("ng test --include={target}"), "ng test --include=src/a.spec.ts")
+
+    def test_a_glued_flag_with_a_path_with_spaces_is_one_quoted_word(self):
+        self.write("src/my dir/c.ts")
+        self.write("src/my dir/c.spec.ts")
+        self.changed = ["src/my dir/c.ts", "src/a.ts"]
+        out = self.command("ng test --include={target}")
+        self.assertEqual(shlex.split(out), ["ng", "test", "--include=src/a.spec.ts", "--include=src/my dir/c.spec.ts"])
 
 
 class TestStrategy(unittest.TestCase):
