@@ -16,6 +16,7 @@ from __future__ import annotations
 import datetime
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -363,6 +364,19 @@ def residual_resources_of(error) -> list:
                 for r in found if isinstance(r, dict)
             ]
     return []
+
+
+_STARTUP_PROMPT = re.compile(r"\bagent-[a-z0-9]+(?:-[a-z0-9]+)*-prompt\b")
+
+
+def startup_blocker_of(error) -> str:
+    """The agent dialog Orca says it aborted a launch on, as Orca names it (`agent-hooks-review-prompt`);
+    "" when the failure does not name one. The name is looked for in the whole failure envelope and
+    message, since where Orca puts it is not pinned down by the recorded fixtures."""
+    envelope = _dict(getattr(error, "envelope", None))
+    text = " ".join([str(getattr(error, "message", "") or ""), json.dumps(envelope, default=str)])
+    found = _STARTUP_PROMPT.search(text)
+    return found.group(0) if found else ""
 
 
 def effective_launch_of(worker_start_result: dict) -> dict:

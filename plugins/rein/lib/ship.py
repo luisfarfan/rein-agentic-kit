@@ -1120,14 +1120,54 @@ class _Driver:
         self.say("%s: adopted worker %s, started before the driver could record it" % (task.id, task.dispatch_id))
         return True
 
-    def _setup_gate(self, task, question):
+    def _setup_gate(self, task, question, dialog=False, quiet=False):
         task.dispatch_id = ""
         task.status = "gated"
-        self.state.pending_gates.append({
-            "task_id": task.id, "kind": "setup", "message_id": "", "options": ["retry", "skip"],
-            "question": question})
+        entry = {"task_id": task.id, "kind": "setup", "message_id": "", "options": ["retry", "skip"],
+                 "question": question}
+        if dialog:  # a start Orca aborted on an agent dialog: Rein probes with fresh starts meanwhile
+            entry["dialog"] = True
+        if quiet:  # the same question as the last probe's: no bell for it
+            entry["quiet"] = True
+        self.state.pending_gates.append(entry)
         self.save()
         self.open_pending()
+
+    def _open_owner_terminal(self, task, path):
+        """A terminal of the owner's with the task's agent in its worktree, once per task: the one
+        place a startup dialog Orca aborted a launch on can be answered (Orca closes the terminals
+        it launched itself). Rein types nothing into it. Returns why it could not, else ""."""
+        if task.unblock_terminal or not task.agent or not path or getattr(self, "dry_run", False):
+            return ""
+        try:
+            res = self.client.terminal_create("path:%s" % path, "rein: trust %s in %s" % (task.agent, task.repo),
+                                              task.agent)
+            task.unblock_terminal = oc.terminal_handle_of(res) or "(opened)"
+        except OrcaError as exc:
+            self.say("%s: could not open a terminal for the owner: %s" % (task.id, exc))
+            return str(exc)[:200]
+        return ""
+
+    def probe_blocked_starts(self):
+        """Ask for a fresh start of every task Orca aborted on an agent dialog once its probe is due:
+        the owner answering the dialog is seen as the next launch no longer being aborted. The gate is
+        resolved `retry` as the coordinator; the start that follows either runs or opens the next
+        (quiet) gate. Nothing about the agent's trust is read or changed."""
+        now = None
+        for gid, gate in list(self.state.gates.items()):
+            due = gate.get("probe_at")
+            if not gate.get("dialog") or due is None:
+                continue
+            now = self.clock() if now is None else now
+            if now < due:
+                continue
+            gate["probe_at"] = None
+            self.save()
+            try:
+                self.client.gate_resolve(gid, "retry")
+            except OrcaError as exc:
+                gate["probe_at"] = now + 30
+                self.say("could not probe the blocked start of %s, will retry: %s" % (gate.get("task_id"), exc))
 
     def dispatch(self, a):
         task = self.state.tasks[a.task_id]
@@ -1173,16 +1213,27 @@ class _Driver:
                 handle = str(failed.get("agentTerminalHandle") or "")
             handle = handle or next((r.split(" ", 1)[1] for r in oc.residual_resources_of(exc)
                                      if r.startswith("terminal ")), "")
-            waits = _dialog.read(self.client, handle, self.state.worktree_paths.get(task.repo, ""))
-            if waits:
+            path = self.state.worktree_paths.get(task.repo, "")
+            waits = _dialog.read(self.client, handle, path)
+            blocker = oc.startup_blocker_of(exc)
+            if blocker:
+                # Orca aborted the launch on the agent's dialog: no live worker to read it from.
+                task.blocked_dialog, task.probes = blocker, task.probes + 1
+                why_not = self._open_owner_terminal(task, path)
+                question = sd.aborted_launch_question(task, blocker, path, task.unblock_terminal, why_not)
+            elif waits:
                 question = sd.startup_question(task, waits, handle)
             else:
                 question = "Orca could not start a worker for %s: %s" % (task.id, exc)
             residual = oc.residual_resources_of(exc)
             if residual:
                 question += " (left behind in Orca: %s)" % ", ".join(residual)
-            self._setup_gate(task, question)
+            self._setup_gate(task, question, dialog=bool(blocker), quiet=bool(blocker) and task.probes > 1)
             return
+        if task.blocked_dialog:
+            self.say("%s: the start is no longer aborted on %s; the worker runs"
+                     % (task.id, sd.blocker_words(task.blocked_dialog)))
+            task.blocked_dialog, task.probes = "", 0
         task.starting = ""
         task.dispatch_id = oc.dispatch_id_of(res)
         wt = oc.worktree_of(res)
@@ -1253,9 +1304,17 @@ class _Driver:
             for extra in ("repo", "reason", "dispatch"):  # a repo gate's repo, a red one's failure, a stall's worker
                 if entry.get(extra):
                     self.state.gates[gate_id][extra] = entry[extra]
+            if entry.get("dialog"):  # an aborted start: probe it again after the (growing) interval
+                task = self.state.tasks.get(task_id)
+                base = self.cfg.trust_probe_seconds
+                self.state.gates[gate_id]["dialog"] = True
+                self.state.gates[gate_id]["probe_at"] = self.clock() + base * 2 ** min(max((task.probes if task else 1) - 1, 0), 4)
             self.state.pending_gates.remove(entry)
             self.save()
-            self.ring("waiting for the owner (%s): %s" % (kind, str(entry.get("question"))[:200]))
+            if entry.get("quiet"):
+                self.say("still waiting for the owner (%s): the same question as before" % kind)
+            else:
+                self.ring("waiting for the owner (%s): %s" % (kind, str(entry.get("question"))[:200]))
 
     def base_ref(self, repo: str) -> str:
         """What the repo's worktree branched from: Orca's worktreeBaseRef, else origin/develop."""
@@ -1847,6 +1906,7 @@ class _Driver:
             if self.finished:
                 break
             self.open_pending()
+            self.probe_blocked_starts()
             limits = self.limits()
             self.note_quota_before(limits)
             self.feed(sd.Tick(self.clock(), limits))

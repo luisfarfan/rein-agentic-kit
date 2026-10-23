@@ -50,6 +50,9 @@ class ShipConfig:
     gate_timeout_seconds: float = 900.0
     large_change_files: int = 25
     stall_minutes: float = 10  # no sign of work this long after a launch asks the owner; 0 = never
+    # Seconds before the first fresh start that probes whether the owner has answered the dialog Orca
+    # aborted a launch on; each further probe waits twice as long, up to 16 times this.
+    trust_probe_seconds: float = 30
     risky_paths: list = field(default_factory=lambda: list(_DEFAULT_RISKY))
     override: tuple | None = None
 
@@ -68,6 +71,7 @@ class ShipConfig:
             "gateTimeoutSeconds": "gate_timeout_seconds",
             "largeChangeFiles": "large_change_files",
             "stallMinutes": "stall_minutes",
+            "trustProbeSeconds": "trust_probe_seconds",
             "riskyPaths": "risky_paths",
         }
         kwargs = {}
@@ -78,6 +82,8 @@ class ShipConfig:
             if attr == "gate_timeout_seconds" and not _positive_number(value):
                 continue  # a bad value keeps the default rather than crashing a run
             if attr == "stall_minutes" and not (value == 0 or _positive_number(value)):
+                continue
+            if attr == "trust_probe_seconds" and not _positive_number(value):
                 continue
             kwargs[attr] = list(value) if attr == "risky_paths" else value
         return cls(**kwargs)
@@ -761,6 +767,28 @@ def startup_question(task: TaskState, waits: str, handle: str = "") -> str:
             "Orca terminal%s; Rein never changes an agent's trust settings. Then retry (a fresh worker, "
             "no retry spent) or skip the task."
             % (task.id, " (%s)" % task.agent if task.agent else "", waits, " %s" % handle if handle else ""))
+
+
+def aborted_launch_question(task: TaskState, blocker: str, path: str, terminal: str, why_no_terminal: str = "") -> str:
+    """The one question about a launch Orca aborted on its agent's startup dialog."""
+    where = "%s%s" % (task.repo, " (%s)" % path if path else "")
+    if terminal:
+        opened = ("Rein opened a terminal with %s in that worktree (%s, Orca does not close it): answer the "
+                  "dialog there" % (task.agent or "the agent", terminal))
+    elif task.agent:
+        opened = ("Rein could not open a terminal for you (%s): open %s in that worktree yourself and answer "
+                  "the dialog there" % (why_no_terminal or "no reason given", task.agent))
+    else:
+        opened = "Open the agent in that worktree yourself and answer the dialog there"
+    return ("Orca aborted the start of task %s's worker%s in %s because the agent stopped on a startup dialog: "
+            "%s (Orca: %s). %s. Rein never answers it nor changes an agent's trust settings; it retries by "
+            "itself once a new start is no longer aborted (no retry is spent). Or skip the task."
+            % (task.id, " (%s)" % task.agent if task.agent else "", where,
+               blocker_words(blocker), blocker, opened))
+
+
+def blocker_words(blocker: str) -> str:
+    return re.sub(r"^agent-|-prompt$", "", blocker).replace("-", " ")
 
 
 def _on_gate_verdict(state: ShipState, event: GateVerdict, cfg: ShipConfig, actions: list) -> None:

@@ -63,6 +63,13 @@ class TaskState:
     # The repo-relative files this task's attempts changed (each gate adds its attempt's): an audit
     # or gate fix task reuses the Verification of the tasks that touched the files it must fix.
     touched: list = field(default_factory=list)
+    # What Orca aborted this task's start on (an agent's startup dialog, as Orca names it); "" when
+    # nothing. While set, Rein probes with a fresh start now and then instead of asking again.
+    blocked_dialog: str = ""
+    # The terminal Rein opened for the owner with the agent in the worktree, to answer that dialog.
+    unblock_terminal: str = ""
+    # Starts Orca aborted on that dialog (spaces the probes out).
+    probes: int = 0
 
 
 @dataclass
