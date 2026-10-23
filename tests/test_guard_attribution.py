@@ -73,10 +73,12 @@ class Attribution(unittest.TestCase):
         run_git(self.qa, "merge", "-q", "--ff-only", "feature")  # `rein merge` from another session
         self.assertEqual(self.review(before), ([], []))
 
-    def test_a_commit_by_another_identity_is_not_the_workers(self):
+    def test_a_commit_by_another_identity_made_here_is_a_warning_not_a_failure(self):
         before = guard.outside_snapshot([self.qa])
         other_session_commit(self.qa, "rel.py", "r = 1\n", "chore: release")
-        self.assertEqual(self.review(before), ([], []))
+        problems, warnings = self.review(before)
+        self.assertEqual(problems, [])
+        self.assertEqual(len(warnings), 1, warnings)
 
     def test_a_file_dirty_at_launch_and_committed_unchanged_by_someone_else_is_clean(self):
         write(self.qa, "app.py", "y = 1\n")
@@ -100,18 +102,18 @@ class Attribution(unittest.TestCase):
         self.assertIn("CLAUDE.md", problems[0])
 
     def test_a_switched_head_cannot_be_attributed_so_it_is_a_warning(self):
+        diverged(self.qa)
         before = guard.outside_snapshot([self.qa])
-        run_git(self.qa, "checkout", "-q", "--orphan", "lone")
-        run_git(self.qa, "commit", "-q", "--allow-empty", "--no-verify", "-m", "chore: lone")
+        run_git(self.qa, "checkout", "-q", "lone")
         problems, warnings = self.review(before)
         self.assertEqual(problems, [], problems)
         self.assertEqual(len(warnings), 1, warnings)
         self.assertIn(self.qa, warnings[0])
 
     def test_without_a_warnings_list_what_cannot_be_attributed_still_fails(self):
+        diverged(self.qa)
         before = guard.outside_snapshot([self.qa])
-        run_git(self.qa, "checkout", "-q", "--orphan", "lone")
-        run_git(self.qa, "commit", "-q", "--allow-empty", "--no-verify", "-m", "chore: lone")
+        run_git(self.qa, "checkout", "-q", "lone")
         self.assertEqual(len(guard.outside_changes(before)), 1)
 
     def test_a_merge_of_work_made_after_launch_is_a_warning_not_a_failure(self):
@@ -128,10 +130,16 @@ class Attribution(unittest.TestCase):
         self.assertEqual(len(warnings), 1, warnings)
 
 
-def switch_head(path):
-    """Someone moves the checkout to history that does not contain the commit it was on."""
+def diverged(path):
+    """A branch `lone` of history that does not contain develop's tip, existing before any launch."""
     run_git(path, "checkout", "-q", "--orphan", "lone")
     run_git(path, "commit", "-q", "--allow-empty", "--no-verify", "-m", "chore: lone")
+    run_git(path, "checkout", "-q", "-f", "develop")
+
+
+def switch_head(path):
+    """Someone moves the checkout to `lone` (made by `diverged`): work that existed, not a descendant."""
+    run_git(path, "checkout", "-q", "lone")
 
 
 class Ship(ShipCase):
@@ -140,6 +148,7 @@ class Ship(ShipCase):
                         "  - Verification: `pnpm test`\n")
         qa = os.path.join(self.tmp.name, "proxima-qa")
         make_repo(qa, hook=False)
+        diverged(qa)
         fake = FakeOrca(self.root, repos=("proxima-api", "proxima-qa"))
         original = fake._answer
 
@@ -168,6 +177,7 @@ class Quick(DoneCase):
     def test_quick_done_warns_and_stays_green_when_another_session_moved_a_checkout(self):
         qa = os.path.join(self.root, "proxima-qa")
         make_repo(qa, hook=False)
+        diverged(qa)
         self.make_repo(outside_before=guard.outside_snapshot([qa]))
         self.write("src/foo.ts", "v2\n")
         switch_head(qa)

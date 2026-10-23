@@ -705,23 +705,27 @@ def run_quick_close(arg: str, client: OrcaClient, *, cwd: str = ".", dry_run: bo
             _run_cleanup(path, cleanup, say, dry_run=True)
             closed += 1
             continue
-        # The record first: Orca refuses a worktree with an untracked file, and the record is one
-        # wherever `.rein/` is not ignored. Only that file: `.rein/` may hold tracked files.
-        record_path = os.path.join(path, quick.RECORD)
-        try:
-            with open(record_path, "rb") as fh:
-                kept = fh.read()
-            os.unlink(record_path)
-        except OSError:
-            kept = None
+        # The record first: Orca refuses a worktree with an untracked file, and the record (and the
+        # agent's report file) are some wherever `.rein/` is not ignored. Only those files: `.rein/`
+        # may hold tracked files.
+        kept = {}
+        for rel in (quick.RECORD, quick.REPORT_FILE):
+            own = os.path.join(path, rel)
+            try:
+                with open(own, "rb") as fh:
+                    content = fh.read()
+                os.unlink(own)
+                kept[own] = content
+            except OSError:
+                pass
         if removable:
             try:
                 client.worktree_rm("path:" + path)
             except OrcaError as exc:
                 errors += 1
                 say("orca could not remove %s: %s" % (path, exc.message))
-                if kept is not None:
-                    _restore(record_path, kept, say)
+                for own, content in kept.items():
+                    _restore(own, content, say)
                 continue
             say("removed worktree %s" % path)
             _run_cleanup(path, cleanup, say)

@@ -137,5 +137,22 @@ class Reprobe(Base):
         self.assertEqual(len(fake.starts()), 1, self.out)
 
 
+class ProbesAreNotOwnerDecisions(Base):
+    def test_automatic_probes_never_become_owner_decisions(self):
+        fake = BlockedLaunch(self.root, blocks=2, repos=("proxima-api",), autocomplete=True)
+        self.config(trustProbeSeconds=1)
+        fake.on_audit = self.approve_audit()
+        self.assertEqual(self.run_ship(fake, scripted_gate()), 0, self.out)
+        self.assertEqual(ship_state.load(self.state_file).owner_decisions, [])
+
+    def test_a_humans_retry_still_is_one(self):
+        fake = BlockedLaunch(self.root, blocks=1, repos=("proxima-api",), autocomplete=True)
+        self.config(trustProbeSeconds=100000)
+        fake.auto_resolve = "retry"
+        fake.on_audit = self.approve_audit()
+        self.assertEqual(self.run_ship(fake, scripted_gate()), 0, self.out)
+        self.assertEqual(len(ship_state.load(self.state_file).owner_decisions), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

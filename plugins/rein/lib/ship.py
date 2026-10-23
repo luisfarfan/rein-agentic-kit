@@ -1188,11 +1188,13 @@ class _Driver:
             if now < due:
                 continue
             gate["probe_at"] = None
+            gate["auto"] = True  # Rein's own retry: not a decision of the owner's
             self.save()
             try:
                 self.client.gate_resolve(gid, "retry")
             except OrcaError as exc:
                 gate["probe_at"] = now + 30
+                gate.pop("auto", None)
                 self.say("could not probe the blocked start of %s, will retry: %s" % (gate.get("task_id"), exc))
 
     def dispatch(self, a):

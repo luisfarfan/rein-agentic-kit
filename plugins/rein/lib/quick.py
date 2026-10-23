@@ -16,6 +16,7 @@ import quota
 import ship_decide
 
 RECORD = ".rein/quick.json"
+REPORT_FILE = ".rein/quick-report.md"  # the agent's report as a file (rein quick report)
 SLUG_MAX = 30
 VERSION = 1
 

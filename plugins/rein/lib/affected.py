@@ -287,22 +287,88 @@ def _quoted(paths: list) -> str:
     return " ".join(shlex.quote(p) for p in paths)
 
 
-_TARGET_WORD = re.compile(r"\S*\{target\}\S*")
+_SHELL_OPERATORS = set(";&|()<>\n")
+
+
+def _shell_words(template: str) -> list:
+    """`template` as `(text, is_word)` pieces: runs of whitespace and shell operators (`; && | ( ) < >`)
+    are not words; a word is what lies between them, quotes and escapes kept as written."""
+    pieces, i, n = [], 0, len(template)
+    while i < n:
+        if template[i].isspace() or template[i] in _SHELL_OPERATORS:
+            start = i
+            while i < n and (template[i].isspace() or template[i] in _SHELL_OPERATORS):
+                i += 1
+            pieces.append((template[start:i], False))
+            continue
+        start, quote = i, None
+        while i < n:
+            c = template[i]
+            if quote:
+                if c == "\\" and quote == '"' and i + 1 < n:
+                    i += 2
+                    continue
+                if c == quote:
+                    quote = None
+            elif c == "\\" and i + 1 < n:
+                i += 2
+                continue
+            elif c in "'\"":
+                quote = c
+            elif c.isspace() or c in _SHELL_OPERATORS:
+                break
+            i += 1
+        pieces.append((template[start:i], True))
+    return pieces
+
+
+def _fill(word: str, target: str) -> str:
+    """`word` with `{target}` replaced by `target`, escaped for the quoting it sits in."""
+    out, quote, i = [], None, 0
+    while i < len(word):
+        if word.startswith("{target}", i):
+            if quote == "'":
+                out.append(target.replace("'", "'\\''"))
+            elif quote == '"':
+                out.append(re.sub(r'(["\\$`])', r"\\\1", target))
+            else:
+                out.append(shlex.quote(target))
+            i += len("{target}")
+            continue
+        c = word[i]
+        if quote:
+            if c == "\\" and quote == '"' and i + 1 < len(word):
+                out.append(word[i:i + 2])
+                i += 2
+                continue
+            if c == quote:
+                quote = None
+        elif c == "\\" and i + 1 < len(word):
+            out.append(word[i:i + 2])
+            i += 2
+            continue
+        elif c in "'\"":
+            quote = c
+        out.append(c)
+        i += 1
+    return "".join(out)
 
 
 def expand_target(template: str, targets: list) -> str:
-    """`template` with its `{target}` given every file. A `{target}` standing alone becomes the files
-    joined by spaces (`pytest -q a b`); one glued to a flag (`--include={target}`) repeats that whole
-    word per file (`--include=a --include=b`), since `--include=a b` is a flag plus a stray argument."""
-    def word(match):
-        text = match.group(0)
-        if text == "{target}":
-            return _quoted(targets)
-        if "'" in text or '"' in text:  # quoted by the template itself: only plain paths fit in it
-            return " ".join(text.replace("{target}", t) if re.fullmatch(r"[\w@%+=:,./-]+", t) else shlex.quote(
-                text.replace("{target}", t)) for t in targets)
-        return " ".join(shlex.quote(text.replace("{target}", t)) for t in targets)
-    return _TARGET_WORD.sub(word, template)
+    """`template` with its `{target}` given every file, judged per shell word. A word that is just
+    `{target}` becomes the files joined by spaces (`pytest -q a b`); a word that carries it glued to
+    something (`--include={target}`, `--include="{target}"`) is repeated whole per file, each file
+    escaped for the quoting around it. Operators (`;`, `&&`, `|`...) and every other word stay as
+    written."""
+    out = []
+    for text, is_word in _shell_words(template):
+        if not is_word or "{target}" not in text:
+            out.append(text)
+        elif text == "{target}":
+            out.append(_quoted(targets))
+        else:
+            out.append(" ".join(_fill(text, t) for t in targets))
+    return "".join(out)
 
 
 def _relative(changed: list, sub: str) -> list:

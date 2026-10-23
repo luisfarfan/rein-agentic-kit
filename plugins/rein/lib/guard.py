@@ -458,37 +458,54 @@ def _created_here(path: str) -> set:
 def _head_moves(path: str, was: dict, head: str) -> tuple:
     """`(problems, doubts)` for HEAD having moved from the launch's to `head`.
 
-    Only a commit the worker could have produced counts: made in this checkout (its reflog), under
-    the checkout's own identity, and not already in the repo at launch. Commits that arrived by a
-    merge, a pull or a fast-forward from another session, authored by someone else, or reachable
-    from a ref the snapshot saw are not the worker's. What cannot be told -- HEAD switched to
-    history that does not contain the launch's, or work that arrived by merge and did not exist at
-    launch -- is a doubt for the owner."""
+    The commits looked at are all those reachable from `head` that did not exist at launch (not
+    reachable from the launch HEAD nor any ref the snapshot saw), whether or not HEAD still descends
+    from the launch's: an amend or a reset is judged by the commits it made. Each is:
+    - the worker's, a failure: made in this checkout (its reflog) under the checkout's own identity;
+    - doubtful, a warning: made in this checkout by another identity (it may have swept in a pending
+      edit of the worker's, and a commit hides the file from the content comparison, unless every file
+      it touches was dirty at launch and so is compared anyway), or arrived by a merge, pull or
+      fast-forward from elsewhere with this identity;
+    - not the worker's, silent: arrived by a merge, pull or fast-forward, written by someone else.
+    HEAD ending on history that does not contain the launch's is a doubt of its own. Work that
+    existed at launch is never new, whoever moved HEAD to it."""
     old = str(was.get("head") or "")
+    doubts = []
     code, _ = _git(path, "merge-base", "--is-ancestor", old, head)
     if code != 0:
-        return [], ["HEAD moved from %s to %s, which does not contain it (a checkout, reset or rebase), "
-                    "so whose it is cannot be told" % (old[:8], head[:8])]
-    code, out = _git(path, "rev-list", "--reverse", "%s..%s" % (old, head), "--not", *(was.get("refs") or []))
+        doubts.append("HEAD moved from %s to %s, which does not contain it (a checkout, reset, amend or "
+                      "rebase), so whose it is cannot be told" % (old[:8], head[:8]))
+    code, out = _git(path, "rev-list", "--reverse", head, "--not", old, *(was.get("refs") or []))
     if code != 0:
         raise GuardError("cannot list the commits in %s since %s" % (path, old[:8]))
-    new = [c for c in out.split() if c]
-    if not new:
-        return [], []  # everything that arrived existed at launch
     own, made = _own_emails(path), _created_here(path)
-    mine, arrived = [], []
-    for sha in new:
+    dirty_at_launch = set((was.get("paths") or {}))
+    mine, swept, arrived = [], [], []
+    for sha in [c for c in out.split() if c]:
         code, ident = _git(path, "log", "-1", "--format=%ae%n%ce", sha)
         if code != 0:
             raise GuardError("cannot read commit %s in %s" % (sha[:8], path))
         emails = {e.strip().lower() for e in ident.splitlines() if e.strip()}
-        if own and emails and not (emails & own):
-            continue  # by someone else
-        (mine if sha in made else arrived).append(sha)
-    problems, doubts = [], []
+        foreign = bool(own and emails and not (emails & own))
+        if sha in made:
+            if not foreign:
+                mine.append(sha)
+                continue
+            code, names = _git(path, "diff-tree", "--root", "--no-commit-id", "--name-only", "-r", sha)
+            if code != 0:
+                raise GuardError("cannot read commit %s in %s" % (sha[:8], path))
+            if not {n for n in names.splitlines() if n} <= dirty_at_launch:
+                swept.append(sha)
+        elif not foreign:
+            arrived.append(sha)
+    problems = []
     if mine:
         problems.append("new commit(s) (HEAD %s -> %s)" % (old[:8], head[:8]))
-    elif arrived:
+    if swept:
+        doubts.append("%d commit(s) by another identity were made in this checkout (HEAD %s -> %s); they "
+                      "may include edits the worker left pending there, so whose they are cannot be told"
+                      % (len(swept), old[:8], head[:8]))
+    if arrived:
         doubts.append("%d commit(s) that did not exist at launch arrived by a merge, pull or fast-forward "
                       "(HEAD %s -> %s), so whose they are cannot be told" % (len(arrived), old[:8], head[:8]))
     return problems, doubts

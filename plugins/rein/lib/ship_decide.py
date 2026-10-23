@@ -869,8 +869,9 @@ def _on_gate_resolved(state: ShipState, event: GateResolved, cfg: ShipConfig, ac
     if allowed is None and kind != "question":
         return
     del state.gates[event.gate_id]
-    state.owner_decisions.append({"gate": event.gate_id, "kind": kind, "task_id": gate.get("task_id"),
-                                  "question": str(gate.get("question") or ""), "answer": resolution})
+    if not gate.get("auto"):  # Rein's own probe retry is not a decision the owner made
+        state.owner_decisions.append({"gate": event.gate_id, "kind": kind, "task_id": gate.get("task_id"),
+                                      "question": str(gate.get("question") or ""), "answer": resolution})
     task = state.tasks.get(gate.get("task_id"))
 
     if kind == "stalled":

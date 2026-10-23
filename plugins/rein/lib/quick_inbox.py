@@ -101,7 +101,7 @@ def ask(cwd: str, text: str, *, now: Callable[[], float] = time.time,
     return 0
 
 
-REPORT_FILE = ".rein/quick-report.md"
+REPORT_FILE = quick.REPORT_FILE
 REPORT_CAP = 20000  # characters kept of one report
 
 
@@ -369,13 +369,22 @@ def _poll(arg: str, client: OrcaClient, cwd: str, printed: set, now: float = 0.0
             printed.add(key)
             _announce(workspace, q)
             shown = True
-        for r in reports(record or {}):
+        fresh = [r for r in reports(record or {}) if not r.get("announced")]
+        for r in fresh:
             key = (os.path.realpath(workspace), "report", r.get("id"))
             if key in printed:
                 continue
             printed.add(key)
             _announce_report(workspace, r)
             shown = True
+        if fresh:  # delivered: a later watch waits for the next one instead of repeating these
+            ids = {r.get("id") for r in fresh}
+
+            def mark(record):
+                for r in reports(record):
+                    if r.get("id") in ids:
+                        r["announced"] = True
+            qd.update_record(workspace, mark)
     return shown
 
 
