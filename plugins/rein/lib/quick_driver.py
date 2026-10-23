@@ -716,8 +716,11 @@ def done_quick(*, cwd: str = ".", client: OrcaClient, run=verify.run_one,
     # the repo's commit-msg hook. A breach is red, with its reason.
     problems, broken = _guard.run_guard(_guard.check, workspace, record["base_sha"], resolved,
                                         _guard.declared_paths(record.get("allow_config") or []))
-    outside, broken2 = _guard.run_guard(_guard.outside_changes, record.get("outside_before") or {})
+    doubts = []
+    outside, broken2 = _guard.run_guard(_guard.outside_changes, record.get("outside_before") or {}, warnings=doubts)
     problems += outside
+    for doubt in doubts:  # not provably this agent's: told, not failed
+        say("guard warning: %s" % doubt)
     broken = broken or broken2
     for problem in problems:
         say("guard: %s" % problem)

@@ -1323,7 +1323,7 @@ class _Driver:
         # per repo before the audit). A verification-type task keeps the default, render-aware gate.
         tier = {"tier": "task", "base": self.task_base(task)} if a.unit_only else {}
         runner, timeout, unit_only = self.gate_runner, self.cfg.gate_timeout_seconds, a.unit_only
-        root, say = getattr(self, "root", ""), self.say
+        root, say, warn = getattr(self, "root", ""), self.say, self.ring
         # The guard: what the change since the task's base must not do. Gate config only where this
         # task, or one already done in this repo, declares it (`Gate config:`).
         guard_base = self.task_base(task)
@@ -1378,9 +1378,14 @@ class _Driver:
                                               ("gate", detail.split("\n"))], _FAILURE_CAP)
             if code != 126:
                 problems, broken = _guard.run_guard(_guard.check, path, guard_base, _detect.resolve(path), allowed)
+                doubts = []
                 outside, broken2 = _guard.run_guard(_guard.outside_changes, outside_before,
-                                                    ignore=[plan_file] if plan_file else [])
+                                                    ignore=[plan_file] if plan_file else [], warnings=doubts)
                 problems += outside
+                if doubts:  # not provably the worker's: the owner is told, the task is not failed
+                    entry["guardWarning"] = "; ".join(doubts)[:600]
+                    for doubt in doubts:
+                        warn("%s guard warning: %s" % (task_id, doubt[:300]))
                 broken = broken or broken2
                 if broken:  # the change cannot be vouched for: setup, never a crash of the gate job
                     entry["guard"] = broken[:600]

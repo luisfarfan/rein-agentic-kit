@@ -398,6 +398,15 @@ def _watched_paths(path: str, globs) -> list:
     return watched
 
 
+def _ref_tips(path: str) -> list:
+    """The commit every branch, remote-tracking ref and tag points at now: what existed before the
+    worker started. A commit reachable from one of them was not made by the worker."""
+    code, out = _git(path, "for-each-ref", "--format=%(objectname)")
+    if code != 0:
+        raise GuardError("cannot list the refs of %s" % path)
+    return sorted(set(line.strip() for line in out.splitlines() if line.strip()))
+
+
 def outside_snapshot(paths, ignore_globs=()) -> dict:
     """`{realpath: {head, paths: {rel: fingerprint}, ignore: [glob]}}` of the git checkouts in
     `paths`: HEAD, and the content of every path that is dirty or untracked there (a clean tracked
@@ -417,7 +426,7 @@ def outside_snapshot(paths, ignore_globs=()) -> dict:
             if code != 0:
                 raise GuardError("git cannot read %s" % path)
             ignore = list(dict.fromkeys(_repo_outside_ignore(path) + list(ignore_globs or ())))
-            snap[real] = {"head": head.strip(), "paths": {
+            snap[real] = {"head": head.strip(), "refs": _ref_tips(path), "paths": {
                 rel: _fingerprint(path, rel) for rel in _watched_paths(path, ignore)}}
             if ignore:
                 snap[real]["ignore"] = ignore
@@ -426,12 +435,76 @@ def outside_snapshot(paths, ignore_globs=()) -> dict:
     return snap
 
 
-def outside_changes(before: dict, ignore=()) -> list:
-    """One problem per checkout of `before` that changed since: new commits, and every path whose
-    content or existence differs -- edited, created or deleted, untracked ones included.
+def _own_emails(path: str) -> set:
+    """The identity commits made in this checkout carry (`user.email`); empty when unset."""
+    code, out = _git(path, "config", "user.email")
+    return {out.strip().lower()} if code == 0 and out.strip() else set()
+
+
+def _created_here(path: str) -> set:
+    """The commits made in this checkout with `git commit` (its HEAD reflog), which a fast-forward,
+    a pull or a merge from elsewhere does not list."""
+    code, out = _git(path, "reflog", "show", "--format=%H%x09%gs", "HEAD")
+    if code != 0:
+        return set()
+    made = set()
+    for line in out.splitlines():
+        sha, _, subject = line.partition("\t")
+        if sha and subject.startswith("commit"):
+            made.add(sha)
+    return made
+
+
+def _head_moves(path: str, was: dict, head: str) -> tuple:
+    """`(problems, doubts)` for HEAD having moved from the launch's to `head`.
+
+    Only a commit the worker could have produced counts: made in this checkout (its reflog), under
+    the checkout's own identity, and not already in the repo at launch. Commits that arrived by a
+    merge, a pull or a fast-forward from another session, authored by someone else, or reachable
+    from a ref the snapshot saw are not the worker's. What cannot be told -- HEAD switched to
+    history that does not contain the launch's, or work that arrived by merge and did not exist at
+    launch -- is a doubt for the owner."""
+    old = str(was.get("head") or "")
+    code, _ = _git(path, "merge-base", "--is-ancestor", old, head)
+    if code != 0:
+        return [], ["HEAD moved from %s to %s, which does not contain it (a checkout, reset or rebase), "
+                    "so whose it is cannot be told" % (old[:8], head[:8])]
+    code, out = _git(path, "rev-list", "--reverse", "%s..%s" % (old, head), "--not", *(was.get("refs") or []))
+    if code != 0:
+        raise GuardError("cannot list the commits in %s since %s" % (path, old[:8]))
+    new = [c for c in out.split() if c]
+    if not new:
+        return [], []  # everything that arrived existed at launch
+    own, made = _own_emails(path), _created_here(path)
+    mine, arrived = [], []
+    for sha in new:
+        code, ident = _git(path, "log", "-1", "--format=%ae%n%ce", sha)
+        if code != 0:
+            raise GuardError("cannot read commit %s in %s" % (sha[:8], path))
+        emails = {e.strip().lower() for e in ident.splitlines() if e.strip()}
+        if own and emails and not (emails & own):
+            continue  # by someone else
+        (mine if sha in made else arrived).append(sha)
+    problems, doubts = [], []
+    if mine:
+        problems.append("new commit(s) (HEAD %s -> %s)" % (old[:8], head[:8]))
+    elif arrived:
+        doubts.append("%d commit(s) that did not exist at launch arrived by a merge, pull or fast-forward "
+                      "(HEAD %s -> %s), so whose they are cannot be told" % (len(arrived), old[:8], head[:8]))
+    return problems, doubts
+
+
+def outside_changes(before: dict, ignore=(), warnings=None) -> list:
+    """One problem per checkout of `before` that changed since: every path whose content or
+    existence differs from what it was at launch -- edited, created or deleted, untracked ones
+    included -- and the commits the worker could have made there (`_head_moves`).
+
     `ignore`: absolute paths Rein itself writes there (the plan file it ticks); they are left out of
     the comparison itself, so they never make another path look changed. So are the paths matching
-    the checkout's `ignore` globs from the snapshot (`gate.outsideIgnore`); a new commit never is."""
+    the checkout's `ignore` globs from the snapshot (`gate.outsideIgnore`).
+
+    What cannot be attributed to the worker goes to `warnings` when the caller passes a list for it
+    (ship and quick tell the owner and do not fail the task); with none it is a problem, as before."""
     skip = {os.path.realpath(p) for p in ignore or ()}
     problems = []
     if not isinstance(before, dict):
@@ -451,19 +524,32 @@ def outside_changes(before: dict, ignore=()) -> list:
         old = was["paths"]
         globs = was.get("ignore") if isinstance(was.get("ignore"), list) else []
         now = {rel: _fingerprint(path, rel) for rel in _watched_paths(path, globs)}
+        for rel in old:  # clean now (committed, or restored): what matters is the content it has
+            if rel not in now and not _outside_ignored(rel, globs):
+                now[rel] = _fingerprint(path, rel)
         changed = [rel for rel in sorted(set(old) | set(now))
                    if os.path.realpath(os.path.join(path, rel)) not in skip
                    and not _outside_ignored(rel, globs)
                    and old.get(rel, "clean") != now.get(rel, "clean")]
-        what = []
+        what, doubts = [], []
         if head.strip() != was.get("head"):
-            what.append("new commit(s) (HEAD %s -> %s)" % (str(was.get("head"))[:8], head.strip()[:8]))
+            if isinstance(was.get("refs"), list):
+                moved, doubts = _head_moves(path, was, head.strip())
+                what += moved
+            else:  # a snapshot without the refs cannot attribute anything: as strict as it was
+                what.append("new commit(s) (HEAD %s -> %s)" % (str(was.get("head"))[:8], head.strip()[:8]))
         if changed:
             what.append("changed: %s" % ", ".join(changed[:10]) + (" ..." if len(changed) > 10 else ""))
         if what:
             problems.append("it wrote outside its worktree, in %s: %s; a worker may only write inside its "
                             "worktree -- revert that (if you changed it yourself meanwhile, retry)"
                             % (path, "; ".join(what)))
+        for doubt in doubts:
+            line = "in %s: %s" % (path, doubt)
+            if warnings is None:
+                problems.append("it may have written outside its worktree, " + line)
+            else:
+                warnings.append(line)
     return problems
 
 

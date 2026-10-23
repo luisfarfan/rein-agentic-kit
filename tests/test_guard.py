@@ -43,6 +43,7 @@ def run_git(path, *args):
 def make_repo(path, config=None, hook=True):
     os.makedirs(path, exist_ok=True)
     subprocess.run(["git", "init", "-q", "-b", "develop", path], check=True)
+    run_git(path, "config", "user.email", "t@t")  # the identity of the commits `commit` makes
     with open(os.path.join(path, "flow.config.json"), "w") as fh:
         json.dump(config or {"commands": {"test": "true"}}, fh)
     with open(os.path.join(path, "app.py"), "w") as fh:
