@@ -68,7 +68,7 @@ Rein and executed without it. v2 fixes that by making execution one command.
    judgement.
 4. **Audit** (`rein-audit`) is run by Sonnet or Codex, preferring the one that did *not* implement
    and is under its quota brake (Opus for risky paths or large changes). The final state is
-   `in-review`: **Rein never pushes, merges, opens a PR or deploys.** You open the PR.
+   `in-review`: **`rein ship` never pushes, merges, opens a PR or deploys.** You open the PR. (The only push Rein can make is `rein done --push`, opt-in, of the plan-archive commit; never to `main`, `master` or `qa`.)
 
 No agent approves its own work, and every worker starts with an empty context.
 
@@ -133,7 +133,7 @@ Coming from v1? `rein migrate-config` rewrites `flow.config.json` (drops `models
 
 ### CLI — the deterministic half
 
-Every command below exists in `rein --help`; run it for the authoritative flags.
+Every command below exists in `rein --help`. The help is the command list, **not** a complete flag reference: some flags are parsed but not shown there, and the syntax below is the one the code accepts.
 
 ```bash
 rein ship <change> [--root <plan repo>] [--agent <id> [--model <m>]] [--dry-run | --detach] [--allow-temp-root]
@@ -160,7 +160,8 @@ rein answer [<change>] ["<text>"] [--gate <id>] [--root <plan repo>]
                  # case-insensitive). Never touches the ship state; the driver picks it up. From inside
                  # another Orca terminal (which Orca fences) the answer is queued under
                  # .rein/ship/<change>.answers/ and the driver applies it within ~15 s.
-                 # Exit: 0 ok · 1 Orca error or nothing to answer · 2 usage (ambiguous or invalid)
+                 # Exit: 0 ok (listing with nothing pending prints `no questions pending` and is still 0) ·
+                 # 1 Orca error, or text given with no question pending · 2 usage (ambiguous or invalid)
 rein watch <change> [--root <plan repo>] [--once] [--skip <id,id>]
                  # block until the run needs you: prints PENDING <gate> for every open gate
                  # on its first poll, then QUESTION <gate> (full text, options) for new ones,
@@ -240,7 +241,8 @@ rein tasks       # the plan, parsed (--change <name> for openspec, --source, --p
 rein context     # detect + plan in ONE round-trip
 rein verify      # actually RUN each resolved command and report the truth — an inference is not a fact
                  # exit 0 when every command could be INVOKED, even if a suite ran and failed
-                 # --only slot1,slot2 · --timeout · --json
+                 # rein verify [root] [--plan] [--change <name>] [--repo <name>] [--only slot,slot]
+                 #             [--timeout <seconds>] [--json]
                  # --plan: run each TASK's own Verification before implementers are paid.
                  # Failing is fine (the work does not exist yet); proving NOTHING is not —
                  # a missing test module or a selector matching zero tests exits non-zero
@@ -248,7 +250,8 @@ rein gate        # ✅ did they PASS — 0 green · 1 the code is wrong · 126 t
                  # runs only lint, typecheck, build, test (never testOne or custom slots), cheap
                  # first; the first slot that does not pass stops it, the rest report `skipped`.
                  # An optional `testIntegration` command (integration/e2e suite) runs last;
-                 # --unit-only leaves it out and drops the browser-render demand.
+                 # --unit-only leaves it out and drops the browser-render demand -- unless
+                 # --tier full is also given: then full wins and testIntegration runs.
                  # A slot that passed on the same tree state (HEAD, git status, diff, untracked
                  # files), command and gate.env is reused and printed `cached` (--no-cache: run
                  # anyway); failures, timeouts and setup problems are never stored. Cache:
@@ -258,7 +261,10 @@ rein gate        # ✅ did they PASS — 0 green · 1 the code is wrong · 126 t
                  # <ref> reaches (see gate.affected); --tier full: every gate slot plus
                  # testIntegration. Both are command gates (no browser-render demand).
                  # --require-review also demands a current APPROVED review episode (--change).
-                 # --only, --repo, --env-root, --json, --render, --browser-tools, --url as in --help
+                 # rein gate [root] [--only slot,slot] [--timeout <seconds>] [--json] [--no-cache]
+                 #           [--repo <name>] [--env-root <plan repo>] [--change <name>]
+                 #           [--render <evidence.json>] [--browser-tools <t1,t2>] [--url <dev-server url>]
+                 # (--only, --timeout, --json, --change, --render, --browser-tools, --url are not in --help)
 rein gate-log <change> [--root <plan repo>] | --path <checkout>  [--json]
                  # every gate a ship run (task and repo gates) ran: tier, slots, time, cached, budget,
                  # gate.env names; kept next to its state, archived by `rein done`.
@@ -279,13 +285,16 @@ rein role <name> # ✅ one role's operating profile (planner|implementer|reviewe
 rein next        # ✅ the gate: is there a task to claim, and may it be
 rein close T001  # tick a checkbox deterministically — no agent hand-edits the plan
 rein review      # record / check a verdict bound to a code state (record|check)
-rein token-report# what a run really cost, per agent and per model
-rein ledger      # history across projects, with deltas vs a marked baseline (--json: {"runs": [...]})
+rein token-report # what a run really cost, per agent and per model
+rein ledger      # history across projects, with deltas vs a marked baseline (--json: {"runs": [...]}; with no ledger yet it prints
+                 # `ledger is empty (<path>)` as text, exit 0, even with --json)
 rein baseline    # mark the run everything is compared against (mark|show|clear)
 ```
 
 `rein serve-probe` (start a dev server, wait for its URL, tear it down) is the internal helper the
-rendered-verification check uses; it is not listed in `rein --help`.
+an available helper for preparing a rendered verification (`--start --pidfile <p>` / `--stop --pidfile <p>`,
+`--command <c> --url <u> [--timeout N] [--cwd <dir>]`); no gate or skill calls it automatically today (the
+gate reads evidence from `--render`), and it is not listed in `rein --help`.
 
 > **The rule that separates them:** if it's a *parse*, a script does it. If it's a *judgement*,
 > an agent does it. Every fact an agent doesn't have to rediscover is turns you don't pay for.
@@ -321,10 +330,9 @@ Tried and discarded **with data**, not taste:
 
 ## ⚙️ Configure
 
-Everything is optional. Drop a `flow.config.json` at your project root (or at the plan root, for the
-`ship` and `gate` blocks that apply to every repo of a change); what you omit is autodetected, and this
-file always wins. [`plugins/rein/flow.config.example.json`](plugins/rein/flow.config.example.json) has
-every key, annotated. `rein migrate-config` rewrites a v1 file.
+Everything is optional. Drop a `flow.config.json` at your project root (or at the plan root; see "What the plan root passes on" below); what you omit is autodetected, and this
+file always wins. [`plugins/rein/flow.config.example.json`](plugins/rein/flow.config.example.json) annotates most keys
+(not `commands.testIntegration`). `rein migrate-config` rewrites a v1 file.
 
 **Precedence:** `flow.config.json` › task runner (`justfile` / `Makefile` / `Taskfile` / `mise`) ›
 autodetection. A project that already declares how it is built is never second-guessed.
@@ -332,9 +340,9 @@ autodetection. A project that already declares how it is built is never second-g
 | Key | Default | What it does |
 |---|---|---|
 | `stack`, `subtypes` | detected | Force the stack (`python`, `node`, …) and its subtypes (frontend frameworks) |
-| `subproject` | `""` | Monorepo only: the sub-project every command resolves in. Rein never picks one for you |
+| `subproject` | `""` | Monorepo only: the sub-project every command resolves in. Set it for a monorepo with several candidates (Rein reports them and does not pick); with exactly one sub-project it is resolved for you |
 | `commands.test` · `testOne` · `lint` · `typecheck` · `build` | detected | The gate slots. `testOne` takes `{target}` (a test file or id) |
-| `commands.testIntegration` | unset | Integration/e2e suite: runs last in a full gate; left out by `--unit-only` and by task gates |
+| `commands.testIntegration` | unset | Integration/e2e suite: runs last in a full gate; left out by `--unit-only` (unless `--tier full` is also given) and by task gates |
 | `commands.serve` | `""` | How to start the dev server for rendered verification (always wins over the `package.json` lookup) |
 | `plan.source` · `plan.path` | detected · `""` | `openspec` (`openspec/changes/<change>/`) or `tasks-md` (a plain `tasks.md`) |
 | `plan.repos` | `{}` | Cross-repo plans: where each task's `Repo:` is checked out (name → path, relative to the file). Used by `rein plan-check`; unset: the sibling directory, else the repo registered in Orca |
@@ -360,6 +368,12 @@ autodetection. A project that already declares how it is built is never second-g
 | `gate.protected` | `[]` | Globs a task may not change unless its own text names them. `flow.config.json` and the config of every task runner a gate command uses are always protected (see "Guardrails") |
 | `gate.outsideIgnore` · `gate.outsideWatch` | `[]` · `[]` | Writes outside the worktree (below) |
 | `retrieval.codegraph` | — | Present in the example file; no code reads it today (see the limitations) |
+
+**What the plan root passes on.** In a ship run the `ship` block is read from the plan root. Of the `gate`
+block, a repo being judged also takes from the plan root: `gate.env` (the repo's own value wins),
+`gate.cleanup` (the repo's own, else the root's), `gate.regenerable`, `gate.outsideIgnore` and
+`gate.outsideWatch`. It does **not** take `gate.prepare`, `gate.affected`, `gate.affectedMax` or
+`gate.protected`: declare those in each repo's own `flow.config.json`. (`commands.*` are always the repo's.)
 
 ### Plan roots in a temporary directory
 
@@ -426,10 +440,15 @@ dependencies or test configuration, or a strategy that cannot be applied runs th
 
 ### Guardrails on every worker
 
-Workers and auditors are told, and Rein checks when a task ends: no writes outside the worktree
-(next section), no bypassing the repo's hooks (`--no-verify`, `LEFTHOOK=0`, `SKIP`, `HUSKY=0` …;
-each commit must also pass the repo's own `commit-msg` hook, re-run by Rein with those variables
-removed), and no change to the configuration Rein judges with — `flow.config.json`, the config of a
+Workers and auditors are **told** (in their brief): no writes outside the worktree (next section), no
+bypassing the repo's hooks (`--no-verify`, `LEFTHOOK=0`, `SKIP`, `HUSKY=0` …), no change to the
+configuration Rein judges with. Rein **checks** these only when a *worker's* task ends, and not all of
+them equally: the only hook check is that each commit passes the repo's own `commit-msg` hook, re-run by
+Rein with the bypass variables removed (a `pre-commit` hook, or a commit made with `--no-verify`, is not
+detected). Nothing re-checks an *auditor*: if it writes outside its worktree or edits protected config,
+no mechanical control runs afterwards.
+
+The configuration Rein judges with, and protects from a worker, is `flow.config.json`, the config of a
 task runner a gate command comes from or calls (`mise.toml`, `Makefile`, `justfile`,
 `Taskfile.yml`, as resolved at the change's base and now), any `gate.protected` glob — unless the task
 declares it in its `Gate config: <path>` field (quick: `--allow-config`). A runner no gate command
@@ -539,8 +558,10 @@ owner does. A quick agent gets the same `STALLED` notice from `rein quick watch`
 `rein quick "<sentence>"` (`/quick`) is the no-plan path for one small change in one repo.
 
 1. **Start.** Picks the implementer by quota (as ship does; `--agent` overrides), resolves the repo
-   (`--repo`, else the one you are in), creates a worktree off `origin/<base>` (`develop`; the remote's
-   default branch, else `main`, if the repo has no `develop`; `--base` names it) — or, with `--here`,
+   (`--repo`, else the one you are in), creates a worktree from `origin/<base>` (`develop`; the remote's
+   default branch, else `main`, if the repo has no `develop`; `--base` names it). It tries to fetch first;
+   if the fetch fails it uses the stored `origin/<base>` as it was, or the local branch when there is no
+   remote one, and says so — or, with `--here`,
    uses your checkout on its current branch, even a local-only one (`--dirty-ok` if it has uncommitted
    work) — launches the agent in a tab and writes `.rein/quick.json`. It snapshots the watched
    checkouts for the guard. Two repos in one sentence: use `/rein:rein-plan` instead.
@@ -589,8 +610,9 @@ rein token-report && rein ledger
 ```
 
 Reads Claude Code's own JSONL transcripts (including `cache_read`) and breaks a run down per
-agent and **per model**. Every run is summarized into `~/.claude/rein/runs.jsonl`; `rein ship`
-appends a row per repo it worked in and prints the usage delta per provider when it finishes.
+agent and **per model**. A run is summarized into `~/.claude/rein/runs.jsonl` by `rein token-report`; `rein ship`
+appends a row per repo it worked in when Claude transcripts for it exist (otherwise it prints that it has
+none and goes on; a Codex-only run leaves no row) and prints the usage delta per provider when it finishes.
 
 **On the word "savings":** this measures *consumption*. A saving needs a baseline. Mark one with
 `rein baseline mark` and every later run in that project gets a signed delta.
@@ -602,7 +624,7 @@ appends a row per repo it worked in and prints the usage delta per provider when
 - **v2 is unproven on real work.** The v2 success criteria (Claude tokens ≤ 30% of baseline, Opus
   share ≤ 20%) are measured against a baseline recorded before the build; a pilot on a small
   multi-repo change comes first.
-- **It needs Orca.** Rein v2 has no runtime of its own; without an Orca terminal it refuses to run.
+- **It needs Orca.** Rein v2 has no runtime of its own; the `rein ship` loop refuses to run outside an Orca terminal (`--detach` opens one; `--dry-run` runs nothing), and `quick`, `done` and `answer` call Orca; `detect`, `doctor`, `env`, `gate`, `verify`, `plan-check` and the other local commands do not.
 - **The reviewer is calibrated hard.** In the v1 loop, 8 of 9 runs used all 3 review rounds and the
   last round still found a real blocking issue in 4 — which is why there is no `--fast` that
   reviews less.
@@ -613,9 +635,13 @@ appends a row per repo it worked in and prints the usage delta per provider when
 - **Config keys that do nothing yet.** `retrieval.codegraph` is in the example file but no code reads
   it, and `tracker.kind` is only displayed by `rein doctor` (no Beads sync). The skills probe
   `codegraph` on their own.
-- **Per-command help is thin.** `rein --help` is the one reference; `rein <cmd> --help` prints the
-  usage line for most commands, runs the command for a few (`gate`, `next`) and `rein serve-probe` is
-  not in the list.
+- **Help is incomplete.** `rein --help` omits flags the parsers accept (`gate --only/--timeout/--json/--render/
+  --browser-tools/--url/--change`, `verify --plan`) and the `serve-probe` command; the CLI block above has them.
+  `rein <cmd> --help` prints the usage line for most commands and runs the command for a few (`gate`, `next`).
+- **Auditors and hooks are not mechanically checked.** After an audit nothing re-runs the outside-writes
+  or protected-config guard on the auditor, and for workers the only hook check is `commit-msg`: a
+  skipped `pre-commit` or a `--no-verify` commit passes. Both are instructions in the brief, not controls.
+- **`rein ledger --json` is not always JSON.** With no ledger yet it prints a text line.
 - **Audience.** The owner. No compatibility promises.
 
 See [docs/decisions.md](docs/decisions.md) for why, and the
