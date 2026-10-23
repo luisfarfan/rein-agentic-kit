@@ -357,7 +357,12 @@ left pending there, which no comparison can then see: it is **unresolved**, neve
 done` exits 1 ("not green") until the owner checks that checkout and runs `rein quick done
 --accept-outside`; ship holds the task in an `outside` gate (accept / retry / skip). Odder but
 harmless activity (HEAD switched to unrelated history, work made after launch that arrived by a
-merge) is a visible `guard warning`. A repo's own git
+merge) is a visible `guard warning`.
+`rein quick done` runs this check even when the worktree itself has no diff (restoring only the local
+work settles nothing), and logs an `--accept-outside` in the gate log (`guardAccepted`). In ship the
+snapshot a task is judged against is kept through its retries while a write outside is rejected or
+unresolved: a retry (the owner's, or the automatic one after a guard rejection) never makes that
+write the new baseline; restore the other checkout or accept it. A repo's own git
 hooks can write there without the worker doing anything: beads (`bd hooks run post-checkout`,
 `pre-commit`, lefthook's `beads-export`) rewrites `.beads/` in the MAIN checkout on every commit
 or checkout made in a worktree. Leave such paths out with globs relative to the watched repo, in

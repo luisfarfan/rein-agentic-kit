@@ -65,6 +65,10 @@ class TaskState:
     touched: list = field(default_factory=list)
     # What Orca aborted this task's start on (an agent's startup dialog, as Orca names it); "" when
     # nothing. While set, Rein probes with a fresh start now and then instead of asking again.
+    # The launch snapshot of the other checkouts kept while an external write of this task is
+    # rejected or unresolved: every retry is judged against it, so a new snapshot never makes that
+    # write the baseline. Cleared when the task closes clean or the owner accepts it.
+    outside_held: dict = field(default_factory=dict)
     blocked_dialog: str = ""
     # The terminal Rein opened for the owner with the agent in the worktree, to answer that dialog.
     unblock_terminal: str = ""

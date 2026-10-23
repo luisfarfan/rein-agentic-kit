@@ -387,6 +387,47 @@ def _fill(word: str, value: str, prequoted: bool = False) -> str:
     return "".join(out)
 
 
+def _unescape(content: str, quote: str) -> str:
+    """The text a shell reads out of a quoted run: `"..."` drops the backslash before ", \\, $ and `."""
+    return re.sub(r'\\(["\\$`])', r"\1", content) if quote == '"' else content
+
+
+def _escape(text: str, quote: str) -> str:
+    """`text` as the inside of a `quote`-quoted run."""
+    return text.replace("'", "'\\''") if quote == "'" else re.sub(r'(["\\$`])', r"\\\1", text)
+
+
+def _expand_script(word: str, targets: list) -> str:
+    """A word with a quoted script (`sh -c 'ng test --include={target}'`): each script that holds the
+    placeholder beside other words is expanded as a command line of its own (so a glued flag repeats,
+    a loose placeholder joins), then quoted again for the quote around it."""
+    out, i = [], 0
+    while i < len(word):
+        c = word[i]
+        if c in "'\"":
+            j = i + 1
+            while j < len(word) and word[j] != c:
+                j += 2 if (c == '"' and word[j] == "\\") else 1
+            content = word[i + 1:j]
+            if "{target}" in content and re.search(r"\s", content.replace("{target}", "")):
+                inner = expand_target(_unescape(content, c), targets)
+                out.append(c + _escape(inner, c) + c)
+            else:
+                out.append(word[i:j + 1])
+            i = j + 1
+        elif c == "\\" and i + 1 < len(word):
+            out.append(word[i:i + 2])
+            i += 2
+        else:
+            j = i
+            while j < len(word) and word[j] not in "'\"\\":
+                j += 1
+            chunk = word[i:j]
+            out.append(_fill(chunk, _quoted(targets), prequoted=True) if "{target}" in chunk else chunk)
+            i = j
+    return "".join(out)
+
+
 def expand_target(template: str, targets: list) -> str:
     """`template` with its `{target}` given every file, judged per shell word. A word that is just
     `{target}` becomes the files joined by spaces (`pytest -q a b`); a word that carries it glued to
@@ -400,8 +441,8 @@ def expand_target(template: str, targets: list) -> str:
             out.append(text)
         elif text == "{target}":
             out.append(_quoted(targets))
-        elif _is_script(text):  # one script argument: every file goes inside it, once
-            out.append(_fill(text, _quoted(targets), prequoted=True))
+        elif _is_script(text):  # one script argument: the script is expanded as a command of its own
+            out.append(_expand_script(text, targets))
         else:
             out.append(" ".join(_fill(text, t) for t in targets))
     return "".join(out)

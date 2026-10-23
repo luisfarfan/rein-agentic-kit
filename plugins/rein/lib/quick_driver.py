@@ -656,6 +656,26 @@ def _audit(workspace: str, record: dict, changed: list, limits: dict, client: Or
     return 126
 
 
+def _outside_verdict(record: dict, accept_outside: bool, say) -> tuple:
+    """`(problems, pending, accepted, broken)` of the other checkouts since this quick started.
+    `pending` could hide the agent's write and is red until `accept_outside`; `accepted` is what the
+    owner took as other activity. Warnings are told, not returned."""
+    doubts, held = [], []
+    problems, broken = _guard.run_guard(_guard.outside_changes, record.get("outside_before") or {},
+                                        warnings=doubts, unresolved=held)
+    for doubt in doubts:  # not provably this agent's: told, not failed
+        say("guard warning: %s" % doubt)
+    pending, accepted = [], []
+    for item in held:
+        if accept_outside:
+            accepted.append(item)
+            say("guard: accepted by the owner: %s" % item)
+        else:
+            pending.append(item)
+            say("guard: UNRESOLVED: %s" % item)
+    return problems, pending, accepted, broken
+
+
 def done_quick(*, cwd: str = ".", client: OrcaClient, run=verify.run_one,
                clock: Callable[[], float] = time.time, env: dict = os.environ,
                say: Callable[[str], None] = print, accept_outside: bool = False) -> int:
@@ -679,8 +699,26 @@ def done_quick(*, cwd: str = ".", client: OrcaClient, run=verify.run_one,
         say("cannot list the changes in %s since %s: %s" % (workspace, record["base_sha"], error))
         return 126
     if not changed:
-        say("nothing changed since the task started")
-        return 0
+        # No local diff proves nothing about the other checkouts: the outside guard still speaks.
+        problems, pending, accepted, broken = _outside_verdict(record, accept_outside, say)
+        code = 126 if broken and not (problems or pending) else (1 if problems or pending else 0)
+        if problems or pending or accepted or broken:
+            entry = {"kind": "quick", "repo": str(record.get("repo") or ""), "base": record["base_sha"],
+                     "exit": code, "slots": [], "note": "nothing changed locally"}
+            if problems or pending or broken:
+                entry["guard"] = "; ".join(problems + pending + ([broken] if broken else []))[:600]
+            if accepted:
+                entry["guardAccepted"] = "; ".join(accepted)[:600]
+            _gate_log.append(_gate_log.root_log_path(workspace), entry)
+        if pending:
+            say("not green: restoring the local work does not settle what was written outside it; check that "
+                "checkout (git log, git diff HEAD~..), revert what the agent wrote there, then "
+                "`rein quick done --accept-outside` to accept it as other activity")
+        if broken:
+            say("%s (not a verdict: fix the environment and run `rein quick done` again)" % broken)
+        if code == 0:
+            say("nothing changed since the task started")
+        return code
 
     # 3. Light gate: lint, typecheck and the tests the change reaches (gate_run's task tier,
     # the same as a ship task), cheap first and stopping at the first that fails. A change
@@ -717,25 +755,14 @@ def done_quick(*, cwd: str = ".", client: OrcaClient, run=verify.run_one,
     # the repo's commit-msg hook. A breach is red, with its reason.
     problems, broken = _guard.run_guard(_guard.check, workspace, record["base_sha"], resolved,
                                         _guard.declared_paths(record.get("allow_config") or []))
-    doubts, held = [], []
-    outside, broken2 = _guard.run_guard(_guard.outside_changes, record.get("outside_before") or {},
-                                        warnings=doubts, unresolved=held)
+    outside, pending, accepted, broken2 = _outside_verdict(record, accept_outside, say)
     problems += outside
-    for doubt in doubts:  # not provably this agent's: told, not failed
-        say("guard warning: %s" % doubt)
-    pending = []
-    for item in held:  # could hide this agent's write: only the owner's explicit answer makes it green
-        if accept_outside:
-            say("guard: accepted by the owner: %s" % item)
-        else:
-            pending.append(item)
-            say("guard: UNRESOLVED: %s" % item)
-    if pending:
-        say("not green: check that checkout (git log, git diff HEAD~..), revert what the agent wrote there, "
-            "then `rein quick done --accept-outside` to accept it as other activity")
     broken = broken or broken2
     for problem in problems:
         say("guard: %s" % problem)
+    if pending:
+        say("not green: check that checkout (git log, git diff HEAD~..), revert what the agent wrote there, "
+            "then `rein quick done --accept-outside` to accept it as other activity")
     if broken:
         say("%s (not a verdict on the code: fix the environment and run `rein quick done` again)" % broken)
     # Logged once the guard has spoken: the line keeps the verdict `done` actually gives.
@@ -749,6 +776,8 @@ def done_quick(*, cwd: str = ".", client: OrcaClient, run=verify.run_one,
                  env=sorted(gate_vars), affected=planned.get("affected"), base=record["base_sha"], exit=verdict_code)
     if problems or pending or broken:
         entry["guard"] = "; ".join(problems + pending + ([broken] if broken else []))[:600]
+    if accepted:
+        entry["guardAccepted"] = "; ".join(accepted)[:600]  # the owner's explicit answer, kept for audit
     _gate_log.append(_gate_log.root_log_path(workspace), entry)
     if verdict_code:
         return verdict_code

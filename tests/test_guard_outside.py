@@ -112,7 +112,8 @@ class Ship(ShipCase):
                 calls.append(p)
                 if len(calls) == 1:  # the first worker ran the sibling's update script
                     write(qa, "CLAUDE.md", "@rules/new.md\n")
-                # the retry leaves the sibling as it found it at its own launch
+                elif len(calls) == 2:  # the write is judged against the first launch: the retry puts it back
+                    os.remove(os.path.join(qa, "CLAUDE.md"))
             return 0, "ok"
         fake.on_audit = self.approve_audit()
         self.run_ship(fake, gates)

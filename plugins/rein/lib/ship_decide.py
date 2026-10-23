@@ -125,6 +125,9 @@ class GateVerdict:
     # What the guard saw outside the worktree that could hide the worker's write but cannot be told
     # from other sessions' activity. A green verdict with any is held for the owner, never closed.
     unresolved: list = field(default_factory=list)
+    # The guard rejected a write outside the worktree, or left one unresolved: the task keeps the
+    # snapshot it was judged against (TaskState.outside_held) through its retries.
+    outside_flagged: bool = False
 
 
 @dataclass
@@ -807,6 +810,10 @@ def _on_gate_verdict(state: ShipState, event: GateVerdict, cfg: ShipConfig, acti
     if event.dispatch_id and task.dispatch_id and event.dispatch_id != task.dispatch_id:
         return  # the gate of an earlier attempt
     task.touched = sorted(set(task.touched or []) | set(event.touched or []))
+    if event.outside_flagged or event.unresolved:
+        task.outside_held = copy.deepcopy(task.outside_before)
+    elif event.exit_code in (0, 1):  # judged, and nothing outside is left from this or an earlier attempt
+        task.outside_held = {}
     if event.exit_code == 0 and event.unresolved:
         # Green, but something outside the worktree may be this worker's and cannot be told from
         # other sessions' activity: never closed on its own, the owner answers.

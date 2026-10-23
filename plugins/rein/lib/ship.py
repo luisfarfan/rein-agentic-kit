@@ -12,6 +12,7 @@ ids are read, and a body is shown to the owner only as a gate question.
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import re
@@ -1214,7 +1215,8 @@ class _Driver:
                 self.create_task(task)
             task.dispatches += 1
             task.starting = task.orca_task_id  # persisted before the start: a kill mid-start is recoverable
-            task.outside_before = self.outside_snapshot(a.repo)
+            # An external write already rejected or unresolved stays the base: a retry is not an acceptance.
+            task.outside_before = copy.deepcopy(task.outside_held) if task.outside_held else self.outside_snapshot(a.repo)
             self.save()
             repo = self.ctx["repos"].get(a.repo) or {}
             fresh = a.worktree == "new-top-level"  # a reused worktree is already set up and named
@@ -1464,7 +1466,7 @@ class _Driver:
         launch_head = getattr(task, "launch_head", "")
 
         def job(cancel=None):
-            held = []
+            held, flagged = [], False
             if not path:
                 return sd.GateVerdict(task_id, 126, "no worktree is recorded for %s" % repo, dispatch_id)
             try:
@@ -1513,6 +1515,7 @@ class _Driver:
                                                     ignore=[plan_file] if plan_file else [], warnings=doubts,
                                                     unresolved=held)
                 problems += outside
+                flagged = bool(outside or held)
                 if held:  # could hide the worker's write: the owner answers before the task closes
                     entry["guardUnresolved"] = "; ".join(held)[:600]
                     for item in held:
@@ -1540,7 +1543,7 @@ class _Driver:
             if log:
                 _gate_log.append(log, dict(entry, exit=code))
             return sd.GateVerdict(task_id, code, detail, dispatch_id, touched=attempt_touched(path, launch_head),
-                                  unresolved=held if code == 0 else [])
+                                  unresolved=held if code == 0 else [], outside_flagged=flagged)
         return job
 
     def run_gate(self, a):
