@@ -191,7 +191,8 @@ rein done <change> [--root <plan repo>] [--dry-run] [--yes] [--push]
 rein quick "<sentence>" [--repo <name>] [--base <branch>] [--here [--dirty-ok]] [--agent <id> [--model <m>]] [--linear <id>] [--allow-config <path,...>]
                  # hand a small change to a cheap agent chosen by quota, in a tab you talk to.
                  # Default: its own worktree off develop (or the remote's default branch, else main,
-                 # when the repo has no develop; --base names one), branched from origin's tip.
+                 # when the repo has no develop; --base names one). Prefers origin/<base> after a fetch; if the fetch fails it
+                 # uses the stored origin/<base>, or the local branch when there is none, and says so.
                  # --here uses the checkout you are in, on its current branch (--dirty-ok if it has
                  # uncommitted work). --allow-config: the gate config this task may change.
                  # Never pushes or merges. Exit: 0 started · 1 failed · 2 usage · 126 environment
@@ -241,8 +242,9 @@ rein tasks       # the plan, parsed (--change <name> for openspec, --source, --p
 rein context     # detect + plan in ONE round-trip
 rein verify      # actually RUN each resolved command and report the truth — an inference is not a fact
                  # exit 0 when every command could be INVOKED, even if a suite ran and failed
-                 # rein verify [root] [--plan] [--change <name>] [--repo <name>] [--only slot,slot]
+                 # rein verify [root] [--plan] [--repo <name>] [--only slot,slot]
                  #             [--timeout <seconds>] [--json]
+                 # (`--change` is parsed but does NOT select the change for `--plan`: known bug, not fixed)
                  # --plan: run each TASK's own Verification before implementers are paid.
                  # Failing is fine (the work does not exist yet); proving NOTHING is not —
                  # a missing test module or a selector matching zero tests exits non-zero
@@ -624,7 +626,7 @@ none and goes on; a Codex-only run leaves no row) and prints the usage delta per
 - **v2 is unproven on real work.** The v2 success criteria (Claude tokens ≤ 30% of baseline, Opus
   share ≤ 20%) are measured against a baseline recorded before the build; a pilot on a small
   multi-repo change comes first.
-- **It needs Orca.** Rein v2 has no runtime of its own; the `rein ship` loop refuses to run outside an Orca terminal (`--detach` opens one; `--dry-run` runs nothing), and `quick`, `done` and `answer` call Orca; `detect`, `doctor`, `env`, `gate`, `verify`, `plan-check` and the other local commands do not.
+- **It needs Orca.** Rein v2 has no runtime of its own; the `rein ship` loop refuses to run outside an Orca terminal (`--detach` opens one; `--dry-run` runs nothing), and `quick`, `done` and `answer` call Orca; `detect`, `doctor`, `env`, `gate`, `verify` and the other local commands do not. `plan-check` needs no Orca terminal either, but as a last resort, to resolve a task's `Repo:`, it asks Orca for its repo list (`orca repo list`); without Orca that lookup just finds nothing.
 - **The reviewer is calibrated hard.** In the v1 loop, 8 of 9 runs used all 3 review rounds and the
   last round still found a real blocking issue in 4 — which is why there is no `--fast` that
   reviews less.
