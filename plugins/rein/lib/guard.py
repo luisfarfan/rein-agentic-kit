@@ -81,10 +81,12 @@ def gate_runners(resolved: dict) -> set:
     return found
 
 
-def protected_patterns(*resolutions: dict) -> list:
+def protected_patterns(*resolutions: dict, inherited=()) -> list:
     """Repo-relative globs of the configuration Rein gates a change with, under every resolution
-    given (the change's base and its current tree)."""
+    given (the change's base and its current tree), plus `inherited`: the `gate.protected` globs
+    the plan root declares for every repo of the change."""
     patterns = ["flow.config.json"]
+    patterns += [p.strip() for p in inherited or () if isinstance(p, str) and p.strip()]
     for resolved in resolutions:
         resolved = resolved or {}
         sub = str(resolved.get("subproject") or "").strip("/")
@@ -95,6 +97,14 @@ def protected_patterns(*resolutions: dict) -> list:
         if isinstance(declared, list):
             patterns += [p.strip() for p in declared if isinstance(p, str) and p.strip()]
     return list(dict.fromkeys(patterns))
+
+
+def declared_protected(resolved) -> list:
+    """The `gate.protected` globs a resolved config declares ([] when none or malformed)."""
+    declared = ((resolved or {}).get("gate") or {}).get("protected")
+    if not isinstance(declared, list):
+        return []
+    return [p.strip() for p in declared if isinstance(p, str) and p.strip()]
 
 
 def resolve_at(path: str, base: str):
@@ -314,6 +324,99 @@ def commit_msg_failures(path: str, base: str, env=None) -> list:
             problems.append("commit %s %r does not pass the repo's commit-msg hook (exit %d)%s; amend its "
                             "message, never bypass the hook" % (sha[:8], subject, proc.returncode,
                                                                 ": " + tail[:300] if tail else ""))
+    return problems
+
+
+MAX_PRE_COMMIT = 25  # pre-commit re-runs per check (each one is a temporary checkout and a full hook run)
+
+
+def _has_hook(path: str, name: str) -> bool:
+    """A `name` hook is configured: a hook file, or (newer git) a config-defined hook."""
+    if _hook_installed(path, name):
+        return True
+    code, out = _git(path, "hook", "list", name)
+    return code == 0 and bool(out.strip())
+
+
+def _clean_git_env(env=None) -> dict:
+    out = _hook_env(env)
+    for name in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_PREFIX", "GIT_COMMON_DIR"):
+        out.pop(name, None)
+    return out
+
+
+def _git_or_raise(path: str, *args: str) -> str:
+    code, out = _git(path, *args)
+    if code != 0:
+        raise GuardError("git %s failed in %s" % (" ".join(args[:2]), path))
+    return out
+
+
+def _rerun_pre_commit(path: str, sha: str, env=None) -> str:
+    """Run the repo's `pre-commit` hook as `sha` would have met it: a temporary detached checkout
+    of its parent with `sha`'s tree staged on top (the worker's worktree is never touched). "" when
+    the hook passes, else one line why it did not. GuardError when the re-run cannot be set up."""
+    parts = _git_or_raise(path, "rev-list", "--parents", "-n", "1", sha).split()
+    if len(parts) < 2:
+        return ("commit %s has no parent, so its pre-commit hook cannot be re-run on what it staged; "
+                "the hook is unchecked for it" % sha[:8])
+    tmp = tempfile.mkdtemp(prefix="rein-pre-commit-")
+    work = os.path.join(tmp, "wt")
+    try:
+        # core.hooksPath off for the checkout itself: post-checkout hooks are not what is being checked.
+        code, _ = _git(path, "-c", "core.hooksPath=/dev/null", "worktree", "add", "--detach", "--quiet",
+                       work, parts[1])
+        if code != 0:
+            raise GuardError("cannot make a temporary checkout of %s in %s" % (parts[1][:8], path))
+        _git_or_raise(work, "read-tree", "-u", "--reset", sha)
+        try:
+            proc = subprocess.run(["git", "-C", work, "hook", "run", "--ignore-missing", "pre-commit"],
+                                  capture_output=True, text=True, timeout=HOOK_TIMEOUT,
+                                  env=_clean_git_env(env), stdin=subprocess.DEVNULL)
+        except subprocess.TimeoutExpired:
+            return "commit %s: the repo's pre-commit hook did not finish in %ds; it is unchecked" % (
+                sha[:8], HOOK_TIMEOUT)
+        except OSError as exc:
+            raise GuardError("cannot run the pre-commit hook in %s: %s" % (path, exc))
+        if proc.returncode == 0:
+            return ""
+        said = ((proc.stderr or "") + (proc.stdout or "")).strip()
+        tail = " | ".join(line.strip() for line in said.splitlines()[-3:] if line.strip())
+        subject = (_git(path, "log", "-1", "--format=%s", sha)[1].strip() or "")[:100]
+        return ("commit %s %r does not pass the repo's pre-commit hook (exit %d) when Rein re-runs it on what "
+                "that commit staged%s; fix the commit, never bypass the hook (if the hook needs installed "
+                "dependencies a clean checkout lacks, Rein cannot tell that from a failure: run it by hand "
+                "and ask the owner)" % (sha[:8], subject, proc.returncode, ": " + tail[:300] if tail else ""))
+    finally:
+        _git(path, "worktree", "remove", "--force", work)
+        shutil.rmtree(tmp, ignore_errors=True)
+        _git(path, "worktree", "prune")
+
+
+def pre_commit_failures(path: str, base: str, env=None) -> list:
+    """One line per commit in `base..HEAD` (merges aside) whose `pre-commit` hook fails when Rein runs it
+    again on what that commit staged -- the hook a `git commit --no-verify` skips. Nothing when the
+    repo has no such hook. What cannot be re-run reliably is never green: a hook that times out, a
+    root commit, more commits than MAX_PRE_COMMIT, or a git without `git hook` is a line of its own."""
+    code, out = _git(path, "rev-list", "--no-merges", "%s..HEAD" % base)  # newest first
+    if code != 0:
+        raise GuardError("cannot list the commits since %s in %s" % (base, path))
+    every = [c for c in out.split() if c]
+    if not every or not _has_hook(path, "pre-commit"):
+        return []
+    if not _git_runs_hooks(path):
+        return ["the repo has a pre-commit hook but this git cannot run it again (`git hook` needs "
+                "git >= 2.36), so the change's commits are unchecked against it; upgrade git"]
+    commits = every[:MAX_PRE_COMMIT]
+    problems = []
+    if len(every) > len(commits):
+        problems.append("the change has %d commits; only the newest %d were run through the pre-commit hook, "
+                        "%d were not checked: squash them, or check them by hand"
+                        % (len(every), len(commits), len(every) - len(commits)))
+    for sha in commits:
+        why = _rerun_pre_commit(path, sha, env)
+        if why:
+            problems.append(why)
     return problems
 
 
@@ -709,18 +812,47 @@ def run_guard(fn, *args, **kw) -> tuple:
         return [], "guard could not run: %s: %s" % (type(exc).__name__, exc)
 
 
-def check(path: str, base: str, resolved: dict, allowed=(), env=None) -> list:
+def check(path: str, base: str, resolved: dict, allowed=(), env=None, inherited=()) -> list:
     """Every rule the change since `base` breaks, one line each; [] when it breaks none. GuardError
-    when it cannot tell."""
+    when it cannot tell. `inherited`: the plan root's `gate.protected` globs."""
     if not base:
         raise GuardError("no base to compare the change against")
     try:
         changed = changed_paths(path, base)
     except (RuntimeError, OSError) as exc:
         raise GuardError("cannot list the changes since %s in %s: %s" % (base, path, exc))
-    patterns = protected_patterns(resolved, resolve_at(path, base))
+    patterns = protected_patterns(resolved, resolve_at(path, base), inherited=inherited)
     problems = ["it changes %s, the configuration Rein gates it with; revert that change (only a task "
                 "that declares the file -- a plan task's `Gate config:` field, `rein quick "
                 "--allow-config` -- may change it)" % f
                 for f in config_changes(changed, patterns, allowed)]
-    return problems + commit_msg_failures(path, base, env)
+    return problems + commit_msg_failures(path, base, env) + pre_commit_failures(path, base, env)
+
+
+def config_snapshot(path: str, base: str, resolved: dict, inherited=()) -> dict:
+    """The protected configuration as it is now: `{"patterns": [...], "files": {rel: fingerprint}}`
+    for every protected path the change since `base` touches. Taken before an auditor starts, so
+    `config_drift` can name what the auditor itself changed (the worker's allowed edits are in it)."""
+    patterns = protected_patterns(resolved, resolve_at(path, base), inherited=inherited)
+    try:
+        changed = changed_paths(path, base)
+    except (RuntimeError, OSError) as exc:
+        raise GuardError("cannot list the changes since %s in %s: %s" % (base, path, exc))
+    return {"patterns": patterns,
+            "files": {f: _fingerprint(path, f) for f in config_changes(changed, patterns, ())}}
+
+
+def config_drift(before: dict, path: str, base: str) -> list:
+    """One problem per protected path whose state differs from `before` (a `config_snapshot`):
+    edited, created, deleted or reverted since. GuardError when it cannot tell."""
+    if not isinstance(before, dict) or not isinstance(before.get("files"), dict):
+        raise GuardError("no usable configuration snapshot of %s from before the audit" % path)
+    patterns = list(before.get("patterns") or [])
+    try:
+        changed = changed_paths(path, base)
+    except (RuntimeError, OSError) as exc:
+        raise GuardError("cannot list the changes since %s in %s: %s" % (base, path, exc))
+    now = {f: _fingerprint(path, f) for f in config_changes(changed, patterns, ())}
+    return ["the auditor changed %s, the configuration Rein gates the change with (it is a reviewer: "
+            "it must not edit the worktree it reviews); revert that change" % f
+            for f in sorted(set(now) | set(before["files"])) if now.get(f) != before["files"].get(f)]

@@ -247,7 +247,23 @@ def cmd_verify(argv: list[str]) -> int:
         except ValueError:
             timeout = _verify.DEFAULT_TIMEOUT
         resolved_root = os.path.abspath(root)
-        plan_doc = _plan.read_plan(resolved_root, _opt(argv, "change", ""))
+        # Select the plan exactly as `rein tasks --change` does (source and
+        # path from the resolved config). `--change` used to be passed as the
+        # SOURCE, so it selected nothing and an empty verdict read as green.
+        cfg = _detect.resolve(resolved_root)
+        plan_doc = _plan.read_plan(
+            resolved_root,
+            source=_opt(argv, "source") or cfg["plan"]["source"],
+            change=_opt(argv, "change"),
+            configured=_opt(argv, "path") or cfg["plan"].get("path", ""),
+        )
+        if not plan_doc.get("exists"):
+            err = plan_doc.get("error") or f"no plan at {plan_doc.get('path')}"
+            if "--json" in argv:
+                print(json.dumps({"error": err, "root": resolved_root, "results": {}}, indent=2))
+            else:
+                print(f"rein verify --plan: {err}")
+            return 2
         report = _verify.verify_plan(resolved_root, plan_doc.get("tasks") or [], timeout=timeout,
                                      env=_gate_env.for_worktree(resolved_root, repo=_opt(argv, "repo")))
         if "--json" in argv:
@@ -741,6 +757,9 @@ def cmd_token_report(argv: list[str]) -> int:
 def cmd_ledger(argv: list[str]) -> int:
     rows = _tr.read_ledger()
 
+    if not rows and "--json" in argv:
+        print(json.dumps({"runs": []}, indent=2))
+        return 0
     if not rows:
         print(f"ledger is empty ({_tr.LEDGER_PATH})")
         print("run `rein token-report` on a run's transcripts to record one")

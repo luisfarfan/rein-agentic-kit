@@ -105,6 +105,13 @@ class ShipState:
     # The audit worktree: where the auditor records its verdict and where the
     # driver reads it. Never the plan repo's primary checkout.
     audit_root: str = ""
+    # The guard's look at the worktrees and the other checkouts as the auditor started (see
+    # Ship.audit_guard_snapshot). `audit_guard_held` keeps the baseline of an audit the guard
+    # flagged, so a re-audit does not absorb the infraction into its "before".
+    audit_guard_before: dict = field(default_factory=dict)
+    audit_guard_held: dict = field(default_factory=dict)
+    # The verdict an audit_guard gate holds: what "accept" turns back into.
+    pending_verdict: dict = field(default_factory=dict)
     # The first quota snapshot of the run (`{provider: {window: pct|None}}`); usage deltas are measured from it.
     quota_before: dict = field(default_factory=dict)
     # Set by the brake's "pause": dispatch nothing new, exit once running workers settle.

@@ -242,12 +242,13 @@ rein tasks       # the plan, parsed (--change <name> for openspec, --source, --p
 rein context     # detect + plan in ONE round-trip
 rein verify      # actually RUN each resolved command and report the truth — an inference is not a fact
                  # exit 0 when every command could be INVOKED, even if a suite ran and failed
-                 # rein verify [root] [--plan] [--repo <name>] [--only slot,slot]
+                 # rein verify [root] [--plan] [--change <name>] [--repo <name>] [--only slot,slot]
                  #             [--timeout <seconds>] [--json]
-                 # (`--change` is parsed but does NOT select the change for `--plan`: known bug, not fixed)
                  # --plan: run each TASK's own Verification before implementers are paid.
                  # Failing is fine (the work does not exist yet); proving NOTHING is not —
-                 # a missing test module or a selector matching zero tests exits non-zero
+                 # a missing test module or a selector matching zero tests exits non-zero.
+                 # --change <name> picks the change exactly as `rein tasks --change` does; an unknown
+                 # change (or none named in an openspec tree) is an error, exit 2 — never an empty green
 rein gate        # ✅ did they PASS — 0 green · 1 the code is wrong · 126 the environment could not run them
                  # runs only lint, typecheck, build, test (never testOne or custom slots), cheap
                  # first; the first slot that does not pass stops it, the rest report `skipped`.
@@ -288,8 +289,8 @@ rein next        # ✅ the gate: is there a task to claim, and may it be
 rein close T001  # tick a checkbox deterministically — no agent hand-edits the plan
 rein review      # record / check a verdict bound to a code state (record|check)
 rein token-report # what a run really cost, per agent and per model
-rein ledger      # history across projects, with deltas vs a marked baseline (--json: {"runs": [...]}; with no ledger yet it prints
-                 # `ledger is empty (<path>)` as text, exit 0, even with --json)
+rein ledger      # history across projects, with deltas vs a marked baseline (--json: {"runs": [...]},
+                 # {"runs": []} when there is none yet; without --json an empty ledger is a text line, exit 0)
 rein baseline    # mark the run everything is compared against (mark|show|clear)
 ```
 
@@ -367,15 +368,17 @@ autodetection. A project that already declares how it is built is never second-g
 | `gate.prepare` | unset | Command run in the worktree before the first check of a gate that is not answered from the cache (`rein gate`, ship's task and repo gates, `rein quick done`): e.g. generated API clients before typecheck. `{worktree}`, `{repo}`, `{path}`. Its failure is a setup problem (exit 126), not a red gate |
 | `gate.cleanup` | unset | Command run once per worktree after `rein done` / `rein quick close` removed it, from the repo's main checkout, with the worktree's `gate.env`: drop what the gates created outside the tree (a test database). Same placeholders. A failure is reported, never undoes the close |
 | `gate.regenerable` | `[]` | Gitignored files a worktree's setup regenerates (repo-relative globs, trailing `/` for a folder): `rein done` / `rein quick close` do not count them as lost and need no `--yes` for them |
-| `gate.protected` | `[]` | Globs a task may not change unless its own text names them. `flow.config.json` and the config of every task runner a gate command uses are always protected (see "Guardrails") |
+| `gate.protected` | `[]` | Globs a task may not change unless its own text names them. `flow.config.json` and the config of every task runner a gate command uses are always protected (see "Guardrails"). A plan root's globs apply to every repo of the change |
 | `gate.outsideIgnore` · `gate.outsideWatch` | `[]` · `[]` | Writes outside the worktree (below) |
 | `retrieval.codegraph` | — | Present in the example file; no code reads it today (see the limitations) |
 
 **What the plan root passes on.** In a ship run the `ship` block is read from the plan root. Of the `gate`
 block, a repo being judged also takes from the plan root: `gate.env` (the repo's own value wins),
-`gate.cleanup` (the repo's own, else the root's), `gate.regenerable`, `gate.outsideIgnore` and
-`gate.outsideWatch`. It does **not** take `gate.prepare`, `gate.affected`, `gate.affectedMax` or
-`gate.protected`: declare those in each repo's own `flow.config.json`. (`commands.*` are always the repo's.)
+`gate.cleanup` (the repo's own, else the root's), `gate.regenerable`, `gate.outsideIgnore`,
+`gate.outsideWatch` and `gate.protected` (the root's globs are *added* to the repo's own, since
+protection is policy). It does **not** take `gate.prepare`, `gate.affected` or `gate.affectedMax`: those
+are commands and settings of one repo's tree, so declare them in each repo's own `flow.config.json`.
+(`commands.*` are always the repo's.)
 
 ### Plan roots in a temporary directory
 
@@ -444,11 +447,24 @@ dependencies or test configuration, or a strategy that cannot be applied runs th
 
 Workers and auditors are **told** (in their brief): no writes outside the worktree (next section), no
 bypassing the repo's hooks (`--no-verify`, `LEFTHOOK=0`, `SKIP`, `HUSKY=0` …), no change to the
-configuration Rein judges with. Rein **checks** these only when a *worker's* task ends, and not all of
-them equally: the only hook check is that each commit passes the repo's own `commit-msg` hook, re-run by
-Rein with the bypass variables removed (a `pre-commit` hook, or a commit made with `--no-verify`, is not
-detected). Nothing re-checks an *auditor*: if it writes outside its worktree or edits protected config,
-no mechanical control runs afterwards.
+configuration Rein judges with. Rein **checks** them too, when a worker's task ends and again when an
+auditor's verdict is read:
+
+- **Hooks.** Each commit of the change must pass the repo's own `commit-msg` hook and its `pre-commit`
+  hook, both re-run by Rein with the bypass variables removed. `commit-msg` runs on the commit's message.
+  `pre-commit` runs in a temporary detached checkout of the commit's parent with the commit's tree staged
+  on top (the worker's worktree is never touched), so a commit made with `--no-verify` is caught. At most
+  25 commits are re-run per check; a hook that times out (120 s), a root commit, more commits than that,
+  or a git too old for `git hook` (< 2.36) is reported as unchecked, never as a pass. Other hooks
+  (`pre-push`, `post-commit` …) are not re-run. A `pre-commit` hook that needs something a clean
+  checkout lacks (installed dependencies) fails there for that reason, and Rein cannot tell that from a
+  real failure: its message says so.
+- **After an auditor.** Before the auditor starts, Rein notes the protected config of the worktrees and
+  the state of the watched checkouts; when the verdict is read it compares. If the auditor edited
+  protected config or wrote outside its worktree (same rules, same `--accept-*` exits as for workers),
+  the verdict is **not taken**, whatever it says. In `rein quick done` the run exits 1 (or 126 when the
+  guard itself could not run) with the reasons and the exits below; in `rein ship` an `audit_guard` gate
+  opens (below). What an auditor does *inside* its worktree beyond protected config is not checked.
 
 The configuration Rein judges with, and protects from a worker, is `flow.config.json`, the config of a
 task runner a gate command comes from or calls (`mise.toml`, `Makefile`, `justfile`,
@@ -536,7 +552,16 @@ A ship run opens an Orca **decision gate** whenever it needs you; answer with `r
 | `repo_gate` · `repo_gate_red` | a repo's full gate could not run / is red | `retry` · `skip` |
 | `audit_exhausted` | blocking findings after `maxAuditRounds` | `fix` · `accept` · `reject` |
 | `audit_timeout` · `audit_failed` | the audit timed out / could not run | `retry` · `skip` / `retry-audit` · `accept` · `reject` |
+| `audit_guard` | the auditor edited protected config or wrote outside its worktree; its verdict is held | `retry-audit` · `accept` · `reject` |
 | `brake` | every provider candidate is at 90% (or an `--agent` override is) | `retry` · `pause` |
+
+**After a held audit verdict.** In `rein ship`, `audit_guard` keeps the verdict Rein did not take:
+`accept` says the activity was not the auditor's and lets that verdict stand, `retry-audit` audits again
+keeping the first look as the baseline (what was not reverted stays red; `rein accept-outside --path/--commit`
+names a change that is another session's), `reject` ends the audit rejected. In `rein quick done` the way
+out is the one a worker's write has: revert it and run `rein quick done` again (the standing approval
+needs no new audit), or name it with `--accept-path` / `--accept-commit` (`--accept-outside` for the
+uncertain kind). The attempt is in the gate log either way.
 
 **Human review.** A task with `Human review: true` and no Verification is decided by you alone: no
 worker runs. With a Verification, its gate runs first and, when green, you `approve` or `reject`. The
@@ -640,10 +665,10 @@ none and goes on; a Codex-only run leaves no row) and prints the usage delta per
 - **Help is incomplete.** `rein --help` omits flags the parsers accept (`gate --only/--timeout/--json/--render/
   --browser-tools/--url/--change`, `verify --plan`) and the `serve-probe` command; the CLI block above has them.
   `rein <cmd> --help` prints the usage line for most commands and runs the command for a few (`gate`, `next`).
-- **Auditors and hooks are not mechanically checked.** After an audit nothing re-runs the outside-writes
-  or protected-config guard on the auditor, and for workers the only hook check is `commit-msg`: a
-  skipped `pre-commit` or a `--no-verify` commit passes. Both are instructions in the brief, not controls.
-- **`rein ledger --json` is not always JSON.** With no ledger yet it prints a text line.
+- **The hook and auditor checks have edges.** Only `commit-msg` and `pre-commit` are re-run, and
+  `pre-commit` in a clean checkout of each commit (see "Guardrails"): a hook that depends on the
+  worker's installed dependencies can fail there without the commit being wrong. The auditor is checked
+  for protected config and writes outside its worktree, not for other edits inside it.
 - **Audience.** The owner. No compatibility promises.
 
 See [docs/decisions.md](docs/decisions.md) for why, and the

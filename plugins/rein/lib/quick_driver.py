@@ -576,8 +576,33 @@ def _restore_handlers(previous: dict) -> None:
         signal.signal(sig, signal.SIG_DFL if old is None else old)
 
 
+def _audit_guard(before: dict, workspace: str, record: dict, accept_outside: bool, say) -> tuple:
+    """`(problems, pending, broken)`: what the auditor did that the guard forbids since `before`
+    (`_audit_snapshot`): protected config it edited, anything written outside its worktree. The same
+    checks as for the agent's own work. The owner's way out is the one `done` already has: re-run it
+    with `--accept-path/--accept-commit` (they match against the baseline from the task's start, which
+    the re-run checks again) or `--accept-outside`; the standing approval then needs no new audit."""
+    if before.get("error"):
+        return [], [], before["error"]
+    problems, broken = _guard.run_guard(_guard.config_drift, before["config"], workspace, record["base_sha"])
+    outside, pending, _accepted, broken2 = _outside_verdict(dict(record, outside_before=before["outside"]),
+                                                            accept_outside, say, None)
+    return problems + outside, pending, broken or broken2
+
+
+def _audit_snapshot(workspace: str, record: dict, resolved: dict) -> dict:
+    """Before the auditor starts: the protected config as it is, and the watched checkouts as they are."""
+    try:
+        config = _guard.config_snapshot(workspace, record["base_sha"], resolved)
+    except Exception as exc:  # noqa: BLE001 -- a look it cannot take is a guard that could not run
+        return {"error": "guard could not run: %s: %s" % (type(exc).__name__, exc)}
+    seen = record.get("outside_before") or {}
+    globs = sorted({g for snap in seen.values() if isinstance(snap, dict) for g in snap.get("ignore") or []})
+    return {"config": config, "outside": _guard.outside_snapshot(list(seen), globs)}
+
+
 def _audit(workspace: str, record: dict, changed: list, limits: dict, client: OrcaClient,
-           clock: Callable[[], float], say: Callable[[str], None]) -> int:
+           clock: Callable[[], float], say: Callable[[str], None], accept_outside: bool = False) -> int:
     """One audit round over `changed`; the exit code of `done` (0 approved)."""
     name = os.path.basename(workspace)
     change = "quick-" + name
@@ -598,6 +623,9 @@ def _audit(workspace: str, record: dict, changed: list, limits: dict, client: Or
         gate_commands={workspace: ship.audit_gate_command(workspace, repo)},
         owner_decisions=quick.owner_decisions(record))
     baseline = ship._episode_stamp(_gate.latest_episode(workspace, change))
+    # The auditor is a reviewer: it must not write outside its worktree or edit protected config.
+    # Looked at now, compared when it ends (an APPROVED recorded after a breach is never green).
+    guard_before = _audit_snapshot(workspace, record, _detect.resolve(workspace))
     client.run_create("rein quick %s" % name)
     task_id = oc.task_id_of(client.task_create(
         spec, "rein quick audit %s round %d" % (name, rounds + 1), []))
@@ -635,6 +663,26 @@ def _audit(workspace: str, record: dict, changed: list, limits: dict, client: Or
             % (outcome or "?", workspace))
         return 126
     found = str(episode.get("verdict"))
+    problems, pending, broken = _audit_guard(guard_before, workspace, record, accept_outside, say)
+    if problems or pending or broken:
+        say("the audit recorded %s, but it is not taken: Rein's guard says the auditor broke a rule" % found)
+        for problem in problems:
+            say("guard: %s" % problem)
+        if any("wrote outside its worktree" in p for p in problems):
+            say("if that is another session's work, not the auditor's, accept exactly it: "
+                "`rein quick done --accept-path <checkout>/<path>` / `--accept-commit <sha>` (repeatable; "
+                "each must be a real change there, and is logged); to re-audit instead, revert it first "
+                "and run `rein quick done` again")
+        if pending:
+            say("not green: check that checkout (git log, git diff HEAD~..), revert what the auditor wrote "
+                "there, then `rein quick done --accept-outside` to accept it as other activity")
+        if broken:
+            say("%s (not a verdict: fix the environment and run `rein quick done` again)" % broken)
+        _gate_log.append(_gate_log.root_log_path(workspace), {
+            "kind": "quick", "repo": str(record.get("repo") or ""), "base": record["base_sha"], "exit": 126 if broken and not (problems or pending) else 1,
+            "slots": [], "note": "audit guard", "verdict": found,
+            "guard": "; ".join(problems + pending + ([broken] if broken else []))[:600]})
+        return 126 if broken and not (problems or pending) else 1
     if found == "APPROVED":
         say("audit: APPROVED")
         return 0
@@ -824,7 +872,7 @@ def done_quick(*, cwd: str = ".", client: OrcaClient, run=verify.run_one,
     except OrcaError:
         limits = quota.parse_rate_limits({})  # unknown usage never brakes
     try:
-        return _audit(workspace, record, changed, limits, client, clock, say)
+        return _audit(workspace, record, changed, limits, client, clock, say, accept_outside)
     except OrcaError as error:
         return _failed(say, error)
     except OSError as error:

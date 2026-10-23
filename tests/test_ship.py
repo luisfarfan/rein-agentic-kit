@@ -297,11 +297,20 @@ class ShipCase(unittest.TestCase):
         self._real_guard_check = real_check
         ship._guard.check = lambda path, *a, **kw: (real_check(path, *a, **kw)
                                                     if os.path.exists(os.path.join(path, ".git")) else [])
+        # Likewise the look the guard takes at the protected config around an audit.
+        self._real_config = (ship._guard.config_snapshot, ship._guard.config_drift)
+        real_snapshot, real_drift = self._real_config
+        ship._guard.config_snapshot = lambda path, *a, **kw: (
+            real_snapshot(path, *a, **kw) if os.path.exists(os.path.join(path, ".git"))
+            else {"patterns": [], "files": {}})
+        ship._guard.config_drift = lambda before, path, *a, **kw: (
+            real_drift(before, path, *a, **kw) if os.path.exists(os.path.join(path, ".git")) else [])
         self.clock_value = 1000.0
 
     def _restore(self):
         ship._tr.PROJECTS, ship._tr.LEDGER_PATH, ship.changed_files, ship.run_task_verification = self._saved
         ship._guard.check = self._real_guard_check
+        ship._guard.config_snapshot, ship._guard.config_drift = self._real_config
 
     def write_plan(self, text):
         with open(os.path.join(self.root, "tasks.md"), "w", encoding="utf-8") as fh:

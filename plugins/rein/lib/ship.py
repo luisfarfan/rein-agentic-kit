@@ -1044,6 +1044,62 @@ class _Driver:
         return gate_config_allowed(getattr(self, "plan", None) or {}, self.state, task,
                                    (getattr(self, "ctx", None) or {}).get("default_repo", ""))
 
+    def root_protected(self) -> list:
+        """The `gate.protected` globs the plan root declares for every repo of the change."""
+        root = getattr(self, "root", "")
+        if not root or not os.path.isdir(root):
+            return []
+        try:
+            return _guard.declared_protected(_detect.resolve(root))
+        except Exception:  # noqa: BLE001 -- an unreadable root config protects nothing extra; the repo's own still applies
+            return []
+
+    def audit_guard_snapshot(self, repo: str) -> dict:
+        """Before the auditor starts: the protected config of every worktree of the change, and the
+        other checkouts as the task workers saw them. `audit_guard_verdict` compares against it when the
+        verdict is read. A retained baseline (an audit the guard flagged) is kept, never re-taken."""
+        if getattr(self, "dry_run", False):
+            return {}
+        if self.state.audit_guard_held:
+            return copy.deepcopy(self.state.audit_guard_held)
+        inherited = self.root_protected()
+        config, bases = {}, {}
+        for r, path in self.state.worktree_paths.items():
+            if not path or not os.path.isdir(path):
+                continue
+            base = self.base_ref(r)
+            try:
+                config[path] = _guard.config_snapshot(path, base, _detect.resolve(path), inherited)
+            except Exception as exc:  # noqa: BLE001 -- a look it cannot take is a guard that could not run, never "clean"
+                return {"error": "guard could not run: %s: %s" % (type(exc).__name__, exc)}
+            bases[path] = base
+        return {"config": config, "bases": bases, "outside": self.outside_snapshot(repo)}
+
+    def audit_guard_verdict(self) -> list:
+        """What the auditor did that the guard forbids since `audit_guard_snapshot`, one line each; []
+        when nothing. Unresolved activity outside counts: it could hide the auditor's write."""
+        before = self.state.audit_guard_before
+        if not before:
+            return []
+        if before.get("error"):
+            return [before["error"]]
+        problems, doubts, held, named = [], [], [], []
+        for path, snap in (before.get("config") or {}).items():
+            found, broken = _guard.run_guard(_guard.config_drift, snap, path, before["bases"][path])
+            problems += found + ([broken] if broken else [])
+        root = getattr(self, "root", "")
+        agreed = _guard.load_accepts(root) if root else {}
+        plan_file = getattr(self.state, "plan_path", "")
+        outside, broken2 = _guard.run_guard(_guard.outside_changes, before.get("outside") or {},
+                                            ignore=[plan_file] if plan_file else [], warnings=doubts,
+                                            unresolved=held, accept=agreed, accepted=named)
+        problems += outside + ([broken2] if broken2 else []) + ["unresolved: %s" % h for h in held]
+        for doubt in doubts:
+            self.say("audit guard warning: %s" % doubt[:300])
+        for n in named:
+            self.say("audit guard: accepted by the owner, by name: %s %s" % (n["kind"], n["id"]))
+        return problems
+
     def outside_snapshot(self, repo: str) -> dict:
         """The checkouts of this plan's other repos, as the worker for `repo` is launched (guard.py):
         the repos its tasks name, the plan root's repo, and the siblings `gate.outsideWatch` declares
@@ -1506,6 +1562,7 @@ class _Driver:
         outside_before = dict(getattr(task, "outside_before", None) or {})
         plan_file = getattr(self.state, "plan_path", "")
         launch_head = getattr(task, "launch_head", "")
+        inherited = self.root_protected()
 
         def job(cancel=None):
             held, flagged = [], False
@@ -1551,7 +1608,8 @@ class _Driver:
                         detail = _fit_blocks([(block.split("\n", 1)[0], block.split("\n")[1:]),
                                               ("gate", detail.split("\n"))], _FAILURE_CAP)
             if code != 126:
-                problems, broken = _guard.run_guard(_guard.check, path, guard_base, _detect.resolve(path), allowed)
+                problems, broken = _guard.run_guard(_guard.check, path, guard_base, _detect.resolve(path), allowed,
+                                                    inherited=inherited)
                 doubts = []
                 agreed = _guard.load_accepts(getattr(self, "root", "")) if getattr(self, "root", "") else {}
                 named = []
@@ -1695,6 +1753,7 @@ class _Driver:
             self.state.audit_starting = task_id
             self.state.audit_root = audit_root
             self.state.audit_baseline = _episode_stamp(_gate.latest_episode(audit_root, self.change))
+            self.state.audit_guard_before = self.audit_guard_snapshot(repo)
             self.save()
             res = self.client.worker_start(task_id, worktree="id:%s" % first, agent=a.agent, model=a.model,
                                            timeout=START_TIMEOUT_SECONDS)
@@ -1825,8 +1884,18 @@ class _Driver:
                                     % (outcome or "?", audit_root or "(no audit worktree)")])
         findings = _gate.check_review(audit_root, self.change).get("findings") or []
         blocking = sum(1 for f in findings if f["severity"] == "BLOCKING")
+        guard = self.audit_guard_verdict()
+        if guard:
+            self.state.audit_guard_held = copy.deepcopy(self.state.audit_guard_before)
+            self.say("audit guard: %s" % "; ".join(guard)[:600])
+            log = self.gate_log_path()
+            if log:
+                _gate_log.append(log, {"kind": "audit", "change": self.change, "exit": 1, "slots": [],
+                                       "verdict": str(episode.get("verdict")), "guard": "; ".join(guard)[:600]})
+        else:
+            self.state.audit_guard_held = {}
         return sd.AuditVerdict(str(episode.get("verdict")), blocking, changed,
-                               ["%s: %s" % (f["severity"], f["text"]) for f in findings])
+                               ["%s: %s" % (f["severity"], f["text"]) for f in findings], guard)
 
     def probe_audit(self):
         """Ask Orca about the audit worker; a finished one whose message we missed is read now."""

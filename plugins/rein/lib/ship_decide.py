@@ -30,7 +30,7 @@ _BUSY = ("running", "gating", "gated")  # statuses that hold a repo's worktree
 _FIX_PREFIX = "AUDIT"
 _GATE_FIX_PREFIX = "GATE"  # a fix task for a repo whose full gate was red before the audit
 # Task-less owner gates that hold the audit: no audit may start behind one.
-AUDIT_HOLDS = ("audit_failed", "audit_timeout", "audit_exhausted", "setup")
+AUDIT_HOLDS = ("audit_failed", "audit_timeout", "audit_exhausted", "audit_guard", "setup")
 
 
 # --- configuration ----------------------------------------------------------
@@ -194,6 +194,9 @@ class AuditVerdict:
     blocking: int
     changed_files: list
     findings: list = field(default_factory=list)
+    # What Rein's guard found the auditor did (wrote outside its worktree, edited protected config):
+    # a verdict with any of it is never taken as given.
+    guard: list = field(default_factory=list)
 
 
 # --- actions ----------------------------------------------------------------
@@ -876,6 +879,7 @@ _RESOLUTIONS = {
     "audit_exhausted": ("fix", "accept", "reject"),
     "audit_timeout": ("retry", "skip"),
     "audit_failed": ("retry-audit", "accept", "reject"),
+    "audit_guard": ("retry-audit", "accept", "reject"),
     "repo_gate": ("retry", "skip"),
     "repo_gate_red": ("retry", "skip"),
     "stalled": tuple(STALL_OPTIONS),
@@ -996,8 +1000,23 @@ def _on_gate_resolved(state: ShipState, event: GateResolved, cfg: ShipConfig, ac
             actions.append(RunRepoGate(repo))
         else:
             _gate_fix_task(state, repo, gate.get("reason") or "the full gate of %s was red" % repo)
-    elif kind in ("audit_timeout", "audit_failed") and state.phase != "auditing":
+    elif kind in ("audit_timeout", "audit_failed", "audit_guard") and state.phase != "auditing":
         pass  # the audit moved on while the owner was deciding
+    elif kind == "audit_guard":
+        pending = state.pending_verdict
+        state.pending_verdict = {}
+        if resolution == "retry-audit":  # the guard's baseline is kept: what was not reverted stays red
+            _drop_audit(state, actions)
+            actions.append(ComputeChanges())
+        elif resolution == "reject":
+            state.audit_guard_held = {}
+            _end_audit(state, actions, "rejected")
+        else:  # accept: the owner says that activity is not the auditor's; its verdict stands
+            state.audit_guard_held = {}
+            if pending:
+                _on_audit_verdict(state, AuditVerdict(pending["verdict"], pending["blocking"],
+                                                      list(pending["changed_files"]),
+                                                      list(pending["findings"])), cfg, actions)
     elif kind == "audit_timeout" and gate.get("audit") != state.audit_dispatch:
         pass  # it belonged to an earlier audit; resolving it must not touch this one
     elif kind == "audit_timeout":
@@ -1184,6 +1203,22 @@ def _on_audit_verdict(state: ShipState, event: AuditVerdict, cfg: ShipConfig, ac
         _open(state, actions, None,
               "The audit produced no usable verdict: %s" % "; ".join(event.findings)[:400],
               ["retry-audit", "accept", "reject"], "audit_failed")
+        return
+    if event.guard:
+        # The auditor's verdict is not taken while the guard says it broke a rule: not green, not even
+        # to "request changes" on its own say. The owner decides (accept / re-audit / reject).
+        if _owner_gate_open(state, "audit_guard"):
+            return
+        state.pending_verdict = {"verdict": event.verdict, "blocking": event.blocking,
+                                 "changed_files": list(event.changed_files), "findings": list(event.findings)}
+        _open(state, actions, None,
+              "The audit recorded %s, but Rein's guard found the auditor broke a rule, so that verdict is not "
+              "taken: %s. Check it (the checkouts named, git log, git diff) and revert what the auditor wrote. "
+              "retry-audit = a new audit (what is not reverted stays red; `rein accept-outside --path/--commit` "
+              "names a change that is another session's); accept = it is not the auditor's, the verdict stands; "
+              "reject = end the audit rejected."
+              % (event.verdict, "; ".join(event.guard)[:QUESTION_DETAIL]),
+              ["retry-audit", "accept", "reject"], "audit_guard")
         return
     approved = event.verdict == "APPROVED" or (
         event.verdict == "CHANGES_REQUESTED" and event.blocking <= 0
