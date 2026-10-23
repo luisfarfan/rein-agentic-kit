@@ -17,6 +17,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -1120,18 +1121,17 @@ class LinksIntoTheWorker(unittest.TestCase):
             self.assertEqual(guard.check(self.repo, self.base, {}, unchecked=unchecked), [])
         self.assertIn("could not be moved", unchecked[0]["text"])
 
-    def test_if_a_write_still_reaches_the_worker_it_is_reins_error_and_is_put_back(self):
+    def test_if_a_write_still_reaches_the_worker_the_result_is_void_and_rein_touches_nothing(self):
         install_hook(self.repo, "pre-commit", "#!/bin/sh\nprintf changed-by-hook > node_modules/linked-source/bar.ts\nexit 0\n")
         commit(self.repo, "src/bar.ts", "committed\n", "feat: bar")
         write(self.repo, "wip.txt", "the workers own uncommitted work\n")
         with mock.patch.object(guard, "_relocate_links", return_value=0):  # the first defence fails
             problems = guard.check(self.repo, self.base, {}, unchecked=[])
-        self.assertTrue(any("REIN ERROR, not the worker's" in p for p in problems), problems)
-        self.assertIn("src/bar.ts", " ".join(problems))
-        self.assertEqual(self.bar(), "committed\n")  # put back
-        self.assertEqual(run_git(self.repo, "status", "--porcelain=v1"), "?? wip.txt\n")
-        self.assertFalse(any("it changes" in p for p in guard.check(self.repo, self.base, {}, unchecked=[])
-                             if "REIN ERROR" not in p))
+        self.assertTrue(any("el worktree del worker cambi\u00f3 durante la comprobaci\u00f3n del hook" in p
+                            and "no toc\u00f3 nada" in p and "src/bar.ts" in p for p in problems), problems)
+        self.assertEqual(self.bar(), "changed-by-hook")  # whatever happened there, Rein did not undo it
+        with open(os.path.join(self.repo, "wip.txt")) as fh:
+            self.assertEqual(fh.read(), "the workers own uncommitted work\n")
 
     def test_a_relative_link_inside_the_worktree_stays_inside_the_recheck(self):
         os.symlink("../src", os.path.join(self.repo, "node_modules", "rel-source"))
@@ -1140,6 +1140,123 @@ class LinksIntoTheWorker(unittest.TestCase):
         problems = guard.check(self.repo, self.base, {}, unchecked=[])
         self.assertTrue(any("rewrites" in p for p in problems), problems)
         self.assertEqual(self.bar(), "committed\n")
+
+
+# --- 6e -----------------------------------------------------------------------------------------
+
+@unittest.skipUnless(shutil.which("pnpm") and shutil.which("node"), "pnpm and node are not installed")
+class RealPnpmRecursiveExec(unittest.TestCase):
+    """D2: pnpm prints ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL when the tool ran and failed too."""
+
+    def test_a_real_rejection_through_pnpm_r_exec_is_red_and_no_accept_saves_it(self):
+        tmp = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, True)
+        repo = os.path.join(tmp, "repo")
+        base = make_repo(repo, hook=False)
+        put(repo, "package.json", '{"name": "x", "private": true}\n')
+        run_git(repo, "add", "-A")
+        run_git(repo, "commit", "-q", "--no-verify", "-m", "chore: pkg")
+        base = run_git(repo, "rev-parse", "HEAD").strip()
+        install_hook(repo, "pre-commit", "#!/bin/sh\npnpm -r exec node bad.cjs\n")
+        commit(repo, "bad.cjs", "require('./missing-source.cjs')\n", "feat: bad import")
+        sha = run_git(repo, "rev-parse", "HEAD").strip()
+        proc = subprocess.run(["pnpm", "-r", "exec", "node", "bad.cjs"], cwd=repo, capture_output=True, text=True)
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL", proc.stdout + proc.stderr)
+        unchecked, accepted = [], []
+        problems = guard.check(repo, base, {}, accept_hooks=[sha], unchecked=unchecked, hook_accepted=accepted)
+        self.assertEqual((len(problems), unchecked, accepted), (1, [], []), problems)
+
+    def test_the_bare_marker_is_not_a_missing_tool(self):
+        self.assertFalse(guard._env_failure(1, "ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL Command failed with exit code 1: node x"))
+        self.assertTrue(guard._env_failure(1, 'ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL  Command "eslint" not found'))
+
+
+class WorkerChangedDuringTheCheck(unittest.TestCase):
+    """D1: if the worker's worktree changes while the hook runs -- the owner, the worker, another session --
+    Rein cannot tell who did it, and it never restores, overwrites or deletes anything there."""
+
+    def setUp(self):
+        self.tmp = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.repo = os.path.join(self.tmp, "repo")
+        self.base = make_repo(self.repo, hook=False)
+        self.signal, self.release = os.path.join(self.tmp, "signal"), os.path.join(self.tmp, "release")
+        install_hook(self.repo, "pre-commit", (
+            "#!/bin/sh\n: > '%s'\ni=0\nwhile [ ! -e '%s' ] && [ $i -lt 100 ]; do sleep 0.1; i=$((i+1)); done\nexit 0\n"
+            % (self.signal, self.release)))
+        put(self.repo, "wip.py", "tracked\n")
+        run_git(self.repo, "add", "wip.py")
+        run_git(self.repo, "commit", "-q", "--no-verify", "-m", "chore: wip file")
+        self.base = run_git(self.repo, "rev-parse", "HEAD").strip()
+        commit(self.repo, "src/a.py", "x = 1\n", "feat: a")
+
+    def during(self, work):
+        """Run the guard; once the hook has started (the worker snapshot is taken), `work()` happens in the
+        worker, then the hook is released."""
+        import threading
+        result = {}
+        thread = threading.Thread(target=lambda: result.update(problems=guard.check(self.repo, self.base, {}, unchecked=[])))
+        thread.start()
+        for _ in range(200):
+            if os.path.exists(self.signal):
+                break
+            time.sleep(0.05)
+        self.assertTrue(os.path.exists(self.signal), "the hook never started")
+        work()
+        open(self.release, "w").close()
+        thread.join(30)
+        self.assertFalse(thread.is_alive())
+        problems = result["problems"]
+        self.assertTrue(any("cambi\u00f3 durante la comprobaci\u00f3n del hook" in p and "no toc\u00f3 nada" in p
+                            for p in problems), problems)
+        return problems
+
+    def snapshot(self):
+        return (run_git(self.repo, "status", "--porcelain=v1", "--untracked-files=all"),
+                run_git(self.repo, "diff", "--cached"), run_git(self.repo, "diff"))
+
+    def test_an_edit_of_tracked_work_in_progress_stays_byte_for_byte(self):
+        put(self.repo, "wip.py", "work in progress\n")  # dirty before the check
+        state = {}
+
+        def work():
+            put(self.repo, "wip.py", "newer edit, made meanwhile\n")
+            state["after"] = self.snapshot()
+        self.during(work)
+        self.assertEqual(open(os.path.join(self.repo, "wip.py"), "rb").read(), b"newer edit, made meanwhile\n")
+        self.assertEqual(self.snapshot(), state["after"])
+
+    def test_a_new_untracked_file_is_kept(self):
+        def work():
+            put(self.repo, "note.txt", "a new note\n")
+        self.during(work)
+        self.assertEqual(open(os.path.join(self.repo, "note.txt"), "rb").read(), b"a new note\n")
+
+    def test_a_large_untracked_file_is_kept(self):
+        payload = os.urandom(6 * 1024 * 1024 + 1000)
+
+        def work():
+            with open(os.path.join(self.repo, "big.bin"), "wb") as fh:
+                fh.write(payload)
+        self.during(work)
+        self.assertEqual(open(os.path.join(self.repo, "big.bin"), "rb").read(), payload)
+
+    def test_a_staged_edit_keeps_its_content_and_its_index_entry(self):
+        state = {}
+
+        def work():
+            put(self.repo, "wip.py", "staged meanwhile\n")
+            run_git(self.repo, "add", "wip.py")
+            state["after"] = self.snapshot()
+        self.during(work)
+        self.assertEqual(self.snapshot(), state["after"])
+        self.assertIn("staged meanwhile", state["after"][1])
+        self.assertEqual(open(os.path.join(self.repo, "wip.py"), "rb").read(), b"staged meanwhile\n")
+
+    def test_without_a_change_the_same_hook_is_green(self):
+        open(self.release, "w").close()
+        self.assertEqual(guard.check(self.repo, self.base, {}, unchecked=[]), [])
 
 
 if __name__ == "__main__":

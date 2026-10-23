@@ -463,10 +463,13 @@ auditor's verdict is read:
   folders (without following them): one whose target, absolute or relative, resolves inside the worker's
   worktree is moved to the same path of the temporary checkout (a clone preserves an absolute link, and a
   hook writing through it would write to the worker); if one cannot be moved safely the hook is
-  unchecked. As a last defence Rein fingerprints the worker's worktree (`git status` plus the content of
-  every path it lists) before and after the re-run: if it changed anyway, that is **Rein's error**, not
-  the worker's — the result is red with a message that says so and names the path, and Rein puts the
-  files back so the next `done` never blames the worker. Costs, on APFS: cloning a medium `node_modules`
+  unchecked. As a last defence Rein fingerprints the worker's worktree (`git status` plus a digest of
+  every path it lists) before and after the re-run. If it changed meanwhile, Rein cannot know who changed
+  it — the hook through a path it missed, the worker, you, another session — so that commit's hook result
+  is **void** (red): "el worktree del worker cambió durante la comprobación del hook (paths…); Rein no
+  puede saber quién lo cambió y no tocó nada; revisa esas rutas y vuelve a ejecutar done". It is blamed
+  on nobody, and **Rein never restores, overwrites or deletes anything in the worker** — your edits,
+  staged changes and new files, large ones included, stay byte for byte as they are. Costs, on APFS: cloning a medium `node_modules`
   (25 000 files, 195 MB) took about 2.6 s; a real pnpm one (17 257 files, 387 MB, 1 298 symlinks) cloned in
   3.0 s and its symlinks were walked in 0.14 s — once per re-run commit. If the filesystem cannot clone
   (another volume, no reflink) Rein does not copy the folders for real: the hook is **unchecked**, and the
@@ -484,7 +487,8 @@ auditor's verdict is read:
   - **green**: it ran and left the tree as it found it;
   - **unchecked**: it could not be run reliably, and only because its tool is unambiguously missing —
     exit 126/127, or a line that is exactly `sh: x: command not found` / `sh: 1: x: not found`, or pnpm's
-    `Command "x" not found` / `ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL` — or because the re-run itself could not
+    `Command "x" not found` (pnpm's `ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL` alone is not a signal: it also
+    prefixes `Command failed with exit code N`, a tool that ran and rejected, which is red) — or because the re-run itself could not
     be made: a timeout (120 s), a root commit, a commit past the newest 25, a git too old for `git hook`
     (< 2.36), no copy-on-write clone, or a symlink that cannot be relocated. Unchecked is never a pass and
     never a red: `rein quick done` exits 1 naming each commit, and the owner, having run the hook by hand,

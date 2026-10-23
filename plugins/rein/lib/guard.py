@@ -355,8 +355,9 @@ def _git_or_raise(path: str, *args: str) -> str:
 
 
 # When a hook could not run, as opposed to ran and rejected the tree: ONLY when its tool is unambiguously
-# missing -- exit 126/127, or the shell's `x: command not found` / `x: not found`, or pnpm's
-# `Command "x" not found` / ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL, each on a line of its own. Everything
+# missing -- exit 126/127, or the shell's `x: command not found` / `x: not found`, or pnpm's exact
+# `Command "x" not found` (not ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL by itself: pnpm also prints it when
+# the tool ran and failed, `Command failed with exit code N`), each on a line of its own. Everything
 # else is red, including `Cannot find module`, `ModuleNotFoundError` and `No such file or directory`:
 # those are as often the code's own bad import as a missing dependency, and the dependencies of the
 # worker are already in the clone. A linter's rejection signal always wins: a hook that ran and rejected
@@ -364,7 +365,6 @@ def _git_or_raise(path: str, *args: str) -> str:
 _MISSING_TOOL = [re.compile(p, re.M) for p in (
     r"^[\W_]*(?:\S+: )+(?:line \d+: )?\S+: (?:command )?not found\s*$",               # sh: x: command not found / sh: 1: x: not found
     r"^[\W_]*(?:ERR_PNPM_\w+\s+)?Command \"[^\"]+\" not found\s*$",                  # pnpm exec
-    r"^[\W_]*ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL\b",
 )]
 _REJECTION = [re.compile(p, re.M | re.I) for p in (
     r"^\s*\d+:\d+\s+(?:error|warning)\b",                       # eslint stylish
@@ -473,53 +473,15 @@ def _relocate_links(worker: str, work: str, folders: list) -> int:
     return moved
 
 
-def _worker_state(path: str, keep: int = 5 << 20) -> dict:
-    """The worker's worktree as git sees it: `git status --porcelain` and the bytes of every path it lists
-    (up to `keep` bytes in all, so Rein's own damage can be undone). Compared before and after a re-run."""
+def _worker_state(path: str) -> dict:
+    """The worker's worktree as git sees it -- `git status --porcelain` and a digest of every path it
+    lists -- taken before and after a re-run. Only ever compared: Rein never restores, overwrites or
+    deletes anything in the worker from it."""
     code, out = _git(path, "status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames")
     if code != 0:
         raise GuardError("git status failed in %s" % path)
-    entries, files, used = [], {}, 0
-    for item in [i for i in out.split("\0") if i]:
-        rel = item[3:]
-        if rel.startswith(".rein/"):
-            continue
-        entries.append(item)
-        full = os.path.join(path, rel)
-        if os.path.isfile(full) and not os.path.islink(full):
-            try:
-                size = os.path.getsize(full)
-                if used + size <= keep:
-                    with open(full, "rb") as fh:
-                        files[rel] = fh.read()
-                    used += size
-            except OSError:
-                pass
-    prints = {rel: _fingerprint(path, rel) for rel in (i[3:] for i in entries)}
-    return {"status": entries, "prints": prints, "files": files}
-
-
-def _restore_worker(path: str, before: dict, after: dict) -> list:
-    """Undo what the re-run changed in the worker's worktree. The paths it could not put back."""
-    stuck = []
-    changed = [rel for rel in set(before["prints"]) | set(after["prints"])
-               if before["prints"].get(rel) != after["prints"].get(rel)]
-    for rel in sorted(changed):
-        full = os.path.join(path, rel)
-        try:
-            if rel in before["files"]:
-                with open(full, "wb") as fh:
-                    fh.write(before["files"][rel])
-            elif rel in before["prints"]:
-                stuck.append(rel)  # it was dirty and too big to keep
-            elif _git(path, "ls-files", "--error-unmatch", rel)[0] == 0:
-                if _git(path, "checkout", "HEAD", "--", rel)[0] != 0:
-                    stuck.append(rel)
-            elif os.path.lexists(full):
-                os.unlink(full)
-        except OSError:
-            stuck.append(rel)
-    return stuck
+    entries = [i for i in out.split("\0") if i and not i[3:].startswith(".rein/")]
+    return {"status": entries, "prints": {rel: _fingerprint(path, rel) for rel in (i[3:] for i in entries)}}
 
 
 def _hook_log(said: str) -> str:
@@ -567,17 +529,17 @@ def _rerun_pre_commit(path: str, sha: str, env=None) -> tuple:
             timed_out = True
         except OSError as exc:
             raise GuardError("cannot run the pre-commit hook in %s: %s" % (path, exc))
-        # Defence in depth: the re-run must not have touched the worker. If it did, that is Rein's error,
-        # never the worker's: put it back, so the next look does not blame the worker, and say so.
+        # Defence in depth: the worker's worktree must be as it was. If it changed while the hook ran, Rein
+        # cannot know who changed it (the hook through a path it missed, the worker, the owner, another
+        # session): the hook's result for this commit is void, nothing is attributed to anyone, and Rein
+        # touches nothing -- it never restores, overwrites or deletes anything in the worker.
         after = _worker_state(path)
         if before["prints"] != after["prints"] or before["status"] != after["status"]:
-            stuck = _restore_worker(path, before, after)
             touched = sorted(rel for rel in set(before["prints"]) | set(after["prints"])
                              if before["prints"].get(rel) != after["prints"].get(rel))
-            return "red", ("REIN ERROR, not the worker's: Rein's own re-run of the pre-commit hook modified the "
-                           "worker's worktree (%s)%s; this commit's hook result is void"
-                           % (", ".join(touched[:5]) or "git status changed",
-                              "; Rein put it back" if not stuck else "; could NOT put back %s" % ", ".join(stuck[:5])))
+            return "red", ("el worktree del worker cambi\u00f3 durante la comprobaci\u00f3n del hook (%s); Rein no puede "
+                           "saber qui\u00e9n lo cambi\u00f3 y no toc\u00f3 nada; revisa esas rutas y vuelve a ejecutar done"
+                           % (", ".join(touched[:5]) or "git status cambi\u00f3"))
         if timed_out:
             return "unchecked", "the pre-commit hook did not finish in %ds" % HOOK_TIMEOUT
         said = ((proc.stderr or "") + (proc.stdout or "")).strip()
