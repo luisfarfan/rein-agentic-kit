@@ -32,6 +32,17 @@ from test_guard_outside import write  # noqa: E402
 from test_quick_driver import DoneCase, TERMINAL, _AuditOrca  # noqa: E402
 from test_ship import Drained, FakeOrca, ShipCase, scripted_gate  # noqa: E402
 
+def _clone_works():
+    src = tempfile.mkdtemp()
+    dst = os.path.join(tempfile.mkdtemp(), "c")
+    try:
+        os.makedirs(os.path.join(src, "d"))
+        return subprocess.run(guard._clone_command(os.path.join(src, "d"), dst), capture_output=True).returncode == 0
+    finally:
+        shutil.rmtree(src, True)
+
+
+CLONE = unittest.skipUnless(_clone_works(), "this filesystem cannot clone copy-on-write")
 REIN = os.path.join(os.path.dirname(HERE), "plugins", "rein", "bin", "rein")
 
 PRE_COMMIT = """#!/bin/sh
@@ -513,10 +524,12 @@ class DependenciesAndUncertainty(unittest.TestCase):
         self.repo = os.path.join(self.tmp, "repo")
         self.base = js_repo(self.repo)
 
+    @CLONE
     def test_a_hook_that_needs_the_workers_dependencies_runs_with_them_and_passes(self):
         commit(self.repo, "src/a.ts", "export const a = 1\n", "feat: a")  # --no-verify
         self.assertEqual(guard.check(self.repo, self.base, {}), [])
 
+    @CLONE
     def test_a_hook_that_really_rejects_the_tree_is_red_with_its_error_lines_and_a_log(self):
         commit(self.repo, "src/a.ts", "FORBIDDEN\n", "feat: bad")
         [problem] = guard.check(self.repo, self.base, {})
@@ -526,6 +539,7 @@ class DependenciesAndUncertainty(unittest.TestCase):
         self.assertIn("forbidden token", open(log).read())
         os.remove(log)
 
+    @CLONE
     def test_the_workers_dependency_folder_is_not_modified(self):
         commit(self.repo, "src/a.ts", "export const a = 1\n", "feat: a")
         before = sorted(os.listdir(os.path.join(self.repo, "node_modules", ".bin")))
@@ -564,6 +578,7 @@ class DependenciesAndUncertainty(unittest.TestCase):
         self.assertEqual(len(guard.check(self.repo, self.base, {}, accept_hooks=[sha], unchecked=[])), 1)
 
 
+@CLONE
 @unittest.skipUnless(shutil.which("lefthook") and shutil.which("pnpm"), "lefthook and pnpm are not installed")
 class LefthookWithPnpm(unittest.TestCase):
     """The repos Rein is used on: lefthook running `pnpm exec eslint {staged_files}`."""
@@ -674,6 +689,7 @@ class QuickUncheckedHook(DoneCase):
         self.assertEqual(code, 1, self.text())
         self.assertIn("--accept-hook deadbeefdead", self.text())
 
+    @CLONE
     def test_with_the_dependencies_present_it_is_green(self):
         add_deps(self.ws)
         self.assertEqual(self.done()[0], 0, self.text())
@@ -832,6 +848,195 @@ class ShipAuditOtherWorktrees(ShipCase):
         fake.on_audit = self.approve_audit()  # writes reviewed.txt in the auditor's own worktree
         self.assertEqual(self.run_ship(fake, scripted_gate()), 0, self.out)
         self.assertEqual(ship_state.load(self.state_file).audit_result, "approved")
+
+
+# --- 6c -----------------------------------------------------------------------------------------
+
+ENOENT_HOOK = """#!/bin/sh
+printf 'ENOENT.ts\\n  1:1  error  Unexpected console statement  no-console\\n'
+exit 1
+"""
+
+
+class RejectionIsAlwaysRed(unittest.TestCase):
+    """B1: a hook that ran and rejected the tree is red, whatever its output happens to contain."""
+
+    def setUp(self):
+        self.tmp = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.repo = os.path.join(self.tmp, "repo")
+        self.base = make_repo(self.repo, hook=False)
+
+    def hook(self, body):
+        install_hook(self.repo, "pre-commit", "#!/bin/sh\n" + body)
+        commit(self.repo, "src/ENOENT.ts", "console.log(1)\n", "feat: log")
+        self.sha = run_git(self.repo, "rev-parse", "HEAD").strip()
+
+    def verdict(self, accept=True):
+        unchecked, accepted = [], []
+        problems = guard.check(self.repo, self.base, {}, accept_hooks=[self.sha] if accept else [], unchecked=unchecked,
+                               hook_accepted=accepted)
+        return problems, unchecked, accepted
+
+    def test_a_file_called_enoent_with_a_lint_error_is_red_and_not_acceptable(self):
+        self.hook("printf 'ENOENT.ts\\n  1:1  error  Unexpected console statement  no-console\\n'\nexit 1\n")
+        problems, unchecked, accepted = self.verdict()
+        self.assertEqual((len(problems), unchecked, accepted), (1, [], []), problems)
+        self.assertIn("no-console", problems[0])
+
+    def test_a_free_substring_is_not_a_missing_tool(self):
+        self.hook("echo 'ENOENT: no such file or directory, open x'; echo 'No such file or directory'; exit 1\n")
+        problems, unchecked, _ = self.verdict()
+        self.assertEqual((len(problems), unchecked), (1, []), problems)
+
+    def test_rejection_signals_win_even_over_a_127(self):
+        self.hook("echo 'src/a.ts:3:1: error unexpected'; echo 'sh: eslint: command not found'; exit 127\n")
+        problems, unchecked, _ = self.verdict()
+        self.assertEqual((len(problems), unchecked), (1, []), problems)
+
+    def test_the_exact_missing_tool_forms_are_unchecked(self):
+        for body in ("echo 'sh: 1: eslint: not found'; exit 1\n", "echo 'sh: eslint: command not found'; exit 1\n",
+                     "echo 'ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL  Command \"eslint\" not found'; exit 1\n",
+                     "exit 127\n"):
+            with self.subTest(body=body):
+                run_git(self.repo, "reset", "-q", "--hard", self.base)
+                self.hook(body)
+                problems, unchecked, _ = self.verdict(accept=False)
+                self.assertEqual(problems, [])
+                self.assertEqual(len(unchecked), 1)
+
+    def test_the_enoent_file_through_quick_and_ship_stays_red_with_both_accepts(self):
+        self.hook("printf 'ENOENT.ts\\n  1:1  error  Unexpected console statement  no-console\\n'\nexit 1\n")
+        guard.record_accepts(self.tmp, hooks=[self.sha])
+        problems = guard.check(self.repo, self.base, {}, accept_hooks=guard.load_accepts(self.tmp)["hooks"],
+                               unchecked=[])
+        self.assertEqual(len(problems), 1)
+
+
+class QuickEnoent(DoneCase):
+    def test_done_is_red_and_accept_hook_does_not_save_it(self):
+        self.make_repo()
+        install_hook(self.ws, "pre-commit", ENOENT_HOOK)
+        self.write("src/ENOENT.ts", "console.log(1)\n")
+        self.git("add", "-A")
+        self.git("commit", "-q", "--no-verify", "-m", "feat: log")
+        sha = subprocess.run(["git", "-C", self.ws, "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+        self.assertEqual(self.done()[0], 1, self.text())
+        self.assertIn("does not pass the repo's pre-commit hook", self.text())
+        self.out.clear()
+        self.assertEqual(self.done(accept_hooks=[sha])[0], 1, self.text())
+
+
+@CLONE
+class CopyOnWriteDependencies(unittest.TestCase):
+    """B2: the re-check gets clones of the dependency folders; nothing it writes reaches the worker."""
+
+    def setUp(self):
+        self.tmp = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.repo = os.path.join(self.tmp, "repo")
+        self.base = js_repo(self.repo)
+
+    def test_a_hook_writing_tracked_config_through_the_dependency_folder_is_red_and_the_worker_is_untouched(self):
+        install_hook(self.repo, "pre-commit",
+                     "#!/bin/sh\ncd node_modules\nprintf '{\"commands\":{\"test\":\"false\"}}\\n' > ../flow.config.json\nexit 0\n")
+        original = open(os.path.join(self.repo, "flow.config.json")).read()
+        commit(self.repo, "src/a.ts", "export const a = 1\n", "feat: a")
+        problems = guard.check(self.repo, self.base, {}, unchecked=[])
+        self.assertTrue(any("only after the hook rewrites" in p for p in problems), problems)
+        with open(os.path.join(self.repo, "flow.config.json")) as fh:
+            self.assertEqual(fh.read(), original)
+        self.assertEqual(run_git(self.repo, "status", "--porcelain=v1"), "")
+        # and the next look blames nothing the re-run did
+        self.assertFalse(any("it changes flow.config.json" in p for p in guard.check(self.repo, self.base, {}, unchecked=[])))
+
+    def test_a_cache_the_hook_writes_inside_the_dependencies_stays_in_the_clone(self):
+        install_hook(self.repo, "pre-commit", "#!/bin/sh\nmkdir -p node_modules/.cache && echo x > node_modules/.cache/y\nexit 0\n")
+        commit(self.repo, "src/a.ts", "export const a = 1\n", "feat: a")
+        self.assertEqual(guard.check(self.repo, self.base, {}, unchecked=[]), [])
+        self.assertFalse(os.path.exists(os.path.join(self.repo, "node_modules", ".cache")))
+
+    def test_without_copy_on_write_it_is_unchecked_and_says_so(self):
+        commit(self.repo, "src/a.ts", "export const a = 1\n", "feat: a")
+        unchecked = []
+        with mock.patch.object(guard, "_clone_command", lambda s, t: ["false"]):
+            self.assertEqual(guard.check(self.repo, self.base, {}, unchecked=unchecked), [])
+        [item] = unchecked
+        self.assertIn("copy-on-write", item["text"])
+        self.assertIn("does not copy them for real", item["text"])
+
+
+class QuickBreachSurvivesAnEmptyDiff(DoneCase):
+    """B3: undoing the local work does not settle what the auditor did elsewhere."""
+
+    def test_the_kept_rejection_is_checked_when_nothing_changed_locally(self):
+        admin = os.path.join(self.root, "proxima-admin")
+        make_repo(admin, hook=False)
+        put(admin, "app.py", "x = 1\n")
+        before = guard.outside_snapshot([admin])
+        self.make_repo(outside_before=before)
+        self.write("src/auth/login.ts", "v2\n")
+        put(admin, "app.py", "x = 2\n")  # a legitimate edit by the owner, accepted by name below
+        approve = self.reviewer("APPROVED")
+
+        def auditor():
+            put(admin, "app.py", "x = 1\n")  # undoes it
+            approve()
+        code, _, _ = self.done(orca=_AuditOrca(on_start=auditor), env=TERMINAL,
+                               accept_paths=[os.path.join(admin, "app.py")])
+        self.assertEqual(code, 1, self.text())
+        self.git("checkout", "--", "src/auth/login.ts")  # only the worker's local change goes back
+        self.out.clear()
+        code, _, _ = self.done(orca=_AuditOrca(), env=TERMINAL)
+        self.assertEqual(code, 1, self.text())
+        self.assertNotIn("nothing changed since the task started", self.text())
+        self.assertIn("(audit)", self.text())
+        put(admin, "app.py", "x = 2\n")  # the owner's edit restored: the rejection clears
+        self.out.clear()
+        self.assertEqual(self.done(orca=_AuditOrca(), env=TERMINAL, accept_paths=[os.path.join(admin, "app.py")])[0],
+                         0, self.text())
+
+
+class ShipAuditFrozenIgnoresOfOtherWorktrees(ShipCase):
+    """B4: a worker's later `outsideIgnore` never narrows what the auditor is watched for."""
+
+    PLAN = ("# Change: demo\n\n- [ ] T001 Add the api endpoint\n  - Repo: proxima-api\n"
+            "  - Verification: `pnpm test`\n\n- [ ] T002 Add the admin screen\n  - Repo: proxima-admin\n"
+            "  - Gate config: flow.config.json\n  - Verification: `pnpm test`\n")
+
+    def test_an_ignore_the_worker_added_does_not_hide_the_auditors_write(self):
+        self.write_plan(self.PLAN)
+        for repo in ("proxima-api", "proxima-admin"):
+            path = self.wtpath(repo)
+            base = make_repo(path, hook=False)
+            put(path, "app.py", "x = 0\n")
+            run_git(path, "add", "-A")
+            run_git(path, "commit", "-q", "--no-verify", "-m", "chore: app")
+            base = run_git(path, "rev-parse", "HEAD").strip()
+            run_git(path, "update-ref", "refs/remotes/origin/develop", base)
+        admin = self.wtpath("proxima-admin")
+        done = []
+
+        def gates(p, unit_only, timeout=None, **kw):
+            if kw.get("tier") == "task" and p == admin and not done:
+                done.append(1)
+                put(admin, "flow.config.json", json.dumps({"commands": {"test": "true"},
+                                                          "gate": {"outsideIgnore": ["app.py"]}}))
+                run_git(admin, "add", "-A")
+                run_git(admin, "commit", "-q", "--no-verify", "-m", "chore: gate config")
+            return 0, "ok"
+        fake = FakeOrca(self.root, repos=("proxima-api", "proxima-admin"))
+        approve = self.approve_audit()
+
+        def on_audit():
+            put(admin, "app.py", "x = 777\n")
+            approve()
+            fake.auto_resolve = "reject"
+        fake.on_audit = on_audit
+        self.run_ship(fake, gates)
+        [gate] = [g for g in fake.gates if "guard found the auditor" in g["question"]]
+        self.assertIn("app.py", gate["question"])
+        self.assertEqual(ship_state.load(self.state_file).audit_result, "rejected")
 
 
 if __name__ == "__main__":

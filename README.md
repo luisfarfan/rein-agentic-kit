@@ -455,36 +455,47 @@ auditor's verdict is read:
 - **Hooks.** Each commit of the change must pass the repo's own `commit-msg` hook and its `pre-commit`
   hook, both re-run by Rein with the bypass variables removed. `commit-msg` runs on the commit's message.
   `pre-commit` runs in a temporary detached checkout of the commit's parent with the commit's tree staged
-  on top and the worker's gitignored folders (`node_modules`, `.venv` …) linked in, so a hook such as
-  lefthook's `pnpm exec eslint {staged_files}` finds the tools it has in the worktree; the worktree itself
-  is never modified (a hook that writes a cache into a linked folder writes to the original). Three
-  results, never mixed:
+  on top. The worker's gitignored folders (`node_modules`, `.venv` …) are given to that checkout as
+  **copy-on-write clones** (APFS `cp -c`, or `--reflink` on Linux), so a hook such as lefthook's
+  `pnpm exec eslint {staged_files}` finds the tools the worktree has, and nothing the hook writes can
+  reach the worker: a write into a clone stays in the clone, and one anywhere else lands in the
+  temporary checkout, where it counts as a change (below). A clone of a medium `node_modules` (25 000
+  files, 195 MB) took about 2.6 s on APFS, once per re-run commit. If the filesystem cannot clone (another
+  volume, no reflink) Rein does not copy the folders for real: the hook is **unchecked**, and the message
+  says why. Three results, never mixed:
   - **red**: the hook ran on the commit's tree and rejected it (the message carries its error lines and
-    the path of its full output), **or** it passed only after rewriting files (an autofix such as
-    lint-staged): the commit as made does not pass its hook, and the message shows the diff of what the
-    hook would have fixed (amend the commit; Rein changes nothing);
+    the path of its full output) — a linter's rejection signal (`1:1 error …`, `file:line:col …`,
+    `N problems`) always wins, whatever else the output says — **or** it left the tree changed (an
+    autofix such as lint-staged, or any write into the checkout): the commit as made does not pass its
+    hook, and the message shows the diff of what the hook would have fixed (amend the commit; Rein
+    changes nothing);
   - **green**: it ran and left the tree as it found it;
-  - **unchecked**: it could not be run reliably: exit 126/127 or output of a missing tool, dependency or
-    network (`command not found`, `ENOENT`, `Cannot find module`, pnpm's `Command "x" not found` …, a
-    heuristic), a timeout (120 s), a root commit, a commit past the newest 25, or a git too old for
-    `git hook` (< 2.36). Unchecked is never a pass and never a red: `rein quick done` exits 1 naming each
-    commit, and the owner, having run the hook by hand, answers `--accept-hook <sha>` (logged by
-    commit); ship holds the task in the `outside` gate (`accept` · `retry` · `skip`, no retry is spent on
-    it) or `rein accept-outside --hook <sha>` remembers the answer for the run. Nothing retries it by
-    itself, and an accept never turns a red green.
+  - **unchecked**: it could not be run reliably, and only for these reasons: exit 126/127; or a line that
+    is exactly a missing-tool message (`sh: eslint: command not found`, `sh: 1: eslint: not found`, pnpm's
+    `Command "x" not found` / `ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL`, the hook script's own `…: line N: x:
+    No such file or directory`, Python's `ModuleNotFoundError: No module named`, Node's `Error: Cannot
+    find module`); a timeout (120 s); a root commit; a commit past the newest 25; a git too old for
+    `git hook` (< 2.36); or no copy-on-write clone. A file called `ENOENT.ts` inside a lint error is just
+    a file name: the hook ran, so it is red. Unchecked is never a pass and never a red: `rein quick done`
+    exits 1 naming each commit, and the owner, having run the hook by hand, answers `--accept-hook <sha>`
+    (logged by commit); ship holds the task in the `outside` gate (`accept` · `retry` · `skip`, no retry is
+    spent on it) or `rein accept-outside --hook <sha>` remembers the answer for the run. Nothing retries
+    it by itself, and an accept never turns a red green.
 
   Other hooks (`pre-push`, `post-commit` …) are not re-run.
 - **After an auditor.** Before the auditor starts, Rein notes the protected config of the worktrees and
   the state of the watched checkouts; when the verdict is read it compares. If the auditor edited
   protected config or wrote outside its worktree (same rules, same `--accept-*` exits as for workers),
-  the verdict is **not taken**, whatever it says. Writes outside cover the watched checkouts with the
-  ignores each had when the task started (one repo's `gate.outsideIgnore` never applies to another) and,
-  in ship, the ordinary files of the *other* worktrees of the run (only the auditor's own is left out).
-  In `rein quick done` the run exits 1 (or 126 when the guard itself could not run) with the reasons and
-  the exits below, and the rejection is kept in the quick's record: every later `done` re-checks it
-  before reusing the approval, until it is reverted or accepted; in `rein ship` an `audit_guard` gate
-  opens (below). What an auditor does *inside* its worktree beyond protected config and the other
-  worktrees is not checked.
+  the verdict is **not taken**, whatever it says. Writes outside cover the watched checkouts and, in
+  ship, the ordinary files of the *other* worktrees of the run (only the auditor's own is left out), all
+  with the `gate.outsideIgnore` each had **when its task was launched** — never a config read again
+  later, which a worker may have edited, and never one repo's ignores applied to another. In
+  `rein quick done` the run exits 1 (or 126 when the guard itself could not run) with the reasons and the
+  exits below, and the rejection is kept in the quick's record with the baseline taken before that
+  auditor: every later `done` re-checks it before it returns success — including the "nothing changed
+  since the task started" return after the local work was undone — until the write is reverted or
+  accepted; in `rein ship` an `audit_guard` gate opens (below). What an auditor does *inside* its
+  worktree beyond protected config and the other worktrees is not checked.
 
 The configuration Rein judges with, and protects from a worker, is `flow.config.json`, the config of a
 task runner a gate command comes from or calls (`mise.toml`, `Makefile`, `justfile`,
@@ -686,10 +697,10 @@ none and goes on; a Codex-only run leaves no row) and prints the usage delta per
   --browser-tools/--url/--change`, `verify --plan`) and the `serve-probe` command; the CLI block above has them.
   `rein <cmd> --help` prints the usage line for most commands and runs the command for a few (`gate`, `next`).
 - **The hook and auditor checks have edges.** Only `commit-msg` and `pre-commit` are re-run. The
-  `pre-commit` re-run sees the worker's ignored folders by link, not its whole environment: whether a
-  failure is the code's or the environment's is told by exit codes and output patterns (a heuristic), so a
-  hook that fails oddly in a clean checkout can land as red, and one that hides a missing tool behind a
-  plain failure can too. The auditor is checked for protected config and writes outside its worktree
+  `pre-commit` re-run has the worker's ignored folders (cloned) but not its whole environment, and each
+  re-run costs a clone and a hook run (up to 25 commits): a hook that needs something else it has only in
+  the worktree can fail in the clean checkout, and Rein calls that red unless it is exit 126/127 or an
+  exact missing-tool line. The auditor is checked for protected config and writes outside its worktree
   (and, in ship, in the run's other worktrees), not for other edits inside its own.
 - **Audience.** The owner. No compatibility promises.
 

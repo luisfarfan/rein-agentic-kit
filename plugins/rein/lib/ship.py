@@ -1079,9 +1079,16 @@ class _Driver:
         mine = os.path.realpath(self.state.worktree_paths.get(repo, "") or "/nonexistent")
         others = [p for p in self.state.worktree_paths.values()
                   if p and os.path.exists(os.path.join(p, ".git")) and os.path.realpath(p) != mine]
+        # Each with the ignores its task froze at launch (its repo's and the root's then), never the config
+        # now in that worktree, which the worker may have edited. One never launched has only the root's.
         root = getattr(self, "root", "")
         globs = _guard.outside_ignore_globs(_detect.resolve(root)) if root and os.path.isdir(root) else []
-        outside.update(_guard.outside_snapshot(others, globs))
+        by_path = {os.path.realpath(p): r for r, p in self.state.worktree_paths.items() if p}
+        frozen = {}
+        for real, owner in by_path.items():
+            launched = [g for t in self.state.tasks.values() if t.repo == owner for g in (t.own_ignore or [])]
+            frozen[real] = list(dict.fromkeys(launched)) if launched else list(globs)
+        outside.update(_guard.outside_snapshot(others, globs, ignore_for=frozen))
         return {"config": config, "bases": bases, "outside": outside}
 
     def audit_guard_verdict(self) -> list:
@@ -1135,6 +1142,14 @@ class _Driver:
         globs = _guard.outside_ignore_globs(resolved) if resolved else []
         return _guard.outside_snapshot([p for p in paths if p and os.path.realpath(p) != mine], globs,
                                        ignore_for=self.frozen_ignores())
+
+    def launch_ignores(self, repo: str) -> list:
+        """`gate.outsideIgnore` of `repo`'s own checkout plus the plan root's, now (a worker is launching)."""
+        root = getattr(self, "root", "")
+        checkout = str(((getattr(self, "ctx", None) or {}).get("repos") or {}).get(repo, {}).get("path") or "")
+        own = _guard._repo_outside_ignore(checkout) if checkout and os.path.isdir(checkout) else []
+        top = _guard.outside_ignore_globs(_detect.resolve(root)) if root and os.path.isdir(root) else []
+        return list(dict.fromkeys(own + top))
 
     def frozen_ignores(self) -> dict:
         """`{checkout: globs}` as the tasks' own launch snapshots froze them: a later snapshot (the
@@ -1336,6 +1351,7 @@ class _Driver:
             task.starting = task.orca_task_id  # persisted before the start: a kill mid-start is recoverable
             # An external write already rejected or unresolved stays the base: a retry is not an acceptance.
             task.outside_before = copy.deepcopy(task.outside_held) if task.outside_held else self.outside_snapshot(a.repo)
+            task.own_ignore = self.launch_ignores(a.repo)
             self.save()
             repo = self.ctx["repos"].get(a.repo) or {}
             fresh = a.worktree == "new-top-level"  # a reused worktree is already set up and named

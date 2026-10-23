@@ -715,6 +715,23 @@ def _audit(workspace: str, record: dict, changed: list, limits: dict, client: Or
     return 126
 
 
+def _recheck_breach(workspace: str, record: dict, accept_outside: bool, say, accept=None) -> tuple:
+    """`(problems, pending, broken)` of the auditor's rejection kept in the record (`audit_breach`), checked
+    against the baseline taken before that auditor started. Cleared from the record only when clean.
+    Run before ANY successful return of `done`: undoing the local work does not settle what the
+    auditor did elsewhere."""
+    breach = record.get("audit_breach")
+    if not isinstance(breach, dict):
+        return [], [], ""
+    again, pending, broken = _audit_guard(breach, workspace, record, accept_outside, say, accept)
+    if not (again or pending or broken):
+        try:
+            update_record(workspace, lambda fresh: fresh.pop("audit_breach", None) and None)
+        except OSError as error:
+            say("cannot update %s in %s: %s" % (quick.RECORD, workspace, error))
+    return ["(audit) %s" % p for p in again], pending, broken
+
+
 def _outside_verdict(record: dict, accept_outside: bool, say, accept=None, unmatched: bool = True) -> tuple:
     """`(problems, pending, accepted, broken)` of the other checkouts since this quick started.
     `pending` could hide the agent's write and is red until `accept_outside`; `accepted` is what the
@@ -775,6 +792,8 @@ def done_quick(*, cwd: str = ".", client: OrcaClient, run=verify.run_one,
     if not changed:
         # No local diff proves nothing about the other checkouts: the outside guard still speaks.
         problems, pending, accepted, broken = _outside_verdict(record, accept_outside, say, accept)
+        again, again_pending, broken3 = _recheck_breach(workspace, record, accept_outside, say, accept)
+        problems, pending, broken = problems + again, pending + again_pending, broken or broken3
         code = 126 if broken and not (problems or pending) else (1 if problems or pending else 0)
         for problem in problems:
             say("guard: %s" % problem)
@@ -839,17 +858,10 @@ def done_quick(*, cwd: str = ".", client: OrcaClient, run=verify.run_one,
     problems += outside
     broken = broken or broken2
     # A rejection of the auditor kept from an earlier `done` is checked before any approval is reused.
-    breach = record.get("audit_breach")
-    if isinstance(breach, dict):
-        again, again_pending, broken3 = _audit_guard(breach, workspace, record, accept_outside, say, accept)
-        problems += ["(audit) %s" % p for p in again]
-        pending = pending + again_pending
-        broken = broken or broken3
-        if not (again or again_pending or broken3):
-            try:
-                update_record(workspace, lambda fresh: fresh.pop("audit_breach", None) and None)
-            except OSError as error:
-                say("cannot update %s in %s: %s" % (quick.RECORD, workspace, error))
+    again, again_pending, broken3 = _recheck_breach(workspace, record, accept_outside, say, accept)
+    problems += again
+    pending = pending + again_pending
+    broken = broken or broken3
     accepted = accepted + ["hook %s in %s (%s)" % (h["id"][:12], h["checkout"], h.get("note", "")) for h in hook_accepted]
     for h in hook_accepted:
         say("guard: accepted by the owner, by name: pre-commit hook of commit %s" % h["id"][:12])

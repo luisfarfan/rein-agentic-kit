@@ -38,6 +38,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import hashlib
 import tempfile
 
@@ -63,6 +64,7 @@ RUNNER_CONFIG = {
 GATE_COMMANDS = ("lint", "typecheck", "build", "test", "testOne", "testIntegration")
 _RUNNER_CALL = re.compile(r"(?:^|[\s;&|()])(%s)(?=\s|$)" % "|".join(RUNNER_CONFIG))
 HOOK_TIMEOUT = 120
+CLONE_TIMEOUT = 120  # one dependency folder's copy-on-write clone
 MAX_COMMITS = 200  # hook runs per check; past it the newest are checked and the rest is reported
 
 
@@ -352,15 +354,33 @@ def _git_or_raise(path: str, *args: str) -> str:
     return out
 
 
-# What a hook prints when it could not run (a missing tool or dependency, the network), as opposed to
-# when it ran and rejected the commit. A heuristic, said as such: the exits 126/127 always count.
-_ENV_FAILURE = re.compile(
-    r"command not found|: not found|No such file or directory|ENOENT|Cannot find (?:module|package)|"
-    r"ModuleNotFoundError|No module named|Command \"[^\"]+\" not found|ERR_PNPM_[A-Z_]*(?:NOT_FOUND|EXEC_FIRST_FAIL|FETCH|NO_MATCHING)|"
-    r"Failed to (?:download|install|fetch|resolve)|error sending request|Temporary failure in name resolution|"
-    r"Connection (?:refused|timed out|reset)|ECONNREFUSED|ETIMEDOUT|getaddrinfo", re.I)
+# When a hook could not run, as opposed to ran and rejected the tree. Exits 126/127 say it; so do a few
+# messages of a MISSING TOOL, each anchored to its exact form on a line of its own -- never a free
+# substring (`ENOENT` inside a file name, `not found` inside a diagnostic). A linter's rejection signal
+# always wins over all of them: a hook that ran and rejected the tree is red.
+_MISSING_TOOL = [re.compile(p, re.M) for p in (
+    r"^[\W_]*(?:\S+: )+(?:line \d+: )?\S+: (?:command )?not found\s*$",               # sh: eslint: command not found
+    r"^[\W_]*(?:\S+: )+line \d+: \S+: No such file or directory\s*$",                 # the hook's own executable
+    r"^[\W_]*(?:ERR_PNPM_\w+\s+)?Command \"[^\"]+\" not found\s*$",                  # pnpm exec
+    r"^[\W_]*ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL\b",
+    r"^[\W_]*ModuleNotFoundError: No module named\b",
+    r"^[\W_]*Error: Cannot find module\b",
+)]
+_REJECTION = [re.compile(p, re.M | re.I) for p in (
+    r"^\s*\d+:\d+\s+(?:error|warning)\b",                       # eslint stylish
+    r"^\s*[^\s:]+:\d+(?::\d+)?[: ]\s*\S",                        # file:line[:col] diagnostics
+    r"\b\d+ (?:problems?|errors?)\b",
+)]
 _RELEVANT = re.compile(r"error|fail|\u2717|\u2716|not found|cannot|denied|forbidden|\bE\d{3}\b|^\s*\S+:\d+(?::\d+)?\b", re.I)
 _ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+
+
+def _env_failure(code: int, said: str) -> bool:
+    """The hook could not run (not: it ran and rejected the tree)."""
+    clean = _ANSI.sub("", said)
+    if any(r.search(clean) for r in _REJECTION):
+        return False
+    return code in (126, 127) or any(r.search(clean) for r in _MISSING_TOOL)
 
 
 def _relevant_lines(said: str, limit: int = 10, chars: int = 900) -> str:
@@ -372,11 +392,23 @@ def _relevant_lines(said: str, limit: int = 10, chars: int = 900) -> str:
     return " | ".join(picked[:limit])[:chars]
 
 
-def _link_dependencies(source: str, into: str) -> None:
-    """Make the temporary checkout see what the worker's worktree has but git does not track -- the
-    dependency folders (node_modules, .venv, ...) and other ignored directories -- by symlink, so a hook
-    that needs them runs as it does there. Nothing is copied and nothing in `source` is changed by the
-    linking; a hook that writes into a linked folder (a cache) writes to the original."""
+class NoClone(Exception):
+    """The filesystem cannot clone the dependency folders copy-on-write (or the clone failed): Rein
+    does not copy thousands of files instead."""
+
+
+def _clone_command(source: str, target: str) -> list:
+    if sys.platform == "darwin":
+        return ["cp", "-c", "-R", "-p", source, target]      # clonefile(2) on APFS
+    return ["cp", "-a", "--reflink=always", source, target]   # reflink: btrfs, xfs, ...
+
+
+def _clone_dependencies(source: str, into: str) -> None:
+    """Give the temporary checkout the worker's gitignored folders (`node_modules`, `.venv`, ...) as
+    copy-on-write clones, so a hook finds the tools it has in the worktree while nothing it writes can
+    reach the worker: a write lands in the clone, and one outside those folders lands in the checkout,
+    where the autofix check counts it. NoClone when the filesystem cannot clone (another volume, no
+    reflink): copying them for real could be thousands of files, so the caller leaves the hook unchecked."""
     code, out = _git(source, "ls-files", "--others", "--ignored", "--exclude-standard", "--directory")
     if code != 0:
         raise GuardError("cannot list the ignored folders of %s" % source)
@@ -390,7 +422,13 @@ def _link_dependencies(source: str, into: str) -> None:
         if os.path.lexists(link) or not os.path.isdir(target):
             continue
         os.makedirs(os.path.dirname(link), exist_ok=True)
-        os.symlink(os.path.realpath(target), link)
+        try:
+            proc = subprocess.run(_clone_command(target, link), capture_output=True, text=True,
+                                  timeout=CLONE_TIMEOUT)
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise NoClone("%s: %s" % (rel, exc))
+        if proc.returncode != 0:
+            raise NoClone("%s: %s" % (rel, (proc.stderr or proc.stdout).strip()[:200] or "exit %d" % proc.returncode))
 
 
 def _hook_log(said: str) -> str:
@@ -402,7 +440,7 @@ def _hook_log(said: str) -> str:
 
 def _rerun_pre_commit(path: str, sha: str, env=None) -> tuple:
     """Run the repo's `pre-commit` hook as `sha` would have met it: a temporary detached checkout of its
-    parent with `sha`'s tree staged on top and the worker's ignored dependency folders linked in (the
+    parent with `sha`'s tree staged on top and the worker's ignored dependency folders cloned in (the
     worker's worktree is never modified). `("pass", "")`, `("red", why)` when the hook ran on the tree
     and rejected it or changed it (an autofix: the commit as made did not pass), `("unchecked", why)`
     when it could not be run reliably (no parent, timeout, a tool or dependency missing, the network).
@@ -419,7 +457,11 @@ def _rerun_pre_commit(path: str, sha: str, env=None) -> tuple:
         if code != 0:
             raise GuardError("cannot make a temporary checkout of %s in %s" % (parts[1][:8], path))
         _git_or_raise(work, "read-tree", "-u", "--reset", sha)
-        _link_dependencies(path, work)
+        try:
+            _clone_dependencies(path, work)
+        except NoClone as exc:
+            return "unchecked", ("the dependency folders of the worktree could not be cloned copy-on-write into "
+                                 "the re-check (%s), and Rein does not copy them for real; run the hook by hand" % exc)
         try:
             proc = subprocess.run(["git", "-C", work, "hook", "run", "--ignore-missing", "pre-commit"],
                                   capture_output=True, text=True, timeout=HOOK_TIMEOUT,
@@ -431,7 +473,7 @@ def _rerun_pre_commit(path: str, sha: str, env=None) -> tuple:
         said = ((proc.stderr or "") + (proc.stdout or "")).strip()
         if proc.returncode != 0:
             log = _hook_log(said)
-            if proc.returncode in (126, 127) or _ENV_FAILURE.search(said):
+            if _env_failure(proc.returncode, said):
                 return "unchecked", ("the pre-commit hook could not run in the re-check (exit %d: %s); "
                                      "full output: %s" % (proc.returncode, _relevant_lines(said), log))
             return "red", ("does not pass the repo's pre-commit hook (exit %d): %s; full output: %s"
