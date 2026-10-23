@@ -30,7 +30,7 @@ class TestV2Surface(unittest.TestCase):
         self.assertEqual(sorted(rein_cli.COMMANDS), sorted([
             "detect", "verify", "gate", "role", "tasks", "plan-check", "context", "close",
             "next", "review", "token-report", "ledger", "baseline", "serve-probe", "doctor", "ship",
-            "answer", "watch", "done", "quick", "migrate-config", "env", "gate-log"]))
+            "answer", "watch", "done", "quick", "migrate-config", "env", "gate-log", "accept-outside"]))
 
     def test_removed_modules_are_gone(self):
         for name in ("dashboard", "events", "product_state", "backlog", "workspace", "setup",

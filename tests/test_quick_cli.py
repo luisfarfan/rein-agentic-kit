@@ -80,11 +80,13 @@ class TestQuickCli(unittest.TestCase):
                 mock.patch.object(rein_cli._quick, "done_quick", return_value=126) as done:
             code, _ = _run(["done"])
             self.assertEqual(code, 126)
-            done.assert_called_once_with(cwd=".", client=client, accept_outside=False)
+            done.assert_called_once_with(cwd=".", client=client, accept_outside=False,
+                                         accept_paths=[], accept_commits=[])
             start.assert_not_called()
             done.reset_mock()
             _run(["done", "--accept-outside"])
-            done.assert_called_once_with(cwd=".", client=client, accept_outside=True)
+            done.assert_called_once_with(cwd=".", client=client, accept_outside=True,
+                                         accept_paths=[], accept_commits=[])
 
     def test_quick_lone_agent_routes_with_empty_model(self):
         client = object()

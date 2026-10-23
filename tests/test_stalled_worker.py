@@ -263,9 +263,12 @@ class QuickWatch(Case):
     def test_an_edit_is_a_sign_of_work(self):
         with open(os.path.join(self.ws, "x.py"), "w") as fh:
             fh.write("x")
+        with open(os.path.join(self.ws, quick.RECORD), "rb") as fh:
+            before = fh.read()
         self.assertEqual(self.watch_once(1.0 + 60 * 60)[0], 1)
-        with open(os.path.join(self.ws, quick.RECORD)) as fh:
-            self.assertTrue(json.load(fh)["active"])
+        self.assertEqual(self.watch_once(1.0 + 120 * 60)[0], 1, "never alerted, however long")
+        with open(os.path.join(self.ws, quick.RECORD), "rb") as fh:
+            self.assertEqual(fh.read(), before, "a watch does not rewrite a record that is fine")
 
     def test_a_resend_restarts_the_window(self):
         record = self.record()

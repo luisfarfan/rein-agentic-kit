@@ -316,8 +316,9 @@ def _announce(workspace: str, q: dict) -> None:
 def stall(workspace: str, record: dict, now: float) -> str:
     """The alert for an agent with no sign of work past the stall window, else "".
 
-    A sign of work (HEAD moved past the base, an edit, a question) marks the record `active`
-    for good; an alert is given once per window, counted from the launch, the last alert or
+    A sign of work (HEAD moved past the base, an edit, a question) means no alert; it is looked at
+    again on each watch and never written down, so a watch leaves the records of tasks that are
+    fine untouched. An alert is given once per window, counted from the launch, the last alert or
     the last `rein quick resend`. Decided on the record as it is under the lock: `record` (what
     the caller read) only spares the lock when it already says `active`."""
     if record.get("active"):
@@ -340,8 +341,7 @@ def _stall_of(workspace: str, record: dict, now: float):
     code2, porcelain = qd.run_git(workspace, "status", "--porcelain", "--untracked-files=all")
     if (code == 0 and base and head.strip() != base) or (code2 == 0 and qd._is_dirty(porcelain)) \
             or questions(record):
-        record["active"] = True
-        return ""
+        return None  # at work: no alert. Not written down here -- a watch never rewrites another quick's record
     minutes = _sd.ShipConfig.from_flow_config(_detect.resolve(workspace)).stall_minutes
     since = max(float(record.get(k) or 0) for k in ("started_at", "stall_alerted_at", "resent_at"))
     if not minutes or minutes <= 0 or now - since < minutes * 60:
@@ -354,7 +354,24 @@ def _stall_of(workspace: str, record: dict, now: float):
                record.get("terminal") or "(unknown)", workspace))
 
 
-def _poll(arg: str, client: OrcaClient, cwd: str, printed: set, now: float = 0.0) -> bool:
+def superseded(workspace: str, record: dict, q: dict) -> bool:
+    """The agent is no longer waiting on `q` although it has no answer in the record: after it asked,
+    it asked something else, reported, or committed -- the owner answered in its terminal. An open
+    question the agent still waits on is none of these."""
+    asked = float(q.get("asked_at") or 0)
+    if not asked:
+        return False
+    if any(float(o.get("asked_at") or 0) > asked for o in questions(record) if o is not q):
+        return True
+    if any(float(r.get("at") or 0) > asked for r in reports(record)):
+        return True
+    base = str(record.get("base_sha") or "")
+    code, out = qd.run_git(workspace, "log", "-1", "--format=%H %ct")
+    sha, _, when = out.strip().partition(" ")
+    return code == 0 and bool(sha) and sha != base and when.isdigit() and float(when) > asked
+
+
+def _poll(arg: str, client: OrcaClient, cwd: str, printed: set, now: float = 0.0, still_open=None) -> bool:
     shown = False
     for workspace in targets(arg, client, cwd):
         record, _ = qd._load_record(workspace)
@@ -362,13 +379,25 @@ def _poll(arg: str, client: OrcaClient, cwd: str, printed: set, now: float = 0.0
         if alert:
             print(alert)
             shown = True
+        told = []
         for q in open_questions(record or {}):
+            if superseded(workspace, record, q):
+                continue
             key = (os.path.realpath(workspace), q.get("id"))
-            if key in printed:
+            if q.get("announced") or key in printed:  # told once; a later watch waits for something new
+                if still_open is not None:
+                    still_open.append((workspace, q))
                 continue
             printed.add(key)
             _announce(workspace, q)
+            told.append(q.get("id"))
             shown = True
+        if told:
+            def mark_asked(fresh):
+                for q in questions(fresh):
+                    if q.get("id") in told and q.get("answer") is None:
+                        q["announced"] = True
+            qd.update_record(workspace, mark_asked)
         fresh = [r for r in reports(record or {}) if not r.get("announced")]
         for r in fresh:
             key = (os.path.realpath(workspace), "report", r.get("id"))
@@ -397,8 +426,11 @@ def watch(arg: str, client: OrcaClient, *, cwd: str = ".", once: bool = False,
     is pending."""
     printed = set()
     while True:
-        if _poll(arg, client, cwd, printed, clock()):
+        waiting: list = []
+        if _poll(arg, client, cwd, printed, clock(), waiting):
             return 0
         if once:
+            for workspace, q in waiting:  # told before, still unanswered: listed, never mixed with news
+                print("STILL OPEN %s %s: %s" % (workspace, q.get("id"), str(q.get("text") or "")[:100]))
             return 1
         sleep(WATCH_POLL_SECONDS)

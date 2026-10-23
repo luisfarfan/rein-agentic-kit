@@ -181,10 +181,20 @@ rein quick "<sentence>" [--repo <name>] [--base <branch>] [--here [--dirty-ok]] 
                  # Default: its own worktree off develop, or the remote's default branch when there is none; --here uses the main checkout
                  # (--dirty-ok if it has uncommitted work). Never pushes or merges.
                  # Exit: 0 started · 1 failed · 2 usage · 126 environment
-rein quick done  # run by that agent on "listo": lint/typecheck plus the tests the change reaches
+rein quick done [--accept-outside] [--accept-path <abs path>]... [--accept-commit <sha>]...
+                 # run by that agent on "listo": lint/typecheck plus the tests the change reaches
                  # (gate.affected), stopping at the first failure, with gate.env and the gate
                  # cache; a risky path runs the full suite instead, then an audit. Never commits.
                  # Exit: 0 green · 1 red · 2 no quick task here · 126 setup (not a verdict)
+                 # --accept-path / --accept-commit: the owner's registered exit for a REAL change in a
+                 # watched checkout that is another session's (see "Writes outside the worktree")
+rein accept-outside [--root <plan repo>] (--path <abs path> | --commit <sha>)...
+                 # ship's counterpart: records, in <plan repo>/.rein/outside-accept.json, changes in a
+                 # watched checkout that are another session's, so no task of that plan is rejected for them
+rein quick watch # tell the orchestrator what each quick needs: a QUESTION (told once; one the agent no longer
+                 # waits on -- it asked again, reported or committed after it -- is not told at all),
+                 # a REPORT, a STALLED agent. What was told and is still open is listed as STILL OPEN
+                 # by `--once`, never mixed with news. It never rewrites a record that is fine.
 rein quick close [<workspace path or quick-<slug> name>] [--dry-run] [--yes]
                  # remove the worktrees of finished quick tasks (all when no argument) and their
                  # records, only if clean and integrated into origin/<base>; blocked ones are kept
@@ -344,10 +354,14 @@ pass an environment to an agent — writes them as an `export` line at the top o
 the auditor's brief so their own test runs use the same database. Without `gate.env` nothing
 changes. Creating the database on first use is the repo's job (its test setup).
 
-### Writes outside the worktree (`gate.outsideIgnore`)
+### Writes outside the worktree (`gate.outsideIgnore`, `gate.outsideWatch`)
 
-When a worker (or quick agent) is launched Rein notes the git state of every other checkout Orca
-knows; by the end of its task, file content that differs there fails it, with the files named
+When a worker (or quick agent) is launched Rein notes the git state of the other checkouts **of its
+task**: for a quick, the checkout of its repo; for ship, those of the repos the plan's tasks name and
+the plan root's. The checkouts of every other repo Orca knows belong to other sessions and are not
+watched. A sibling repo a task may really write into (an update script that reaches into it) is
+declared with `gate.outsideWatch`, in the task repo's `flow.config.json` or the plan root's:
+`{ "gate": { "outsideWatch": ["proxima-qa"] } }` (Orca repo names, or absolute directories). By the end of its task, file content that differs there fails it, with the files named
 (a file dirty at launch and committed unchanged by someone else is not a difference). Other sessions
 work in those checkouts too, so a commit only counts when the worker could have made it: created in
 that checkout (its reflog), under the checkout's own `user.email`, and not already reachable from a
@@ -358,6 +372,13 @@ done` exits 1 ("not green") until the owner checks that checkout and runs `rein 
 --accept-outside`; ship holds the task in an `outside` gate (accept / retry / skip). Odder but
 harmless activity (HEAD switched to unrelated history, work made after launch that arrived by a
 merge) is a visible `guard warning`.
+A change that really happened in a watched checkout and is another session's work (a legitimate
+integration, a regenerated file) is not the agent's to revert: the owner names it. `rein quick done
+--accept-path /abs/checkout/path --accept-commit <sha>` (repeatable) and, for ship, `rein
+accept-outside --root <plan repo> --path ... --commit ...` accept exactly those paths and commits,
+only if they are real changes when the task is judged (anything else named is itself a red
+verdict). Each acceptance is logged with the path's fingerprint or the commit (`guardAccepted`);
+every other change still counts.
 `rein quick done` runs this check even when the worktree itself has no diff (restoring only the local
 work settles nothing), and logs an `--accept-outside` in the gate log (`guardAccepted`). In ship the
 snapshot a task is judged against is kept through its retries while a write outside is rejected or

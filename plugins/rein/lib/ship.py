@@ -64,10 +64,12 @@ _FAILURE_CAP = sd.GATE_FAILURE_CAP
 WORKER_PREAMBLE = (
     "You are a Rein ship worker with exactly one task. The driver runs the gate, retries and "
     "closes the task: do not run `rein gate`, `rein close` or tick the plan. Run the task's "
-    "Verification command and the tests affected by what you touched (the tests of the modules "
-    "you changed and of the code that imports them), fix what they report, then commit as "
-    "instructed below. Do not run the project's full test suite: after you, the driver runs lint, "
-    "typecheck and the affected tests, and the full suite once per repo before the audit. "
+    "Verification command exactly as given (when that is itself the whole suite, as a fix task's "
+    "may be, running it once is part of your task) and the tests affected by what you touched (the "
+    "tests of the modules you changed and of the code that imports them), fix what they report, then "
+    "commit as instructed below. Do not run the project's full test suite otherwise: after you, the "
+    "driver runs lint, typecheck and the affected tests, and the full suite once per repo before the "
+    "audit. "
     "If you are blocked, ask the owner with `orca orchestration ask --question <text>`."
 )
 
@@ -77,20 +79,44 @@ DECISION_QUESTION_CAP = 600  # how much of a gate's question the audit brief quo
 OWNER_DECISIONS_LIMIT = 3000
 
 
-def _decisions_block(decisions: list) -> str:
-    """One line per plan decision, whole lines only, at most DECISIONS_LIMIT characters."""
-    out, size = [], 0
+def _cited_ids(entry: dict) -> set:
+    """The decision ids (`D6`) a task's own text cites: its title, acceptance, verification and notes."""
+    parts = []
+    for value in (entry or {}).values():
+        if isinstance(value, str):
+            parts.append(value)
+        elif isinstance(value, (list, tuple)):
+            parts += [v for v in value if isinstance(v, str)]
+    return set(re.findall(r"\bD\d+\b", " ".join(parts)))
+
+
+def _decisions_block(decisions: list, cited=(), path: str = "") -> str:
+    """One line per plan decision, whole lines only. The ones the task cites (`cited`) are always
+    in, whatever their size; the others fill DECISIONS_LIMIT in plan order. Whatever is left out is
+    said, with the absolute path of the plan's tasks.md where the worker -- whose worktree may be
+    another repo's -- can read it."""
+    lines = []
     for d in decisions:
         line = "- %s: %s" % (d.get("id"), d.get("title"))
         if d.get("rationale"):
             line += " \u2014 %s" % d["rationale"]
-        line = line.replace("\n", " ")
-        if size + len(line) + (1 if out else 0) > DECISIONS_LIMIT:
-            if not out:
-                out.append(line[:DECISIONS_LIMIT])
-            break
-        out.append(line)
-        size += len(line) + (1 if len(out) > 1 else 0)
+        lines.append((str(d.get("id")), line.replace("\n", " ")))
+    must = {i for i, _ in lines if i in set(cited or ())}
+    size = sum(len(line) + 1 for i, line in lines if i in must)
+    kept, left = [], []
+    for ident, line in lines:
+        if ident in must:
+            kept.append(line)
+        elif size + len(line) + 1 <= DECISIONS_LIMIT:
+            kept.append(line)
+            size += len(line) + 1
+        else:
+            left.append(ident)
+            kept.append(None)  # keeps plan order; dropped below
+    out = [line for line in kept if line is not None]
+    if left:
+        out.append("(decisions not shown here: %s -- the full list is in %s)"
+                   % (", ".join(left), path or "the plan's tasks.md"))
     return "\n".join(out)
 
 
@@ -136,7 +162,7 @@ def build_task_spec(task: ss.TaskState, plan: dict, env_lines: list = (), allowe
                      "file Rein judges the work with stays off limits." % ", ".join(allowed_config))
     if plan.get("why"):
         lines += ["", "Why: %s" % plan["why"]]
-    decisions = _decisions_block(plan.get("decisions") or [])
+    decisions = _decisions_block(plan.get("decisions") or [], _cited_ids(entry), str(plan.get("path") or ""))
     if decisions:
         lines += ["", "Decisions (binding):", decisions]
     if plan.get("scopeOut"):
@@ -1016,16 +1042,23 @@ class _Driver:
                                    (getattr(self, "ctx", None) or {}).get("default_repo", ""))
 
     def outside_snapshot(self, repo: str) -> dict:
-        """The other checkouts Orca knows, as the worker for `repo` is launched (guard.py); the
-        worktree it works in is not one of them. The plan root's `gate.outsideIgnore` applies to each
-        (their own is read from them)."""
+        """The checkouts of this plan's other repos, as the worker for `repo` is launched (guard.py):
+        the repos its tasks name, the plan root's repo, and the siblings `gate.outsideWatch` declares
+        (guard.watched_checkouts). Every other checkout Orca knows is some other session's; the
+        worktree the worker uses is not one of them. The plan root's `gate.outsideIgnore` applies to
+        each (their own is read from them)."""
         if getattr(self, "dry_run", False):
             return {}
         mine = os.path.realpath(self.state.worktree_paths.get(repo, "") or "/nonexistent")
-        paths = [str(r.get("path") or "") for r in ((getattr(self, "ctx", None) or {}).get("repos") or {}).values()
-                 if isinstance(r, dict)]
+        ctx = getattr(self, "ctx", None) or {}
         root = getattr(self, "root", "")
-        globs = _guard.outside_ignore_globs(_detect.resolve(root)) if root and os.path.isdir(root) else []
+        resolved = _detect.resolve(root) if root and os.path.isdir(root) else {}
+        names = {t.get("repo") or ctx.get("default_repo", "")
+                 for t in ((getattr(self, "plan", None) or ctx.get("plan") or {}).get("tasks") or [])}
+        names.add(ctx.get("default_repo", ""))
+        paths = _guard.watched_checkouts(ctx.get("repos") or {}, sorted(n for n in names if n),
+                                         [root] if root else [])
+        globs = _guard.outside_ignore_globs(resolved) if resolved else []
         return _guard.outside_snapshot([p for p in paths if p and os.path.realpath(p) != mine], globs)
 
     def tidy_setup_tabs(self, repo: str) -> None:
@@ -1511,9 +1544,16 @@ class _Driver:
             if code != 126:
                 problems, broken = _guard.run_guard(_guard.check, path, guard_base, _detect.resolve(path), allowed)
                 doubts = []
+                agreed = _guard.load_accepts(getattr(self, "root", "")) if getattr(self, "root", "") else {}
+                named = []
                 outside, broken2 = _guard.run_guard(_guard.outside_changes, outside_before,
                                                     ignore=[plan_file] if plan_file else [], warnings=doubts,
-                                                    unresolved=held)
+                                                    unresolved=held, accept=agreed, accepted=named)
+                if named:  # the owner named these changes (`rein accept-outside`): verified now, kept in the log
+                    entry["guardAccepted"] = "; ".join(
+                        "%s %s in %s" % (n["kind"], n["id"], n["checkout"]) for n in named)[:600]
+                    for n in named:
+                        warn("%s guard: accepted by the owner, by name: %s %s" % (task_id, n["kind"], n["id"]))
                 problems += outside
                 flagged = bool(outside or held)
                 if held:  # could hide the worker's write: the owner answers before the task closes

@@ -107,11 +107,17 @@ Subcommands:
                       type the task's brief (kept in .rein/quick.json) into the agent's
                       terminal again, e.g. once a startup dialog that swallowed it is gone.
                       Exit 0 sent / 1 no quick task / 2 ambiguous / 126 Orca
-  rein quick done [--accept-outside]
+  rein quick done [--accept-outside] [--accept-path <abs path>]... [--accept-commit <sha>]...
                       run by that agent when you say "listo": light gate on the
                       changed files, plus an audit only for risky paths. Never commits
                       or pushes. Exit 0 green / 1 red or unresolved outside activity (the owner
-                      checks it, then --accept-outside) / 2 no quick task / 126 setup
+                      checks it, then --accept-outside; or names a real change of another
+                      session's -- --accept-path / --accept-commit, verified and logged) /
+                      2 no quick task / 126 setup
+  rein accept-outside [--root <plan repo>] (--path <abs path> | --commit <sha>)...
+                      ship: record that a change in a watched checkout is another session's
+                      work, so no task of that plan is held for it. Only what really changed
+                      there is accepted when a task is judged, and each use is logged
   rein done <change> [--root <plan repo>] [--dry-run] [--yes] [--push]
                       close a finished change: remove its worktrees, close its tab,
                       archive the openspec plan (local commit on the plan repo's current
@@ -161,6 +167,7 @@ import gate_cache as _gate_cache  # noqa: E402
 import gate_env as _gate_env  # noqa: E402
 import gate_log as _gate_log  # noqa: E402
 import gate_run as _gate_run  # noqa: E402
+import guard as _guard  # noqa: E402
 import migrate_config as _migrate_config  # noqa: E402
 import plan as _plan  # noqa: E402
 import plan_check as _plan_check  # noqa: E402
@@ -1190,6 +1197,51 @@ def _quick_inbox(argv: list[str]):
     return _inbox.watch(words[0] if words else "", _quick.OrcaClient(), cwd=".", once="--once" in flags)
 
 
+def _take_accepts(argv: list, flags: tuple) -> tuple:
+    """`(values of flags[0], values of flags[1], the rest of argv, bad)`: both flags repeat, so they
+    are lifted out before the one-value flags are read. A flag with no value is `bad`."""
+    out, rest, bad, i = ([], []), [], False, 0
+    while i < len(argv):
+        a = argv[i]
+        i += 1
+        name, eq, inline = a.partition("=")
+        if name in flags:
+            if eq:
+                value = inline
+            elif i < len(argv) and not argv[i].startswith("-"):
+                value, i = argv[i], i + 1
+            else:
+                value = ""
+            if not value:
+                bad = True
+            else:
+                out[flags.index(name)].append(value)
+        else:
+            rest.append(a)
+    return out[0], out[1], rest, bad
+
+
+def cmd_accept_outside(argv: list[str]) -> int:
+    """`rein accept-outside [--root DIR] (--path P | --commit SHA)...`: the ship owner's registered
+    exit for a real change in a watched checkout that is another session's, not a worker's."""
+    paths, commits, rest, bad = _take_accepts(argv, ("--path", "--commit"))
+    root = "."
+    while rest and not bad:
+        if rest[0] == "--root" and len(rest) >= 2:
+            root, rest = rest[1], rest[2:]
+        else:
+            bad = True
+    short = [c for c in commits if len(c) < 7]
+    if bad or not (paths or commits) or short or [p for p in paths if not os.path.isabs(p)]:
+        print("usage: rein accept-outside [--root <plan repo>] (--path <absolute path> | --commit <sha, 7+ chars>)...")
+        return 2
+    recorded = _guard.record_accepts(os.path.abspath(root), paths, commits)
+    print("recorded in %s: %d path(s), %d commit(s); a task is only released for what really changed "
+          "there when it is judged, and each use goes to the gate log"
+          % (_guard.accept_file(os.path.abspath(root)), len(recorded["paths"]), len(recorded["commits"])))
+    return 0
+
+
 def cmd_quick(argv: list[str]) -> int:
     """Start a quick task (`rein quick "<sentence>"`) or close it (`rein quick done`).
 
@@ -1199,7 +1251,8 @@ def cmd_quick(argv: list[str]) -> int:
     (`--agent --model x`) is a usage error, judged here rather than by `_opt`.
     """
     usage = ('usage: rein quick "<sentence>" [--repo <name>] [--base <branch>] [--here [--dirty-ok]] '
-             "[--agent <id> [--model <m>]] [--linear <id>] [--allow-config <path,...>]  |  rein quick done [--accept-outside]  |  "
+             "[--agent <id> [--model <m>]] [--linear <id>] [--allow-config <path,...>]  |  "
+             "rein quick done [--accept-outside] [--accept-path <path>] [--accept-commit <sha>]  |  "
              "rein quick close [<path or quick-<slug>>] [--dry-run] [--yes]")
     # One pass over argv. A value flag takes the next token as its value (or `--flag=value`);
     # a missing, empty or `-`-led value is a usage error, and the token that was not consumed
@@ -1219,6 +1272,11 @@ def cmd_quick(argv: list[str]) -> int:
         if any(a.startswith("-") for a in tail):
             print(usage)
             return 2
+    accept_paths, accept_commits, argv, bad_accept = _take_accepts(argv, ("--accept-path", "--accept-commit"))
+    if bad_accept or ((accept_paths or accept_commits) and argv != ["done"] + [
+            a for a in argv[1:] if a == "--accept-outside"]):
+        print(usage)
+        return 2
     value_flags = ("repo", "base", "agent", "model", "linear", "allow-config")
     values: dict = {}
     words: list = []
@@ -1255,7 +1313,8 @@ def cmd_quick(argv: list[str]) -> int:
         print(usage)
         return 2
     if sentence == "done":
-        return _quick.done_quick(cwd=".", client=_quick.OrcaClient(), accept_outside="--accept-outside" in argv)
+        return _quick.done_quick(cwd=".", client=_quick.OrcaClient(), accept_outside="--accept-outside" in argv,
+                                 accept_paths=accept_paths, accept_commits=accept_commits)
     return _quick.start_quick(
         sentence, repo=values.get("repo", ""), base=values.get("base", ""), here=here, dirty_ok=dirty_ok,
         agent=agent, model=model, linear=values.get("linear", ""), cwd=".", client=_quick.OrcaClient(),
@@ -1296,6 +1355,7 @@ def cmd_migrate_config(argv: list[str]) -> int:
 
 
 COMMANDS = {
+    "accept-outside": cmd_accept_outside,
     "doctor": cmd_doctor,
     "detect": cmd_detect,
     "verify": cmd_verify,

@@ -407,6 +407,47 @@ def _ref_tips(path: str) -> list:
     return sorted(set(line.strip() for line in out.splitlines() if line.strip()))
 
 
+def outside_watch_names(resolved) -> list:
+    """`gate.outsideWatch` of a resolved (or raw) flow config: the other repos (an Orca repo name, or a
+    directory) whose checkouts a task in this repo also watches. Anything malformed declares none."""
+    gate = resolved.get("gate") if isinstance(resolved, dict) else None
+    declared = gate.get("outsideWatch") if isinstance(gate, dict) else None
+    if not isinstance(declared, list):
+        return []
+    return [n.strip() for n in declared if isinstance(n, str) and n.strip()]
+
+
+def _raw_config(directory: str) -> dict:
+    try:
+        with open(os.path.join(directory, _detect.CONFIG_NAME), encoding="utf-8") as fh:
+            cfg = json.load(fh)
+    except (OSError, ValueError):
+        return {}
+    return cfg if isinstance(cfg, dict) else {}
+
+
+def watched_checkouts(repos, names, config_dirs=()) -> list:
+    """The checkouts a task watches: those of the repos `names` (the task's own: a quick's repo; a
+    plan's repos) plus the siblings declared by `gate.outsideWatch` in the flow config of each of
+    `config_dirs` (read as written, like `gate.outsideIgnore`). `repos` is Orca's repo list (dicts with `displayName`/`path`) or a
+    `{name: dict}` map. Every other checkout Orca knows -- another product's, the tool's own -- is
+    someone else's work: watching it only blames the task for sessions that never touched it. A
+    declared sibling that Orca does not know and is not a directory is left out."""
+    listed = list(repos.values()) if isinstance(repos, dict) else list(repos or ())
+    by_name = {str(r.get("displayName")): str(r.get("path") or "") for r in listed
+               if isinstance(r, dict) and r.get("displayName") and r.get("path")}
+    wanted = [n for n in names or () if n]
+    for directory in config_dirs or ():
+        if directory and os.path.isdir(directory):
+            wanted += outside_watch_names(_raw_config(directory))
+    paths = []
+    for name in wanted:
+        path = by_name.get(name) or (name if os.path.isabs(name) and os.path.isdir(name) else "")
+        if path and path not in paths:
+            paths.append(path)
+    return paths
+
+
 def outside_snapshot(paths, ignore_globs=()) -> dict:
     """`{realpath: {head, paths: {rel: fingerprint}, ignore: [glob]}}` of the git checkouts in
     `paths`: HEAD, and the content of every path that is dirty or untracked there (a clean tracked
@@ -455,7 +496,11 @@ def _created_here(path: str) -> set:
     return made
 
 
-def _head_moves(path: str, was: dict, head: str) -> tuple:
+def _accepts_commit(sha: str, accept) -> bool:
+    return any(len(c) >= 7 and sha.startswith(c.lower()) for c in (accept or {}).get("commits") or ())
+
+
+def _head_moves(path: str, was: dict, head: str, accept=None, accepted=None) -> tuple:
     """`(problems, doubts, unresolved)` for HEAD having moved from the launch's to `head`.
 
     The commits looked at are all those reachable from `head` that did not exist at launch (not
@@ -483,6 +528,12 @@ def _head_moves(path: str, was: dict, head: str) -> tuple:
     dirty_at_launch = set((was.get("paths") or {}))
     mine, swept, arrived = [], [], []
     for sha in [c for c in out.split() if c]:
+        if _accepts_commit(sha, accept):  # the owner named this very commit
+            code, subject = _git(path, "log", "-1", "--format=%s", sha)
+            if accepted is not None:
+                accepted.append({"kind": "commit", "id": sha, "checkout": path,
+                                 "note": subject.strip()[:80] if code == 0 else ""})
+            continue
         code, ident = _git(path, "log", "-1", "--format=%ae%n%ce", sha)
         if code != 0:
             raise GuardError("cannot read commit %s in %s" % (sha[:8], path))
@@ -501,7 +552,7 @@ def _head_moves(path: str, was: dict, head: str) -> tuple:
             arrived.append(sha)
     problems, unresolved = [], []
     if mine:
-        problems.append("new commit(s) (HEAD %s -> %s)" % (old[:8], head[:8]))
+        problems.append("new commit(s) (HEAD %s -> %s): %s" % (old[:8], head[:8], " ".join(c[:12] for c in mine[:10])))
     if swept:
         unresolved.append("%d commit(s) by another identity were made in this checkout (HEAD %s -> %s); they "
                           "may include edits the worker left pending there, so whose they are cannot be told"
@@ -512,7 +563,7 @@ def _head_moves(path: str, was: dict, head: str) -> tuple:
     return problems, doubts, unresolved
 
 
-def outside_changes(before: dict, ignore=(), warnings=None, unresolved=None) -> list:
+def outside_changes(before: dict, ignore=(), warnings=None, unresolved=None, accept=None, accepted=None) -> list:
     """One problem per checkout of `before` that changed since: every path whose content or
     existence differs from what it was at launch -- edited, created or deleted, untracked ones
     included -- and the commits the worker could have made there (`_head_moves`).
@@ -524,7 +575,13 @@ def outside_changes(before: dict, ignore=(), warnings=None, unresolved=None) -> 
     What cannot be attributed to the worker but could hide its write goes to `unresolved` when the
     caller passes a list for it (ship and quick then hold the task for the owner's explicit answer:
     never green); what is only odd goes to `warnings` (told, not held). With no list for either it is
-    a problem: the guard fails closed."""
+    a problem: the guard fails closed.
+
+    `accept` is the owner's explicit exit for a change that really happened and is not the task's:
+    `{"paths": [absolute path, ...], "commits": [sha (7+ chars), ...]}`. Only a path that differs now
+    and a commit that is new now match; each match is left out of the result and appended to `accepted`
+    as `{"kind", "id", "checkout", ...}` (a path with its fingerprint) for the log. Anything the owner
+    names that matches nothing stays a thing the caller reports (`unmatched_accepts`)."""
     skip = {os.path.realpath(p) for p in ignore or ()}
     problems = []
     if not isinstance(before, dict):
@@ -552,9 +609,18 @@ def outside_changes(before: dict, ignore=(), warnings=None, unresolved=None) -> 
                    and not _outside_ignored(rel, globs)
                    and old.get(rel, "clean") != now.get(rel, "clean")]
         what, doubts, held = [], [], []
+        agreed = {os.path.realpath(p) for p in (accept or {}).get("paths") or ()}
+        if agreed:
+            for rel in list(changed):
+                full = os.path.realpath(os.path.join(path, rel))
+                if full in agreed:
+                    changed.remove(rel)
+                    if accepted is not None:
+                        accepted.append({"kind": "path", "id": full, "checkout": path,
+                                         "fingerprint": now.get(rel, "clean")})
         if head.strip() != was.get("head"):
             if isinstance(was.get("refs"), list):
-                moved, doubts, held = _head_moves(path, was, head.strip())
+                moved, doubts, held = _head_moves(path, was, head.strip(), accept, accepted)
                 what += moved
             else:  # a snapshot without the refs cannot attribute anything: as strict as it was
                 what.append("new commit(s) (HEAD %s -> %s)" % (str(was.get("head"))[:8], head.strip()[:8]))
@@ -577,6 +643,46 @@ def outside_changes(before: dict, ignore=(), warnings=None, unresolved=None) -> 
             else:
                 warnings.append(line)
     return problems
+
+
+def unmatched_accepts(accept, accepted) -> list:
+    """What the owner named in `accept` that `outside_changes` did not find among the changes: an
+    acceptance that vouches for nothing is a mistake to say, never a quiet pass."""
+    left = []
+    ids = {a.get("id", "") for a in accepted or ()}
+    for p in (accept or {}).get("paths") or ():
+        if os.path.realpath(p) not in ids:
+            left.append("--accept-path %s is not a path that changed in the watched checkouts" % p)
+    for c in (accept or {}).get("commits") or ():
+        if not any(i.startswith(c.lower()) for i in ids):
+            left.append("--accept-commit %s is not a new commit in the watched checkouts" % c)
+    return left
+
+
+def accept_file(root: str) -> str:
+    return os.path.join(root, ".rein", "outside-accept.json")
+
+
+def load_accepts(root: str) -> dict:
+    """The acceptances the owner recorded for the ship tasks run from `root` (`rein accept-outside`)."""
+    try:
+        with open(accept_file(root), encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return {"paths": [], "commits": []}
+    clean = lambda key: [x for x in data.get(key, []) if isinstance(x, str) and x] if isinstance(data, dict) else []  # noqa: E731
+    return {"paths": clean("paths"), "commits": clean("commits")}
+
+
+def record_accepts(root: str, paths=(), commits=()) -> dict:
+    """Add the owner's acceptances to `root`'s file; returns what is recorded now."""
+    cur = load_accepts(root)
+    cur["paths"] = sorted(set(cur["paths"]) | {os.path.realpath(p) for p in paths})
+    cur["commits"] = sorted(set(cur["commits"]) | {c.lower() for c in commits})
+    os.makedirs(os.path.dirname(accept_file(root)), exist_ok=True)
+    with open(accept_file(root), "w", encoding="utf-8") as fh:
+        json.dump(cur, fh, indent=1)
+    return cur
 
 
 def run_guard(fn, *args, **kw) -> tuple:

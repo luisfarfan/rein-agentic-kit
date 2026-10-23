@@ -317,11 +317,13 @@ def start_quick(
         env_lines = ['eval "$(python3 %s env --repo %s)"' % (shlex.quote(ship.BIN), shlex.quote(repo_name))]
     brief = quick.build_brief(sentence, linear, quick.looks_like_bug(sentence), ship.BIN, env_lines,
                               _guard.declared_paths(allow_config))
-    # The other checkouts Orca knows, BEFORE the agent exists: `done` names what changed there
-    # (guard.outside_changes). The workspace itself is not one of them (with --here it is a main checkout).
+    # The checkouts this task can be blamed for, BEFORE the agent exists: its repo's, plus the siblings
+    # that repo's `gate.outsideWatch` declares (guard.watched_checkouts). Every other checkout Orca
+    # knows belongs to someone else's session. `done` names what changed there (guard.outside_changes).
+    # The workspace itself is not one of them (with --here it is a main checkout).
     outside_before = _guard.outside_snapshot(
-        [str(r.get("path") or "") for r in repos
-         if r.get("path") and not (here and os.path.realpath(str(r["path"])) == os.path.realpath(here_path))])
+        [p for p in _guard.watched_checkouts(repos, [repo_name], [repo_path])
+         if not (here and os.path.realpath(p) == os.path.realpath(here_path))])
 
     # 4. Placement
     handle = ""
@@ -656,16 +658,27 @@ def _audit(workspace: str, record: dict, changed: list, limits: dict, client: Or
     return 126
 
 
-def _outside_verdict(record: dict, accept_outside: bool, say) -> tuple:
+def _outside_verdict(record: dict, accept_outside: bool, say, accept=None) -> tuple:
     """`(problems, pending, accepted, broken)` of the other checkouts since this quick started.
     `pending` could hide the agent's write and is red until `accept_outside`; `accepted` is what the
-    owner took as other activity. Warnings are told, not returned."""
-    doubts, held = [], []
+    owner took as other activity, or named by path/commit (`accept`: the changes that really happened
+    and are another session's; each must exist now, and is logged with its fingerprint). Warnings are
+    told, not returned."""
+    doubts, held, named = [], [], []
     problems, broken = _guard.run_guard(_guard.outside_changes, record.get("outside_before") or {},
-                                        warnings=doubts, unresolved=held)
+                                        warnings=doubts, unresolved=held, accept=accept, accepted=named)
+    if accept and not broken:
+        problems += _guard.unmatched_accepts(accept, named)
     for doubt in doubts:  # not provably this agent's: told, not failed
         say("guard warning: %s" % doubt)
     pending, accepted = [], []
+    for item in named:
+        text = "%s %s in %s%s" % (item["kind"], item["id"][:12] if item["kind"] == "commit" else item["id"],
+                                  item["checkout"],
+                                  " (%s)" % item["fingerprint"] if item.get("fingerprint") else
+                                  (" (%s)" % item["note"] if item.get("note") else ""))
+        accepted.append(text)
+        say("guard: accepted by the owner, by name: %s" % text)
     for item in held:
         if accept_outside:
             accepted.append(item)
@@ -678,7 +691,8 @@ def _outside_verdict(record: dict, accept_outside: bool, say) -> tuple:
 
 def done_quick(*, cwd: str = ".", client: OrcaClient, run=verify.run_one,
                clock: Callable[[], float] = time.time, env: dict = os.environ,
-               say: Callable[[str], None] = print, accept_outside: bool = False) -> int:
+               say: Callable[[str], None] = print, accept_outside: bool = False,
+               accept_paths=(), accept_commits=()) -> int:
     # 1. The workspace and its record
     code, top = run_git(cwd, "rev-parse", "--show-toplevel")
     workspace = top.strip()
@@ -689,6 +703,8 @@ def done_quick(*, cwd: str = ".", client: OrcaClient, run=verify.run_one,
     if record is None:
         say(problem)
         return 2
+    accept = {"paths": [os.path.abspath(p) for p in accept_paths],
+              "commits": [c.lower() for c in accept_commits]} if (accept_paths or accept_commits) else None
     # The agent is done, so the worktree's setup is too: its idle "Setup" tab can go.
     oc.close_idle_setup_tabs(client, workspace, say=say)
 
@@ -700,8 +716,10 @@ def done_quick(*, cwd: str = ".", client: OrcaClient, run=verify.run_one,
         return 126
     if not changed:
         # No local diff proves nothing about the other checkouts: the outside guard still speaks.
-        problems, pending, accepted, broken = _outside_verdict(record, accept_outside, say)
+        problems, pending, accepted, broken = _outside_verdict(record, accept_outside, say, accept)
         code = 126 if broken and not (problems or pending) else (1 if problems or pending else 0)
+        for problem in problems:
+            say("guard: %s" % problem)
         if problems or pending or accepted or broken:
             entry = {"kind": "quick", "repo": str(record.get("repo") or ""), "base": record["base_sha"],
                      "exit": code, "slots": [], "note": "nothing changed locally"}
@@ -755,11 +773,15 @@ def done_quick(*, cwd: str = ".", client: OrcaClient, run=verify.run_one,
     # the repo's commit-msg hook. A breach is red, with its reason.
     problems, broken = _guard.run_guard(_guard.check, workspace, record["base_sha"], resolved,
                                         _guard.declared_paths(record.get("allow_config") or []))
-    outside, pending, accepted, broken2 = _outside_verdict(record, accept_outside, say)
+    outside, pending, accepted, broken2 = _outside_verdict(record, accept_outside, say, accept)
     problems += outside
     broken = broken or broken2
     for problem in problems:
         say("guard: %s" % problem)
+    if problems and any("wrote outside its worktree" in p for p in problems):
+        say("if that is another session's work, not the agent's, accept exactly it: "
+            "`rein quick done --accept-path <checkout>/<path>` / `--accept-commit <sha>` (repeatable; "
+            "each must be a real change there, and is logged)")
     if pending:
         say("not green: check that checkout (git log, git diff HEAD~..), revert what the agent wrote there, "
             "then `rein quick done --accept-outside` to accept it as other activity")

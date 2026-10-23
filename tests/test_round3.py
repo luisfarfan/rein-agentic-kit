@@ -108,6 +108,7 @@ class Ship(ShipCase):
 
     def fake(self):
         self.write_plan(self.PLAN)
+        self.watch("proxima-qa")
         qa = os.path.join(self.tmp.name, "proxima-qa")
         make_repo(qa, hook=False)
         self.qa = qa

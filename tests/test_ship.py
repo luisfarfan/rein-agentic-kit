@@ -307,6 +307,19 @@ class ShipCase(unittest.TestCase):
         with open(os.path.join(self.root, "tasks.md"), "w", encoding="utf-8") as fh:
             fh.write(text)
 
+    def watch(self, *siblings):
+        """Declare `gate.outsideWatch` in the plan root: repos the plan does not name but whose
+        checkouts the guard also watches."""
+        path = os.path.join(self.root, "flow.config.json")
+        try:
+            with open(path, encoding="utf-8") as fh:
+                cfg = json.load(fh)
+        except (OSError, ValueError):
+            cfg = {}
+        cfg.setdefault("gate", {})["outsideWatch"] = list(siblings)
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(cfg, fh)
+
     def clock(self):
         self.clock_value += 1
         return self.clock_value
@@ -1868,7 +1881,9 @@ class TestSpecs(unittest.TestCase):
                                           for i in range(30)]}
         block = ship.build_task_spec(self.task(), big).split("Decisions (binding):\n", 1)[1]
         block = block.split("\n\n", 1)[0].split("\nOut of scope:", 1)[0]
-        self.assertLessEqual(len(block), 1500)
+        shown = [ln for ln in block.splitlines() if ln.startswith("- D")]
+        self.assertLessEqual(sum(len(ln) + 1 for ln in shown), 1500)
+        self.assertIn("decisions not shown here", block)  # what was cut is said (see test_round5)
 
     def test_re_audit_brief_is_not_a_whole_change_audit_and_names_the_fix_commits(self):
         spec = ship.build_audit_spec(

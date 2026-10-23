@@ -151,6 +151,7 @@ class Ship(ShipCase):
         qa = os.path.join(self.tmp.name, "proxima-qa")
         make_repo(qa, hook=False)
         diverged(qa)
+        self.watch("proxima-qa")
         fake = FakeOrca(self.root, repos=("proxima-api", "proxima-qa"))
         original = fake._answer
 

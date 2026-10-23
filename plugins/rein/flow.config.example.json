@@ -58,7 +58,9 @@
     "$protected": "Globs of files a task may not change unless its own text names them (Rein checks it when a task ends and fails the task with the reason). flow.config.json is always protected, and so is the config of every task runner (mise.toml, Makefile, justfile, Taskfile.yml) a gate command comes from or calls, as resolved at the change's base and now: deleting or swapping that runner is caught, a runner no gate command uses may change. Each commit of the task must also pass the repo's own commit-msg hook, re-run by Rein with the bypass variables (LEFTHOOK_EXCLUDE, SKIP, HUSKY ...) removed.",
     "protected": [],
     "$outsideIgnore": "Globs, relative to each other checkout Rein watches while a worker runs (a trailing / covers a folder), whose changes do not count as the worker writing outside its worktree: what the repo's own git hooks rewrite in the main checkout, e.g. beads' .beads/. Declared in the watched repo or in the plan root (applies to every watched repo); read when the worker is launched; never hides a new commit. Unset: every change counts.",
-    "outsideIgnore": []
+    "outsideIgnore": [],
+    "$outsideWatch": "Other repos (Orca repo names, or absolute directories) whose checkouts a task in this repo also watches for writes outside its worktree, besides the checkouts of its own repo (a quick) or of the plan's repos (ship). Every other checkout Orca knows is not watched. Declared in the task repo or the plan root.",
+    "outsideWatch": []
   },
 
   "retrieval": {

@@ -92,6 +92,7 @@ class Ship(ShipCase):
     def test_a_worker_that_writes_in_a_sibling_repo_is_retried_with_the_reason(self):
         self.write_plan("# Change: demo\n\n- [ ] T001 Add the api endpoint\n  - Repo: proxima-api\n"
                         "  - Verification: `pnpm test`\n")
+        self.watch("proxima-qa")
         qa = os.path.join(self.tmp.name, "proxima-qa")
         make_repo(qa, hook=False)
         fake = FakeOrca(self.root, repos=("proxima-api", "proxima-qa"))
@@ -181,6 +182,8 @@ class QuickBaselineBeforeLaunch(DriverCase):
         qa = os.path.join(self.root, "proxima-qa")
         make_repo(qa, hook=False)
         self.repos.append({"id": "qa", "displayName": "proxima-qa", "path": qa})
+        with open(os.path.join(self.repo_path, "flow.config.json"), "w") as fh:
+            json.dump({"gate": {"outsideWatch": ["proxima-qa"]}}, fh)  # a declared sibling
         orca = _Orca(self.repos, _limits(10, 10), self.worktree)
         original = orca.__call__
 

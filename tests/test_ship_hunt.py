@@ -444,7 +444,8 @@ class TaskVerificationRuns(ShipCase):
         # Its Verification and the affected tests; the driver's gate (lint, typecheck, affected
         # tests) follows, and the full suite runs once per repo before the audit.
         self.assertIn("gate", ship.WORKER_PREAMBLE)
-        self.assertIn("Verification command and the tests affected", ship.WORKER_PREAMBLE)
+        self.assertIn("Verification command exactly as given", ship.WORKER_PREAMBLE)
+        self.assertIn("the tests affected", ship.WORKER_PREAMBLE)
         self.assertIn("lint, typecheck and the affected tests", ship.WORKER_PREAMBLE)
 
 
