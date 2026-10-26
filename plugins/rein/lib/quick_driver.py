@@ -133,10 +133,10 @@ def _taken_names(branches: str) -> set:
     return taken
 
 
-def _braked_lines(limits: dict, threshold: float) -> list:
+def _braked_lines(limits: dict, threshold: float, max_pct: float) -> list:
     lines, seen = [], set()
     for agent, _model in quota.candidates(limits, threshold):
-        reason = quota.brake_reason(limits, agent)
+        reason = quota.brake_reason(limits, agent, max_pct)
         if reason and reason not in seen:
             seen.add(reason)
             lines.append(reason)
@@ -299,11 +299,11 @@ def start_quick(
             limits = quota.parse_rate_limits({"result": client.account_list()})
         except OrcaError:
             limits = quota.parse_rate_limits({})  # unknown usage never brakes
-        threshold = ship_decide.ShipConfig.from_flow_config(
-            _detect.resolve(repo_path)).claude_weekly_threshold
-        agent, model = quota.choose_implementer(limits, threshold)
-        if quota.brake_reason(limits, agent):
-            for line in _braked_lines(limits, threshold):
+        cfg = ship_decide.ShipConfig.from_flow_config(_detect.resolve(repo_path))
+        agent, model = quota.choose_implementer(
+            limits, cfg.claude_weekly_threshold, max_pct=cfg.brake_percent)
+        if quota.brake_reason(limits, agent, cfg.brake_percent):
+            for line in _braked_lines(limits, cfg.claude_weekly_threshold, cfg.brake_percent):
                 say(line)
             say("every provider is braked: nothing was launched")
             return 1

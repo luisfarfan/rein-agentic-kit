@@ -43,6 +43,7 @@ def _positive_number(value) -> bool:
 @dataclass
 class ShipConfig:
     claude_weekly_threshold: float = 60
+    brake_percent: float = 90.0
     max_concurrent_workers: int = 3
     max_retries: int = 2
     max_audit_rounds: int = 2
@@ -67,6 +68,7 @@ class ShipConfig:
             block = {}
         names = {
             "claudeWeeklyThreshold": "claude_weekly_threshold",
+            "brakePercent": "brake_percent",
             "maxConcurrentWorkers": "max_concurrent_workers",
             "maxRetries": "max_retries",
             "maxAuditRounds": "max_audit_rounds",
@@ -82,6 +84,8 @@ class ShipConfig:
         for key, attr in names.items():
             value = block.get(key)
             if value is None:
+                continue
+            if attr == "brake_percent" and not (_positive_number(value) and value <= 100):
                 continue
             if attr == "gate_timeout_seconds" and not _positive_number(value):
                 continue  # a bad value keeps the default rather than crashing a run
@@ -308,14 +312,14 @@ def touches_risky(files: list, patterns: list) -> bool:
     return any(_matches(f, p) for f in files for p in patterns)
 
 
-def _claude_usable(limits: dict) -> bool:
+def _claude_usable(limits: dict, cfg: ShipConfig) -> bool:
     """Claude may review: its usage is under the brake and, when it was read at all, known.
 
     Unknown usage (Orca could not say) never routes work onto Claude. A caller that
     passes no limits at all gets the routing without any quota check."""
     if "claude" in limits and (limits.get("claude") or {}).get("weekly") is None:
         return False
-    return not quota.brake_reason(limits, "claude")
+    return not quota.brake_reason(limits, "claude", cfg.brake_percent)
 
 
 def audit_model(changed_files: list, implementer_agents: list, cfg: ShipConfig,
@@ -326,7 +330,7 @@ def audit_model(changed_files: list, implementer_agents: list, cfg: ShipConfig,
     never picked on unknown usage. When every reviewer is braked, the first one, so the
     caller can see the brake and ask the owner. `("", "")` when Orca refused every reviewer."""
     limits = limits or {}
-    claude = _claude_usable(limits) and "claude" not in exclude
+    claude = _claude_usable(limits, cfg) and "claude" not in exclude
     if not reaudit and claude:
         if len(changed_files) > cfg.large_change_files:
             return quota.OPUS
@@ -341,7 +345,7 @@ def audit_model(changed_files: list, implementer_agents: list, cfg: ShipConfig,
         return "", ""
     fresh = [m for m in pool if m[0] not in used]
     choices = fresh + [m for m in pool if m not in fresh]
-    return quota.first_unbraked(choices, limits)
+    return quota.first_unbraked(choices, limits, cfg.brake_percent)
 
 
 # --- helpers ----------------------------------------------------------------
@@ -349,7 +353,7 @@ def audit_model(changed_files: list, implementer_agents: list, cfg: ShipConfig,
 def _implementer(state: ShipState, limits: dict, cfg: ShipConfig) -> tuple:
     if state.forced_implementer:
         return tuple(state.forced_implementer)
-    return quota.choose_implementer(limits, cfg.claude_weekly_threshold, cfg.override)
+    return quota.choose_implementer(limits, cfg.claude_weekly_threshold, cfg.override, cfg.brake_percent)
 
 
 def _worktree(state: ShipState, repo: str) -> str:
@@ -711,11 +715,11 @@ def _on_tick(state: ShipState, event: Tick, cfg: ShipConfig, actions: list) -> N
         return
 
     agent, model = _implementer(state, event.limits, cfg)
-    reason = quota.brake_reason(event.limits, agent)
+    reason = quota.brake_reason(event.limits, agent, cfg.brake_percent)
     if reason:
         if not state.forced_implementer and cfg.override is None:
             # every candidate is braked: say so, or the owner would chase a provider that is also full
-            reason = "; ".join(quota.brake_reason(event.limits, c[0]) for c in
+            reason = "; ".join(quota.brake_reason(event.limits, c[0], cfg.brake_percent) for c in
                                quota.candidates(event.limits, cfg.claude_weekly_threshold))
         state.phase = "braked"
         actions.append(Brake(reason))
@@ -1168,7 +1172,7 @@ def _on_changes_computed(state: ShipState, event: ChangesComputed, cfg: ShipConf
               "Orca, then retry (every reviewer is tried again), or skip the audit (the change stays "
               "unapproved)?" % refused, ["retry", "skip"], "setup")
         return
-    braked = quota.brake_reason(event.limits, agent)
+    braked = quota.brake_reason(event.limits, agent, cfg.brake_percent)
     if braked:
         _open(state, actions, None,
               "Every reviewer is over the quota brake (%s), so the audit cannot start. Retry once quota "

@@ -312,9 +312,9 @@ gate reads evidence from `--render`), and it is not listed in `rein --help`.
 context, so spend stops growing without a ceiling.
 
 **2️⃣ Route by quota, not habit.** Claude's weekly usage ≥ `ship.claudeWeeklyThreshold` (60%) sends
-implementation to Codex; otherwise Sonnet. A provider at 90% of its session or weekly quota is
+implementation to Codex; otherwise Sonnet. A provider at `ship.brakePercent` (90% by default) of its session or weekly quota is
 skipped for the next one, Antigravity (Gemini) last. Opus is reserved for the audit of risky or large
-changes. A brake opens a gate ("retry or pause?") only when every candidate is at 90%, or when an
+changes. A brake opens a gate ("retry or pause?") only when every candidate reaches that limit, or when an
 `--agent` override is.
 
 **3️⃣ Verifiable signals, not model judgement.** `rein gate` answers "did it pass" from exit codes;
@@ -355,6 +355,7 @@ autodetection. A project that already declares how it is built is never second-g
 | `verify.mode` | `auto` | `auto` picks `rendered` for frontend subtypes, `plan-only` for infra without a test command, else `unit`. Asking for *less* than detected needs `verify.until: "YYYY-MM-DD"` and stops applying after it |
 | `verify.url` | detected | Dev-server URL for rendered checks (e.g. an app under a subpath) |
 | `ship.claudeWeeklyThreshold` | `60` | Claude weekly usage % above which implementation goes to Codex |
+| `ship.brakePercent` | `90` | Session or weekly usage % at which a provider is braked in ship and quick; number >0 and <=100. At `100`, usage below 100% is allowed. Invalid values keep the default |
 | `ship.maxConcurrentWorkers` | `3` | Live workers at once |
 | `ship.maxRetries` | `2` | Fresh workers a red task gets before the owner is asked (`retry_exhausted`) |
 | `ship.maxAuditRounds` | `2` | Audit + fix rounds. When it runs out with blocking findings the gate offers `fix` (one more round), `accept` or `reject` |

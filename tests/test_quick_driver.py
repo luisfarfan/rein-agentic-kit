@@ -474,6 +474,31 @@ class StartTests(DriverCase):
 
 
 class AgentTests(DriverCase):
+    def test_repo_brake_percent_allows_95(self):
+        with open(os.path.join(self.repo_path, "flow.config.json"), "w") as fh:
+            json.dump({"ship": {"brakePercent": 100}}, fh)
+        code, orca, _ = self.run_quick(limits=_limits(10, 95, claude_session=95))
+        self.assertEqual(code, 0)
+        argv = orca.launches()[0]
+        self.assertEqual(argv[argv.index("--agent") + 1], "claude")
+
+    def test_repo_brake_percent_allows_codex_at_95(self):
+        with open(os.path.join(self.repo_path, "flow.config.json"), "w") as fh:
+            json.dump({"ship": {"brakePercent": 100}}, fh)
+        code, orca, _ = self.run_quick(limits=_limits(77, 95))
+        self.assertEqual(code, 0)
+        argv = orca.launches()[0]
+        self.assertEqual(argv[argv.index("--agent") + 1], "codex")
+
+    def test_repo_brake_percent_stops_at_100(self):
+        with open(os.path.join(self.repo_path, "flow.config.json"), "w") as fh:
+            json.dump({"ship": {"brakePercent": 100}}, fh)
+        code, orca, _ = self.run_quick(limits=_limits(10, 100, claude_session=100))
+        self.assertEqual(code, 1)
+        self.assertEqual(orca.launches(), [])
+        self.assertEqual(sum("limit 100%" in line for line in self.out), 2)
+
+
     def test_every_provider_braked_launches_nothing(self):
         # Claude's weekly is under the threshold (a candidate) but its session is full
         code, orca, _ = self.run_quick(limits=_limits(10, 93, claude_session=95))

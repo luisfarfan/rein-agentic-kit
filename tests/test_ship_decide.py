@@ -53,6 +53,19 @@ def tick(state, limits=OK, now=NOW, cfg=CFG):
 
 
 class TickDispatch(unittest.TestCase):
+    def test_configured_brake_boundary(self):
+        cfg = sd.ShipConfig.from_flow_config({"ship": {"brakePercent": 100}})
+        for used, braked in ((95, False), (100, True)):
+            limits = {"claude": {"session": used, "weekly": 10},
+                      "codex": {"weekly": used}}
+            with self.subTest(used=used):
+                _, actions = tick(ship(task("1")), limits, cfg=cfg)
+                self.assertEqual(any(isinstance(a, sd.Brake) for a in actions), braked)
+                self.assertEqual(any(isinstance(a, sd.Dispatch) for a in actions), not braked)
+                _, defaults = tick(ship(task("1")), limits)
+                self.assertTrue(any(isinstance(a, sd.Brake) for a in defaults))
+
+
     def test_dispatch_respects_deps_repo_serial_and_cap(self):
         state = ship(
             task("1", "a"),
@@ -747,6 +760,23 @@ class Audit(unittest.TestCase):
         self.assertFalse(sd.touches_risky([], patterns))
         self.assertFalse(sd.touches_risky(["src/auth/x.py"], []))
 
+    def test_configured_brake_applies_to_reviewers_and_audit_launch(self):
+        cfg = sd.ShipConfig.from_flow_config({"ship": {"brakePercent": 100}})
+        for used, allowed in ((95, True), (100, False)):
+            limits = {"claude": {"session": used, "weekly": 10},
+                      "codex": {"session": used, "weekly": 10}}
+            for files, implementers, expected in ((["src/auth/x.py"], ["codex"], quota.OPUS),
+                                                   (["src/x.py"], ["claude"], quota.CODEX)):
+                with self.subTest(used=used, files=files):
+                    state = ship(task("1", status="done"), phase="auditing",
+                                 implementer_agents=implementers)
+                    _, actions = sd.decide(state, sd.ChangesComputed(files, limits), cfg)
+                    if allowed:
+                        self.assertEqual(actions, [sd.StartAudit(*expected)])
+                    else:
+                        self.assertTrue(any(isinstance(a, sd.OpenGate) for a in actions))
+                        self.assertFalse(any(isinstance(a, sd.StartAudit) for a in actions))
+
     def test_audit_model_skips_a_braked_reviewer(self):
         am = sd.audit_model
         hot, cool = {"session": 92.0, "weekly": 10.0}, {"session": 1.0, "weekly": 1.0}
@@ -1024,6 +1054,19 @@ class Audit(unittest.TestCase):
 
 
 class Config(unittest.TestCase):
+    def test_brake_percent_default_valid_and_invalid(self):
+        self.assertEqual(sd.ShipConfig().brake_percent, 90)
+        self.assertEqual(sd.ShipConfig.from_flow_config({}).brake_percent, 90)
+        for value in (0.1, 50, 100):
+            self.assertEqual(sd.ShipConfig.from_flow_config(
+                {"ship": {"brakePercent": value}}).brake_percent, value)
+        for bad in (0, -1, 100.1, "100", True, False, None, float("nan"),
+                    float("inf"), [], {}):
+            with self.subTest(value=bad):
+                self.assertEqual(sd.ShipConfig.from_flow_config(
+                    {"ship": {"brakePercent": bad}}).brake_percent, 90)
+
+
     def test_defaults(self):
         c = sd.ShipConfig()
         self.assertEqual((c.claude_weekly_threshold, c.max_concurrent_workers, c.max_retries,

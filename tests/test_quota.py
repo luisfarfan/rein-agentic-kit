@@ -109,6 +109,20 @@ class ChooseImplementerTest(unittest.TestCase):
 
 
 class BrakeReasonTest(unittest.TestCase):
+    def test_full_quota_brake_boundary_in_both_windows(self):
+        for window in ("session", "weekly"):
+            for used, braked in ((95, False), (100, True)):
+                with self.subTest(window=window, used=used):
+                    limits = {"codex": {window: used}}
+                    self.assertEqual(bool(quota.brake_reason(limits, "codex", 100)), braked)
+                    self.assertTrue(quota.brake_reason(limits, "codex"))
+                    self.assertEqual(quota.first_unbraked(
+                        [quota.CODEX, quota.SONNET], limits, 100),
+                        quota.SONNET if braked else quota.CODEX)
+                    self.assertEqual(quota.choose_implementer(
+                        {**limits, "antigravity": {"weekly": 1}}, 60, max_pct=100),
+                        quota.ANTIGRAVITY if braked else quota.CODEX)
+
     def test_brake_on_session_or_weekly_at_90(self):
         self.assertIn("claude", quota.brake_reason({"claude": {"session": 90, "weekly": 10}}, "claude"))
         self.assertIn("codex", quota.brake_reason({"codex": {"session": 1, "weekly": 91}}, "codex"))
