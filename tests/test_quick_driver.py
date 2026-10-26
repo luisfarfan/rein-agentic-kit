@@ -1004,6 +1004,16 @@ class DoneAuditTests(DoneCase):
         self.assertIn("audit cannot run", self.text())
         self.assertEqual(orca.called("orchestration", "worker-start"), [])
 
+    def test_repo_brake_percent_allows_claude_auditor_at_95(self):
+        self.risky(config={**CONFIG, "ship": {"brakePercent": 100}})
+        orca = _AuditOrca(on_start=self.reviewer("APPROVED"),
+                          limits=_limits(10, 95, claude_session=95))
+        code, _, _ = self.done(orca=orca, env=TERMINAL)
+        self.assertEqual(code, 0, self.text())
+        [start] = orca.called("orchestration", "worker-start")
+        self.assertEqual(start[start.index("--agent") + 1], "claude")
+        self.assertEqual(start[start.index("--model") + 1], "opus")
+
     def test_braked_claude_audits_with_codex(self):
         self.risky()
         orca = _AuditOrca(on_start=self.reviewer("APPROVED"),

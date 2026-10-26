@@ -277,6 +277,17 @@ class AuditDecisionTests(unittest.TestCase):
         self.assertFalse(quick.needs_audit(big_safe, self.CFG))
         self.assertFalse(quick.needs_audit([], self.CFG))
 
+    def test_reviewer_respects_configured_brake_in_both_windows(self):
+        for window in ("session", "weekly"):
+            with self.subTest(window=window):
+                limits = {"claude": {window: 95}, "codex": {window: 95}}
+                self.assertEqual(quick.reviewer(limits, 100), quota.OPUS)
+                self.assertIsNone(quick.reviewer(limits))
+                limits["claude"][window] = 100
+                self.assertEqual(quick.reviewer(limits, 100), quota.CODEX)
+                limits["codex"][window] = 100
+                self.assertIsNone(quick.reviewer(limits, 100))
+
     def test_reviewer_choices(self):
         cool = {"session": 1.0, "weekly": 1.0}
         hot = {"session": 95.0, "weekly": 1.0}

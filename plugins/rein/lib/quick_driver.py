@@ -603,12 +603,13 @@ def _audit_snapshot(workspace: str, record: dict, resolved: dict) -> dict:
 
 
 def _audit(workspace: str, record: dict, changed: list, limits: dict, client: OrcaClient,
-           clock: Callable[[], float], say: Callable[[str], None], accept_outside: bool = False) -> int:
+           clock: Callable[[], float], say: Callable[[str], None], accept_outside: bool = False,
+           brake_percent: float = 90.0) -> int:
     """One audit round over `changed`; the exit code of `done` (0 approved)."""
     name = os.path.basename(workspace)
     change = "quick-" + name
     rounds = int(record.get("audit_rounds") or 0)
-    pick = quick.reviewer(limits)
+    pick = quick.reviewer(limits, brake_percent)
     if pick is None:
         say("every provider is braked: the audit cannot run; try again later "
             "or ask the owner to review the diff")
@@ -919,7 +920,8 @@ def done_quick(*, cwd: str = ".", client: OrcaClient, run=verify.run_one,
     except OrcaError:
         limits = quota.parse_rate_limits({})  # unknown usage never brakes
     try:
-        return _audit(workspace, record, changed, limits, client, clock, say, accept_outside)
+        return _audit(workspace, record, changed, limits, client, clock, say, accept_outside,
+                      brake_percent=cfg.brake_percent)
     except OrcaError as error:
         return _failed(say, error)
     except OSError as error:
