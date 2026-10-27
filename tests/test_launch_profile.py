@@ -56,6 +56,12 @@ class TestLeanSettings(unittest.TestCase):
         self.assertNotIn("ToolSearch", lp.LEAN_DENY)
         self.assertNotIn("ToolSearch", lp.lean_settings({}, [])["permissions"]["deny"])
 
+    def test_every_denied_name_is_a_rule_claude_accepts(self):
+        """`advisor` was "an invalid permission rule": an interactive Claude stopped on the warning
+        before the brief, and Orca aborted the worker's start (seen in the first real pilot)."""
+        for name in lp.LEAN_DENY:
+            self.assertRegex(name, r"^[A-Z][A-Za-z]*$", name)
+
     def test_keeps_what_the_owner_already_had(self):
         owner = {"enabledMcpjsonServers": ["context7"], "skillOverrides": {"x": "off"},
                  "enabledPlugins": {"mine@m": True},
@@ -108,6 +114,22 @@ class TestApplyAndRestore(unittest.TestCase):
         again = lp.apply(self.wt, rec, plugins=[], ignored=ALWAYS)
         self.assertEqual(again, rec)
         self.assertIsNone(again["original"], "Rein's own file is never taken for the owner's")
+
+    def test_a_profile_written_by_an_older_rein_is_replaced_and_keeps_the_owners_original(self):
+        os.makedirs(os.path.dirname(self.file))
+        with open(self.file, "w", encoding="utf-8") as fh:
+            fh.write('{"theirs": true}\n')
+        old = lp.apply(self.wt, plugins=[], ignored=ALWAYS)
+        stale = json.loads(old["written"])
+        stale["permissions"]["deny"].append("advisor")  # what the first version wrote
+        old = dict(old, written=json.dumps(stale))
+        with open(self.file, "w", encoding="utf-8") as fh:
+            fh.write(old["written"])
+        new = lp.apply(self.wt, old, plugins=[], ignored=ALWAYS)
+        self.assertEqual(new["original"], '{"theirs": true}\n')
+        self.assertNotIn("advisor", _read(self.file))
+        lp.restore(self.wt, new)
+        self.assertEqual(_read(self.file), '{"theirs": true}\n')
 
     def test_a_file_changed_after_the_write_is_left_alone(self):
         rec = lp.apply(self.wt, plugins=[], ignored=ALWAYS)

@@ -27,8 +27,10 @@ REL_PATH = os.path.join(".claude", "settings.local.json")
 USER_SETTINGS = os.path.expanduser("~/.claude/settings.json")
 
 # Built-in tools an implementer worker has no use for. Never ToolSearch (see the module doc).
+# Only names a deny rule accepts: a lowercase tool (`advisor`) is "an invalid permission rule", and an
+# interactive Claude stops on that warning before reading the brief -- Orca then aborts the launch.
 LEAN_DENY = ["Artifact", "Workflow", "ScheduleWakeup", "ReportFindings", "AskUserQuestion",
-             "ListAgents", "SendFeedback", "Agent", "Skill", "advisor"]
+             "ListAgents", "SendFeedback", "Agent", "Skill"]
 NEVER_DENY = ("ToolSearch",)
 
 
@@ -98,10 +100,9 @@ def prepare(worktree: str, record: dict = None, plugins: list = None, ignored=No
         raise ProfileError("%s is not ignored by git in %s, so a worker could commit it"
                            % (REL_PATH, worktree))
     current = _read(os.path.join(worktree, REL_PATH))
-    if record and current == record.get("written"):
-        return record  # already in place
-    if record and current is None:
-        base_text = record.get("original")  # removed since: come back to what the owner had
+    if record and current in (record.get("written"), None):
+        # Rein's own file (perhaps of an older profile), or removed since: the owner's is still the original.
+        base_text = record.get("original")
     else:
         base_text = current  # first apply, or the owner changed it since: that is the file to come back to
     try:
