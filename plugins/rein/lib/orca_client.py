@@ -241,6 +241,10 @@ class OrcaClient:
             args.append("--screen")
         return self._call(*args)
 
+    def terminal_show(self, handle: str) -> dict:
+        """A terminal's metadata, including the `preview` Orca keeps after it exited."""
+        return self._call("terminal", "show", "--terminal", handle)
+
     def terminal_close(self, handle: str, tab: bool = False) -> dict:
         """Close one terminal by its runtime handle; `tab` closes its whole tab."""
         args = ["terminal", "close", "--terminal", handle]

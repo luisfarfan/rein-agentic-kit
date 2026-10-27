@@ -20,6 +20,7 @@ import re
 from dataclasses import dataclass, field
 from fnmatch import fnmatch
 
+import failure_triage as triage
 import quota
 from ship_state import ShipState, TaskState
 
@@ -743,7 +744,18 @@ def _on_tick(state: ShipState, event: Tick, cfg: ShipConfig, actions: list) -> N
 
 
 def _red(state: ShipState, task: TaskState, reason: str, cfg: ShipConfig, actions: list) -> None:
-    task.last_failure = reason[:GATE_FAILURE_CAP]
+    task.last_failure = triage.clean(reason)[:GATE_FAILURE_CAP]
+    sig = triage.signature(reason)
+    repeated = bool(sig) and sig == task.failure_sig
+    task.failure_sig = sig
+    if repeated:
+        # A fresh worker met exactly what the last one met: another one would very likely meet it too.
+        task.status = "failed"
+        _open(state, actions, task.id,
+              "Task %s failed the same way twice in a row, so Rein started no other worker: %s %s"
+              % (task.id, task.last_failure[:QUESTION_DETAIL], triage.hint(reason)),
+              ["retry", "skip"], "retry_exhausted")
+        return
     if task.attempts < cfg.max_retries:
         # Back to pending: the next Tick re-dispatches it, so a retry meets the
         # same brake, caps, one-worker-per-repo rule and implementer choice as

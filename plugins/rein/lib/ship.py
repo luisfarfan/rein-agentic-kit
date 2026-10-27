@@ -26,6 +26,7 @@ from typing import Callable
 
 import affected as _affected
 import detect as _detect
+import failure_triage as _triage
 import gate as _gate
 import gate_env as _gate_env
 import gate_log as _gate_log
@@ -1333,6 +1334,22 @@ class _Driver:
                 gate.pop("auto", None)
                 self.say("could not probe the blocked start of %s, will retry: %s" % (gate.get("task_id"), exc))
 
+    TAIL_CHARS = 500
+
+    def terminal_tail(self, handle: str) -> str:
+        """The end of what an (exited) terminal showed, as one line for an owner question; "" when
+        there is no handle or Orca cannot say. Shown to the owner only, never acted on."""
+        if not handle or getattr(self, "dry_run", False):
+            return ""
+        try:
+            res = self.client.terminal_show(handle)
+        except Exception:  # OrcaError, or an Orca without `terminal show`: nothing is known
+            return ""
+        term = (res.get("terminal") or {}) if isinstance(res, dict) else {}
+        preview = term.get("preview") if isinstance(term, dict) else ""
+        text = " | ".join(line.strip() for line in _triage.clean(preview or "").splitlines() if line.strip())
+        return text[-self.TAIL_CHARS:]
+
     def apply_launch_profile(self, task, a, fresh: bool) -> None:
         """`ship.launchProfile: lean`: put the lean settings in the worktree a Claude implementer is
         about to start in. Orca creates a fresh worktree in the same call that launches the agent,
@@ -1434,6 +1451,9 @@ class _Driver:
                 question = sd.startup_question(task, waits, handle)
             else:
                 question = "Orca could not start a worker for %s: %s" % (task.id, exc)
+                shown = self.terminal_tail(handle)
+                if shown:  # Orca's error rarely says why; what the agent printed often does
+                    question += ". Its terminal last showed: %s" % shown
             residual = oc.residual_resources_of(exc)
             if residual:
                 question += " (left behind in Orca: %s)" % ", ".join(residual)

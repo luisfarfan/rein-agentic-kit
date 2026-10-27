@@ -360,7 +360,7 @@ autodetection. A project that already declares how it is built is never second-g
 | `ship.claudeWeeklyThreshold` | `60` | Claude weekly usage % above which implementation goes to Codex |
 | `ship.brakePercent` | `90` | Session or weekly usage % at which a provider is braked in ship and quick; number >0 and <=100. At `100`, usage below 100% is allowed. Invalid values keep the default |
 | `ship.maxConcurrentWorkers` | `3` | Live workers at once |
-| `ship.maxRetries` | `2` | Fresh workers a red task gets before the owner is asked (`retry_exhausted`) |
+| `ship.maxRetries` | `2` | Fresh workers a red task gets before the owner is asked (`retry_exhausted`). A worker that fails exactly as the one before it (same failure once ids, shas, timings and temp paths are set aside) asks at once: another worker would meet it again, e.g. the guard's "wrote outside its worktree" about a commit in another checkout. The question says what a worker cannot do (`rein accept-outside` …); the text a retry is given has no colour codes |
 | `ship.maxAuditRounds` | `2` | Audit + fix rounds. When it runs out with blocking findings the gate offers `fix` (one more round), `accept` or `reject` |
 | `ship.taskTimeoutMinutes` | `45` | Wall time per task (its gating included) before a `timeout` gate opens |
 | `ship.stallMinutes` | `10` | A worker or quick agent with no sign of work (no commit, edit or question) that long after launch asks the owner; `0` = never |

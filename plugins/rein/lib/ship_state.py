@@ -36,6 +36,9 @@ class TaskState:
     model: str = ""
     started_at: float = 0.0
     last_failure: str = ""
+    # failure_triage.signature of the last red: the same one twice in a row asks the owner instead of
+    # starting yet another worker.
+    failure_sig: str = ""
     # Worker starts attempted on this plan task. Every start consumes an Orca task,
     # so a re-dispatch creates a fresh one rather than reusing a spent task.
     dispatches: int = 0

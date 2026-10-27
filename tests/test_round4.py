@@ -116,10 +116,13 @@ class ShipRetry(Round3Ship):
                         fh.write("bad = 1\n")
             return 0, "ok"
         fake = self.fake()
-        # every attempt is rejected (the file stays): the task ends in the owner's retry_exhausted gate
+        # every attempt is rejected (the file stays): the task ends in the owner's retry_exhausted gate,
+        # after the second identical rejection rather than maxRetries more workers (failure_triage)
         state = self.drive(fake, gates, until=lambda f: len(f.gates) >= 1)
         self.assertNotEqual(state.tasks["T001"].status, "done", self.out)
-        self.assertGreaterEqual(len(calls), 3)
+        self.assertEqual(len(calls), 2)
+        self.assertIn("failed the same way twice", fake.gates[0]["question"])
+        self.assertIn("rein accept-outside", fake.gates[0]["question"])
         self.assertEqual(read(self.qa, "bad.py"), "bad = 1\n")
 
     def test_restoring_the_external_checkout_lets_the_retry_close(self):
