@@ -141,6 +141,14 @@ Subcommands:
                       task only loses its record. The record is deleted before Orca
                       removes the worktree (only that file, never .rein/). Run it from
                       outside the worktree. Exit 0 closed / 1 blockers / 126 Orca
+  rein benchmark startup [--profile default|lean|both] [--source <dir>] [--model <m>]
+                      [--max-tokens <n>] [--json]
+                      the first-turn context a fresh Claude worker loads under each launch
+                      profile (ship.launchProfile): one `claude -p` reply per profile in a
+                      scratch repo with --source's CLAUDE.md/AGENTS.md (default: here), on
+                      your subscription (default model haiku). --max-tokens (default 30000)
+                      applies to lean, and to default only when it is the profile asked for.
+                      Exit 0 within / 1 over the limit / 2 usage / 126 claude failed
   rein migrate-config [root] [--write]
                       v1 -> v2 flow.config.json: drop models/limits/worktree, add the
                       ship block. Prints a diff; writes only with --write
@@ -171,6 +179,7 @@ import gate_env as _gate_env  # noqa: E402
 import gate_log as _gate_log  # noqa: E402
 import gate_run as _gate_run  # noqa: E402
 import guard as _guard  # noqa: E402
+import launch_profile as _profile  # noqa: E402
 import migrate_config as _migrate_config  # noqa: E402
 import plan as _plan  # noqa: E402
 import plan_check as _plan_check  # noqa: E402
@@ -1365,6 +1374,62 @@ def cmd_quick(argv: list[str]) -> int:
     )
 
 
+LEAN_STARTUP_LIMIT = 30000  # tokens; the lean profile measured 21.2k, the default 59.0k (claude -p)
+
+
+def cmd_benchmark(argv: list[str]) -> int:
+    """`rein benchmark startup`: measure what a fresh worker loads before its brief."""
+    usage = ("usage: rein benchmark startup [--profile default|lean|both] [--source <dir>] "
+             "[--model <m>] [--max-tokens <n>] [--json]")
+    if not argv or argv[0] != "startup":
+        print(usage)
+        return 2
+    opts = {"--profile": "both", "--source": ".", "--model": "haiku", "--max-tokens": ""}
+    rest, as_json = argv[1:], False
+    while rest:
+        flag = rest.pop(0)
+        if flag == "--json":
+            as_json = True
+        elif flag in opts and rest and not rest[0].startswith("--"):
+            opts[flag] = rest.pop(0)
+        else:
+            print(usage)
+            return 2
+    profiles = list(_profile.PROFILES) if opts["--profile"] == "both" else [opts["--profile"]]
+    if any(p not in _profile.PROFILES for p in profiles):
+        print(usage)
+        return 2
+    try:
+        limit = int(opts["--max-tokens"]) if opts["--max-tokens"] else LEAN_STARTUP_LIMIT
+    except ValueError:
+        print(usage)
+        return 2
+    if not shutil.which("claude"):
+        print("claude is not on PATH")
+        return 126
+    source = os.path.abspath(opts["--source"])
+    results = [_profile.measure(p, source=source, model=opts["--model"]) for p in profiles]
+    for r in results:
+        bounded = r["profile"] == "lean" or opts["--profile"] == r["profile"]
+        r["limit"] = limit if bounded else None
+        r["over"] = bool(bounded and r["tokens"] is not None and r["tokens"] > limit)
+    code = 126 if any(r["error"] for r in results) else (1 if any(r["over"] for r in results) else 0)
+    if as_json:
+        print(json.dumps({"model": opts["--model"], "source": source, "results": results}, indent=2))
+        return code
+    for r in results:
+        if r["error"]:
+            print(f"{r['profile']:8} error: {r['error']}")
+            continue
+        verdict = "" if r["limit"] is None else (" OVER the limit of %d" % r["limit"] if r["over"]
+                                                 else " (limit %d)" % r["limit"])
+        print(f"{r['profile']:8} {r['tokens']:>8,} tokens in the first turn{verdict}")
+    known = {r["profile"]: r["tokens"] for r in results if r["tokens"]}
+    if len(known) == 2:
+        print(f"lean saves {1 - known['lean'] / known['default']:.0%} of the startup context on every turn")
+    return code
+
+
 def cmd_migrate_config(argv: list[str]) -> int:
     """Show (and with --write, apply) the v1 -> v2 rewrite of flow.config.json."""
     usage = "usage: rein migrate-config [root] [--write]"
@@ -1422,6 +1487,7 @@ COMMANDS = {
     "done": cmd_done,
     "quick": cmd_quick,
     "migrate-config": cmd_migrate_config,
+    "benchmark": cmd_benchmark,
 }
 
 

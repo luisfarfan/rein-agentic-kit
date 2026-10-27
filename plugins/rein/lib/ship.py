@@ -31,6 +31,7 @@ import gate_env as _gate_env
 import gate_log as _gate_log
 import gate_run as _gate_run
 import guard as _guard
+import launch_profile as _profile
 import orca_client as oc
 import plan as _plan
 import plan_check as _plan_check
@@ -1332,6 +1333,48 @@ class _Driver:
                 gate.pop("auto", None)
                 self.say("could not probe the blocked start of %s, will retry: %s" % (gate.get("task_id"), exc))
 
+    def apply_launch_profile(self, task, a, fresh: bool) -> None:
+        """`ship.launchProfile: lean`: put the lean settings in the worktree a Claude implementer is
+        about to start in. Orca creates a fresh worktree in the same call that launches the agent,
+        so the first worker of a repo starts on the default profile. A profile that cannot be put
+        in place is said once and never stops the run."""
+        if self.cfg.launch_profile != "lean" or a.agent != "claude" or getattr(self, "dry_run", False):
+            return
+        if fresh:
+            self.note_once(("profile-fresh", a.repo), "%s: the lean launch profile starts with the next "
+                           "worker in %s (Orca creates its worktree at launch)" % (task.id, a.repo))
+            return
+        path = self.state.worktree_paths.get(a.repo, "")
+        if not path or not os.path.isdir(path):
+            return
+        try:
+            rec = _profile.prepare(path, self.state.launch_profiles.get(path))
+            if rec != self.state.launch_profiles.get(path):
+                self.state.launch_profiles[path] = rec
+                self.save()  # before the write: a crash in between still knows the owner's file
+            _profile.write(path, rec)
+        except (_profile.ProfileError, OSError) as exc:
+            self.note_once(("profile", path), "%s: launch profile not applied, the worker starts on the "
+                           "default one: %s" % (task.id, exc))
+
+    def restore_launch_profiles(self) -> None:
+        """Put back every settings file the lean profile replaced: before the auditor starts (it runs
+        on the default profile) and when the run stops. A later implementer applies it again."""
+        for path, rec in list(self.state.launch_profiles.items()):
+            try:
+                why = _profile.restore(path, rec) if os.path.isdir(path) else ""
+            except OSError as exc:
+                why = str(exc)
+            if why:
+                self.say("launch profile: %s" % why)
+            del self.state.launch_profiles[path]
+            self.save()
+
+    def note_once(self, key: tuple, text: str) -> None:
+        if key not in self.noted:
+            self.noted.add(key)
+            self.say(text)
+
     def dispatch(self, a):
         task = self.state.tasks[a.task_id]
         if task.starting:  # an earlier start's answer was lost: never start a second worker blind
@@ -1355,6 +1398,7 @@ class _Driver:
             self.save()
             repo = self.ctx["repos"].get(a.repo) or {}
             fresh = a.worktree == "new-top-level"  # a reused worktree is already set up and named
+            self.apply_launch_profile(task, a, fresh)
             res = self.client.worker_start(
                 task.orca_task_id, worktree=a.worktree, agent=a.agent, model=a.model,
                 repo="id:%s" % repo["id"] if fresh and repo.get("id") else "",
@@ -1773,6 +1817,7 @@ class _Driver:
                 self.save()
                 self.open_pending()
                 return
+        self.restore_launch_profiles()  # the auditor runs on the default profile
         repo, first = next(iter(self.state.worktrees.items()))
         audit_root = self.state.worktree_paths.get(repo) or oc.worktree_path_of(first)
         fix_commits = {}
@@ -2178,6 +2223,7 @@ class _Driver:
                     self.idle_poll()
 
     def finish(self):
+        self.restore_launch_profiles()  # the owner's own sessions in these worktrees get their settings back
         skipped = {t.id for t in sd.skipped_fix_tasks(self.state)}
         # A fix task the owner skipped is not a failure once a later audit approves the change.
         tasks = [t for t in self.state.tasks.values() if t.id not in skipped]

@@ -94,6 +94,9 @@ class ShipState:
     implementer_agents: list = field(default_factory=list)
     # The agents Orca actually launched for implementation workers (it may swap the requested one).
     launched_agents: list = field(default_factory=list)
+    # `ship.launchProfile: lean`: `{worktree path: launch_profile record}` of every worktree Rein put
+    # the lean settings in, so it can put the owner's file back before the audit and at the end.
+    launch_profiles: dict = field(default_factory=dict)
     forced_implementer: list = field(default_factory=list)
     changed_files: list = field(default_factory=list)
     # Stamped by the first Tick after StartAudit; 0.0 = not started / reset.

@@ -57,6 +57,10 @@ class ShipConfig:
     # Where a human_review gate's review artifact goes, relative to the plan root ("" = the plan's own
     # change folder: openspec/changes/<change>/, else .rein/review/<change>/).
     review_dir: str = ""
+    # What a Claude implementer worker's session loads: "default" (everything the owner's Claude has)
+    # or "lean" (launch_profile.py: no user plugins, no tools a worker never uses). Auditors always
+    # run on the default.
+    launch_profile: str = "default"
     risky_paths: list = field(default_factory=lambda: list(_DEFAULT_RISKY))
     override: tuple | None = None
 
@@ -78,6 +82,7 @@ class ShipConfig:
             "stallMinutes": "stall_minutes",
             "trustProbeSeconds": "trust_probe_seconds",
             "reviewDir": "review_dir",
+            "launchProfile": "launch_profile",
             "riskyPaths": "risky_paths",
         }
         kwargs = {}
@@ -94,6 +99,8 @@ class ShipConfig:
             if attr == "trust_probe_seconds" and not _positive_number(value):
                 continue
             if attr == "review_dir" and not (isinstance(value, str) and value.strip()):
+                continue
+            if attr == "launch_profile" and value not in ("default", "lean"):
                 continue
             kwargs[attr] = list(value) if attr == "risky_paths" else value
         return cls(**kwargs)

@@ -294,6 +294,9 @@ rein token-report # what a run really cost, per agent and per model
 rein ledger      # history across projects, with deltas vs a marked baseline (--json: {"runs": [...]},
                  # {"runs": []} when there is none yet; without --json an empty ledger is a text line, exit 0)
 rein baseline    # mark the run everything is compared against (mark|show|clear)
+rein benchmark startup [--profile default|lean|both] [--source <dir>] [--model <m>] [--max-tokens <n>] [--json]
+                 # what a fresh Claude worker loads before its brief, per ship.launchProfile: one `claude -p`
+                 # reply per profile (Haiku, on your subscription). Exit 0 · 1 over --max-tokens (30000, lean) · 126
 ```
 
 `rein serve-probe` (start a dev server, wait for its URL, tear it down) is the internal helper the
@@ -362,6 +365,7 @@ autodetection. A project that already declares how it is built is never second-g
 | `ship.taskTimeoutMinutes` | `45` | Wall time per task (its gating included) before a `timeout` gate opens |
 | `ship.stallMinutes` | `10` | A worker or quick agent with no sign of work (no commit, edit or question) that long after launch asks the owner; `0` = never |
 | `ship.trustProbeSeconds` | `30` | Startup dialogs, below. Must be positive: `0` or a bad value keeps the default |
+| `ship.launchProfile` | `default` | `lean`: before a Claude **implementer** starts in an existing worktree, Rein puts a `.claude/settings.local.json` there that turns your user plugins off and denies the tools a worker never uses (Agent, Artifact, Workflow, Skill …; never ToolSearch). Measured: 59.0k → 21.2k tokens of startup context, re-read on every turn. Only where git ignores the file; the owner's own file is put back before the audit (auditors always run on the default) and when the run stops. The first worker of a repo starts on the default (Orca creates its worktree at launch). Check it with `rein benchmark startup` |
 | `ship.reviewDir` | `""` | Where a `Human review` task's `review-<task>.md` goes, relative to the plan root. Default: `openspec/changes/<change>/`, else `.rein/review/<change>/` |
 | `ship.gateTimeoutSeconds` | `900` | A gate slot's timeout until that slot has passed in the repo; after that, twice its slowest of the last five passes, between 2 and 30 minutes. Raise it for a slow suite |
 | `ship.largeChangeFiles` | `25` | A ship change touching more files than this gets an Opus audit |
