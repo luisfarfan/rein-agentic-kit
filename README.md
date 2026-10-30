@@ -54,7 +54,8 @@ something (`docs/research/2026-10-28-post-sdd/`):
 | A small, low-risk change in one repo | **Claude Code or Codex alone.** No Rein |
 | Real uncertainty, several requirements or several repos | `/rein:rein-plan`, then implement natively |
 | Touches permissions, security, concurrency, durable state or contracts between services | add `/rein:rein-audit` |
-| Several dependent tasks, or coordination across repos | `/ship` |
+| Orchestration pays: tasks that can run in parallel, several repos, dependencies to track and recover, or a run long enough to need saved state | `/ship` |
+| Several tasks that run one after another in one repo | **One native session** with the plan: `/ship` would add workers, gates and audit rounds it does not need |
 
 More audits or more test runs are not more quality by themselves: a measured audit round
 that fixed nothing cost 35 minutes, and gate-fix workers spent 39 of a run's 65 minutes on a

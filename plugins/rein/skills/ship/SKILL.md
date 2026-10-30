@@ -1,13 +1,13 @@
 ---
 name: ship
-description: "Implement a planned change: opens a detached Orca tab that runs `rein ship <change>` (workers implement, each task is gated, then an audit). Use for multi-task or multi-repo plans, when the user says ship, lánzalo, implementa el plan, or invokes /ship."
+description: "Implement a planned change: opens a detached Orca tab that runs `rein ship <change>` (workers, task gates, an audit). Use only when orchestration pays (parallel tasks, several repos, dependencies to recover, a long run needing saved state), not for a sequential plan one session can do; when the user says ship, lánzalo, implementa el plan, or /ship."
 license: MIT
 ---
 
 # /ship
 
 Hands a planned change to `rein ship` in its own Orca tab (`/rein:ship` when namespaced), then
-keeps the owner in THIS session.
+keeps the owner here.
 **Never edits code, pushes, merges or opens a PR.**
 
 Usage: `/ship <change> [--root <plan repo>]`
@@ -19,9 +19,8 @@ Agent flag: "con codex" → `--agent codex`; "con antigravity" →
 
 1. Confirm the plan exists: `rein tasks <root> --change <change>` (root `.` or the user's
    `--root`). None: stop, suggest `/rein:rein-plan`.
-2. Run `rein ship <change> --root <root> --detach`. If it refuses (a tab is already running, or a
-   preflight error, or a plan root in a temporary directory whose `.rein/` state a reboot would
-   lose), show its output; never retry, and never run the loop in this session. Only the owner
+2. Run `rein ship <change> --root <root> --detach`. If it refuses (a running tab, a preflight
+   error, a temporary plan root), show its output; never retry, and never run the loop in this session. Only the owner
    may accept the temporary root: then add `--allow-temp-root`.
 3. Immediately run `rein watch <change> --root <root>` as a BACKGROUND command. Tell the owner
    to stay in this session: Rein's decision gate questions will appear here.
