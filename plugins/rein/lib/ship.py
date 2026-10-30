@@ -176,8 +176,12 @@ def build_task_spec(task: ss.TaskState, plan: dict, env_lines: list = (), allowe
     if not findings and sd._is_fix(task) and task.attempts == 0:
         findings = task.last_failure  # a state saved before audit_findings existed
     if findings:
-        lines += ["", "The audit found these blocking problems; fix them (a finding that is not about "
-                  "the %s repository belongs to another repository's fix task):" % task.repo, findings]
+        lines += ["", "The audit found these blocking problems. For each one: reproduce it first (a test "
+                  "that fails), then make the smallest change that fixes its cause. Add no table, service "
+                  "or abstraction the finding does not require. If you cannot reproduce it, ask the owner "
+                  "with `orca orchestration ask --question <text>` instead of changing code. (A finding "
+                  "that is not about the %s repository belongs to another repository's fix task.)"
+                  % task.repo, findings]
     if sd.is_gate_fix(task) and task.last_failure:
         lines += ["", "The full test suite of %s (run once every task was done, before the audit) failed "
                   "the same way twice. First run each failing test alone (the project's testOne command). "

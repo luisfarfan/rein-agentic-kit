@@ -93,15 +93,29 @@ class TestReviewSeverityRoundTrip(ReviewCliFixture):
         record = self._run(
             "record", "--root", self.root, "--change", "demo",
             "--verdict", "CHANGES_REQUESTED", "--files", "a.py",
-            "--findings", "BLOCKING: fix the thing|SUGGESTION: rename this var",
+            "--findings", "BLOCKING: a.py:3 fix the thing|SUGGESTION: rename this var",
             "--reviewer", "reviewer-agent",
         )
         self.assertEqual(record.returncode, 0, record.stdout + record.stderr)
 
         result = self._run("check", "--root", self.root, "--change", "demo")
         self.assertEqual(result.returncode, 1)  # CHANGES_REQUESTED never satisfies the gate
-        self.assertIn("finding [BLOCKING]: fix the thing", result.stdout)
+        self.assertIn("finding [BLOCKING]: a.py:3 fix the thing", result.stdout)
         self.assertIn("finding [SUGGESTION]: rename this var", result.stdout)
+
+    def test_a_blocking_without_file_and_line_is_refused(self):
+        # In the 2026-10-30 pilot an auditor recorded "the full API gate failed" (a flaky suite) as a
+        # blocker, and a 35-minute fix round followed.
+        record = self._run(
+            "record", "--root", self.root, "--change", "demo",
+            "--verdict", "CHANGES_REQUESTED", "--files", "a.py",
+            "--findings", "BLOCKING: API full mechanical gate failed: uv run pytest exited 1",
+            "--reviewer", "reviewer-agent",
+        )
+        self.assertEqual(record.returncode, 1)
+        self.assertIn("must name file:line", record.stdout)
+        self.assertIn("a red gate alone is not a finding", record.stdout)
+        self.assertFalse(os.path.exists(os.path.join(self.root, ".rein", "reviews")))
 
     def test_approved_check_also_prints_its_findings(self):
         # An APPROVED episode can still carry IMPORTANT/SUGGESTION findings

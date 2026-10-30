@@ -20,16 +20,20 @@ Usage: `/rein:rein-audit [change-name]`
    brief gives for each worktree — never the raw test, lint or typecheck commands, and never
    with a shorter `--timeout` (without one it uses the project's). A check that already passed
    on this exact state is reused and printed `cached`, so this costs nothing after Rein's own
-   gate. If any slot is red the verdict **cannot** be `APPROVED` however good the code reads —
-   record `CHANGES_REQUESTED` with the failing commands as `BLOCKING` findings (a red gate is
-   by definition a blocker; see the severity vocabulary in step 7). A `SETUP` result is not a
+   gate. A red slot is not a finding by itself. Run each failing test alone: one your change
+   causes is a `BLOCKING` finding with that test as its reproduction (and the verdict cannot be
+   `APPROVED`); one that passes alone, or fails the same way on the base, is the environment or
+   a flaky suite — say so in your report, never as a finding. A `SETUP` result is not a
    verdict on the code: say so rather than calling it red. If a slot is not configured, say it
    is absent rather than substituting one.
 3. **Judgement — five axes.** Delegate to the `agent-skills:code-reviewer` agent over the
    diff: correctness, readability, architecture, security, performance. If that agent is not
    available (Codex, Antigravity, or a Claude without its plugin), review the
    five axes yourself and never ask anyone for a reviewer. Look at the change **as a whole** — coherence defects *between* tasks are the
-   ones nobody else will see.
+   ones nobody else will see. **Always check, and say for each "checked" or "not applicable":**
+   permissions and scopes (who can see or do what, tenant boundaries), security, concurrency and
+   idempotency, contracts between services or repos. A plan *Decision* is not exempt: one that
+   grants more access than the criteria need is a finding.
 4. **Intent.** If the plan has a `Why`, judge the work against it — not only against
    the criteria. Criteria can all pass while the change does not solve the stated
    problem. If it has `Scope: Out`, work that strayed there is a finding **even if it
@@ -51,7 +55,10 @@ Usage: `/rein:rein-audit [change-name]`
      --findings "BLOCKING: ...|IMPORTANT: ...|SUGGESTION: ..."
    ```
 
-   Every finding must be prefixed with one of the three severities — `BLOCKING` (must fix,
+   Every finding must be prefixed with one of the three severities. A `BLOCKING` names
+   `file:line` and a reproduction (a test, a command, or an input and the wrong result);
+   `rein review record` refuses one without `file:line`, and without a reproduction it is
+   `IMPORTANT`. `BLOCKING` (must fix,
    costs a round), `IMPORTANT` (should fix, does not by itself block `APPROVED`), or
    `SUGGESTION` (never costs a round). `CHANGES_REQUESTED` requires at least one `BLOCKING`
    finding; `APPROVED` tolerates none (D2) — a verdict that violates this is refused, not

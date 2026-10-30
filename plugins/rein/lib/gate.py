@@ -24,6 +24,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import time
 
 import plan as _plan
@@ -152,6 +153,18 @@ def state_hash(reviewed_files: dict[str, str]) -> str:
     """
     canonical = json.dumps(reviewed_files, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+# A file and a line: `app/x.py:12`, `src/a.component.ts:1596,1853`, `lib/y.py:137-140`.
+_CITES_CODE = re.compile(r"[\w./-]+\.\w+:\d+")
+
+
+def unreproducible_blocking(findings: list) -> list:
+    """The BLOCKING findings that name no `file:line`. A blocker costs a fix round, so it must point
+    at code a worker can reproduce; a red gate on its own (in the 2026-10-30 pilot, "the full API
+    gate failed" on a flaky suite) is not one."""
+    return [f["text"] for f in _normalize_findings(findings)
+            if f["severity"] == "BLOCKING" and not _CITES_CODE.search(f["text"])]
 
 
 def record_review(

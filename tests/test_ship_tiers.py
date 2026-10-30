@@ -163,6 +163,21 @@ class TestTheRepoGateRunsBeforeTheAudit(unittest.TestCase):
         self.assertIn("do not edit tests, fixtures or test setup", spec)
         self.assertNotIn("may be outside what the change touched", spec)
 
+    def test_the_audit_fix_brief_asks_to_reproduce_before_fixing(self):
+        t = sd.TaskState(id="AUDIT1-api", repo="api", deps=[], human_review=False, verification="",
+                         type="implementation", audit_findings="BLOCKING: app/x.py:12 loses a retry")
+        spec = ship.build_task_spec(t, {"tasks": []})
+        self.assertIn("reproduce it first", spec)
+        self.assertIn("smallest change", spec)
+        self.assertIn("app/x.py:12 loses a retry", spec)
+
+    def test_the_audit_skill_no_longer_makes_a_red_gate_a_blocker(self):
+        with open(ship.AUDIT_SKILL, encoding="utf-8") as fh:
+            text = fh.read()
+        self.assertNotIn("by definition a blocker", text)
+        self.assertIn("A red slot is not a finding by itself", text)
+        self.assertIn("permissions and scopes", text)
+
     def test_no_worktree_goes_straight_to_the_audit(self):
         st = make_state(task("T1", "api", status="gating", dispatch_id="d1"))
         st, actions = sd.decide(st, sd.GateVerdict("T1", 0, ""), CFG)

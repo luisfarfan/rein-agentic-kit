@@ -96,6 +96,15 @@ class TestNextTask(unittest.TestCase):
         self.assertEqual(r["taskId"], "T001")
 
 
+class TestUnreproducibleBlocking(unittest.TestCase):
+    def test_only_a_blocking_without_file_and_line_is_named(self):
+        findings = ["BLOCKING: support/support-chat.component.ts:1898-1903 a pending GET overwrites a send",
+                    "BLOCKING: src/modules/mcp_server/actions/batch.py:137 rejects savepoints",
+                    "BLOCKING: API full mechanical gate failed",
+                    "IMPORTANT: the gate is slow"]
+        self.assertEqual(gate.unreproducible_blocking(findings), ["API full mechanical gate failed"])
+
+
 class TestRecordReview(unittest.TestCase):
     FILES = {"a.py": "print(1)\n", "b.py": "print(2)\n"}
 

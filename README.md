@@ -306,7 +306,8 @@ rein plan-check <plan-file> [--root <plan repo>] [--gate] [--tasks T001,T002]
 rein role <name> # ✅ one role's operating profile (planner|implementer|reviewer) as markdown
 rein next        # ✅ the gate: is there a task to claim, and may it be
 rein close T001  # tick a checkbox deterministically — no agent hand-edits the plan
-rein review      # record / check a verdict bound to a code state (record|check)
+rein review      # record / check a verdict bound to a code state (record|check); record refuses
+                 # a BLOCKING without file:line: a red gate alone is not a finding
 rein token-report # what a run really cost, per agent and per model
 rein ledger      # history across projects, with deltas vs a marked baseline (--json: {"runs": [...]},
                  # {"runs": []} when there is none yet; without --json an empty ledger is a text line, exit 0)
