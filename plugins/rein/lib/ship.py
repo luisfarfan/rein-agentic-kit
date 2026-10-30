@@ -176,12 +176,12 @@ def build_task_spec(task: ss.TaskState, plan: dict, env_lines: list = (), allowe
     if not findings and sd._is_fix(task) and task.attempts == 0:
         findings = task.last_failure  # a state saved before audit_findings existed
     if findings:
-        lines += ["", "The audit found these blocking problems. For each one: reproduce it first (a test "
-                  "that fails), then make the smallest change that fixes its cause. Add no table, service "
-                  "or abstraction the finding does not require. If you cannot reproduce it, ask the owner "
-                  "with `orca orchestration ask --question <text>` instead of changing code. (A finding "
-                  "that is not about the %s repository belongs to another repository's fix task.)"
-                  % task.repo, findings]
+        lines += ["", "The audit found these blocking problems. For each one: confirm it first with its "
+                  "evidence (a failing test, or the interleaving it describes), then make the smallest change "
+                  "that fixes its cause. Add no table, service or abstraction the finding does not require. "
+                  "Spend at most three attempts confirming one: if you cannot, ask the owner with `orca "
+                  "orchestration ask --question <text>` instead of changing code. (A finding that is not "
+                  "about the %s repository belongs to another repository's fix task.)" % task.repo, findings]
     if sd.is_gate_fix(task) and task.last_failure:
         lines += ["", "The full test suite of %s (run once every task was done, before the audit) failed, "
                   "and what failed still fails when run alone (or a lint, typecheck or build slot is red). "
@@ -308,7 +308,8 @@ def build_audit_spec(plan: dict, changed: dict, reviewer_profile: str,
     lines += ["Record the verdict with exactly this command, run in the audit worktree:",
               "  rein review record --root %s --change %s --verdict <APPROVED|CHANGES_REQUESTED> "
               "--reviewer <your name> --files <comma-separated changed files that still exist; "
-              "absolute paths for files outside %s> --findings \"BLOCKING: ...|IMPORTANT: ...\""
+              "absolute paths for files outside %s> --findings \"BLOCKING: <file:line> expected: ... observed: ... "
+              "evidence: ... breaks: ...|IMPORTANT: ...\""
               % (shlex.quote(audit_root), shlex.quote(change), audit_root),
               "Never record into any other checkout. If `rein` is not on PATH, run: python3 %s" % BIN,
               "Never push, merge, open a pull request or deploy."]

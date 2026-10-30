@@ -96,13 +96,31 @@ class TestNextTask(unittest.TestCase):
         self.assertEqual(r["taskId"], "T001")
 
 
-class TestUnreproducibleBlocking(unittest.TestCase):
-    def test_only_a_blocking_without_file_and_line_is_named(self):
-        findings = ["BLOCKING: support/support-chat.component.ts:1898-1903 a pending GET overwrites a send",
-                    "BLOCKING: src/modules/mcp_server/actions/batch.py:137 rejects savepoints",
-                    "BLOCKING: API full mechanical gate failed",
-                    "IMPORTANT: the gate is slow"]
-        self.assertEqual(gate.unreproducible_blocking(findings), ["API full mechanical gate failed"])
+CONFIRMED = ("BLOCKING: support/support-chat.component.ts:1898 expected: a newer send response is kept; "
+             "observed: a pending GET that resolves later overwrites it; evidence: start a poll, send, resolve "
+             "the send, then the GET -- the summary shows the old answer; breaks: criterion 3 (the newest reply wins)")
+
+
+class TestUnconfirmedBlocking(unittest.TestCase):
+    def test_a_confirmed_blocking_names_code_behaviour_evidence_and_what_it_breaks(self):
+        self.assertEqual(gate.unconfirmed_blocking([CONFIRMED], ["support/support-chat.component.ts"]), [])
+
+    def test_a_race_needs_its_interleaving_not_a_test(self):
+        race = ("BLOCKING: app/claims.py:40 expected: one issue per fingerprint; observed: two; evidence: worker A "
+                "searches, worker B searches, both create; breaks: invariant one issue per fingerprint")
+        self.assertEqual(gate.unconfirmed_blocking([race], ["app/claims.py"]), [])
+
+    def test_a_suspicion_or_a_red_gate_is_not_a_blocker(self):
+        got = dict(gate.unconfirmed_blocking([
+            "BLOCKING: API full mechanical gate failed",
+            "BLOCKING: app/x.py:12 this looks racy",
+            "BLOCKING: other/y.py:3 expected: a; observed: b; evidence: c; breaks: d",
+            "IMPORTANT: the gate is slow"], ["app/x.py"]))
+        self.assertEqual(got["API full mechanical gate failed"][0], "file:line")
+        self.assertEqual(got["app/x.py:12 this looks racy"], ["expected", "observed", "evidence", "breaks"])
+        self.assertEqual(got["other/y.py:3 expected: a; observed: b; evidence: c; breaks: d"],
+                         ["a file:line in a file you reviewed"])
+        self.assertEqual(len(got), 3)
 
 
 class TestRecordReview(unittest.TestCase):

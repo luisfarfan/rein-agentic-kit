@@ -159,12 +159,32 @@ def state_hash(reviewed_files: dict[str, str]) -> str:
 _CITES_CODE = re.compile(r"[\w./-]+\.\w+:\d+")
 
 
-def unreproducible_blocking(findings: list) -> list:
-    """The BLOCKING findings that name no `file:line`. A blocker costs a fix round, so it must point
-    at code a worker can reproduce; a red gate on its own (in the 2026-10-30 pilot, "the full API
-    gate failed" on a flaky suite) is not one."""
-    return [f["text"] for f in _normalize_findings(findings)
-            if f["severity"] == "BLOCKING" and not _CITES_CODE.search(f["text"])]
+# What a confirmed blocker states besides the code it points at.
+EVIDENCE_LABELS = ("expected:", "observed:", "evidence:", "breaks:")
+
+
+def unconfirmed_blocking(findings: list, reviewed=()) -> list:
+    """`(text, what is missing)` for each BLOCKING that is a suspicion rather than a confirmed defect.
+    A blocker costs a fix round, so it states the code (`file:line`, one of the files reviewed), the
+    expected and observed behaviour, the evidence (a test, a command, or for a race the interleaving
+    that breaks it) and the contract, criterion or invariant it breaks. Anything less is IMPORTANT.
+    In the 2026-10-30 pilot a "the full API gate failed" blocker on a flaky suite started a 35-minute
+    fix round that fixed nothing."""
+    names = [str(f).replace("\\", "/") for f in reviewed or ()]
+    out = []
+    for f in _normalize_findings(findings):
+        if f["severity"] != "BLOCKING":
+            continue
+        text, low = f["text"], f["text"].lower()
+        missing = [label.rstrip(":") for label in EVIDENCE_LABELS if label not in low]
+        cited = [m.group(0).split(":")[0] for m in _CITES_CODE.finditer(text)]
+        if not cited:
+            missing.insert(0, "file:line")
+        elif names and not any(n.endswith(c) or c.endswith(n) for c in cited for n in names):
+            missing.insert(0, "a file:line in a file you reviewed")
+        if missing:
+            out.append((text, missing))
+    return out
 
 
 def record_review(

@@ -307,7 +307,8 @@ rein role <name> # ✅ one role's operating profile (planner|implementer|reviewe
 rein next        # ✅ the gate: is there a task to claim, and may it be
 rein close T001  # tick a checkbox deterministically — no agent hand-edits the plan
 rein review      # record / check a verdict bound to a code state (record|check); record refuses
-                 # a BLOCKING without file:line: a red gate alone is not a finding
+                 # a BLOCKING that is not confirmed (file:line, expected, observed,
+                 # evidence, breaks): a suspicion is IMPORTANT; a red gate is no finding
 rein token-report # what a run really cost, per agent and per model
 rein ledger      # history across projects, with deltas vs a marked baseline (--json: {"runs": [...]},
                  # {"runs": []} when there is none yet; without --json an empty ledger is a text line, exit 0)
@@ -483,7 +484,10 @@ dependencies or test configuration, or a strategy that cannot be applied runs th
 Workers and auditors are **told** (in their brief): no writes outside the worktree (next section), no
 bypassing the repo's hooks (`--no-verify`, `LEFTHOOK=0`, `SKIP`, `HUSKY=0` …), no change to the
 configuration Rein judges with, no edit to global configuration (`~/.claude`, `~/.codex`, shell or git
-config). Rein **checks** them too, when a worker's task ends and again when an auditor's verdict is read:
+config). The last one is **only told**: Rein has no sandbox, and nothing checks `~/.claude` or `~/.codex`
+(use Claude Code's or Codex's own sandbox where it must be enforced). The rest Rein **checks**, when a
+worker's task ends and again when an auditor's verdict is read -- detection, not prevention: a breach
+fails the task, it does not stop the write:
 
 - **Gate config and test setup.** `flow.config.json`, a gate command's runner file, the test setup every
   test runs through (`conftest.py`, `pytest.ini`, `tox.ini`, a vitest, jest, playwright or karma config)

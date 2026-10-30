@@ -55,10 +55,13 @@ Usage: `/rein:rein-audit [change-name]`
      --findings "BLOCKING: ...|IMPORTANT: ...|SUGGESTION: ..."
    ```
 
-   Every finding must be prefixed with one of the three severities. A `BLOCKING` names
-   `file:line` and a reproduction (a test, a command, or an input and the wrong result);
-   `rein review record` refuses one without `file:line`, and without a reproduction it is
-   `IMPORTANT`. `BLOCKING` (must fix,
+   Every finding must be prefixed with one of the three severities. A `BLOCKING` is a
+   **confirmed** defect, written `BLOCKING: <file:line> expected: ... observed: ... evidence: ...
+   breaks: ...`: the code (in a file you reviewed), the behaviour expected and observed, the
+   evidence (a test or command you ran, or for a race the interleaving that breaks it -- not every
+   defect needs a new test) and the criterion, contract or invariant it breaks. `rein review
+   record` refuses a BLOCKING missing any of them. A suspicion you could not confirm is
+   `IMPORTANT`: it costs no fix round. `BLOCKING` (must fix,
    costs a round), `IMPORTANT` (should fix, does not by itself block `APPROVED`), or
    `SUGGESTION` (never costs a round). `CHANGES_REQUESTED` requires at least one `BLOCKING`
    finding; `APPROVED` tolerates none (D2) — a verdict that violates this is refused, not

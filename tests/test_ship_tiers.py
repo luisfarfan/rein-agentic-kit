@@ -183,8 +183,11 @@ class TestTheRepoGateRunsBeforeTheAudit(unittest.TestCase):
     def test_the_audit_fix_brief_asks_to_reproduce_before_fixing(self):
         t = sd.TaskState(id="AUDIT1-api", repo="api", deps=[], human_review=False, verification="",
                          type="implementation", audit_findings="BLOCKING: app/x.py:12 loses a retry")
+        # Rounds are bounded in code, not by the brief: maxAuditRounds, then the owner's audit_exhausted gate.
+        self.assertEqual(CFG.max_audit_rounds, 2)
         spec = ship.build_task_spec(t, {"tasks": []})
-        self.assertIn("reproduce it first", spec)
+        self.assertIn("confirm it first with its evidence", spec)
+        self.assertIn("at most three attempts", spec)
         self.assertIn("smallest change", spec)
         self.assertIn("app/x.py:12 loses a retry", spec)
 

@@ -731,11 +731,13 @@ def cmd_review(argv: list[str]) -> int:
     if sub == "record":
         files = [f for f in _opt(rest, "files").split(",") if f.strip()]
         findings = [f for f in _opt(rest, "findings").split("|") if f.strip()]
-        vague = _gate.unreproducible_blocking(findings)
+        vague = _gate.unconfirmed_blocking(findings, files)
         if vague:
-            print("refused to record: a BLOCKING must name file:line and how to reproduce it (a test, a "
-                  "command, or an input and the wrong result); a red gate alone is not a finding -- make "
-                  "it IMPORTANT or say it in your report. Without file:line: " + " | ".join(t[:120] for t in vague))
+            print("refused to record: a BLOCKING is a confirmed defect, written as `BLOCKING: <file:line> "
+                  "expected: ... observed: ... evidence: <a test, a command, or the interleaving that "
+                  "breaks it> breaks: <the criterion, contract or invariant>`. A suspicion is IMPORTANT, and "
+                  "a red gate alone is not a finding. " + " ; ".join(
+                      "missing %s in: %s" % (", ".join(m), t[:100]) for t, m in vague))
             return 1
         try:
             episode = _gate.record_review(

@@ -93,14 +93,14 @@ class TestReviewSeverityRoundTrip(ReviewCliFixture):
         record = self._run(
             "record", "--root", self.root, "--change", "demo",
             "--verdict", "CHANGES_REQUESTED", "--files", "a.py",
-            "--findings", "BLOCKING: a.py:3 fix the thing|SUGGESTION: rename this var",
+            "--findings", "BLOCKING: a.py:3 expected: hi; observed: bye; evidence: python3 a.py; breaks: AC1|SUGGESTION: rename this var",
             "--reviewer", "reviewer-agent",
         )
         self.assertEqual(record.returncode, 0, record.stdout + record.stderr)
 
         result = self._run("check", "--root", self.root, "--change", "demo")
         self.assertEqual(result.returncode, 1)  # CHANGES_REQUESTED never satisfies the gate
-        self.assertIn("finding [BLOCKING]: a.py:3 fix the thing", result.stdout)
+        self.assertIn("finding [BLOCKING]: a.py:3 expected: hi", result.stdout)
         self.assertIn("finding [SUGGESTION]: rename this var", result.stdout)
 
     def test_a_blocking_without_file_and_line_is_refused(self):
@@ -113,8 +113,17 @@ class TestReviewSeverityRoundTrip(ReviewCliFixture):
             "--reviewer", "reviewer-agent",
         )
         self.assertEqual(record.returncode, 1)
-        self.assertIn("must name file:line", record.stdout)
+        self.assertIn("missing file:line", record.stdout)
         self.assertIn("a red gate alone is not a finding", record.stdout)
+        vague = self._run(
+            "record", "--root", self.root, "--change", "demo",
+            "--verdict", "CHANGES_REQUESTED", "--files", "a.py",
+            "--findings", "BLOCKING: a.py:1 this might be wrong",
+            "--reviewer", "reviewer-agent",
+        )
+        self.assertEqual(vague.returncode, 1)
+        self.assertIn("missing expected, observed, evidence, breaks", vague.stdout)
+        self.assertIn("A suspicion is IMPORTANT", vague.stdout)
         self.assertFalse(os.path.exists(os.path.join(self.root, ".rein", "reviews")))
 
     def test_approved_check_also_prints_its_findings(self):
