@@ -1,0 +1,35 @@
+{
+  "root": "/Users/luisfarfan/Developer/sandbox/rein-pilot",
+  "rein_commit": "80b1732",
+  "implementer_model": "claude-sonnet-5-5",
+  "auditor": {"agent": "codex", "model": "gpt-6.1-sol"},
+  "budget": {"claude_usd_per_session": 8.0, "run_wall_minutes": 60, "smoke_total_usd": 60.0},
+  "tasks": {
+    "obs-cors": {
+      "change": "ai-support-p0-obs-cors",
+      "product_repo": "/Users/luisfarfan/Developer/products/proxima/proxima-api",
+      "base": "ca6f369d220ac3de540d6a8e7338e7d1884ec189",
+      "final": "df887b43",
+      "stack": "python",
+      "hidden": {
+        "functional": {"file": "test_zz_hidden_obs_cors.py", "dest": "tests/unit/core/", "cmd": "uv run pytest -q -p no:cacheprovider tests/unit/core/test_zz_hidden_obs_cors.py"}
+      },
+      "suite": "uv run pytest -q -p no:cacheprovider tests/unit -n auto --dist loadfile",
+      "deps": "python"
+    },
+    "widget": {
+      "change": "support-v3-widget",
+      "product_repo": "/Users/luisfarfan/Developer/products/proxima/proxima-auth",
+      "base": "f5bc2f29820b961877fe9de7752b28c6dbabcea2",
+      "final": "f9010b0",
+      "prefix": "e05ccf7",
+      "stack": "node",
+      "hidden": {
+        "functional": {"file": "support-zz-hidden-functional.spec.ts", "dest": "support/", "cmd": "npx vitest run support/support-zz-hidden-functional.spec.ts"},
+        "defect": {"file": "support-zz-hidden-defect.spec.ts", "dest": "support/", "cmd": "npx vitest run support/support-zz-hidden-defect.spec.ts"}
+      },
+      "suite": "npx vitest run",
+      "deps": "node"
+    }
+  }
+}

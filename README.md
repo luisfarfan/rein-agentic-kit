@@ -44,6 +44,38 @@ Rein and executed without it. v2 fixes that by making execution one command.
 
 ---
 
+## 🔬 What the evidence says (2026-10-28 → 10-30)
+
+Rein was put against **Claude Code alone** on real Proxima tasks, rebuilt from the commit before
+each one shipped, with hidden tests for the criteria (F) and for the defects Rein's own audit had
+caught then (D), an OS sandbox, and pre-registered rules. The goal was not to prove Rein better but
+to find which layer earns its cost. Everything is in
+[`docs/research/2026-10-28-post-sdd/`](docs/research/2026-10-28-post-sdd/).
+
+- **Screen, Claude Code alone, 13 tasks × 2 runs** ([results](docs/research/2026-10-28-post-sdd/RESULTADOS-CRIBA.md)):
+  the 5 easy tasks pass 2/2 in 4–14 min for $2–5. 4 hard tasks meet every criterion but repeat the
+  historical defect (platform scopes, private data in telemetry, stale rows, a missing text); 4
+  leave criteria undone. No task was borderline.
+- **Phase 2, one layer per arm, 3 tasks × 1 run** ([design](docs/research/2026-10-28-post-sdd/FASE2.md),
+  [closing report](docs/research/2026-10-28-post-sdd/CIERRE-PROVISIONAL-FASE2.md)):
+  - **Planning** is the one clear gain: the incomplete task came out complete only with a plan
+    (2/2, against 0/4 without).
+  - **Gates as a stop hook** changed no result: all 6 reds came from the lab (a flaky suite, a blocked
+    hook), none from the agent's code; up to +23 min a run.
+  - **Audit** finds real defects (the stale read, the lost retry, a cross-repo contract) but missed
+    the platform-scope defect 2/2, flagged a red gate as a blocker, and a single fix round fixed 1 of
+    3 real defects; a 35-minute, $9 round fixed nothing.
+  - **Full orchestration** (`rein ship`) cost more and took longer than one session with the same
+    plan, without better code; 39 of one run's 65 minutes went to workers fixing a flaky suite.
+  - One run per cell: none of this is statistically distinguishable; it is mechanism, not effect size.
+- **P0 simplification** ([proposal and diff](docs/research/2026-10-28-post-sdd/P0-SIMPLIFICACION.md)):
+  Claude Code or Codex alone is the default (below); a red full gate is PASS, FAIL or INCONCLUSIVE
+  and only FAIL gets a worker; test setup is protected like gate config; a BLOCKING must be a
+  confirmed defect with its evidence. +190/−28 lines of code.
+
+The earlier token study behind v2 (context re-read, Opus share, lean worker profile) is in
+[`docs/research/2026-10-26-arquitectura/`](docs/research/2026-10-26-arquitectura/).
+
 ## 🧭 When to use Rein (and when not)
 
 Claude Code or Codex on its own is the default. Rein steps in only where it measurably adds
@@ -737,13 +769,22 @@ none and goes on; a Codex-only run leaves no row) and prints the usage delta per
 
 ## 🙃 Honest limitations
 
-- **v2 is unproven on real work.** The v2 success criteria (Claude tokens ≤ 30% of baseline, Opus
-  share ≤ 20%) are measured against a baseline recorded before the build; a pilot on a small
-  multi-repo change comes first.
+- **Orchestration has not earned its cost yet.** On the tasks measured (see *What the evidence
+  says*), `rein ship` was slower and dearer than one session with the same plan, without better code.
+  It is kept for the cases where orchestration has something concrete to offer: parallel tasks, several
+  repos, recovery, long runs. One run per cell: an effect size needs more runs than were spent.
 - **It needs Orca.** Rein v2 has no runtime of its own; the `rein ship` loop refuses to run outside an Orca terminal (`--detach` opens one; `--dry-run` runs nothing), and `quick`, `done` and `answer` call Orca; `detect`, `doctor`, `env`, `gate`, `verify` and the other local commands do not. `plan-check` needs no Orca terminal either, but as a last resort, to resolve a task's `Repo:`, it asks Orca for its repo list (`orca repo list`); without Orca that lookup just finds nothing.
-- **The reviewer is calibrated hard.** In the v1 loop, 8 of 9 runs used all 3 review rounds and the
-  last round still found a real blocking issue in 4 — which is why there is no `--fast` that
-  reviews less.
+- **The audit finds real defects but is no safety net.** In the v1 loop, 8 of 9 runs used all 3
+  review rounds and the last round still found a real blocking issue in 4. In 2026-10 it missed a
+  platform-scope defect in both audits that saw it, and a single fix round fixed 1 of 3 real defects.
+  The evidence format of a BLOCKING is checked; its truth is not.
+- **Some guardrails are only told.** Editing `~/.claude` or `~/.codex`, or a repository nobody
+  watches, is forbidden in the brief and never checked: Rein has no sandbox. What it checks
+  (gate config, test setup, watched checkouts) it detects when the task ends; it does not prevent
+  the write.
+- **INCONCLUSIVE asks more in JavaScript repos.** Failing tests are read from pytest's summary; a red
+  vitest, jest or Angular suite cannot be rechecked test by test, so it goes to the owner instead of
+  a worker.
 - **The outside-writes guard is git-based.** It sees what git sees in the watched checkouts: ignored
   paths, files outside any repo and writes that were reverted before the end of the task are
   invisible, and a commit swept in by another identity is only flagged as unresolved. Declare the

@@ -1,0 +1,75 @@
+{
+ "state_files": 53,
+ "phase": {
+  "done": 51,
+  "running": 2
+ },
+ "audit_result": {
+  "approved": 49,
+  "": 3,
+  "skipped": 1
+ },
+ "audit_rounds": {
+  "3": 2,
+  "0": 18,
+  "2": 10,
+  "1": 23
+ },
+ "multi_repo_runs": 14,
+ "plan_tasks": 172,
+ "audit_fix_tasks": 63,
+ "gate_fix_tasks": 5,
+ "runs_with_audit_fix": 35,
+ "runs_with_gate_fix": 5,
+ "dispatches_total": 418,
+ "plan_task_dispatches": {
+  "4": 8,
+  "5": 14,
+  "3": 8,
+  "1": 111,
+  "2": 28,
+  "0": 3
+ },
+ "plan_task_first_try_share": 0.6627906976744186,
+ "status": {
+  "audit_fix/done": 61,
+  "plan/done": 168,
+  "plan/pending": 3,
+  "gate_fix/done": 5,
+  "plan/failed": 1,
+  "audit_fix/failed": 1,
+  "audit_fix/pending": 1
+ },
+ "agents": {
+  "audit_fix/claude:sonnet": 55,
+  "plan/claude:sonnet": 127,
+  "plan/codex:gpt-6.1-sol": 40,
+  "plan/:": 3,
+  "audit_fix/codex:gpt-6.1-sol": 7,
+  "gate_fix/claude:sonnet": 2,
+  "gate_fix/codex:gpt-6.1-sol": 3,
+  "audit_fix/:": 1,
+  "plan/antigravity:gemini-4-argon-medium": 2
+ },
+ "fail_categories_retried_plan_tasks": {
+  "test_failed": 35,
+  "setup_env": 17,
+  "typecheck": 1,
+  "guard_outside": 4,
+  "hook": 7,
+  "timeout": 1
+ },
+ "fail_categories_all": {
+  "lint": 13,
+  "typecheck": 11,
+  "guard_config": 1,
+  "audit_blocking": 50,
+  "verification_failed": 9,
+  "setup_env": 33,
+  "test_failed": 61,
+  "other": 2,
+  "timeout": 11,
+  "hook": 9,
+  "guard_outside": 5
+ }
+}

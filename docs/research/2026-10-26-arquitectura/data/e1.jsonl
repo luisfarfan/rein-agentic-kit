@@ -1,0 +1,14 @@
+{"config": "C0_default", "rep": "1", "ctx": 59024, "input": 2, "cache_write": 59022, "cache_read": 0, "output": 4, "result": "OK", "wall_s": 7.86, "is_error": false}
+{"config": "C0_default", "rep": "2", "ctx": 59019, "input": 2, "cache_write": 29499, "cache_read": 29518, "output": 4, "result": "OK", "wall_s": 6.33, "is_error": false}
+{"config": "C1_strict_mcp", "rep": "1", "ctx": 47641, "input": 2, "cache_write": 24093, "cache_read": 23546, "output": 4, "result": "OK", "wall_s": 4.46, "is_error": false}
+{"config": "C1_strict_mcp", "rep": "2", "ctx": 47641, "input": 2, "cache_write": 19071, "cache_read": 28568, "output": 142, "result": "OK", "wall_s": 3.99, "is_error": false}
+{"config": "C2_no_skills", "rep": "1", "ctx": 46166, "input": 2, "cache_write": 46164, "cache_read": 0, "output": 4, "result": "OK", "wall_s": 4.47, "is_error": false}
+{"config": "C2_no_skills", "rep": "2", "ctx": 46167, "input": 2, "cache_write": 8410, "cache_read": 37755, "output": 4, "result": "OK", "wall_s": 5.37, "is_error": false}
+{"config": "C3_core_tools", "rep": "1", "ctx": 16119, "input": 2, "cache_write": 10969, "cache_read": 5148, "output": 177, "result": "OK", "wall_s": 4.42, "is_error": false}
+{"config": "C3_core_tools", "rep": "2", "ctx": 16116, "input": 2, "cache_write": 6128, "cache_read": 9986, "output": 123, "result": "OK", "wall_s": 4.48, "is_error": false}
+{"config": "C4_no_plugins", "rep": "1", "ctx": 12534, "input": 2, "cache_write": 2546, "cache_read": 9986, "output": 4, "result": "OK", "wall_s": 4.41, "is_error": false}
+{"config": "C4_no_plugins", "rep": "2", "ctx": 12535, "input": 2, "cache_write": 2547, "cache_read": 9986, "output": 4, "result": "OK", "wall_s": 3.45, "is_error": false}
+{"config": "C5_project_local", "rep": "1", "ctx": 29925, "input": 2, "cache_write": 29923, "cache_read": 0, "output": 4, "result": "OK", "wall_s": 6.26, "is_error": false}
+{"config": "C5_project_local", "rep": "2", "ctx": 29927, "input": 2, "cache_write": 18421, "cache_read": 11504, "output": 4, "result": "OK", "wall_s": 6.31, "is_error": false}
+{"config":"C6_deny_ToolSearch","ctx":533541,"note":"deny ToolSearch -> all deferred MCP tools load eagerly"}
+{"config":"C8_safe_project_local","ctx":21224,"rep":"1-2","note":"settings.local.json: plugins off + deny Artifact,Workflow,ScheduleWakeup,ReportFindings,AskUserQuestion,ListAgents,SendFeedback,Agent,Skill,advisor; ToolSearch kept"}

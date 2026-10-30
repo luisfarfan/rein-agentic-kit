@@ -1,0 +1,66 @@
+{
+ "rein": "rein 2.1.0",
+ "rein_repo_commit": "80b1732",
+ "claude": "2.1.312 (Claude Code)",
+ "codex": "codex-cli 0.164.0",
+ "tasks": {
+  "obs-cors": {
+   "base": "ca6f369d220ac3de540d6a8e7338e7d1884ec189",
+   "intent_sha256": "4cf1e74869cdd339dee80bfe971afff3a0f238c24648c797ad6dd2a9f778e30b",
+   "plan_sha256": "4969c66847e1bb65437e02e8633042ae50ebaab4c0005f311b9396bf2a98eec7",
+   "hidden": {
+    "functional": {
+     "file": "test_zz_hidden_obs_cors.py",
+     "sha256": "3ac248d52c50adfdafb51f73c2207460097b95df1a9bc268fba959c7c50be9ac"
+    }
+   },
+   "baseline": {
+    "runs": [
+     {
+      "passed": 13075,
+      "failed": 10,
+      "skipped": 8,
+      "secs": 359.5
+     },
+     {
+      "passed": 13075,
+      "failed": 10,
+      "skipped": 8,
+      "secs": 289.3
+     }
+    ]
+   }
+  },
+  "widget": {
+   "base": "f5bc2f29820b961877fe9de7752b28c6dbabcea2",
+   "intent_sha256": "3f86d9957551e9f4e429e24f2b61759a4d03e355c87ce0dc640bf1059edab212",
+   "plan_sha256": "fc4b61fb9c56b9eef490a1ac89e06d2a0a858948e9236d62eff4322dadb192ce",
+   "hidden": {
+    "functional": {
+     "file": "support-zz-hidden-functional.spec.ts",
+     "sha256": "d7b012361af056106e633f5956c939f0664fe8f81782b8c3e10249cab969d3e6"
+    },
+    "defect": {
+     "file": "support-zz-hidden-defect.spec.ts",
+     "sha256": "157237a109cc74e6688701ac86e96fc4d16f21917c8483fa0316e19ff47cc106"
+    }
+   },
+   "baseline": {
+    "runs": [
+     {
+      "passed": 234,
+      "failed": 0,
+      "skipped": 0,
+      "secs": 2.4
+     },
+     {
+      "passed": 234,
+      "failed": 0,
+      "skipped": 0,
+      "secs": 2.1
+     }
+    ]
+   }
+  }
+ }
+}

@@ -1,0 +1,256 @@
+{
+ "root": "/Users/luisfarfan/Developer/sandbox/rein-pilot/screen",
+ "products": "/Users/luisfarfan/Developer/products/proxima",
+ "postgres": {
+  "container": "rein-pilot-pg",
+  "image": "pgvector/pgvector:pg16",
+  "port": 56543
+ },
+ "stacks": {
+  "proxima-api": {
+   "setup": [
+    "mise trust -q . ; uv sync --frozen -q"
+   ],
+   "suite": "uv run pytest tests/unit/ -q -p no:cacheprovider --timeout=120 --timeout-method=thread",
+   "gate": "uv run ruff check src/",
+   "env": {
+    "POSTGRES_SERVER": "localhost",
+    "POSTGRES_USER": "proxima",
+    "POSTGRES_PASSWORD": "proxima",
+    "POSTGRES_DB": "proxima_test",
+    "POSTGRES_PORT": "56543",
+    "SECRET_KEY": "ci-test-secret-key-not-for-prod",
+    "ENVIRONMENT": "test",
+    "PGSSLMODE": "disable"
+   },
+   "db_env": "PROXIMA_TEST_DB",
+   "junit": " --junitxml={junit}"
+  },
+  "proxima-rag-api": {
+   "setup": [
+    "mise trust -q . ; uv venv -q .venv && VIRTUAL_ENV=.venv uv pip install -q -r requirements.txt"
+   ],
+   "suite": ".venv/bin/pytest -q -p no:cacheprovider",
+   "gate": ".venv/bin/python -m compileall -q app tests scripts",
+   "junit": " --junitxml={junit}",
+   "env": {
+    "UV_VENV_CLEAR": "1"
+   }
+  },
+  "proxima-pos": {
+   "setup": [
+    "pnpm install --frozen-lockfile --prefer-offline --reporter=silent"
+   ],
+   "suite": "pnpm exec ng test --watch=false",
+   "gate": "pnpm run lint && pnpm run build",
+   "junit": " --reporters=junit --output-file={junit}"
+  },
+  "proxima-admin": {
+   "setup": [
+    "pnpm install --frozen-lockfile --prefer-offline --reporter=silent && pnpm exec orval --config orval.config.ts"
+   ],
+   "suite": "pnpm exec ng test --watch=false",
+   "gate": "pnpm lint && pnpm build:production",
+   "junit": " --reporters=junit --output-file={junit}"
+  },
+  "proxima-storefront-v2": {
+   "setup": [
+    "pnpm install --frozen-lockfile --prefer-offline --reporter=silent && pnpm run gen:api"
+   ],
+   "suite": "pnpm exec vitest run",
+   "gate": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm build",
+   "junit": " --reporter=junit --outputFile={junit}"
+  },
+  "proxima-auth": {
+   "setup": [
+    "npm ci --prefer-offline --no-audit --no-fund --silent"
+   ],
+   "suite": "npx vitest run",
+   "gate": "mise trust -q . ; mise run verify",
+   "junit": " --reporter=junit --outputFile={junit}"
+  }
+ },
+ "candidates": {
+  "client-errors": {
+   "change": "obs-client-error-reasons",
+   "prior": "high",
+   "plan_tasks": 1,
+   "repos": {
+    "proxima-api": {
+     "base": "d6aa26f382",
+     "stack": "proxima-api"
+    }
+   },
+   "evidence": "3 BLOCKING (1 testigo), todos corregidos DENTRO del run: d09d8359 (primera ronda de auditoría: claves elegidas por el cliente sin redactar, 4xx directos sin motivo) y 6b9f0fa9 (ronda extra: 413 en streaming registrado dos veces). Escapados: ninguno",
+   "final": "api 6b9f0fa9 (landed onto e0d395b1)",
+   "quarantine": [
+    "tests/unit/inventory/test_lot_model.py::test_switching_off_needs_every_unit_back_in_the_unassigned_lot"
+   ]
+  },
+  "pos-availability": {
+   "change": "availability-p1-pos",
+   "prior": "high",
+   "plan_tasks": 1,
+   "repos": {
+    "proxima-pos": {
+     "base": "6f7de61337",
+     "stack": "proxima-pos"
+    }
+   },
+   "evidence": "2 BLOCKING (1 testigo) corregidos dentro del run (2de1089, adbdbda, en el store Rust de escritorio); escapados: 6a07821 (filas del catálogo sin el campo nuevo tras sync incremental), 5c7c245 (catálogo vacío durante el snapshot)",
+   "final": "pos adbdbda"
+  },
+  "storefront-tolerance": {
+   "change": "availability-p1-storefront-tolerance",
+   "prior": "high",
+   "plan_tasks": 1,
+   "repos": {
+    "proxima-storefront-v2": {
+     "base": "d8de23c73b",
+     "stack": "proxima-storefront-v2"
+    }
+   },
+   "evidence": "3 BLOCKING (1 testigo) corregidos dentro del run (489709c, 57d8469). e3c2320 (líneas scheduled/confirm topadas a stock 0) probablemente NO es de este cambio: el código vino con commits posteriores de promesa de envío (por decidir)",
+   "gate_override": {
+    "proxima-storefront-v2": "pnpm exec prettier --check --ignore-unknown {changed} && pnpm lint && pnpm typecheck && pnpm build"
+   },
+   "final": "sf 57d8469"
+  },
+  "sale-note-pos": {
+   "change": "sale-note-pos",
+   "prior": "medium",
+   "plan_tasks": 2,
+   "repos": {
+    "proxima-pos": {
+     "base": "5c7c245045",
+     "stack": "proxima-pos"
+    }
+   },
+   "evidence": "0 BLOCKING, 0 rondas de auditoría; escapado: f1b038d (nota de venta offline mal etiquetada), commit del dueño tras la auditoría; posible segundo escape d839572",
+   "final": "pos 7675754"
+  },
+  "mcp-ops-core": {
+   "change": "mcp-ops-core",
+   "prior": "high",
+   "plan_tasks": 2,
+   "repos": {
+    "proxima-api": {
+     "base": "f69c01d758",
+     "stack": "proxima-api"
+    }
+   },
+   "evidence": "Dentro del run: d5c879f6 (BLOCKING con testigo: carrera, la comprobación de staleness fuera de la transacción) y 9b6a6b75 (herramientas listadas sin mirar los scopes del token, hallazgo 'important'). Escapados: ninguno",
+   "final": "api 9b6a6b75 (landed onto 98afd87c)"
+  },
+  "new-errors": {
+   "change": "support-v3-new-errors",
+   "prior": "high",
+   "plan_tasks": 2,
+   "repos": {
+    "proxima-api": {
+     "base": "5e9e935768",
+     "stack": "proxima-api"
+    },
+    "proxima-rag-api": {
+     "base": "2b87907ca7",
+     "stack": "proxima-rag-api"
+    }
+   },
+   "evidence": "4 BLOCKING (2 testigos); dentro del run: 013452ba api (carrera: dos posts del mismo fingerprint crean dos issues), 3cda9fb3 rag; escapado: a32e4c3 rag (atributo de estado de SigNoz equivocado). Contrato entre dos repos",
+   "final": "api 16687213 (run) / 013452ba landed; rag 3cda9fb3 (run) / e8297c00 landed"
+  },
+  "cpe-admin": {
+   "change": "cpe-delivery-p0-admin",
+   "prior": "high",
+   "plan_tasks": 2,
+   "repos": {
+    "proxima-admin": {
+     "base": "a82375bc42",
+     "stack": "proxima-admin"
+    }
+   },
+   "evidence": "2 BLOCKING; dentro del run: 49f1f19d (T002 reintentada tras gate rojo: canales de entrega por índice en vez de id) y 384abf85 (fix de auditoría: envía aunque el receptor no se aceptó). Escapados: ninguno",
+   "final": "admin 8596aad8 (run) / 5185fbc4 landed"
+  },
+  "widget": {
+   "change": "support-v3-widget",
+   "prior": "medium",
+   "plan_tasks": 1,
+   "repos": {
+    "proxima-auth": {
+     "base": "f5bc2f2982",
+     "stack": "proxima-auth"
+    }
+   },
+   "evidence": "1 BLOCKING real corregido dentro del run (f9010b0f, carrera de lectura); escapados: ninguno. Smoke: N0 1/1 bien, A lo reintrodujo",
+   "final": "auth f9010b0f"
+  },
+  "rag-agent": {
+   "change": "support-v3-agent",
+   "prior": "medium",
+   "plan_tasks": 2,
+   "repos": {
+    "proxima-rag-api": {
+     "base": "667747aebb",
+     "stack": "proxima-rag-api"
+    }
+   },
+   "evidence": "3 BLOCKING (1 testigo) corregidos dentro del run (2b87907c); escapados: 2ff19748 (todo turno real devolvía 502), a32e4c3 (atributo de estado de SigNoz)",
+   "final": "rag 2b87907c"
+  },
+  "oauth-public": {
+   "change": "mcp-oauth-public-clients",
+   "prior": "medium",
+   "plan_tasks": 2,
+   "repos": {
+    "proxima-api": {
+     "base": "e43eede021",
+     "stack": "proxima-api"
+    }
+   },
+   "evidence": "1 BLOCKING sin testigo; dominio OAuth (redirect URIs, RFC 9207)",
+   "final": "api b1e94287"
+  },
+  "obs-cors": {
+   "change": "ai-support-p0-obs-cors",
+   "prior": "low",
+   "plan_tasks": 1,
+   "repos": {
+    "proxima-api": {
+     "base": "ca6f369d22",
+     "stack": "proxima-api"
+    }
+   },
+   "evidence": "smoke: tests ocultos validados; 0 BLOCKING; todos los brazos bien",
+   "final": "api df887b43"
+  },
+  "cpe-pos": {
+   "change": "cpe-delivery-p0-pos",
+   "prior": "low",
+   "plan_tasks": 2,
+   "repos": {
+    "proxima-pos": {
+     "base": "d8395722a1",
+     "stack": "proxima-pos"
+    }
+   },
+   "evidence": "0 BLOCKING, 0 rondas de auditoría, sin fixes posteriores",
+   "final": "pos 3727f1e"
+  },
+  "cpe-storefront": {
+   "change": "cpe-delivery-p0-storefront",
+   "prior": "low",
+   "plan_tasks": 1,
+   "repos": {
+    "proxima-storefront-v2": {
+     "base": "ed5e1d035f",
+     "stack": "proxima-storefront-v2"
+    }
+   },
+   "evidence": "0 BLOCKING, 0 rondas de auditoría; 8a73cb0 es el fix del propio run tras gate rojo (GATE1), no un fix posterior",
+   "final": "sf 8a73cb0"
+  }
+ },
+ "stacks_note": "Reference = the repo's own CI gate at its base (mise run ci / ci.yml), split into suite (tests, run twice) and gate (lint/typecheck/build, run once), with CI's env vars. proxima-api adds PGSSLMODE=disable: CI's service Postgres has no SSL either, and asyncpg's default 'prefer' handshake through Docker Desktop's port proxy dropped 1 random connection per ~13k-test run (\"rejected SSL upgrade\", no server-side error). Generated API clients are gitignored (storefront gen:api, admin orval via its pretest hook, both from the in-repo contracts/openapi.json), so setup runs the codegen that the repo's own scripts would run. Rerun with PGSSLMODE=disable (obs-cors): still 1 random connection error in 1 of 2 runs (now TimeoutError), so it is a Docker Desktop connection flake, not SSL. Accepted as documented environment noise: a test counts as broken only if it also fails in 2 isolated reruns (CRIBA §6), which this flake never does.",
+ "bases_note": "2026-10-29: 5 bases corregidas (client-errors, pos-availability, cpe-admin, rag-agent, new-errors/rag-api). Las originales salían del launch_head de T001, que REIN sobrescribe al reintentar la tarea, así que eran el propio commit de implementación. Auditoría: screen/BASES-AUDIT.md"
+}
