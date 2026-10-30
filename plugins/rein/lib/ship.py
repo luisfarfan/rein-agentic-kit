@@ -183,8 +183,9 @@ def build_task_spec(task: ss.TaskState, plan: dict, env_lines: list = (), allowe
                   "that is not about the %s repository belongs to another repository's fix task.)"
                   % task.repo, findings]
     if sd.is_gate_fix(task) and task.last_failure:
-        lines += ["", "The full test suite of %s (run once every task was done, before the audit) failed "
-                  "the same way twice. First run each failing test alone (the project's testOne command). "
+        lines += ["", "The full test suite of %s (run once every task was done, before the audit) failed, "
+                  "and what failed still fails when run alone (or a lint, typecheck or build slot is red). "
+                  "First run each failing test alone (the project's testOne command). "
                   "Fix only a failure the change causes. If a test passes alone, or fails the same way on "
                   "the change's base, do not edit tests, fixtures or test setup: ask the owner with "
                   "`orca orchestration ask --question <text>`. The failure:" % task.repo,
@@ -284,6 +285,11 @@ def build_audit_spec(plan: dict, changed: dict, reviewer_profile: str,
     if plan.get("why"):
         lines.append("Why: %s" % plan["why"])
     lines += owner_decisions_block(list(owner_decisions or []))
+    if any(isinstance(d, dict) and d.get("kind") == "repo_gate_inconclusive" and d.get("answer") == "skip"
+           for d in owner_decisions or ()):
+        lines.append("A full gate was INCONCLUSIVE and the owner skipped it (above): it is not a pass. Check "
+                     "whether the change can cause those failures (a race, ordering, shared state); a cause "
+                     "you can show is a finding.")
     lines.append(INLINE_REVIEW)
     # Not every auditor has Claude's skill loader (Codex, Antigravity): the skill is a plain file.
     lines.append("The rein-audit skill is the file %s: read it and follow its steps "
@@ -658,6 +664,22 @@ def run_task_verification(command: str, path: str, timeout: float, env: dict = N
     elif "pytest" in command and res.exit_code == 5:
         lines = ["pytest selected no tests (exit 5): this verification confirms nothing"] + lines
     return 1, "\n".join(lines)
+
+
+def recheck_alone(tests, path: str, timeout: float, env: dict = None) -> tuple:
+    """Run each failing test alone with the project's `testOne`: `(0, "")` when every one passes,
+    `(1, the ones that still fail)`, `(126, why)` when there is no testOne to run them with."""
+    template = str(((_detect.resolve(path) or {}).get("commands") or {}).get("testOne") or "")
+    if "{target}" not in template:
+        return 126, "no testOne command with {target} is configured"
+    failed = []
+    for test in tests:
+        code, text = run_task_verification(template.replace("{target}", shlex.quote(test)), path, timeout, env)
+        if code == 126:
+            return 126, text
+        if code:
+            failed.append("FAILED %s (run alone)\n%s" % (test, text[:1500]))
+    return (1, "\n".join(failed)) if failed else (0, "")
 
 
 def _verification_block(command: str, code: int, text: str) -> str:
@@ -1625,10 +1647,16 @@ class _Driver:
         repo, runner, timeout = a.repo, self.gate_runner, self.cfg.gate_timeout_seconds
         root, say = getattr(self, "root", ""), self.say
         log, change = self.gate_log_path(), getattr(self, "change", "")
+        recheck, env = tuple(getattr(a, "recheck", ()) or ()), self.worktree_env(a.repo, path)
 
         def job(cancel=None):
             if not path:
-                return sd.RepoGateVerdict(repo, 126, "no worktree is recorded for %s" % repo)
+                return sd.RepoGateVerdict(repo, 126, "no worktree is recorded for %s" % repo, recheck)
+            if recheck:
+                code, text = recheck_alone(recheck, path, timeout, env)
+                say("%s failing tests run alone: %s" % (repo, {0: "all pass", 1: "some still fail"}.get(
+                    code, "could not run")))
+                return sd.RepoGateVerdict(repo, code, text, recheck)
             try:
                 code, out = call_with(runner, path, True, timeout, repo=repo, env_root=root, tier="full",
                                       cancel=cancel)

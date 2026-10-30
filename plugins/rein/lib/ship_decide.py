@@ -26,6 +26,7 @@ from ship_state import ShipState, TaskState
 
 _DEFAULT_RISKY = ["**/auth/**", "**/payments/**", "**/migrations/**"]
 GATE_FAILURE_CAP = 6000  # a failed gate's detail: the real error lines, not a 2000-char tail
+RECHECK_CAP = 5  # failing tests a red full gate reruns alone before it is called FAIL or INCONCLUSIVE
 QUESTION_DETAIL = 1200   # how much of a failure an owner question quotes (Orca takes 2000)
 _BUSY = ("running", "gating", "gated")  # statuses that hold a repo's worktree
 _FIX_PREFIX = "AUDIT"
@@ -157,10 +158,12 @@ class GateResolved:
 
 @dataclass
 class RepoGateVerdict:
-    """The full gate of one repo (every gate slot, the whole suite) before the audit."""
+    """The full gate of one repo (every gate slot, the whole suite) before the audit; or, with
+    `recheck`, those failing tests run alone (0: every one passed alone, 1: some still fail)."""
     repo: str
     exit_code: int
     reason: str
+    recheck: tuple = ()
 
 
 @dataclass
@@ -230,8 +233,10 @@ class RunGate:
 
 @dataclass
 class RunRepoGate:
-    """Run the full gate of `repo`'s worktree and answer with RepoGateVerdict."""
+    """Run the full gate of `repo`'s worktree and answer with RepoGateVerdict. With `recheck`, run
+    only those failing tests, each alone (the project's testOne), instead of the whole suite."""
     repo: str
+    recheck: tuple = ()
 
 
 @dataclass
@@ -542,15 +547,57 @@ def _gate_fix_task(state: ShipState, repo: str, reason: str) -> None:
     state.tasks[fix_id] = TaskState(id=fix_id, repo=repo, deps=[], human_review=False, verification="",
                                     type="implementation", last_failure=reason[:GATE_FAILURE_CAP])
     state.repo_gates[repo] = "failed"
-    state.repo_gate_reds.pop(repo, None)  # after the fix, a red is run twice again before another one
+    state.repo_gate_reds.pop(repo, None)  # after the fix, a red is classified again
     if state.phase == "verifying":
         state.phase = "fixing" if state.audit_rounds > 0 else "running"
 
 
+def _inconclusive(state: ShipState, actions: list, repo: str, why: str, reason: str) -> None:
+    """A red full gate no worker should be sent to fix, and no one may read as passed: the owner decides."""
+    state.repo_gates[repo] = "inconclusive"
+    _open(state, actions, None,
+          "The full gate of %s is INCONCLUSIVE (%s): %s. Retry the gate, fix (a worker takes it as a real "
+          "failure), or skip (the audit starts and is asked whether the change can cause it)?"
+          % (repo, why, reason[:QUESTION_DETAIL]), ["retry", "fix", "skip"], "repo_gate_inconclusive")
+    state.pending_gates[-1]["repo"] = repo
+    state.pending_gates[-1]["reason"] = reason[:GATE_FAILURE_CAP]
+
+
+def _repo_gate_failed(state: ShipState, actions: list, cfg: ShipConfig, repo: str, reason: str) -> None:
+    """A red full gate the change causes: a fix task, past maxRetries the owner."""
+    fails = state.repo_gate_fails.get(repo, 0) + 1
+    state.repo_gate_fails[repo] = fails
+    if fails <= cfg.max_retries:
+        _gate_fix_task(state, repo, reason)
+        return
+    state.repo_gates[repo] = "red"
+    _open(state, actions, None,
+          "The full gate of %s is still red after %d fix task(s): %s. Retry (one more fix task), or skip "
+          "it (the audit starts without it)?" % (repo, fails - 1, reason[:QUESTION_DETAIL]),
+          ["retry", "skip"], "repo_gate_red")
+    state.pending_gates[-1]["repo"] = repo
+    state.pending_gates[-1]["reason"] = reason[:GATE_FAILURE_CAP]
+
+
 def _on_repo_gate_verdict(state: ShipState, event: RepoGateVerdict, cfg: ShipConfig, actions: list) -> None:
+    """PASS, FAIL or INCONCLUSIVE, before any worker is spent. A red full gate is PASS only when it is
+    green; FAIL (a fix task) when its failing tests still fail run alone, or a deterministic slot
+    (lint, typecheck, build) is red; INCONCLUSIVE (the owner) when the environment failed or the
+    failing tests pass alone. Only the failing tests are run again, never the whole suite."""
     repo = event.repo
     if state.repo_gates.get(repo) != "running":
         return  # nobody is waiting for this one
+    original = state.repo_gate_reds.get(repo, "")
+    if event.recheck:
+        if event.exit_code == 0:
+            _inconclusive(state, actions, repo, "its failing tests pass when run alone: intermittent, "
+                          "order-dependent or a race", original or event.reason)
+        elif event.exit_code == 126:
+            _inconclusive(state, actions, repo, "its failing tests could not be run alone: %s"
+                          % event.reason[:200], original)
+        else:
+            _repo_gate_failed(state, actions, cfg, repo, "%s\n%s" % (event.reason, original))
+        return
     if event.exit_code == 0:
         state.repo_gates[repo] = "passed"
         state.repo_gate_reds.pop(repo, None)
@@ -561,35 +608,15 @@ def _on_repo_gate_verdict(state: ShipState, event: RepoGateVerdict, cfg: ShipCon
               "The full gate of %s could not run before the audit: %s. Retry it, or skip it (the audit "
               "starts without it)?" % (repo, event.reason[:QUESTION_DETAIL]), ["retry", "skip"], "repo_gate")
         state.pending_gates[-1]["repo"] = repo
-    else:
-        # Classify before spending a worker: a fix task only for the same failure twice in a row.
-        # The environment failing, or a different failure each run, is no worker's to fix.
-        why, prev = triage.kind(event.reason), state.repo_gate_reds.get(repo)
+    elif triage.kind(event.reason) == "infra":
+        _inconclusive(state, actions, repo, "the environment failed", event.reason)
+    elif triage.failing_tests(event.reason):
         state.repo_gate_reds[repo] = event.reason[:GATE_FAILURE_CAP]
-        if why == "infra" or (prev is not None and not triage.same_failure(prev, event.reason)):
-            state.repo_gates[repo] = "setup"
-            _open(state, actions, None,
-                  "The full gate of %s is red for a reason no worker should fix (%s): %s. Retry the gate, "
-                  "or skip it (the audit starts without it)?"
-                  % (repo, "the environment failed" if why == "infra" else "a different failure each run",
-                     event.reason[:QUESTION_DETAIL]), ["retry", "skip"], "repo_gate")
-            state.pending_gates[-1]["repo"] = repo
-            return
-        if prev is None:  # the first red: run it once more before a worker is spent on it
-            actions.append(RunRepoGate(repo))
-            return
-        fails = state.repo_gate_fails.get(repo, 0) + 1
-        state.repo_gate_fails[repo] = fails
-        if fails <= cfg.max_retries:
-            _gate_fix_task(state, repo, event.reason)
-            return
-        state.repo_gates[repo] = "red"
-        _open(state, actions, None,
-              "The full gate of %s is still red after %d fix task(s): %s. Retry (one more fix task), or skip "
-              "it (the audit starts without it)?" % (repo, fails - 1, event.reason[:QUESTION_DETAIL]),
-              ["retry", "skip"], "repo_gate_red")
-        state.pending_gates[-1]["repo"] = repo
-        state.pending_gates[-1]["reason"] = event.reason[:GATE_FAILURE_CAP]
+        actions.append(RunRepoGate(repo, tuple(triage.failing_tests(event.reason)[:RECHECK_CAP])))
+    elif triage.red_slots(event.reason) & {"lint", "typecheck", "build"}:
+        _repo_gate_failed(state, actions, cfg, repo, event.reason)  # deterministic: no rerun needed
+    else:
+        _inconclusive(state, actions, repo, "the suite failed without naming a failing test", event.reason)
 
 
 # --- decide -----------------------------------------------------------------
@@ -925,6 +952,7 @@ _RESOLUTIONS = {
     "audit_guard": ("retry-audit", "accept", "reject"),
     "repo_gate": ("retry", "skip"),
     "repo_gate_red": ("retry", "skip"),
+    "repo_gate_inconclusive": ("retry", "fix", "skip"),
     "stalled": tuple(STALL_OPTIONS),
 }
 
@@ -1031,15 +1059,16 @@ def _on_gate_resolved(state: ShipState, event: GateResolved, cfg: ShipConfig, ac
                 state.pending_findings, state.pending_changed_files = [], []
             else:
                 _end_audit(state, actions, "approved" if resolution == "accept" else "rejected")
-    elif kind in ("repo_gate", "repo_gate_red"):
+    elif kind in ("repo_gate", "repo_gate_red", "repo_gate_inconclusive"):
         repo = gate.get("repo") or ""
-        if state.repo_gates.get(repo) not in ("setup", "red"):
+        if state.repo_gates.get(repo) not in ("setup", "red", "inconclusive"):
             return  # already moved on
         if resolution == "skip":
             state.repo_gates[repo] = "skipped"
             _after_repo_gates(state, actions)
-        elif kind == "repo_gate":
+        elif kind in ("repo_gate", "repo_gate_inconclusive") and resolution == "retry":
             state.repo_gates[repo] = "running"
+            state.repo_gate_reds.pop(repo, None)
             actions.append(RunRepoGate(repo))
         else:
             _gate_fix_task(state, repo, gate.get("reason") or "the full gate of %s was red" % repo)

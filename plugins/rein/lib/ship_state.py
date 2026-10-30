@@ -145,8 +145,8 @@ class ShipState:
     repo_gates: dict = field(default_factory=dict)
     # Red full gates per repo in this run: past maxRetries the owner decides.
     repo_gate_fails: dict = field(default_factory=dict)
-    # The last red full gate of each repo, until it passes or a fix task takes it: a second red
-    # is compared with it before any worker is spent on it.
+    # A red full gate whose failing tests are being run alone (RunRepoGate.recheck): kept until
+    # the recheck says FAIL or INCONCLUSIVE, the gate passes, or a fix task takes it.
     repo_gate_reds: dict = field(default_factory=dict)
     # Every gate the owner resolved: `{gate, kind, task_id, question, answer}`. The auditor reads
     # them as binding, so it never asks the owner again what they already decided.

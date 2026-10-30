@@ -87,14 +87,12 @@ class TestKindAndHint(unittest.TestCase):
     def test_an_assertion_stays_a_test_failure(self):
         self.assertEqual(ft.kind("test [failed] exit=1 $ pytest\nE   AssertionError: assert 1 == 2"), "test")
 
-    def test_the_same_failure_is_the_same_failing_tests(self):
-        a = "FAILED tests/x.py::test_y - assert 1 == 2\n1 failed, 13567 passed, 30721 warnings in 67.69s"
-        b = "FAILED tests/x.py::test_y - assert 1 == 2\n1 failed, 13567 passed, 30713 warnings in 71.02s"
-        c = "FAILED tests/z.py::test_w - assert 0\n1 failed, 13567 passed"
-        self.assertEqual(ft.failing_tests(a), ["tests/x.py::test_y"])
-        self.assertTrue(ft.same_failure(a, b))
-        self.assertFalse(ft.same_failure(a, c))
-        self.assertTrue(ft.same_failure("lint [failed] exit=1\nI001 unsorted", "lint [failed] exit=1\nI001 unsorted"))
+    def test_failing_tests_and_red_slots_are_read_from_the_gate_report(self):
+        text = ("lint [ok] exit=0 $ ruff\ntest [failed] exit=1 $ pytest\n"
+                "FAILED tests/x.py::test_y - assert 1 == 2\nERROR tests/z.py\n2 failed, 13567 passed")
+        self.assertEqual(ft.failing_tests(text), ["tests/x.py::test_y", "tests/z.py"])
+        self.assertEqual(ft.red_slots(text), {"test"})
+        self.assertEqual(ft.failing_tests("lint [failed] exit=1\nI001 unsorted"), [])
 
     def test_the_outside_hint_names_accept_outside(self):
         self.assertIn("rein accept-outside", ft.hint(OUTSIDE))

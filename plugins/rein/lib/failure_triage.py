@@ -53,6 +53,7 @@ _INFRA = re.compile(r"rejected SSL upgrade|ConnectionRefusedError|Connection ref
                     r"Cannot connect to the Docker daemon|address already in use|ECONNREFUSED|ETIMEDOUT")
 # A pytest summary line: `FAILED tests/x.py::test_y - AssertionError` or `ERROR tests/x.py`.
 _FAILED_TEST = re.compile(r"^(?:FAILED|ERROR) (\S+)", re.M)
+_RED_SLOT = re.compile(r"^(\w+) \[failed\]", re.M)
 
 
 def kind(text: str) -> str:
@@ -74,13 +75,9 @@ def failing_tests(text: str) -> list:
     return sorted(set(_FAILED_TEST.findall(clean(text))))
 
 
-def same_failure(a: str, b: str) -> bool:
-    """Whether two red gates failed the same way: the same failing tests when either names any
-    (counts, timings and warnings differ between two runs of one failure), else the same signature."""
-    fa, fb = failing_tests(a), failing_tests(b)
-    if fa or fb:
-        return fa == fb
-    return signature(a) == signature(b)
+def red_slots(text: str) -> set:
+    """The gate slots a gate report names as failed: `lint [failed] exit=1 $ ...` -> {"lint"}."""
+    return set(_RED_SLOT.findall(clean(text)))
 
 
 def hint(text: str) -> str:
