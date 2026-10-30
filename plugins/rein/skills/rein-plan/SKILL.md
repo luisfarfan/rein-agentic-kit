@@ -1,6 +1,6 @@
 ---
 name: rein-plan
-description: "Plan a change into verifiable tasks with acceptance criteria, a Repo, dependencies and a runnable verification each — dry-run and explicit confirmation before anything is written. Never implements. Use when the user asks to plan or break down work, or invokes /rein:rein-plan."
+description: "Plan a change into verifiable tasks with acceptance criteria, a Repo, dependencies and a runnable verification each — confirmed before anything is written. Never implements. Use for uncertain or multi-requirement work, when asked to plan or break it down, or on /rein:rein-plan."
 license: MIT
 ---
 
@@ -44,9 +44,9 @@ Usage: `/rein:rein-plan <change-name> [description]`
        - reads flow.config.json when present
    ```
 
-   Changing gate config (flow.config.json, runner files) needs `Gate config: <path>`.
-   The header is short: `Out` and decision titles ride in every worker's prompt. Decisions
-   only where a worker could plausibly reverse a choice unnoticed.
+   Changing gate config or test setup (flow.config.json, runner files, conftest.py) needs
+   `Gate config: <path>`. Short header: `Out` and decision titles ride in every
+   worker's prompt. Decisions only where a worker could reverse a choice unnoticed.
 5. **Critique the draft before it is shown or written.** UNCONDITIONAL: every invocation, never
    behind a flag, never only when the user asks for it.
    a. If `plan.source` is `openspec` and `command -v openspec` finds it, run

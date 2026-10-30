@@ -44,6 +44,22 @@ Rein and executed without it. v2 fixes that by making execution one command.
 
 ---
 
+## 🧭 When to use Rein (and when not)
+
+Claude Code or Codex on its own is the default. Rein steps in only where it measurably adds
+something (`docs/research/2026-10-28-post-sdd/`):
+
+| The work | Use |
+|---|---|
+| A small, low-risk change in one repo | **Claude Code or Codex alone.** No Rein |
+| Real uncertainty, several requirements or several repos | `/rein:rein-plan`, then implement natively |
+| Touches permissions, security, concurrency, durable state or contracts between services | add `/rein:rein-audit` |
+| Several dependent tasks, or coordination across repos | `/ship` |
+
+More audits or more test runs are not more quality by themselves: a measured audit round
+that fixed nothing cost 35 minutes, and gate-fix workers spent 39 of a run's 65 minutes on a
+flaky suite.
+
 ## 🔁 The lifecycle
 
 ```

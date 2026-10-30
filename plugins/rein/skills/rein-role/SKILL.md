@@ -1,6 +1,6 @@
 ---
 name: rein-role
-description: "Assign this session's working role — planner, implementer or reviewer — and load its operating profile. Use when the user runs /rein:rein-role, says which role a session should play, or when you are about to plan, implement or review and it is unclear which one you are."
+description: "Assign this session's working role — planner, implementer or reviewer — and load its operating profile. Use only when the user runs /rein:rein-role or says which role a session should play."
 license: MIT
 ---
 

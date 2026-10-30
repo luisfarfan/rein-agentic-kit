@@ -1,6 +1,6 @@
 ---
 name: rein-audit
-description: "Independent review of a completed change — the third role, distinct from planner and implementer. Runs the mechanical checks, delegates the five-axis judgement to the code-reviewer, and records a state-bound verdict. Never implements. Use when the user asks to review a change or audit a branch before merge, or invokes /rein:rein-audit."
+description: "Independent review of a completed change — the third role, distinct from planner and implementer. Runs the mechanical checks, delegates the five-axis judgement to the code-reviewer, and records a state-bound verdict. Never implements. Use when the change touches permissions, security, concurrency or durable state, or contracts between services, or when the user asks to review a change or audit a branch before merge, or invokes /rein:rein-audit."
 license: MIT
 ---
 

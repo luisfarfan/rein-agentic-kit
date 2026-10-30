@@ -1,6 +1,6 @@
 ---
 name: rein-discover
-description: "Think a problem through before committing to a shape. Investigate, read, ask — produce understanding, never a plan. Use when the work is not yet clear enough to decompose, or before /rein:rein-plan."
+description: "Think a problem through before committing to a shape. Investigate, read, ask — produce understanding, never a plan. Use only when the user invokes /rein:rein-discover or asks to think a problem through before planning."
 ---
 
 # /rein:rein-discover

@@ -1,6 +1,6 @@
 ---
 name: ship
-description: "Implement a planned change: opens a detached Orca tab that runs `rein ship <change>` (workers implement, each task is gated, then an audit). Use when the user says ship, lánzalo, implementa el plan, or invokes /ship."
+description: "Implement a planned change: opens a detached Orca tab that runs `rein ship <change>` (workers implement, each task is gated, then an audit). Use for multi-task or multi-repo plans, when the user says ship, lánzalo, implementa el plan, or invokes /ship."
 license: MIT
 ---
 
@@ -14,7 +14,6 @@ Usage: `/ship <change> [--root <plan repo>]`
 
 Agent flag: "con codex" → `--agent codex`; "con antigravity" →
 `--agent antigravity`; "con sonnet" / "con claude" → `--agent claude`; `--model` only if named.
-It applies to every task.
 
 ## Steps
 
