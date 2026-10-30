@@ -156,7 +156,8 @@ rein ship <change> [--root <plan repo>] [--agent <id> [--model <m>]] [--dry-run 
                  # drive a plan through Orca workers: dispatch, gate each task, audit.
                  # A task's gate: lint, typecheck, the affected tests and its Verification;
                  # each repo's full gate (whole suite) runs once, after its tasks, before the
-                 # audit and the re-audit. A red full gate becomes a GATE<n>-<repo> fix task.
+                 # audit and the re-audit. A red full gate runs again; the same failure twice
+                 # becomes a GATE<n>-<repo> fix task, anything else goes to you.
                  # Gates run in the background: the loop keeps handling workers, gates and
                  # answers meanwhile. taskTimeoutMinutes covers a task's gating too.
                  # Resumes from <root>/.rein/ship/<change>.json. --dry-run prints every orca call
@@ -434,7 +435,11 @@ setup); dropping it is `gate.cleanup`'s.
 A task's gate runs `lint`, `typecheck`, the tests its change reaches (`gate.affected`) and the
 task's own Verification; `test` in full (and `build`, and the optional `testIntegration`) runs
 **once per repo**, after all its tasks and before the audit and the re-audit. A red repo gate
-becomes a `GATE<n>-<repo>` fix task. `rein gate --tier task --base <ref>` and `--tier full` are the
+runs once more before any worker is spent on it. The same failing tests twice become a
+`GATE<n>-<repo>` fix task, whose worker first runs each failing test alone and never edits test
+setup for a failure the change did not cause. The environment failing (a refused or dropped
+connection, no Docker) or a different failure each run is a `repo_gate` question for you, with the
+failure: no worker fixes a flaky suite. `rein gate --tier task --base <ref>` and `--tier full` are the
 same two levels by hand. A slot that passed on the same tree state, command and `gate.env` is
 reused (`cached`); a failure, a timeout or a setup problem is never cached.
 

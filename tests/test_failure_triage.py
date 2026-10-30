@@ -76,6 +76,26 @@ class TestKindAndHint(unittest.TestCase):
         self.assertEqual(ft.kind(NG), "test")
         self.assertEqual(ft.kind("worker failed"), "other")
 
+    def test_an_environment_failure_is_infra_even_inside_a_test_slot(self):
+        # Texts the 2026-10-30 pilot's flaky API suite printed.
+        for text in ("test [failed] exit=1 $ uv run pytest -q tests/unit\nE   asyncpg.exceptions: rejected SSL upgrade",
+                     "test [failed] exit=1 $ pytest\nE   ConnectionRefusedError: [Errno 61] Connect call failed",
+                     "FATAL:  sorry, too many clients already"):
+            self.assertEqual(ft.kind(text), "infra", text)
+        self.assertIn("environment", ft.hint("connection was closed in the middle of operation"))
+
+    def test_an_assertion_stays_a_test_failure(self):
+        self.assertEqual(ft.kind("test [failed] exit=1 $ pytest\nE   AssertionError: assert 1 == 2"), "test")
+
+    def test_the_same_failure_is_the_same_failing_tests(self):
+        a = "FAILED tests/x.py::test_y - assert 1 == 2\n1 failed, 13567 passed, 30721 warnings in 67.69s"
+        b = "FAILED tests/x.py::test_y - assert 1 == 2\n1 failed, 13567 passed, 30713 warnings in 71.02s"
+        c = "FAILED tests/z.py::test_w - assert 0\n1 failed, 13567 passed"
+        self.assertEqual(ft.failing_tests(a), ["tests/x.py::test_y"])
+        self.assertTrue(ft.same_failure(a, b))
+        self.assertFalse(ft.same_failure(a, c))
+        self.assertTrue(ft.same_failure("lint [failed] exit=1\nI001 unsorted", "lint [failed] exit=1\nI001 unsorted"))
+
     def test_the_outside_hint_names_accept_outside(self):
         self.assertIn("rein accept-outside", ft.hint(OUTSIDE))
         self.assertIn("hook", ft.hint(HOOK))

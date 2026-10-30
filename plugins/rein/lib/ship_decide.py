@@ -542,6 +542,7 @@ def _gate_fix_task(state: ShipState, repo: str, reason: str) -> None:
     state.tasks[fix_id] = TaskState(id=fix_id, repo=repo, deps=[], human_review=False, verification="",
                                     type="implementation", last_failure=reason[:GATE_FAILURE_CAP])
     state.repo_gates[repo] = "failed"
+    state.repo_gate_reds.pop(repo, None)  # after the fix, a red is run twice again before another one
     if state.phase == "verifying":
         state.phase = "fixing" if state.audit_rounds > 0 else "running"
 
@@ -552,6 +553,7 @@ def _on_repo_gate_verdict(state: ShipState, event: RepoGateVerdict, cfg: ShipCon
         return  # nobody is waiting for this one
     if event.exit_code == 0:
         state.repo_gates[repo] = "passed"
+        state.repo_gate_reds.pop(repo, None)
         _after_repo_gates(state, actions)
     elif event.exit_code == 126:
         state.repo_gates[repo] = "setup"
@@ -560,6 +562,22 @@ def _on_repo_gate_verdict(state: ShipState, event: RepoGateVerdict, cfg: ShipCon
               "starts without it)?" % (repo, event.reason[:QUESTION_DETAIL]), ["retry", "skip"], "repo_gate")
         state.pending_gates[-1]["repo"] = repo
     else:
+        # Classify before spending a worker: a fix task only for the same failure twice in a row.
+        # The environment failing, or a different failure each run, is no worker's to fix.
+        why, prev = triage.kind(event.reason), state.repo_gate_reds.get(repo)
+        state.repo_gate_reds[repo] = event.reason[:GATE_FAILURE_CAP]
+        if why == "infra" or (prev is not None and not triage.same_failure(prev, event.reason)):
+            state.repo_gates[repo] = "setup"
+            _open(state, actions, None,
+                  "The full gate of %s is red for a reason no worker should fix (%s): %s. Retry the gate, "
+                  "or skip it (the audit starts without it)?"
+                  % (repo, "the environment failed" if why == "infra" else "a different failure each run",
+                     event.reason[:QUESTION_DETAIL]), ["retry", "skip"], "repo_gate")
+            state.pending_gates[-1]["repo"] = repo
+            return
+        if prev is None:  # the first red: run it once more before a worker is spent on it
+            actions.append(RunRepoGate(repo))
+            return
         fails = state.repo_gate_fails.get(repo, 0) + 1
         state.repo_gate_fails[repo] = fails
         if fails <= cfg.max_retries:

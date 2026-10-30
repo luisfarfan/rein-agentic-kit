@@ -47,16 +47,40 @@ def signature(text: str) -> str:
     return hashlib.sha1(norm.encode("utf-8")).hexdigest()[:16] if norm else ""
 
 
+# What the environment said, not the code: a dropped or refused connection, a busy port, no Docker.
+_INFRA = re.compile(r"rejected SSL upgrade|ConnectionRefusedError|Connection refused|connection reset|"
+                    r"connection was closed in the middle|too many clients|could not connect to server|"
+                    r"Cannot connect to the Docker daemon|address already in use|ECONNREFUSED|ETIMEDOUT")
+# A pytest summary line: `FAILED tests/x.py::test_y - AssertionError` or `ERROR tests/x.py`.
+_FAILED_TEST = re.compile(r"^(?:FAILED|ERROR) (\S+)", re.M)
+
+
 def kind(text: str) -> str:
-    """outside | hook | test | other: which part of Rein said no."""
+    """outside | hook | infra | test | other: which part of Rein said no."""
     t = clean(text)
     if "wrote outside its worktree" in t:
         return "outside"
     if "pre-commit hook only after the hook rewrites" in t or "commit-msg hook" in t:
         return "hook"
+    if _INFRA.search(t):
+        return "infra"
     if re.search(r"^(?:test|testIntegration|lint|typecheck|build) \[", t, re.M):
         return "test"
     return "other"
+
+
+def failing_tests(text: str) -> list:
+    """The test ids a pytest summary names as failed or errored, sorted; [] when it names none."""
+    return sorted(set(_FAILED_TEST.findall(clean(text))))
+
+
+def same_failure(a: str, b: str) -> bool:
+    """Whether two red gates failed the same way: the same failing tests when either names any
+    (counts, timings and warnings differ between two runs of one failure), else the same signature."""
+    fa, fb = failing_tests(a), failing_tests(b)
+    if fa or fb:
+        return fa == fb
+    return signature(a) == signature(b)
 
 
 def hint(text: str) -> str:
@@ -69,6 +93,8 @@ def hint(text: str) -> str:
     if k == "hook":
         return ("The repo's own git hook rewrites files on commit; check that hook, or let the next worker "
                 "amend its commit with the hook's fix (retry).")
+    if k == "infra":
+        return "The environment failed (a connection, a port, Docker), not the change: fix it, then retry."
     if k == "test":
         return "Two workers in a row could not make this check pass the same way; look at the failure before retrying."
     return "Look at the failure before retrying."

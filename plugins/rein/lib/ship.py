@@ -179,8 +179,11 @@ def build_task_spec(task: ss.TaskState, plan: dict, env_lines: list = (), allowe
         lines += ["", "The audit found these blocking problems; fix them (a finding that is not about "
                   "the %s repository belongs to another repository's fix task):" % task.repo, findings]
     if sd.is_gate_fix(task) and task.last_failure:
-        lines += ["", "The full test suite of %s (run once every task was done, before the audit) failed; "
-                  "fix it -- the failing tests may be outside what the change touched:" % task.repo,
+        lines += ["", "The full test suite of %s (run once every task was done, before the audit) failed "
+                  "the same way twice. First run each failing test alone (the project's testOne command). "
+                  "Fix only a failure the change causes. If a test passes alone, or fails the same way on "
+                  "the change's base, do not edit tests, fixtures or test setup: ask the owner with "
+                  "`orca orchestration ask --question <text>`. The failure:" % task.repo,
                   task.last_failure]
     elif task.last_failure and task.last_failure != findings:
         # Also after the owner's "retry", which resets the attempts: a fresh worker must not start blind.

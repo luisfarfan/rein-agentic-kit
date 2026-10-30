@@ -4,7 +4,10 @@ The full suite used to run in every task's gate (and every retry's, and every fi
 task's), then again in the auditor's session: 20-30 runs of a 6-12 minute suite on
 one change. Now a task's gate is lint + typecheck + affected tests + its own
 Verification, and each repo's full gate runs once, after its tasks, before the
-audit; a red full gate becomes a fix task for that repo.
+audit. A red full gate runs again before any worker is spent on it: the same failure
+twice becomes a fix task for that repo; the environment failing, or a different failure
+each run, goes to the owner (in the 2026-10-30 pilot, gate-fix workers spent 39 of a
+run's 65 minutes on a flaky suite and committed test-setup changes nobody asked for).
 """
 
 from __future__ import annotations
@@ -57,6 +60,9 @@ class TestTheRepoGateRunsBeforeTheAudit(unittest.TestCase):
     def test_a_red_full_gate_becomes_a_fix_task_for_that_repo(self):
         st, _ = sd.decide(done_state(), sd.GateVerdict("T2", 0, ""), CFG)
         st, actions = verified(st, "api", 1, "tests/unit/test_x.py::test_y FAILED")
+        self.assertEqual(actions, [sd.RunRepoGate("api")])  # the first red runs once more, no worker
+        self.assertNotIn("GATE1-api", st.tasks)
+        st, actions = verified(st, "api", 1, "tests/unit/test_x.py::test_y FAILED")
         fix = st.tasks["GATE1-api"]
         self.assertEqual((fix.repo, fix.status, fix.verification), ("api", "pending", ""))
         self.assertIn("test_y FAILED", fix.last_failure)
@@ -75,6 +81,7 @@ class TestTheRepoGateRunsBeforeTheAudit(unittest.TestCase):
     def test_past_the_retries_the_owner_decides(self):
         st, _ = sd.decide(done_state(), sd.GateVerdict("T2", 0, ""), CFG)
         st.repo_gate_fails = {"api": CFG.max_retries + 1}
+        st.repo_gate_reds = {"api": "still red"}
         st, actions = verified(st, "api", 1, "still red")
         self.assertNotIn("GATE%d-api" % (CFG.max_retries + 2), st.tasks)
         gate = st.pending_gates[-1]
@@ -110,7 +117,51 @@ class TestTheRepoGateRunsBeforeTheAudit(unittest.TestCase):
         self.assertEqual(st.phase, "verifying")
         self.assertEqual(actions[-1], sd.RunRepoGate("api"))
         st, actions = verified(st, "api", 1, "red")
+        st, actions = verified(st, "api", 1, "red")
         self.assertEqual(st.phase, "fixing")  # a fix round stays one: the re-audit follows
+
+    def test_a_red_then_green_full_gate_passes_without_a_worker(self):
+        st, _ = sd.decide(done_state(), sd.GateVerdict("T2", 0, ""), CFG)
+        st, _ = verified(st, "api", 1, "FAILED tests/unit/test_x.py::test_y - AssertionError")
+        st, _ = verified(st, "api", 0)
+        self.assertEqual(st.repo_gates["api"], "passed")
+        self.assertFalse(any(t.startswith("GATE") for t in st.tasks))
+
+    def test_a_different_failure_each_run_asks_the_owner_without_a_worker(self):
+        st, _ = sd.decide(done_state(), sd.GateVerdict("T2", 0, ""), CFG)
+        st, _ = verified(st, "api", 1, "FAILED tests/unit/storefront/test_pc_builds.py::test_a\n1 failed, 13567 passed")
+        st, actions = verified(st, "api", 1, "FAILED tests/unit/exports/test_exports_api.py::test_b\n1 failed, 13567 passed")
+        self.assertFalse(any(t.startswith("GATE") for t in st.tasks))
+        gate = st.pending_gates[-1]
+        self.assertEqual((gate["kind"], gate["repo"], gate["options"]), ("repo_gate", "api", ["retry", "skip"]))
+        self.assertIn("a different failure each run", gate["question"])
+
+    def test_the_same_failing_tests_with_other_counts_is_the_same_failure(self):
+        st, _ = sd.decide(done_state(), sd.GateVerdict("T2", 0, ""), CFG)
+        st, _ = verified(st, "api", 1, "FAILED tests/x.py::test_y - assert 1 == 2\n1 failed, 13567 passed, 30721 warnings")
+        st, _ = verified(st, "api", 1, "FAILED tests/x.py::test_y - assert 1 == 2\n1 failed, 13567 passed, 30713 warnings")
+        self.assertIn("GATE1-api", st.tasks)
+
+    def test_an_environment_failure_asks_the_owner_at_once(self):
+        st, _ = sd.decide(done_state(), sd.GateVerdict("T2", 0, ""), CFG)
+        st, actions = verified(st, "api", 1, "ERROR tests/unit/test_x.py - asyncpg: rejected SSL upgrade")
+        self.assertEqual([type(a).__name__ for a in actions], ["OpenGate"])  # no rerun, no worker
+        self.assertFalse(any(t.startswith("GATE") for t in st.tasks))
+        gate = st.pending_gates[-1]
+        self.assertEqual(gate["kind"], "repo_gate")
+        self.assertIn("the environment failed", gate["question"])
+        st.gates["g1"] = {"task_id": None, "kind": "repo_gate", "repo": "api"}
+        st.pending_gates = []
+        again, actions = sd.decide(st, sd.GateResolved("g1", "retry"), CFG)
+        self.assertEqual(actions, [sd.RunRepoGate("api")])  # retry runs the gate, not a worker
+
+    def test_the_gate_fix_brief_asks_to_isolate_before_touching_tests(self):
+        t = sd.TaskState(id="GATE1-api", repo="api", deps=[], human_review=False, verification="",
+                         type="implementation", last_failure="FAILED tests/x.py::test_y")
+        spec = ship.build_task_spec(t, {"tasks": []})
+        self.assertIn("First run each failing test alone", spec)
+        self.assertIn("do not edit tests, fixtures or test setup", spec)
+        self.assertNotIn("may be outside what the change touched", spec)
 
     def test_no_worktree_goes_straight_to_the_audit(self):
         st = make_state(task("T1", "api", status="gating", dispatch_id="d1"))
@@ -155,13 +206,13 @@ class TestDriverTiers(ShipCase):
         def gates(path, unit_only, timeout=None, **kw):
             if kw.get("tier") == "full" and path.endswith("proxima-api"):
                 state["full"] += 1
-                if state["full"] == 1:
+                if state["full"] <= 2:  # red twice the same way: then a fix task
                     return 1, "E   assert totals() == 3"
             return 0, "ok"
         fake = FakeOrca(self.root)
         fake.on_audit = self.approve_audit()
         self.assertEqual(self.run_ship(fake, gates), 0, self.out)
-        self.assertEqual(state["full"], 2)
+        self.assertEqual(state["full"], 3)
         fix_spec = next(t["spec"] for t in fake.tasks.values() if "GATE1-proxima-api" in t["title"])
         self.assertIn("assert totals() == 3", fix_spec)
         self.assertIn("full", fix_spec)
