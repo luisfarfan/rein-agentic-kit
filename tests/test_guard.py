@@ -83,6 +83,25 @@ class Guard(unittest.TestCase):
         commit(self.repo, "flow.config.json", "{}", "fix: loosen the gate")
         self.assertEqual(guard.check(self.repo, base, {}, allowed=["flow.config.json"]), [])
 
+    def test_test_setup_is_protected_unless_the_task_declares_it(self):
+        base = make_repo(self.repo)
+        os.makedirs(os.path.join(self.repo, "tests", "unit"))
+        commit(self.repo, "tests/unit/conftest.py", "import pytest\n", "test: cap the workers")
+        commit(self.repo, "vitest.config.ts", "export default {}\n", "test: retry flaky tests")
+        problems = guard.check(self.repo, base, {})
+        self.assertEqual(len(problems), 2, problems)
+        self.assertTrue(any("tests/unit/conftest.py" in p for p in problems))
+        self.assertEqual(guard.check(self.repo, base, {}, allowed=["tests/unit/conftest.py", "vitest.config.ts"]), [])
+
+    def test_a_test_file_named_like_test_setup_is_not_test_setup(self):
+        base = make_repo(self.repo)
+        os.makedirs(os.path.join(self.repo, "tests"))
+        commit(self.repo, "tests/test_conftest.py", "x = 1\n", "test: cover the fixture")
+        self.assertEqual(guard.check(self.repo, base, {}), [])
+
+    def test_the_brief_forbids_global_configuration(self):
+        self.assertTrue(any("~/.claude" in g and "~/.codex" in g for g in ship.GUARDRAILS))
+
     def test_mise_toml_is_protected_when_the_commands_come_from_mise(self):
         base = make_repo(self.repo)
         commit(self.repo, "mise.toml", "[tasks.test]\nrun = 'true'\n", "fix: tasks")

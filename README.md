@@ -475,8 +475,13 @@ dependencies or test configuration, or a strategy that cannot be applied runs th
 
 Workers and auditors are **told** (in their brief): no writes outside the worktree (next section), no
 bypassing the repo's hooks (`--no-verify`, `LEFTHOOK=0`, `SKIP`, `HUSKY=0` …), no change to the
-configuration Rein judges with. Rein **checks** them too, when a worker's task ends and again when an
-auditor's verdict is read:
+configuration Rein judges with, no edit to global configuration (`~/.claude`, `~/.codex`, shell or git
+config). Rein **checks** them too, when a worker's task ends and again when an auditor's verdict is read:
+
+- **Gate config and test setup.** `flow.config.json`, a gate command's runner file, the test setup every
+  test runs through (`conftest.py`, `pytest.ini`, `tox.ini`, a vitest, jest, playwright or karma config)
+  and any `gate.protected` glob change only when the task declares them (`Gate config:`). A repo whose
+  test setup lives elsewhere (a `tests/db_setup.py`) lists it in `gate.protected`.
 
 - **Hooks.** Each commit of the change must pass the repo's own `commit-msg` hook and its `pre-commit`
   hook, both re-run by Rein with the bypass variables removed. `commit-msg` runs on the commit's message.

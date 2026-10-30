@@ -239,8 +239,11 @@ GUARDRAILS = [
     "Never bypass the repo's hooks: no `--no-verify` / `-n`, no LEFTHOOK=0, LEFTHOOK_EXCLUDE, SKIP, "
     "HUSKY=0 or the like. A hook that fails is yours to fix, or a question for the owner.",
     "Never modify the configuration Rein judges the work with (flow.config.json, the task runner's "
-    "config such as mise.toml or a Makefile, any gate.protected file) unless your task declares that "
-    "file in its `Gate config:` field: Rein rejects the change if you do.",
+    "config such as mise.toml or a Makefile, test setup such as conftest.py or a vitest/jest config, "
+    "any gate.protected file) unless your task declares that file in its `Gate config:` field: Rein "
+    "rejects the change if you do.",
+    "Never edit global or user configuration (~/.claude, ~/.codex, your shell's or git's config) or a "
+    "repository other than your task's.",
 ]
 
 

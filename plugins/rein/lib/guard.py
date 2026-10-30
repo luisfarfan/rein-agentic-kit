@@ -7,7 +7,8 @@ commands and `gate.affected`), and another skipped the repo's commit-msg hook wi
 - the change touches the configuration Rein judges it with: `flow.config.json` always, the
   config of every task runner (mise, make, just, task) a gate command comes from or calls --
   as resolved at the change's base AND now, so deleting or swapping the runner is caught --
-  and any glob in `gate.protected`. Only a path the task explicitly declares (`allowed`: a
+  the test setup every test runs through (`TEST_SETUP`: conftest.py, pytest.ini, a vitest, jest,
+  playwright or karma config) and any glob in `gate.protected`. Only a path the task explicitly declares (`allowed`: a
   plan task's `Gate config:` field, `rein quick --allow-config`) may change; a mention in
   the task's text is not a declaration;
 - a commit of the change does not pass the repo's own `commit-msg` hook, run again by Rein
@@ -83,11 +84,19 @@ def gate_runners(resolved: dict) -> set:
     return found
 
 
+# Test setup every test runs through: changed only by a task that declares it (`Gate config:`).
+# In the 2026-10-30 pilot, workers fixing a flaky suite rewrote a repo's test DB setup and two
+# unrelated tests, and the change shipped with them.
+TEST_SETUP = tuple(p for name in ("conftest.py", "pytest.ini", "tox.ini", "vitest.config.*", "jest.config.*",
+                                  "playwright.config.*", "karma.conf.*")
+                   for p in (name, "*/" + name))
+
+
 def protected_patterns(*resolutions: dict, inherited=()) -> list:
     """Repo-relative globs of the configuration Rein gates a change with, under every resolution
     given (the change's base and its current tree), plus `inherited`: the `gate.protected` globs
     the plan root declares for every repo of the change."""
-    patterns = ["flow.config.json"]
+    patterns = ["flow.config.json", *TEST_SETUP]
     patterns += [p.strip() for p in inherited or () if isinstance(p, str) and p.strip()]
     for resolved in resolutions:
         resolved = resolved or {}
