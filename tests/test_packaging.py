@@ -80,7 +80,7 @@ class TestTheWheelInstallsAndRuns(unittest.TestCase):
                        # cleanly and then has no roles at all -- the whole point of the
                        # command is that it works where Claude Code is not.
                        "rein_kit/skills/rein-role/SKILL.md",
-                       "rein_kit/PROVIDERS.md", "rein_kit/IMPACT.md",
+                       "rein_kit/PROVIDERS.md", "rein_kit/IMPACT.md", "rein_kit/ENTRY.md",
                        "rein_kit/skills/rein-discover/PROVIDERS.md",
                        "rein_kit/skills/rein-discover/IMPACT.md",
                        "rein_kit/lib/impact.py", "rein_kit/lib/routing.py",

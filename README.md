@@ -78,13 +78,18 @@ The earlier token study behind v2 (context re-read, Opus share, lean worker prof
 
 ## 🧭 When to use Rein (and when not)
 
-Claude Code or Codex on its own is the default. Rein steps in only where it measurably adds
-something (`docs/research/2026-10-28-post-sdd/`):
+The current Claude Code or Codex session is the default. With the
+[small project entry policy](docs/native-providers.md#starting-an-ordinary-task-in-orca)
+adopted once, describe the task in Orca: inspect relevant code, reuse evidence, then
+choose only the workflow that helps. No manual workflow selection, mandatory JSON
+or `rein route` call is needed for an ordinary task. Plugin installation alone does
+not activate this policy. Rein steps in selectively:
 
 | The work | Use |
 |---|---|
 | A small, low-risk change in one repo | **Claude Code or Codex alone.** No Rein |
-| Real uncertainty, several requirements or several repos | `/rein:rein-plan`, then implement natively |
+| An unresolved question that could change correctness or scope | Deepen it with `rein-discover`, reusing initial findings; retain UNKNOWN when evidence is missing |
+| Requirements/dependencies that need a verifiable plan | `/rein:rein-plan`, then implement natively when sufficient; repo count alone is not a reason |
 | Touches permissions, security, concurrency, durable state or contracts between services | add `/rein:rein-audit` |
 | Orchestration pays: tasks that can run in parallel, several repos, dependencies to track and recover, or a run long enough to need saved state | `/ship` |
 | Several tasks that run one after another in one repo | **One native session** with the plan: `/ship` would add workers, gates and audit rounds it does not need |
@@ -93,7 +98,11 @@ More audits or more test runs are not more quality by themselves: a measured aud
 that fixed nothing cost 35 minutes, and gate-fix workers spent 39 of a run's 65 minutes on a
 flaky suite.
 
-## 🔁 The lifecycle
+## 🔁 Optional planned-work lifecycle
+
+The sequence below is available when a change needs it, not a phase checklist for
+every task. Most localized tasks finish in the initiating session after inspection
+and relevant verification. Explicit Discover remains investigation-only.
 
 ```
  ① DISCOVER        ② PLAN             ③ SHIP                  ④ AUDIT + PR
@@ -130,15 +139,14 @@ claude plugin marketplace add luisfarfan/rein-agentic-kit
 ```
 
 ```bash
-claude plugin install rein@rein-agentic-kit --scope user
+claude plugin install rein@rein-agentic-kit --scope project
 ```
 
-**Restart Claude Code**, then, per change:
+For either provider, follow the [local setup and shared entry policy](docs/native-providers.md).
+**Start a fresh session in the project's Orca worktree**, then describe the task:
 
 ```
-/rein:rein-discover   →   think it through, until the unknowns that matter are closed
-/rein:rein-plan       →   you confirm the plan
-/ship <change>        →   workers implement, each task is gated, then the audit
+Quiero agregar soporte para euros.
 ```
 
 > **`rein ship` must run inside an Orca terminal** (it refuses unless `ORCA_TERMINAL_HANDLE` is set,
@@ -176,7 +184,7 @@ Coming from v1? `rein migrate-config` rewrites `flow.config.json` (drops `models
 | 🧭 **`/rein:rein-plan`** | Plan into verifiable tasks — dry-run and **explicit confirmation** before writing |
 | 🚢 **`/ship`** (`/rein:ship`) | Open a detached Orca tab running `rein ship <change>`, then watch it (`rein watch`) so Rein's questions and the final result appear in this session. Never edits code or opens a PR |
 | 💬 **`/answer`** (`/rein:answer`) | "¿Qué me pregunta rein?" / "respóndele: …": show and answer the run's pending gates |
-| ⚡ **`/quick`** (`/rein:quick`) | "Tarea rápida: …": hand a small change to a cheap agent in its own tab, no plan. You talk to it; "listo" runs the light gate. Never edits code itself |
+| ⚡ **`/quick`** (`/rein:quick`) | Explicitly delegate a small change to a worker. An ordinary request for a quick fix stays native when sufficient. Never edits code itself |
 | 🔍 **`/rein:rein-audit`** | The independent gate: mechanical checks first, then five-axis judgement |
 | 🎭 **`/rein:rein-role`** | Assign this session's role: planner · implementer · reviewer |
 

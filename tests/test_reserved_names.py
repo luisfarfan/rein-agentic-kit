@@ -268,5 +268,6 @@ class TestDiscoverIsAStanceNotAWorkflow(unittest.TestCase):
         body = self._skill()
         self.assertIn("targeted `rg` searches", body)
         self.assertIn("bounded reads", body)
-        self.assertIn("rein context .", body)
-        self.assertIn("Neither graphs nor a second model are prerequisites", body)
+        self.assertIn("rein context <actual-repo-root>", body)
+        self.assertIn("only for missing commands/plan state", body)
+        self.assertIn("graphs and caller tools are optional", body)

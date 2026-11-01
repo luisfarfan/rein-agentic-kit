@@ -40,3 +40,12 @@ class NativeSkillsTest(unittest.TestCase):
     def test_claude_imports_shared_project_instructions(self):
         self.assertEqual((ROOT / 'CLAUDE.md').read_text().strip(), '@AGENTS.md')
         self.assertTrue((ROOT / 'AGENTS.md').is_file())
+
+    def test_entry_template_is_small_and_shared_once_in_the_project(self):
+        entry = (PLUGIN / 'ENTRY.md').read_text()
+        body = (ROOT / 'AGENTS.md').read_text()
+        shared = body.split('<!-- rein-entry:start -->\n', 1)[1].split('<!-- rein-entry:end -->', 1)[0]
+        self.assertEqual(shared, entry)
+        self.assertEqual(body.count('<!-- rein-entry:start -->'), 1)
+        self.assertLessEqual(len(entry.split()), 280)
+        self.assertFalse((PLUGIN / 'skills/rein-impact').exists())

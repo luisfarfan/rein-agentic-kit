@@ -12,7 +12,10 @@ scope, gates, guard checks, review independence, or authorization.
   `rein --version` or `rein doctor . --json` identifies a different installation.
   No global installation or Claude-specific environment variable is required.
 - Read the target repository's AGENTS.md / CLAUDE.md under the host's normal
-  precedence. This plugin does not install or replace project instructions.
+  precedence. This plugin does not install or replace project instructions. The
+  packaged ENTRY.md is a small, optional project-adoption template; plugin
+  installation alone does not activate it. Keep one body in AGENTS.md, imported
+  by CLAUDE.md when needed; do not import all skills or IMPACT.md at startup.
 - Ordinary implementation stays in the current session when sufficient.
   Quick and Ship explicitly delegate through Orca; either initiating provider
   can pass `--agent claude` or `--agent codex`, and an explicit `--model`.
@@ -24,7 +27,7 @@ scope, gates, guard checks, review independence, or authorization.
   reviewing the five axes yourself applies to that independent reviewer session.
   No missing Claude reviewer plugin permits self-approval.
 
-Before implementation, inspect relevant code and impact in this session. For
-uncertain routing, use [impact routing](IMPACT.md) and `rein route` to explain the
+Before implementation, reuse or inspect relevant code and impact in this session. For
+routing that benefits from a reusable record, optionally use [impact routing](IMPACT.md) and `rein route` to explain the
 choice. Keep ordinary work native; an explicit Quick/Ship request selects its
 existing delegated contract. Reconsider when evidence changes.
