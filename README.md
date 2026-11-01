@@ -292,6 +292,7 @@ rein doctor [root] # 🩺 start here: stack, resolved commands, and the source o
 rein detect      # resolved stack + commands as JSON (config > task runner > autodetect)
 rein tasks       # the plan, parsed (--change <name> for openspec, --source, --path)
 rein route assessment.json --agent codex  # evidence-backed advice; no dispatch
+rein discover-check report.json --root .  # check cited evidence; read-only
 rein context     # detect + plan in ONE round-trip
 rein verify      # actually RUN each resolved command and report the truth — an inference is not a fact
                  # exit 0 when every command could be INVOKED, even if a suite ran and failed

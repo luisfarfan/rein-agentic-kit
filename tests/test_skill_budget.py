@@ -27,7 +27,7 @@ import roles  # noqa: E402
 # rein-plan: +15 for showing the owner plan-check's warnings (a plan root in a temp dir).
 # ship: +25 for the temp-root refusal and --allow-temp-root.
 # quick: +30 for relaying the agent's REPORT and `rein quick allow-config`.
-BUDGETS = {"rein-plan": 745, "ship": 485, "answer": 220, "quick": 350}
+BUDGETS = {"rein-plan": 745, "ship": 485, "answer": 220, "quick": 350, "rein-discover": 500}
 
 
 def _skill_files() -> list:

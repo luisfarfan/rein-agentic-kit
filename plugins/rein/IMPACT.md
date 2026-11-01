@@ -1,5 +1,53 @@
 # Evidence-backed impact
 
+## Progressive Discover (v2)
+
+The current session investigates the natural-language request. There is no second
+classifier or scanner. Default limit: eight investigation tool calls / 180 seconds;
+reuse current context and batch focused reads. Unknowns at the limit remain UNKNOWN
+with a specific next check. This is a host instruction, not a hidden timer or hook.
+
+For repeatable evidence, supply `schema_version: 2`. A report separates:
+
+- `classification`: `implementation`, `risk`, `uncertainty`, `repo_scope`,
+  `planning`, `independent_verification`. Each has `level`, `reason`, `evidence` IDs.
+  Levels are `low`, `high`, `unknown`, `not_applicable`. Repo scope low = one repo,
+  high = multiple repos; planning/review high = needed, low = not currently needed.
+- `findings`: lists named `existing`, `missing`, `dependencies`, `risks`. Each item
+  has `claim`, `kind` (`observed` or `inference`), and evidence IDs. A relationship
+  names its producer and consumer. For local-only work, explain the checked local
+  boundary instead of inventing a cross-repo dependency. Empty missing/risks lists
+  are allowed; capability and dependency evidence are required for sufficiency.
+- `risk_facets`: optional specific high/low/unknown assessments of `operations`,
+  `persistence`, `security`, `concurrency`, `contracts`, `tests`, `side_effects`,
+  `money`. High facets cannot be cancelled by a low aggregate risk.
+- `questions`: unresolved `{ "question": "...", "next_check": "..." }` entries.
+  Open questions prevent implementation readiness; do not conceal them to get green.
+- `evidence`: IDs mapped to `{ "repo": ".", "path": "settings.py",
+  "sha256": "<hash of the exact file inspected>", "lines": [1, 12],
+  "symbol": "SUPPORTED_CURRENCIES" }`. `repo` defaults to `.`, symbol is optional.
+  Use the host's existing file tools to capture the hash when reading the evidence,
+  never refresh hashes blindly to make stale conclusions pass.
+- `investigation`: optional observed `steps`, `seconds`, `limit_steps` (default 8),
+  `limit_seconds` (default 180). Missing metrics stay null. No confidence percentage.
+
+`rein discover-check report.json --root /repo` checks only cited files (at most 64,
+2 MiB each). For other repositories explicitly pass `--repo registered-name=/path`;
+roots inside the report are never trusted. Relative paths and symlinks must stay
+inside their assigned root. Duplicate file citations are read once. File hashes,
+inclusive line ranges and optional symbol text are checked. Missing or stale
+evidence makes dependent conclusions unknown; arbitrary commands are never run.
+Exit 0 = sufficient supplied evidence, 1 = deeper investigation, 2 = invalid report.
+
+The checker does **not** prove that a claim follows from the code, that a mentioned
+test ran, or that an uncited dependency does not exist. Record actual test commands
+and outcomes in findings; checking a test file's hash only proves freshness. Reuse
+evidence while its inspected files and relevant boundaries remain unchanged. New
+dependencies or changed assumptions require targeted reinvestigation even when
+all cited hashes still match. Reports are optional and nothing is written by the CLI.
+
+## Legacy declarations (v1, retained)
+
 The current agent investigates the code; Python normalizes its report. This is
 not static analysis and does not verify whether cited evidence is true. Keep
 references reviewable and include negative evidence before marking a dimension

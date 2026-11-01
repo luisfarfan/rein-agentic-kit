@@ -3,6 +3,7 @@
 
 Subcommands:
   rein route <assessment.json> --agent <id> [--model <m>] [--limits <orca.json>]
+  rein discover-check <report.json> [--root <path>] [--repo <name=path>]
                       evidence-backed advice; no dispatch or account query
   rein doctor         environment probe (plugin wiring, CLIs, config, stack);
                       --json returns {"version", "pluginRoot", "project", "plan",
@@ -1474,6 +1475,36 @@ def cmd_migrate_config(argv: list[str]) -> int:
 
 
 
+def _evidence_roots(root, repos):
+    roots = {".": root}
+    for entry in repos:
+        name, sep, path = entry.partition("=")
+        if not sep or not name or not path or name in roots:
+            raise ValueError("--repo requires a unique name=path")
+        roots[name] = path
+    return roots
+
+
+def cmd_discover_check(argv: list[str]) -> int:
+    """Check an agent's report; never investigate or execute report-supplied commands."""
+    import argparse
+    import impact
+    parser = argparse.ArgumentParser(prog="rein discover-check")
+    parser.add_argument("report")
+    parser.add_argument("--root", default=".")
+    parser.add_argument("--repo", action="append", default=[])
+    args = parser.parse_args(argv)
+    try:
+        with open(args.report, encoding="utf-8") as fh:
+            report = json.load(fh)
+        result = impact.assess(report, _evidence_roots(args.root, args.repo))
+    except (OSError, ValueError, TypeError) as exc:
+        print("rein discover-check: %s" % exc, file=sys.stderr)
+        return 2
+    print(json.dumps(result, indent=2))
+    return 0 if result["discovery"] == "sufficient" else 1
+
+
 def cmd_route(argv: list[str]) -> int:
     """Read evidence, return advice; never launches a worker or queries an account."""
     import routing
@@ -1516,6 +1547,7 @@ def cmd_route(argv: list[str]) -> int:
     return 0
 
 COMMANDS = {
+    "discover-check": cmd_discover_check,
     "route": cmd_route,
     "accept-outside": cmd_accept_outside,
     "doctor": cmd_doctor,

@@ -7,35 +7,49 @@ Read [provider setup](PROVIDERS.md) once when using REIN in this session.
 
 # Discover
 
-Investigate in this session. Start with `rein context .` for resolved commands and
-plan state. Use targeted `rg` searches, bounded reads, and existing tests/config;
-use symbol/caller tools when available and useful. File count alone is no reason
-to create workers. Neither graphs nor a second model are prerequisites.
+Investigate the natural-language request in this session. Start with `rein context .`
+for resolved commands and plan state; reuse it if already current. Use targeted `rg` searches,
+bounded reads and existing tests/config. Symbol/caller tools are optional.
+File count and the wording of a request do not establish difficulty.
+Neither graphs nor a second model are prerequisites.
 
-Follow the capability from its entry point to the relevant consumer, storage,
-permissions and tests. Read only enough to settle the decision. A request such
-as “enable EUR” could be an existing configuration switch or a change to money,
-orders, payments, refunds and reporting: inspect the code before deciding.
+Budget: at most eight investigation tool calls or three minutes, whichever comes
+first, unless the user sets another limit. Batch related reads; count actual calls
+and elapsed time, not invented tokens. Reuse valid evidence instead of rereading it.
+Use host timing when available. After reading the relevant files completely, do
+not repeat inventory or searches without a named unresolved question.
+Do not create workers, indexes or model calls; do not switch to Astra by default.
 
-Assess separately: functional scope, implementation complexity, operational
-risk, uncertainty, persistence/migrations, security/tenant permissions,
-concurrency/idempotency, service contracts, test coverage, side effects and money.
-For each material conclusion cite a file/symbol, contract or executed check.
-Distinguish observed support from an inference; “no match in one search” does not
-prove absence. A low or not-applicable finding also needs a reason and reference.
+1. Locate the entry point and identify **existing capability** versus **missing
+   behavior**. “Agregar soporte para euros” might only require enabling a supported
+   currency. Trace the relevant consumer, storage, permissions and tests before
+   declaring that sufficient. A single empty search does not prove absence.
+2. Follow only relationships that can change the decision: callers, data flow,
+   service contracts, persistence/migrations, money, security/tenant permissions,
+   concurrency/idempotency, side effects and operational rollback. Name the producer
+   and consumer. Check negative cases as well as happy paths; existing support in
+   one layer does not establish end-to-end support.
+3. Classify separately: **implementation complexity**, **modification risk**,
+   **system uncertainty**, **repository scope**, **need for planning**, and
+   **need for independent verification**. Use low/high/UNKNOWN/not applicable with
+   a reason and concrete file/symbol/test evidence for each, including low and N/A.
+   One-line code can be high risk; multiple repos do not force delegation. Do not
+   invent confidence percentages. Mark observations versus inferences and identify
+   tests merely read versus checks actually executed.
+4. Stop when the affected path, boundaries and verification are understood. If a
+   missing fact could change risk or scope, name that question and make one targeted
+   follow-up within the remaining budget. At exhaustion retain UNKNOWN and state
+   the next check; do not silently expand research. Ask the user only for decisions
+   that code cannot answer.
 
-Use progressive depth: stop a light investigation once the affected path and
-verification are understood. Trace another boundary when missing evidence could
-change scope, risk or acceptance. Escalate research or model capability only for
-a named unresolved question; say UNKNOWN if evidence remains insufficient.
-No fixed minimum file count, mandatory exhaustive scan, or model call.
-
-Close with what exists, likely changes, impact evidence, verification available,
-and unresolved questions. Ask only for decisions the code cannot answer. If a
-machine-readable recommendation is useful, use the assessment contract in
-[impact routing](IMPACT.md); an artifact is optional for small changes.
+Close with existing capabilities, missing behavior, dependencies/contracts, technical
+and operational risks, the six classifications, verification and unresolved questions.
+Load [impact routing](IMPACT.md) only when constructing a reusable JSON report or
+router request; prose discovery does not need that resource. Use its v2 contract
+and `rein discover-check`; it checks file freshness, not semantic truth. An artifact
+is optional for small changes. Reconsider only affected conclusions when evidence changes.
 
 This explicit Discover invocation is read-only: do not implement, write a plan,
-or start workers. Suggest the appropriate next step, which may be native work,
-selective planning (`/rein:rein-plan`) or independent audit. Discovery within an already-authorized
-implementation can be brief and does not require invoking this read-only skill.
+or start workers. Suggest native work, selective planning (`/rein:rein-plan`), or
+independent audit as justified. Discovery within an already-authorized implementation
+can be brief and does not require invoking this read-only skill.
