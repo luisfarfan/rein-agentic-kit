@@ -1,0 +1,26 @@
+{
+  "fixture": "/Users/luisfarfan/Developer/labs/agents/rein/.rein/followup/p2-native",
+  "checks": {
+    "visible_inventory:manage": false,
+    "visible_pricing:manage": false,
+    "visible_catalog:manage": true,
+    "visible_orders:manage": true,
+    "hidden_empty": true,
+    "hidden_read_only": true,
+    "approve_inventory": true,
+    "wrong_business_inventory": true,
+    "wrong_grant_inventory": true,
+    "wrong_area_inventory": true,
+    "approve_pricing": true,
+    "wrong_business_pricing": true,
+    "wrong_grant_pricing": true,
+    "wrong_area_pricing": true,
+    "mixed_batch_denied": true,
+    "visibility_not_mutation": true,
+    "unchanged_api/policy.py": true,
+    "unchanged_api/approvals.py": true,
+    "unchanged_admin/view.py": true
+  },
+  "passed": 17,
+  "total": 19
+}

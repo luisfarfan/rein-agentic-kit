@@ -1,0 +1,345 @@
+{
+  "proofs": {
+    "p1-case1": {
+      "cwd": "/Users/luisfarfan/Developer/labs/agents/rein/.rein/p0-live-evaluation/new/case1",
+      "git_root": "/Users/luisfarfan/Developer/labs/agents/rein/.rein/p0-live-evaluation/new/case1",
+      "remotes": "",
+      "context": {
+        "config": {
+          "schema": 1,
+          "root": "/Users/luisfarfan/Developer/labs/agents/rein/.rein/p0-live-evaluation/new/case1",
+          "configFound": false,
+          "configPath": "",
+          "stack": "unknown",
+          "subtypes": [],
+          "packageManager": "",
+          "taskRunner": "",
+          "commands": {},
+          "commandSources": {},
+          "subproject": "",
+          "missingCommands": [
+            "test",
+            "testOne",
+            "lint",
+            "typecheck"
+          ],
+          "plan": {
+            "source": "tasks-md",
+            "path": ""
+          },
+          "tracker": {
+            "kind": "none"
+          },
+          "models": {
+            "aux": "haiku",
+            "impl": "sonnet",
+            "review": "opus"
+          },
+          "limits": {
+            "maxTaskSteps": 8,
+            "maxReviewRounds": 3
+          },
+          "worktree": {
+            "enabled": true,
+            "prefix": "rein-wt"
+          },
+          "ship": {},
+          "gate": {},
+          "capabilities": [
+            "graphify",
+            "openspec",
+            "codegraph",
+            "bd",
+            "git",
+            "node",
+            "python3",
+            "serena"
+          ],
+          "verifyPolicy": {
+            "mode": "unit",
+            "requires": [],
+            "forbids": [],
+            "tools": []
+          }
+        },
+        "plan": {
+          "source": "tasks-md",
+          "change": "",
+          "path": "/Users/luisfarfan/Developer/labs/agents/rein/.rein/p0-live-evaluation/new/case1/tasks.md",
+          "exists": false,
+          "availableChanges": [],
+          "tasks": [],
+          "pending": [],
+          "artifacts": [],
+          "why": "",
+          "scopeIn": [],
+          "scopeOut": [],
+          "decisions": [],
+          "error": "no plan at /Users/luisfarfan/Developer/labs/agents/rein/.rein/p0-live-evaluation/new/case1/tasks.md",
+          "unresolvableDeps": []
+        }
+      }
+    },
+    "p1-case2": {
+      "cwd": "/Users/luisfarfan/Developer/labs/agents/rein/.rein/p0-live-evaluation/new/case2",
+      "git_root": "/Users/luisfarfan/Developer/labs/agents/rein/.rein/p0-live-evaluation/new/case2",
+      "remotes": "",
+      "context": {
+        "config": {
+          "schema": 1,
+          "root": "/Users/luisfarfan/Developer/labs/agents/rein/.rein/p0-live-evaluation/new/case2",
+          "configFound": false,
+          "configPath": "",
+          "stack": "unknown",
+          "subtypes": [],
+          "packageManager": "",
+          "taskRunner": "",
+          "commands": {},
+          "commandSources": {},
+          "subproject": "",
+          "missingCommands": [
+            "test",
+            "testOne",
+            "lint",
+            "typecheck"
+          ],
+          "plan": {
+            "source": "tasks-md",
+            "path": ""
+          },
+          "tracker": {
+            "kind": "none"
+          },
+          "models": {
+            "aux": "haiku",
+            "impl": "sonnet",
+            "review": "opus"
+          },
+          "limits": {
+            "maxTaskSteps": 8,
+            "maxReviewRounds": 3
+          },
+          "worktree": {
+            "enabled": true,
+            "prefix": "rein-wt"
+          },
+          "ship": {},
+          "gate": {},
+          "capabilities": [
+            "graphify",
+            "openspec",
+            "codegraph",
+            "bd",
+            "git",
+            "node",
+            "python3",
+            "serena"
+          ],
+          "verifyPolicy": {
+            "mode": "unit",
+            "requires": [],
+            "forbids": [],
+            "tools": []
+          }
+        },
+        "plan": {
+          "source": "tasks-md",
+          "change": "",
+          "path": "/Users/luisfarfan/Developer/labs/agents/rein/.rein/p0-live-evaluation/new/case2/tasks.md",
+          "exists": false,
+          "availableChanges": [],
+          "tasks": [],
+          "pending": [],
+          "artifacts": [],
+          "why": "",
+          "scopeIn": [],
+          "scopeOut": [],
+          "decisions": [],
+          "error": "no plan at /Users/luisfarfan/Developer/labs/agents/rein/.rein/p0-live-evaluation/new/case2/tasks.md",
+          "unresolvableDeps": []
+        }
+      }
+    },
+    "p2-native": {
+      "cwd": "/Users/luisfarfan/Developer/labs/agents/rein/.rein/followup/p2-native",
+      "git_root": "/Users/luisfarfan/Developer/labs/agents/rein/.rein/followup/p2-native",
+      "remotes": "",
+      "context": {
+        "config": {
+          "schema": 1,
+          "root": "/Users/luisfarfan/Developer/labs/agents/rein/.rein/followup/p2-native",
+          "configFound": true,
+          "configPath": "/Users/luisfarfan/Developer/labs/agents/rein/.rein/followup/p2-native/flow.config.json",
+          "stack": "python",
+          "subtypes": [],
+          "packageManager": "",
+          "taskRunner": "",
+          "commands": {
+            "test": "python3 -B -m unittest test_panel -q"
+          },
+          "commandSources": {
+            "test": "flow.config.json"
+          },
+          "subproject": "",
+          "missingCommands": [
+            "testOne",
+            "lint",
+            "typecheck"
+          ],
+          "plan": {
+            "source": "tasks-md",
+            "path": ""
+          },
+          "tracker": {
+            "kind": "none"
+          },
+          "models": {
+            "aux": "haiku",
+            "impl": "sonnet",
+            "review": "opus"
+          },
+          "limits": {
+            "maxTaskSteps": 8,
+            "maxReviewRounds": 3
+          },
+          "worktree": {
+            "enabled": true,
+            "prefix": "rein-wt"
+          },
+          "ship": {},
+          "gate": {},
+          "capabilities": [
+            "graphify",
+            "openspec",
+            "codegraph",
+            "bd",
+            "git",
+            "node",
+            "python3",
+            "serena"
+          ],
+          "verifyPolicy": {
+            "mode": "unit",
+            "requires": [],
+            "forbids": [],
+            "tools": []
+          }
+        },
+        "plan": {
+          "source": "tasks-md",
+          "change": "",
+          "path": "/Users/luisfarfan/Developer/labs/agents/rein/.rein/followup/p2-native/tasks.md",
+          "exists": false,
+          "availableChanges": [],
+          "tasks": [],
+          "pending": [],
+          "artifacts": [],
+          "why": "",
+          "scopeIn": [],
+          "scopeOut": [],
+          "decisions": [],
+          "error": "no plan at /Users/luisfarfan/Developer/labs/agents/rein/.rein/followup/p2-native/tasks.md",
+          "unresolvableDeps": []
+        }
+      }
+    },
+    "p2-rein": {
+      "cwd": "/Users/luisfarfan/Developer/labs/agents/rein/.rein/followup/p2-rein",
+      "git_root": "/Users/luisfarfan/Developer/labs/agents/rein/.rein/followup/p2-rein",
+      "remotes": "",
+      "context": {
+        "config": {
+          "schema": 1,
+          "root": "/Users/luisfarfan/Developer/labs/agents/rein/.rein/followup/p2-rein",
+          "configFound": true,
+          "configPath": "/Users/luisfarfan/Developer/labs/agents/rein/.rein/followup/p2-rein/flow.config.json",
+          "stack": "python",
+          "subtypes": [],
+          "packageManager": "",
+          "taskRunner": "",
+          "commands": {
+            "test": "python3 -B -m unittest test_panel -q"
+          },
+          "commandSources": {
+            "test": "flow.config.json"
+          },
+          "subproject": "",
+          "missingCommands": [
+            "testOne",
+            "lint",
+            "typecheck"
+          ],
+          "plan": {
+            "source": "tasks-md",
+            "path": ""
+          },
+          "tracker": {
+            "kind": "none"
+          },
+          "models": {
+            "aux": "haiku",
+            "impl": "sonnet",
+            "review": "opus"
+          },
+          "limits": {
+            "maxTaskSteps": 8,
+            "maxReviewRounds": 3
+          },
+          "worktree": {
+            "enabled": true,
+            "prefix": "rein-wt"
+          },
+          "ship": {},
+          "gate": {},
+          "capabilities": [
+            "graphify",
+            "openspec",
+            "codegraph",
+            "bd",
+            "git",
+            "node",
+            "python3",
+            "serena"
+          ],
+          "verifyPolicy": {
+            "mode": "unit",
+            "requires": [],
+            "forbids": [],
+            "tools": []
+          }
+        },
+        "plan": {
+          "source": "tasks-md",
+          "change": "",
+          "path": "/Users/luisfarfan/Developer/labs/agents/rein/.rein/followup/p2-rein/tasks.md",
+          "exists": false,
+          "availableChanges": [],
+          "tasks": [],
+          "pending": [],
+          "artifacts": [],
+          "why": "",
+          "scopeIn": [],
+          "scopeOut": [],
+          "decisions": [],
+          "error": "no plan at /Users/luisfarfan/Developer/labs/agents/rein/.rein/followup/p2-rein/tasks.md",
+          "unresolvableDeps": []
+        }
+      }
+    }
+  },
+  "p1_prompt_hashes": {
+    "case1": "a828b3ef60ecb58a0fce5b415fc8b1b90904f008b4728c47378cb6360a9baa97",
+    "case2": "f2d054a9c1d31736c997025830710b371ff9bb3d1c86f13d8ce1f9a208a2847b"
+  },
+  "p2_initial_code_hashes": {
+    ".gitignore": "0ac7b38c2156a0cfc82e0668ce883566a9688e2f214c12d8a843e0dac858ff9d",
+    "admin/help.md": "068f7317642f5235b0510a5539ef0a75ac8076b69138fa1d8e9be6a23e586924",
+    "admin/menu.py": "2698d34e73266d745215febf0123e8b98e5dffffc3d6246ffd7ba26a793dffe2",
+    "admin/view.py": "c39bedbe4383cc1f8fdabbfa4267b31729a2a278c978ed0655e7017b0004598a",
+    "api/approvals.py": "c6f0fab783ef0ec4f364dae54c19dbe36ee119b937d69ff36f425de833671c52",
+    "api/policy.py": "1db15f6aa761ea6a51f43f3cc7fd386473aac1fa36f85b8311d6925b35f88ded",
+    "flow.config.json": "7ae8d5f718bf7de1e5443b700bd2ba260c3464c759ea0ee853e25c4d9c6f2f42",
+    "test_panel.py": "5ac260ce3819db3956ecc4079a86a7fa0153a2d7ec6f5055c4013c0a06a63bc7"
+  },
+  "context_code_unchanged_from_b2f4244": true
+}

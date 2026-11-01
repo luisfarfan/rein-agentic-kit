@@ -1,0 +1,439 @@
+{
+  "source": "Deterministic observations and existing Ship state machine, before any follow-up policy/message change. Reality of an unknown provider is a scenario assumption, not inferable by REIN.",
+  "scenarios": [
+    {
+      "scenario": "recent_missing_session",
+      "observation": {
+        "claude": {
+          "session": null,
+          "weekly": null,
+          "_quota_checked": true,
+          "_observation_age_seconds": null,
+          "_quota_unusable": "observation timestamp is missing or invalid",
+          "_quota_epoch": {
+            "plan": null,
+            "session": [
+              null,
+              null
+            ],
+            "weekly": [
+              null,
+              null
+            ]
+          }
+        },
+        "codex": {
+          "session": null,
+          "weekly": 20,
+          "_quota_checked": true,
+          "_observation_age_seconds": 0.0,
+          "_quota_epoch": {
+            "plan": "Plus",
+            "session": [
+              null,
+              null
+            ],
+            "weekly": [
+              10080,
+              1800600000000
+            ]
+          }
+        }
+      },
+      "status": "available",
+      "reason": "",
+      "phase": "running",
+      "dispatches": 1,
+      "delta_from_initial": {
+        "claude": {
+          "session": null,
+          "weekly": null
+        },
+        "codex": {
+          "session": null,
+          "weekly": 0
+        }
+      }
+    },
+    {
+      "scenario": "older_than_15m",
+      "observation": {
+        "claude": {
+          "session": null,
+          "weekly": null,
+          "_quota_checked": true,
+          "_observation_age_seconds": null,
+          "_quota_unusable": "observation timestamp is missing or invalid",
+          "_quota_epoch": {
+            "plan": null,
+            "session": [
+              null,
+              null
+            ],
+            "weekly": [
+              null,
+              null
+            ]
+          }
+        },
+        "codex": {
+          "session": null,
+          "weekly": 20,
+          "_quota_checked": true,
+          "_observation_age_seconds": 901.0,
+          "_quota_unusable": "observation is stale (older than 900 seconds)",
+          "_quota_epoch": {
+            "plan": "Plus",
+            "session": [
+              null,
+              null
+            ],
+            "weekly": [
+              10080,
+              1800600000000
+            ]
+          }
+        }
+      },
+      "status": "unknown",
+      "reason": "codex quota observation is stale (older than 900 seconds); refresh Orca before dispatch",
+      "phase": "braked",
+      "dispatches": 0,
+      "delta_from_initial": {
+        "claude": {
+          "session": null,
+          "weekly": null
+        },
+        "codex": {
+          "session": null,
+          "weekly": null
+        }
+      }
+    },
+    {
+      "scenario": "cached_first",
+      "observation": {
+        "claude": {
+          "session": null,
+          "weekly": null,
+          "_quota_checked": true,
+          "_observation_age_seconds": null,
+          "_quota_unusable": "observation timestamp is missing or invalid",
+          "_quota_epoch": {
+            "plan": null,
+            "session": [
+              null,
+              null
+            ],
+            "weekly": [
+              null,
+              null
+            ]
+          }
+        },
+        "codex": {
+          "session": null,
+          "weekly": 20,
+          "_quota_checked": true,
+          "_observation_age_seconds": 0.0,
+          "_quota_epoch": {
+            "plan": "Plus",
+            "session": [
+              null,
+              null
+            ],
+            "weekly": [
+              10080,
+              1800600000000
+            ]
+          }
+        }
+      },
+      "status": "available",
+      "reason": "",
+      "phase": "running",
+      "dispatches": 1,
+      "delta_from_initial": {
+        "claude": {
+          "session": null,
+          "weekly": null
+        },
+        "codex": {
+          "session": null,
+          "weekly": 0
+        }
+      }
+    },
+    {
+      "scenario": "cached_later_same_bytes",
+      "observation": {
+        "claude": {
+          "session": null,
+          "weekly": null,
+          "_quota_checked": true,
+          "_observation_age_seconds": null,
+          "_quota_unusable": "observation timestamp is missing or invalid",
+          "_quota_epoch": {
+            "plan": null,
+            "session": [
+              null,
+              null
+            ],
+            "weekly": [
+              null,
+              null
+            ]
+          }
+        },
+        "codex": {
+          "session": null,
+          "weekly": 20,
+          "_quota_checked": true,
+          "_observation_age_seconds": 901.0,
+          "_quota_unusable": "observation is stale (older than 900 seconds)",
+          "_quota_epoch": {
+            "plan": "Plus",
+            "session": [
+              null,
+              null
+            ],
+            "weekly": [
+              10080,
+              1800600000000
+            ]
+          }
+        }
+      },
+      "status": "unknown",
+      "reason": "codex quota observation is stale (older than 900 seconds); refresh Orca before dispatch",
+      "phase": "braked",
+      "dispatches": 0,
+      "delta_from_initial": {
+        "claude": {
+          "session": null,
+          "weekly": null
+        },
+        "codex": {
+          "session": null,
+          "weekly": null
+        }
+      }
+    },
+    {
+      "scenario": "available_in_reality_but_unknown_observation",
+      "observation": {
+        "claude": {
+          "session": null,
+          "weekly": null,
+          "_quota_checked": true,
+          "_observation_age_seconds": null,
+          "_quota_unusable": "observation timestamp is missing or invalid",
+          "_quota_epoch": {
+            "plan": null,
+            "session": [
+              null,
+              null
+            ],
+            "weekly": [
+              null,
+              null
+            ]
+          }
+        },
+        "codex": {
+          "session": null,
+          "weekly": null,
+          "_quota_checked": true,
+          "_observation_age_seconds": 0.0,
+          "_quota_unusable": "usage is unknown",
+          "_quota_epoch": {
+            "plan": "Plus",
+            "session": [
+              null,
+              null
+            ],
+            "weekly": [
+              10080,
+              1800600000000
+            ]
+          }
+        }
+      },
+      "status": "unknown",
+      "reason": "codex quota usage is unknown; refresh Orca before dispatch",
+      "phase": "braked",
+      "dispatches": 0,
+      "delta_from_initial": {
+        "claude": {
+          "session": null,
+          "weekly": null
+        },
+        "codex": {
+          "session": null,
+          "weekly": null
+        }
+      }
+    },
+    {
+      "scenario": "both_limited",
+      "observation": {
+        "claude": {
+          "session": null,
+          "weekly": 99,
+          "_quota_checked": true,
+          "_observation_age_seconds": 0.0,
+          "_quota_epoch": {
+            "plan": "Plus",
+            "session": [
+              null,
+              null
+            ],
+            "weekly": [
+              10080,
+              1800600000000
+            ]
+          }
+        },
+        "codex": {
+          "session": null,
+          "weekly": 99,
+          "_quota_checked": true,
+          "_observation_age_seconds": 0.0,
+          "_quota_epoch": {
+            "plan": "Plus",
+            "session": [
+              null,
+              null
+            ],
+            "weekly": [
+              10080,
+              1800600000000
+            ]
+          }
+        }
+      },
+      "status": "limited",
+      "reason": "codex weekly usage is at 99% (limit 90%)",
+      "phase": "braked",
+      "dispatches": 0,
+      "delta_from_initial": {
+        "claude": {
+          "session": null,
+          "weekly": null
+        },
+        "codex": {
+          "session": null,
+          "weekly": 79
+        }
+      }
+    },
+    {
+      "scenario": "changed_plan",
+      "observation": {
+        "claude": {
+          "session": null,
+          "weekly": null,
+          "_quota_checked": true,
+          "_observation_age_seconds": null,
+          "_quota_unusable": "observation timestamp is missing or invalid",
+          "_quota_epoch": {
+            "plan": null,
+            "session": [
+              null,
+              null
+            ],
+            "weekly": [
+              null,
+              null
+            ]
+          }
+        },
+        "codex": {
+          "session": null,
+          "weekly": 20,
+          "_quota_checked": true,
+          "_observation_age_seconds": 0.0,
+          "_quota_epoch": {
+            "plan": "Pro",
+            "session": [
+              null,
+              null
+            ],
+            "weekly": [
+              10080,
+              1800600000000
+            ]
+          }
+        }
+      },
+      "status": "available",
+      "reason": "",
+      "phase": "running",
+      "dispatches": 1,
+      "delta_from_initial": {
+        "claude": {
+          "session": null,
+          "weekly": null
+        },
+        "codex": {
+          "session": null,
+          "weekly": null
+        }
+      }
+    },
+    {
+      "scenario": "reset",
+      "observation": {
+        "claude": {
+          "session": null,
+          "weekly": null,
+          "_quota_checked": true,
+          "_observation_age_seconds": null,
+          "_quota_unusable": "observation timestamp is missing or invalid",
+          "_quota_epoch": {
+            "plan": null,
+            "session": [
+              null,
+              null
+            ],
+            "weekly": [
+              null,
+              null
+            ]
+          }
+        },
+        "codex": {
+          "session": null,
+          "weekly": 0,
+          "_quota_checked": true,
+          "_observation_age_seconds": 0.0,
+          "_quota_epoch": {
+            "plan": "Plus",
+            "session": [
+              null,
+              null
+            ],
+            "weekly": [
+              10080,
+              1801000000000
+            ]
+          }
+        }
+      },
+      "status": "available",
+      "reason": "",
+      "phase": "running",
+      "dispatches": 1,
+      "delta_from_initial": {
+        "claude": {
+          "session": null,
+          "weekly": null
+        },
+        "codex": {
+          "session": null,
+          "weekly": null
+        }
+      }
+    }
+  ]
+}

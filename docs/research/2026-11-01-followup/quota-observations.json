@@ -1,0 +1,96 @@
+[
+  {
+    "at": "2026-11-01T07:36:57.969464+00:00",
+    "providers": {
+      "claude": {
+        "status": "limited",
+        "windows": {
+          "session": {
+            "usedPercent": null,
+            "resetsAt": null,
+            "windowMinutes": null
+          },
+          "weekly": {
+            "usedPercent": 91,
+            "resetsAt": 1793642399554,
+            "windowMinutes": 10080
+          }
+        },
+        "plan": null,
+        "plan_source": "unknown",
+        "updatedAt": 1793518559662,
+        "source": "orca account list",
+        "observation_age_seconds": 58.307772159576416,
+        "unusable_reason": ""
+      },
+      "codex": {
+        "status": "available",
+        "windows": {
+          "session": {
+            "usedPercent": null,
+            "resetsAt": null,
+            "windowMinutes": null
+          },
+          "weekly": {
+            "usedPercent": 37,
+            "resetsAt": 1794108224000,
+            "windowMinutes": 10080
+          }
+        },
+        "plan": null,
+        "plan_source": "unknown",
+        "updatedAt": 1793518560104,
+        "source": "orca account list",
+        "observation_age_seconds": 57.865772008895874,
+        "unusable_reason": ""
+      }
+    }
+  },
+  {
+    "at": "2026-11-01T07:37:53.313674+00:00",
+    "providers": {
+      "claude": {
+        "status": "limited",
+        "windows": {
+          "session": {
+            "usedPercent": null,
+            "resetsAt": null,
+            "windowMinutes": null
+          },
+          "weekly": {
+            "usedPercent": 91,
+            "resetsAt": 1793642399554,
+            "windowMinutes": 10080
+          }
+        },
+        "plan": null,
+        "plan_source": "unknown",
+        "updatedAt": 1793518559662,
+        "source": "orca account list",
+        "observation_age_seconds": 113.65189003944397,
+        "unusable_reason": ""
+      },
+      "codex": {
+        "status": "available",
+        "windows": {
+          "session": {
+            "usedPercent": null,
+            "resetsAt": null,
+            "windowMinutes": null
+          },
+          "weekly": {
+            "usedPercent": 37,
+            "resetsAt": 1794108224000,
+            "windowMinutes": 10080
+          }
+        },
+        "plan": null,
+        "plan_source": "unknown",
+        "updatedAt": 1793518560104,
+        "source": "orca account list",
+        "observation_age_seconds": 113.20988988876343,
+        "unusable_reason": ""
+      }
+    }
+  }
+]
