@@ -611,7 +611,7 @@ def _audit(workspace: str, record: dict, changed: list, limits: dict, client: Or
     rounds = int(record.get("audit_rounds") or 0)
     pick = quick.reviewer(limits, brake_percent)
     if pick is None:
-        say("every provider is braked: the audit cannot run; try again later "
+        say("reviewer quota is unknown or limited: the audit cannot run; try again later "
             "or ask the owner to review the diff")
         return 126
     profile = _roles.profile("reviewer", ship.PLUGIN)

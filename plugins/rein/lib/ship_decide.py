@@ -779,6 +779,10 @@ def _on_tick(state: ShipState, event: Tick, cfg: ShipConfig, actions: list) -> N
         _open(state, actions, None, reason, ["retry", "pause"], "brake")
         return
 
+    if quota.availability(event.limits, agent, cfg.brake_percent) == "unknown":
+        # Legacy explicit Ship can make progress with an unavailable quota source,
+        # but unknown capacity never authorizes a parallel burst.
+        batch = batch[:max(0, 1 - len(active))]
     for task in batch:
         actions.append(Dispatch(task.id, task.repo, _worktree(state, task.repo), agent, model))
         task.status = "running"

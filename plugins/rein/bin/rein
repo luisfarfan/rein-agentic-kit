@@ -1482,6 +1482,7 @@ def cmd_route(argv: list[str]) -> int:
     parser.add_argument("--agent", required=True)
     parser.add_argument("--model", default="")
     parser.add_argument("--limits", help="saved Orca account-list JSON; absent means unknown")
+    parser.add_argument("--plans", help="JSON provider-to-plan mapping; metadata only")
     parser.add_argument("--execution", choices=("native", "quick", "ship"))
     parser.add_argument("--plan", action="store_true")
     parser.add_argument("--audit", action="store_true")
@@ -1490,13 +1491,23 @@ def cmd_route(argv: list[str]) -> int:
         with open(args.assessment, encoding="utf-8") as fh:
             report = json.load(fh)
         limits = {}
+        account = {}
+        plans = {}
+        if args.plans:
+            with open(args.plans, encoding="utf-8") as fh:
+                plans = json.load(fh)
+            if not isinstance(plans, dict) or any(not isinstance(v, str) for v in plans.values()):
+                raise ValueError("plans must map provider names to plan strings")
         if args.limits:
             import quota
             with open(args.limits, encoding="utf-8") as fh:
-                limits = quota.parse_rate_limits(json.load(fh))
+                account = json.load(fh)
+                limits = quota.parse_rate_limits(account)
         override = {k: v for k, v in {"execution": args.execution,
                     "plan": args.plan, "audit": args.audit}.items() if v}
         decision = routing.recommend(report, args.agent, args.model, limits, override)
+        import quota
+        decision["quota_snapshot"] = quota.snapshot(account, plans)
     except (OSError, ValueError, TypeError) as exc:
         print("rein route: %s" % exc, file=sys.stderr)
         return 2

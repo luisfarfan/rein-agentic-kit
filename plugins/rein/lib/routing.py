@@ -40,10 +40,7 @@ def recommend(report, current_agent, current_model='', limits=None, override=Non
     audit = override.get('audit', audit) or audit
     providers = []
     for provider in ('claude', 'codex'):
-        block = limits.get(provider) or {}
-        limited = bool(quota.brake_reason(limits, provider))
-        known = any(block.get(w) is not None for w in quota.WINDOWS)
-        providers.append({'provider': provider, 'quota': 'limited' if limited else 'available' if known else 'unknown'})
+        providers.append({'provider': provider, 'quota': quota.availability(limits, provider)})
     eligible = [p['provider'] for p in providers if p['quota'] == 'available']
     status = 'investigate' if assessment['unknowns'] else 'ready'
     if execution != 'native' and not eligible:

@@ -292,7 +292,7 @@ class AuditDecisionTests(unittest.TestCase):
         cool = {"session": 1.0, "weekly": 1.0}
         hot = {"session": 95.0, "weekly": 1.0}
         self.assertEqual(quick.reviewer({"claude": cool, "codex": cool}), quota.OPUS)
-        self.assertEqual(quick.reviewer({}), quota.OPUS)
+        self.assertIsNone(quick.reviewer({}))
         self.assertEqual(quick.reviewer({"claude": hot, "codex": cool}), quota.CODEX)
         self.assertIsNone(quick.reviewer({"claude": hot, "codex": hot}))
 

@@ -109,3 +109,20 @@ Seven routing tests (including real CLI invocation) plus impact/surface checks
 passed. Unknown impact is not ready; missing measured capacity blocks a delegated
 recommendation. This is advisory integration, not automatic interception of every
 natural-language task or a proof of model behavior.
+
+## P3 implemented and bounded
+
+Reproduced before changes: `quick.reviewer(parse_rate_limits({}))` chose Opus;
+unknown Codex outranked known available Antigravity. Both now have regression
+coverage. Provider-limited status without percentages also brakes; invalid numbers
+are unknown; reset deltas are not negative usage. `rein route` exposes sanitized
+plan/window/reset evidence and explicit plan labels without deriving capacity.
+Unknown Ship capacity is limited to one active worker. 210 focused quota, Quick,
+routing and Ship decision tests passed before full regression validation.
+
+Compatibility boundary: explicit legacy implementer flows may still make one
+attempt on an unknown provider; this is an unknown-capacity fallback, not a claim
+of available quota. The advisory route refuses delegated readiness without known
+capacity. Full mid-task recovery remains the separate unpublished branch's work.
+No daemon, private endpoint, credential extraction, global setting, API spending
+or scheduled lab was added. Orca remains the quota and execution integration.

@@ -192,7 +192,7 @@ def needs_audit(changed: list, cfg: ship_decide.ShipConfig) -> bool:
 
 def reviewer(limits: dict, brake_percent: float = 90.0):
     """Opus, else the first unbraked of Codex then Sonnet, else None."""
-    if not quota.brake_reason(limits, quota.OPUS[0], brake_percent):
+    if quota.availability(limits, quota.OPUS[0], brake_percent) == "available":
         return quota.OPUS
     pick = quota.first_unbraked([quota.CODEX, quota.SONNET], limits, brake_percent)
-    return None if quota.brake_reason(limits, pick[0], brake_percent) else pick
+    return pick if quota.availability(limits, pick[0], brake_percent) == "available" else None

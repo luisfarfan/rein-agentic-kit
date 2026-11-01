@@ -58,3 +58,28 @@ execution and capacity is sufficient. Planning and auditing can also accompany
 native execution. An iteration recommendation creates no loop: use the host's
 bounded native mechanism only when necessary, with explicit time/attempt/budget
 limits. A red test first needs code/environment/flaky classification.
+
+## Quota semantics
+
+`rein route ... --limits accounts.json --plans plans.json` includes a sanitized
+`quota_snapshot`. `plans.json` maps provider names to explicit plan labels, e.g.
+`{"claude":"Max $200", "codex":"Plus"}`. Labels are metadata and never imply
+capacity; provider-reported planType takes precedence. No plan is cached.
+Window percentages, duration and reset timestamps are preserved when present.
+
+An Orca limited status brakes even without numeric windows. Unknown capacity is
+reported as unknown, never zero. The selector prefers measured available
+providers; Quick refuses an audit when no reviewer has measured capacity.
+For backwards compatibility an explicitly invoked Quick/Ship implementer can
+still fall back to an unknown provider, but Ship limits that fallback to one
+active worker rather than its configured parallel burst. The advisory router is
+stricter and returns `capacity_required` for delegated work with no measured
+capacity. Existing execution brakes still apply. A single observed window does
+not prove that an absent second window has spare capacity.
+
+The existing driver reads Orca at execution events and records before/after
+percentages. A decreasing percentage now produces unknown delta (a reset or plan
+change), not negative consumption. Shared subscription activity means even a
+positive delta cannot be attributed solely to this task. No dollars or token
+balances are derived from percentages. The default brake leaves 10 percentage
+points; it is a configurable dispatch reserve, not a guarantee an audit will fit.

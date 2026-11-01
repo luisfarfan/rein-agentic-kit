@@ -7,6 +7,8 @@ shells out. Unknown usage (provider down, block missing, no number) is
 
 from __future__ import annotations
 
+import math
+
 CODEX = ("codex", "gpt-6.1-sol")
 SONNET = ("claude", "sonnet")
 OPUS = ("claude", "opus")
@@ -28,7 +30,7 @@ _ALWAYS = ("claude", "codex")
 def _number(value):
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
-    return value
+    return value if 0 <= value <= 100 and math.isfinite(value) else None
 
 
 def _window(block, name):
@@ -52,8 +54,11 @@ def parse_rate_limits(account_list: dict) -> dict:
     for provider, block in limits.items():
         if not isinstance(block, dict) or "status" not in block:
             continue  # configuration flags and targets share this object
+        limited = block.get("status") in ("limited", "exhausted", "rate_limited", "limit_reached")
         ok = block.get("status") == "ok"
         out[provider] = {w: (_window(block, w) if ok else None) for w in WINDOWS}
+        if limited or any(isinstance(block.get(w), dict) and block[w].get("limited") is True for w in WINDOWS):
+            out[provider]["_limited"] = True
     return out
 
 
@@ -80,7 +85,11 @@ def candidates(limits: dict, threshold: float) -> list:
 
 
 def first_unbraked(choices: list, limits: dict, max_pct: float = 90.0) -> tuple:
-    """The first choice whose provider is under the brake; the first choice when none is."""
+    """Prefer measured capacity, then a legacy unknown fallback, else a braked choice."""
+    # A missing percentage must not outrank measured spare capacity.
+    for choice in choices:
+        if availability(limits, choice[0], max_pct) == "available":
+            return choice
     for choice in choices:
         if not brake_reason(limits, choice[0], max_pct):
             return choice
@@ -92,6 +101,8 @@ def brake_reason(limits: dict, agent: str, max_pct: float = 90.0) -> str:
     the provider and the window at or above `max_pct`."""
     provider = {"claude": "claude", "codex": "codex"}.get(agent, agent)
     block = limits.get(provider) or {}
+    if block.get("_limited") is True:
+        return "%s is marked limited by Orca" % provider
     for window in WINDOWS:
         used = block.get(window)
         if used is not None and used >= max_pct:
@@ -100,13 +111,49 @@ def brake_reason(limits: dict, agent: str, max_pct: float = 90.0) -> str:
 
 
 def usage_delta(before: dict, after: dict) -> dict:
-    """Per provider and window, `after - before`; `None` when either side is."""
+    """Observable nonnegative deltas; unknown after a reset or missing observation."""
     out = {}
     for provider in sorted(set(before) | set(after)):
         b = before.get(provider) or {}
         a = after.get(provider) or {}
         out[provider] = {
-            w: (a[w] - b[w] if a.get(w) is not None and b.get(w) is not None else None)
+            w: (a[w] - b[w] if a.get(w) is not None and b.get(w) is not None and a[w] >= b[w] else None)
             for w in WINDOWS
         }
+    return out
+
+
+def availability(limits: dict, provider: str, max_pct: float = 90.0) -> str:
+    """One known window can establish available usage; absent windows stay unknown."""
+    if brake_reason(limits, provider, max_pct):
+        return "limited"
+    block = limits.get(provider) or {}
+    return "available" if any(_number(block.get(w)) is not None for w in WINDOWS) else "unknown"
+
+
+def snapshot(account_list: dict, plans=None) -> dict:
+    """Sanitized metadata for evidence, with explicit plans when not reported.
+
+    No account IDs, auth, prices, inferred token balances, or private endpoints.
+    Re-read each event; this function holds no plan cache across runs.
+    """
+    limits = parse_rate_limits(account_list)
+    result = account_list.get("result", {}) if isinstance(account_list, dict) else {}
+    raw = result.get("rateLimits", {}) if isinstance(result, dict) else {}
+    raw = raw if isinstance(raw, dict) else {}
+    plans = plans or {}
+    out = {}
+    for provider, usage in limits.items():
+        block = raw.get(provider)
+        block = block if isinstance(block, dict) else {}
+        windows = {}
+        for w in WINDOWS:
+            win = block.get(w)
+            win = win if isinstance(win, dict) else {}
+            windows[w] = {"usedPercent": usage[w], "resetsAt": win.get("resetsAt"),
+                          "windowMinutes": win.get("windowMinutes")}
+        out[provider] = {"status": availability(limits, provider), "windows": windows,
+                         "plan": block.get("planType") or plans.get(provider),
+                         "plan_source": "provider" if block.get("planType") else "configured" if plans.get(provider) else "unknown",
+                         "updatedAt": block.get("updatedAt"), "source": "orca account list"}
     return out
