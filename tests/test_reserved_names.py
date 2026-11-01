@@ -251,13 +251,13 @@ class TestDiscoverIsAStanceNotAWorkflow(unittest.TestCase):
         """The one boundary that makes it different from /rein:rein-plan. If it
         drafts tasks, it is just a slower planner and the phase is lost."""
         body = self._skill()
-        self.assertIn("Write no plan", body)
-        self.assertIn("Do not write the plan", body)
+        self.assertIn("do not implement, write a plan", body)
+        self.assertIn("or start workers", body)
 
     def test_it_refuses_to_implement(self):
         body = self._skill()
-        self.assertIn("Implement nothing", body)
-        self.assertIn('Not "one small fix while I am here"', body)
+        self.assertIn("do not implement", body)
+        self.assertIn("explicit Discover invocation is read-only", body)
 
     def test_it_hands_off_by_name(self):
         self.assertIn("/rein:rein-plan", self._skill())
@@ -266,7 +266,7 @@ class TestDiscoverIsAStanceNotAWorkflow(unittest.TestCase):
         """Discovery is the phase most likely to burn context, because
         exploring is the point -- so the discipline matters more here."""
         body = self._skill()
-        self.assertIn("codegraph query", body)
-        self.assertIn("offset/limit", body)
+        self.assertIn("targeted `rg` searches", body)
+        self.assertIn("bounded reads", body)
         self.assertIn("rein context .", body)
-        self.assertIn("read-only workers", body)
+        self.assertIn("Neither graphs nor a second model are prerequisites", body)

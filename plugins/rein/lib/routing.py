@@ -17,7 +17,7 @@ def recommend(report, current_agent, current_model='', limits=None, override=Non
         if key in override and not isinstance(override[key], bool):
             raise ValueError('%s override must be boolean' % key)
     risks = set(assessment['risks'])
-    plan = bool(risks & {'scope', 'implementation', 'contracts', 'persistence'})
+    plan = bool(risks & {'scope', 'implementation', 'contracts', 'persistence', 'uncertainty'})
     audit = bool(risks & AUDIT_RISKS)
     execution = 'native'
     reasons = ['Continue in the current session unless delegation has an evidenced benefit.']
@@ -42,7 +42,10 @@ def recommend(report, current_agent, current_model='', limits=None, override=Non
     for provider in ('claude', 'codex'):
         providers.append({'provider': provider, 'quota': quota.availability(limits, provider)})
     eligible = [p['provider'] for p in providers if p['quota'] == 'available']
-    status = 'investigate' if assessment['unknowns'] else 'ready'
+    status = 'investigate' if assessment['discovery'] == 'deeper' else 'ready'
+    if execution == 'native' and quota.availability(limits, current_agent) == 'limited':
+        status = 'capacity_required'
+        reasons.append('The current provider is limited; refresh capacity before continuing. No automatic delegation.')
     if execution != 'native' and not eligible:
         status = 'capacity_required'
         reasons.append('No measured provider capacity: do not dispatch; refresh quotas or continue natively if sufficient.')

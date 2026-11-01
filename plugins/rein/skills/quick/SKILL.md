@@ -1,6 +1,6 @@
 ---
 name: quick
-description: "Codex: $rein:quick. Hand a small change to a cheap agent in its own tab, no plan needed. Use when the user says: tarea rápida, arréglalo rápido, cambio rápido, quick task, /quick."
+description: "Codex: $rein:quick. Delegate a small change through Orca when the user explicitly requests Quick or a separate worker. Ordinary tarea rápida, arréglalo rápido, cambio rápido or quick task requests stay native when sufficient; /quick selects delegation."
 license: MIT
 ---
 

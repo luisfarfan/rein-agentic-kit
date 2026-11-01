@@ -32,5 +32,5 @@ def assess(report: dict) -> dict:
     unknowns = [k for k, v in out.items() if v['level'] == 'unknown']
     risks = [k for k, v in out.items() if v['level'] == 'high']
     return {'schema_version': 1, 'dimensions': out, 'risks': risks, 'unknowns': unknowns,
-            'discovery': 'deeper' if unknowns else 'sufficient',
+            'discovery': 'deeper' if unknowns or out['uncertainty']['level'] == 'high' else 'sufficient',
             'confidence': 'UNKNOWN' if unknowns else 'evidence_supplied'}

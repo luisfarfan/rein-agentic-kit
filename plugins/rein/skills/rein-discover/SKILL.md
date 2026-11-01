@@ -37,5 +37,5 @@ machine-readable recommendation is useful, use the assessment contract in
 
 This explicit Discover invocation is read-only: do not implement, write a plan,
 or start workers. Suggest the appropriate next step, which may be native work,
-selective planning or independent audit. Discovery within an already-authorized
+selective planning (`/rein:rein-plan`) or independent audit. Discovery within an already-authorized
 implementation can be brief and does not require invoking this read-only skill.

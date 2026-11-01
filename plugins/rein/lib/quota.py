@@ -30,12 +30,17 @@ _ALWAYS = ("claude", "codex")
 def _number(value):
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
-    return value if 0 <= value <= 100 and math.isfinite(value) else None
+    return value if not isinstance(value, float) or math.isfinite(value) else None
+
+
+def _percent(value):
+    number = _number(value)
+    return number if number is not None and 0 <= number <= 100 else None
 
 
 def _window(block, name):
     win = block.get(name)
-    return _number(win.get("usedPercent")) if isinstance(win, dict) else None
+    return _percent(win.get("usedPercent")) if isinstance(win, dict) else None
 
 
 def parse_rate_limits(account_list: dict) -> dict:
@@ -128,7 +133,7 @@ def availability(limits: dict, provider: str, max_pct: float = 90.0) -> str:
     if brake_reason(limits, provider, max_pct):
         return "limited"
     block = limits.get(provider) or {}
-    return "available" if any(_number(block.get(w)) is not None for w in WINDOWS) else "unknown"
+    return "available" if any(_percent(block.get(w)) is not None for w in WINDOWS) else "unknown"
 
 
 def snapshot(account_list: dict, plans=None) -> dict:

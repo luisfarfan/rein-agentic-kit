@@ -67,3 +67,13 @@ class RoutingTest(unittest.TestCase):
             self.assertEqual(p.returncode, 0, p.stderr)
             self.assertEqual(json.loads(p.stdout)['execution'], 'native')
             self.assertEqual(list(Path(tmp).iterdir()), [path])
+
+    def test_evidenced_uncertainty_still_requires_investigation(self):
+        r = routing.recommend(report(uncertainty='high'), 'codex')
+        self.assertEqual(r['status'], 'investigate')
+        self.assertTrue(r['plan'])
+
+    def test_limited_current_provider_is_not_native_ready(self):
+        r = routing.recommend(report(), 'claude', limits={'claude': {'weekly': 99}, 'codex': {'weekly': 5}})
+        self.assertEqual(r['execution'], 'native')
+        self.assertEqual(r['status'], 'capacity_required')

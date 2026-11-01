@@ -139,3 +139,18 @@ Implemented flow: shared SKILL.md → current-session reconnaissance → optiona
 `impact.assess` / `rein route` advice → native work or existing Quick/Ship → existing
 gates/review. Orca still owns workers and terminals. Provider manifests and repo
 symlinks are adapters; there is one Python core and no new runtime dependency.
+
+## Review corrections
+
+The first full regression run executed 1964 tests and found five failures: the
+README command index missed `route`, and four prose-contract tests expected the
+previous Discover wording. The command index was fixed. Discover's tests now
+assert the same read-only/no-plan guarantees and the intended bounded `rg` search
+policy instead of mandatory CodeGraph/worker references.
+
+Review also added regressions for evidenced high uncertainty (still investigate)
+and a limited current provider (capacity required without automatic delegation).
+Quick's description now distinguishes an explicit delegated workflow from an
+ordinary request for a small native change. `_number` remains a general numeric
+helper so the unpublished recovery branch's reset timestamps remain compatible;
+percentage validation is separate.
