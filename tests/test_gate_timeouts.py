@@ -77,9 +77,10 @@ def _git_project(root, commands):
 class TestTheGateUsesHistory(CacheDirCase):
     def test_a_pass_sets_the_next_budget(self):
         root = os.path.join(self.tmp, "p")
-        _git_project(root, {"test": "true"})
+        _git_project(root, {"test": "sleep 0.02"})
         first = json.loads(subprocess.run([sys.executable, REIN, "gate", root, "--json", "--timeout", "50"],
                                           capture_output=True, text=True).stdout)
+        self.assertEqual(first["report"]["results"]["test"]["outcome"], "ok")
         self.assertEqual(first["report"]["results"]["test"]["budgetSeconds"], 50)
         second = json.loads(subprocess.run([sys.executable, REIN, "gate", root, "--json", "--no-cache"],
                                            capture_output=True, text=True).stdout)

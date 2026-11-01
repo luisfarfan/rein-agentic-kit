@@ -86,6 +86,9 @@ class Env(unittest.TestCase):
 
     def clone(self, src, dst):
         subprocess.run(["git", "clone", "-q", src, dst], check=True, capture_output=True)
+        # The runtime commits in this fixture too; do not rely on global identity.
+        git(dst, "config", "user.name", "test")
+        git(dst, "config", "user.email", "test@example.invalid")
 
     def say(self, line):
         self.out.append(line)

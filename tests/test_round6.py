@@ -34,13 +34,14 @@ from test_quick_driver import DoneCase, TERMINAL, _AuditOrca  # noqa: E402
 from test_ship import Drained, FakeOrca, ShipCase, scripted_gate  # noqa: E402
 
 def _clone_works():
-    src = tempfile.mkdtemp()
-    dst = os.path.join(tempfile.mkdtemp(), "c")
-    try:
-        os.makedirs(os.path.join(src, "d"))
-        return subprocess.run(guard._clone_command(os.path.join(src, "d"), dst), capture_output=True).returncode == 0
-    finally:
-        shutil.rmtree(src, True)
+    with tempfile.TemporaryDirectory() as root:
+        src = os.path.join(root, "src")
+        dst = os.path.join(root, "dst")
+        os.makedirs(src)
+        # An empty directory succeeds even when file reflinks are unsupported.
+        with open(os.path.join(src, "probe"), "w", encoding="utf-8") as fh:
+            fh.write("copy-on-write probe\n")
+        return subprocess.run(guard._clone_command(src, dst), capture_output=True).returncode == 0
 
 
 CLONE = unittest.skipUnless(_clone_works(), "this filesystem cannot clone copy-on-write")
@@ -573,6 +574,7 @@ class DependenciesAndUncertainty(unittest.TestCase):
         self.assertEqual(guard.unmatched_hook_accepts(["deadbeefdead"], accepted),
                          ["--accept-hook deadbeefdead is not a commit whose pre-commit hook was unchecked"])
 
+    @CLONE
     def test_an_accept_never_turns_a_red_green(self):
         commit(self.repo, "src/a.ts", "FORBIDDEN\n", "feat: bad")
         sha = run_git(self.repo, "rev-parse", "HEAD").strip()
@@ -928,7 +930,6 @@ class QuickEnoent(DoneCase):
         self.assertEqual(self.done(accept_hooks=[sha])[0], 1, self.text())
 
 
-@CLONE
 class CopyOnWriteDependencies(unittest.TestCase):
     """B2: the re-check gets clones of the dependency folders; nothing it writes reaches the worker."""
 
@@ -938,6 +939,7 @@ class CopyOnWriteDependencies(unittest.TestCase):
         self.repo = os.path.join(self.tmp, "repo")
         self.base = js_repo(self.repo)
 
+    @CLONE
     def test_a_hook_writing_tracked_config_through_the_dependency_folder_is_red_and_the_worker_is_untouched(self):
         install_hook(self.repo, "pre-commit",
                      "#!/bin/sh\ncd node_modules\nprintf '{\"commands\":{\"test\":\"false\"}}\\n' > ../flow.config.json\nexit 0\n")
@@ -951,6 +953,7 @@ class CopyOnWriteDependencies(unittest.TestCase):
         # and the next look blames nothing the re-run did
         self.assertFalse(any("it changes flow.config.json" in p for p in guard.check(self.repo, self.base, {}, unchecked=[])))
 
+    @CLONE
     def test_a_cache_the_hook_writes_inside_the_dependencies_stays_in_the_clone(self):
         install_hook(self.repo, "pre-commit", "#!/bin/sh\nmkdir -p node_modules/.cache && echo x > node_modules/.cache/y\nexit 0\n")
         commit(self.repo, "src/a.ts", "export const a = 1\n", "feat: a")
