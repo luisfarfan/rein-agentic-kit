@@ -1,0 +1,13 @@
+{
+  "tests/fixtures/impact_eval/case2/admin/help.md": "068f7317642f5235b0510a5539ef0a75ac8076b69138fa1d8e9be6a23e586924",
+  "tests/fixtures/impact_eval/case2/admin/menu.py": "2698d34e73266d745215febf0123e8b98e5dffffc3d6246ffd7ba26a793dffe2",
+  "tests/fixtures/impact_eval/case2/admin/view.py": "c39bedbe4383cc1f8fdabbfa4267b31729a2a278c978ed0655e7017b0004598a",
+  "tests/fixtures/impact_eval/case2/api/approvals.py": "c6f0fab783ef0ec4f364dae54c19dbe36ee119b937d69ff36f425de833671c52",
+  "tests/fixtures/impact_eval/case2/api/policy.py": "1db15f6aa761ea6a51f43f3cc7fd386473aac1fa36f85b8311d6925b35f88ded",
+  "tests/fixtures/impact_eval/case1/admin/invoice.ts": "925661da6edd1d496e409897e27c2d255c43fcc0a584e5e467aa0d816cb14272",
+  "tests/fixtures/impact_eval/case1/api/store.py": "09d6f15d787db93ae164011b7832b9ce546c7ad51312eab1227f5b7a6c01e784",
+  "tests/fixtures/impact_eval/case1/api/service.py": "e073898f9470704a5463cb44718c3cc4a75ef37f4495d038643523f4fc2557cf",
+  "tests/fixtures/impact_eval/case1/api/gateway.py": "b7dc8561be1840ea45e1ca4fa33f4ad2d0d226f08d90b6c6f1ccf0d5893b3f00",
+  "tests/fixtures/impact_eval/case1/api/schema.sql": "ba6b12b74e8e5d8623a5a6fa72b6cce3561687205254cb7ae5bf5c4cb9c26c94",
+  "tests/fixtures/impact_eval/case1/api/router.py": "bd0cfb80f55b8f0df47d36f80cfc467dc0677a8ba822bf612f6deb6fe7860188"
+}
