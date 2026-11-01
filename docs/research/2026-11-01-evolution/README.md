@@ -1,6 +1,8 @@
 # Evolution — evidence and acceptance (2026-11-01)
 
-Latest follow-up: [decision-quality evaluation and P3 correction](../2026-11-01-evaluation/RESULTS.md). It records two invalid new benchmark cells, one actual opt-in Astra workflow, and stricter stale/unknown quota dispatch checks. The initial implementation record below is historical; its unknown-capacity fallback and unverified-reference limitations were superseded by the later evidence contracts and P3 correction. P0 remains PARTIALLY ACCEPTED.
+Latest evidence: [valid P1 comparison, paired native control and quota observability](../2026-11-01-followup/RESULTS.md). The corrected P1 cells found no additional critical risks; P2 produced the same functional result with more measured overhead. Recommendation: simplify prose classifications, keep routing optional, preserve evidence and required controls. P3 freshness/brakes are unchanged; diagnostics now distinguish unavailable observations from exhaustion.
+
+Previous follow-up: [decision-quality evaluation and P3 correction](../2026-11-01-evaluation/RESULTS.md). It records two invalid new benchmark cells, one actual opt-in Astra workflow, and stricter stale/unknown quota dispatch checks. The initial implementation record below is historical; its unknown-capacity fallback and unverified-reference limitations were superseded by the later evidence contracts and P3 correction. P0 remains PARTIALLY ACCEPTED.
 
 Latest follow-up: [P1/P2 implementation, real behavior and measured comparison](P1-P2-RESULTS.md),
 with the [acceptance matrix](ACCEPTANCE.md). P0 remains **PARTIALLY ACCEPTED**;

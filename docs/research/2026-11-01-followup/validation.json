@@ -1,0 +1,59 @@
+{
+  "diagnostic_commit": "3541489",
+  "policy_changed": false,
+  "model_turns": 4,
+  "p2_independent_checks": {
+    "native": {
+      "passed": 19,
+      "total": 19
+    },
+    "rein": {
+      "passed": 19,
+      "total": 19
+    }
+  },
+  "checks": [
+    {
+      "command": "python3 -m unittest tests.test_quota_guard_freshness tests.test_quick_driver tests.test_ship_decide -q",
+      "tests": 255,
+      "seconds": 18.619,
+      "result": "PASS"
+    },
+    {
+      "command": "python3 -m unittest discover -s tests -q",
+      "tests": 2000,
+      "seconds": 310.816,
+      "result": "FAIL",
+      "failures": 2,
+      "skipped": 2,
+      "reason": "Audit diagnostic wording assertions; no behavior assertion failed. Quota-brake label restored without restoring exhaustion claim."
+    },
+    {
+      "command": "two targeted failing audit diagnostic checks",
+      "tests": 2,
+      "seconds": 0.135,
+      "result": "PASS"
+    },
+    {
+      "command": "python3 -m unittest discover -s tests -q",
+      "tests": 2000,
+      "seconds": 383.214,
+      "result": "PASS",
+      "skipped": 2
+    },
+    {
+      "command": "/tmp/rein-evolution-validation/bin/python -m unittest tests.test_packaging -q",
+      "tests": 7,
+      "seconds": 4.16,
+      "result": "PASS"
+    },
+    {
+      "command": "git diff --check",
+      "result": "PASS"
+    },
+    {
+      "command": "artifact JSON parse, local links, exact cwd/model/effort and frozen-byte checks",
+      "result": "PASS"
+    }
+  ]
+}

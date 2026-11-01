@@ -92,5 +92,52 @@
         "unusable_reason": ""
       }
     }
+  },
+  {
+    "at": "2026-11-01T07:44:01.266693+00:00",
+    "providers": {
+      "claude": {
+        "status": "limited",
+        "windows": {
+          "session": {
+            "usedPercent": null,
+            "resetsAt": null,
+            "windowMinutes": null
+          },
+          "weekly": {
+            "usedPercent": 91,
+            "resetsAt": 1793642399819,
+            "windowMinutes": 10080
+          }
+        },
+        "plan": null,
+        "plan_source": "unknown",
+        "updatedAt": 1793518876924,
+        "source": "orca account list",
+        "observation_age_seconds": 164.3426229953766,
+        "unusable_reason": ""
+      },
+      "codex": {
+        "status": "available",
+        "windows": {
+          "session": {
+            "usedPercent": null,
+            "resetsAt": null,
+            "windowMinutes": null
+          },
+          "weekly": {
+            "usedPercent": 37,
+            "resetsAt": 1794108224000,
+            "windowMinutes": 10080
+          }
+        },
+        "plan": null,
+        "plan_source": "unknown",
+        "updatedAt": 1793518877438,
+        "source": "orca account list",
+        "observation_age_seconds": 163.82862305641174,
+        "unusable_reason": ""
+      }
+    }
   }
 ]

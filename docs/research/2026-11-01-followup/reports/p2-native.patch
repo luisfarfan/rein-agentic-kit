@@ -1,0 +1,40 @@
+diff --git a/admin/menu.py b/admin/menu.py
+index ccdc962..9663bb1 100644
+--- a/admin/menu.py
++++ b/admin/menu.py
+@@ -1 +1 @@
+-VISIBLE_WITH = ('catalog:manage', 'orders:manage')
++VISIBLE_WITH = ('catalog:manage', 'orders:manage', 'inventory:manage', 'pricing:manage')
+diff --git a/test_panel.py b/test_panel.py
+index 3c71779..d2375e4 100644
+--- a/test_panel.py
++++ b/test_panel.py
+@@ -6,11 +6,27 @@ from approvals import approve_batch
+ from view import show_approvals
+ class PanelTest(unittest.TestCase):
+     def test_existing_menu_access(self):
+-        self.assertTrue(show_approvals({'permissions':['catalog:manage']}))
++        for permission in ['catalog:manage', 'orders:manage', 'inventory:manage', 'pricing:manage']:
++            with self.subTest(permission=permission):
++                self.assertTrue(show_approvals({'permissions':[permission]}))
+         self.assertFalse(show_approvals({'permissions':[]}))
++        self.assertFalse(show_approvals({'permissions':['inventory:read']}))
+     def test_api_boundaries(self):
+         user={'business_id':'a','permissions':['inventory:manage']}
+         p={'id':'p','business_id':'a','area':'inventory','grant_key':'g'}
+         self.assertEqual(approve_batch(user,[p],'g')[0]['status'],'approved')
+         for u,k in [(dict(user,business_id='b'),'g'),(dict(user,permissions=[]),'g'),(user,'bad')]:
+             with self.assertRaises(PermissionError): approve_batch(u,[p],k)
++    def test_menu_access_preserves_approval_authorization(self):
++        for area in ['inventory', 'pricing']:
++            p={'id':'p','business_id':'a','area':area,'grant_key':'g'}
++            for permission in ['catalog:manage', 'orders:manage', 'inventory:manage', 'pricing:manage']:
++                with self.subTest(area=area,permission=permission):
++                    user={'business_id':'a','permissions':[permission]}
++                    self.assertTrue(show_approvals(user))
++                    if permission == area + ':manage':
++                        self.assertEqual(approve_batch(user,[p],'g')[0]['status'],'approved')
++                        for u,k in [(dict(user,business_id='b'),'g'),(user,'bad')]:
++                            with self.assertRaises(PermissionError): approve_batch(u,[p],k)
++                    else:
++                        with self.assertRaises(PermissionError): approve_batch(user,[p],'g')

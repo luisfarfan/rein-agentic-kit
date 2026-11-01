@@ -1,0 +1,241 @@
+{
+  "schema_version": 2,
+  "classification": {
+    "implementation": {
+      "level": "low",
+      "reason": "Extend one existing permission tuple consumed by show_approvals; add regression coverage.",
+      "evidence": [
+        "e0",
+        "e1",
+        "e5"
+      ]
+    },
+    "risk": {
+      "level": "low",
+      "reason": "Local in-process visibility extension only; approval mutation checks remain separate and unchanged. No HTTP deployment or persistence in the inspected path.",
+      "evidence": [
+        "e0",
+        "e1",
+        "e3",
+        "e4",
+        "e6"
+      ]
+    },
+    "uncertainty": {
+      "level": "low",
+      "reason": "Complete menu consumer, request producer, API consumer and policy inspected; no unresolved boundary for this local task.",
+      "evidence": [
+        "e0",
+        "e1",
+        "e2",
+        "e3",
+        "e4",
+        "e5"
+      ]
+    },
+    "repo_scope": {
+      "level": "low",
+      "reason": "Only this isolated repository is authorized and the entire affected path is local.",
+      "evidence": [
+        "e6",
+        "e0",
+        "e1",
+        "e4"
+      ]
+    },
+    "planning": {
+      "level": "low",
+      "reason": "One tuple extension and focused tests; no migration or coordinated change required.",
+      "evidence": [
+        "e0",
+        "e1",
+        "e3",
+        "e4"
+      ]
+    },
+    "independent_verification": {
+      "level": "low",
+      "reason": "Independent review not required for this bounded visibility change; unit checks can verify retained access and API denials without changing authorization.",
+      "evidence": [
+        "e0",
+        "e1",
+        "e3",
+        "e4",
+        "e5",
+        "e6"
+      ]
+    }
+  },
+  "findings": {
+    "existing": [
+      {
+        "claim": "VISIBLE_WITH supplies catalog/orders access to show_approvals via permission intersection.",
+        "kind": "observed",
+        "evidence": [
+          "e0",
+          "e1"
+        ]
+      },
+      {
+        "claim": "approve_batch consumes policy.allowed, requiring matching business, area permission and grant key for every proposal.",
+        "kind": "observed",
+        "evidence": [
+          "e3",
+          "e4"
+        ]
+      }
+    ],
+    "missing": [
+      {
+        "claim": "Menu tuple omits inventory:manage and pricing:manage; current menu test covers catalog and empty permissions only.",
+        "kind": "observed",
+        "evidence": [
+          "e0",
+          "e5"
+        ]
+      }
+    ],
+    "dependencies": [
+      {
+        "claim": "admin.menu.VISIBLE_WITH -> admin.view.show_approvals; admin.view.approval_request constructs a batch request; api.approvals.approve_batch -> api.policy.allowed. This exercise calls the API in process; no HTTP deployment or external integration is in scope.",
+        "kind": "observed",
+        "evidence": [
+          "e0",
+          "e1",
+          "e2",
+          "e3",
+          "e4",
+          "e5",
+          "e6"
+        ]
+      }
+    ],
+    "risks": [
+      {
+        "claim": "Broader menu visibility must not bypass business, per-area or grant checks. Existing API checks are independent; regression tests will include new viewer permissions and mixed batches.",
+        "kind": "inference",
+        "evidence": [
+          "e1",
+          "e3",
+          "e4",
+          "e5"
+        ]
+      },
+      {
+        "claim": "Tests inspected only at discovery time; configured verification is python3 -B -m unittest test_panel -q.",
+        "kind": "observed",
+        "evidence": [
+          "e5",
+          "e7"
+        ]
+      }
+    ]
+  },
+  "risk_facets": {
+    "security": {
+      "level": "low",
+      "reason": "Visibility changes only; existing mutation authority remains independently enforced by policy.allowed.",
+      "evidence": [
+        "e0",
+        "e1",
+        "e3",
+        "e4",
+        "e6"
+      ]
+    },
+    "persistence": {
+      "level": "not_applicable",
+      "reason": "No persistence in affected in-process menu or approval functions.",
+      "evidence": [
+        "e0",
+        "e1",
+        "e3",
+        "e4"
+      ]
+    },
+    "contracts": {
+      "level": "low",
+      "reason": "No request shape or API policy change required.",
+      "evidence": [
+        "e1",
+        "e3",
+        "e4"
+      ]
+    }
+  },
+  "questions": [],
+  "evidence": {
+    "e0": {
+      "repo": ".",
+      "path": "admin/menu.py",
+      "sha256": "2698d34e73266d745215febf0123e8b98e5dffffc3d6246ffd7ba26a793dffe2",
+      "lines": [
+        1,
+        1
+      ]
+    },
+    "e1": {
+      "repo": ".",
+      "path": "admin/view.py",
+      "sha256": "c39bedbe4383cc1f8fdabbfa4267b31729a2a278c978ed0655e7017b0004598a",
+      "lines": [
+        1,
+        9
+      ]
+    },
+    "e2": {
+      "repo": ".",
+      "path": "admin/help.md",
+      "sha256": "068f7317642f5235b0510a5539ef0a75ac8076b69138fa1d8e9be6a23e586924",
+      "lines": [
+        1,
+        3
+      ]
+    },
+    "e3": {
+      "repo": ".",
+      "path": "api/policy.py",
+      "sha256": "1db15f6aa761ea6a51f43f3cc7fd386473aac1fa36f85b8311d6925b35f88ded",
+      "lines": [
+        1,
+        6
+      ]
+    },
+    "e4": {
+      "repo": ".",
+      "path": "api/approvals.py",
+      "sha256": "c6f0fab783ef0ec4f364dae54c19dbe36ee119b937d69ff36f425de833671c52",
+      "lines": [
+        1,
+        6
+      ]
+    },
+    "e5": {
+      "repo": ".",
+      "path": "test_panel.py",
+      "sha256": "5ac260ce3819db3956ecc4079a86a7fa0153a2d7ec6f5055c4013c0a06a63bc7",
+      "lines": [
+        1,
+        16
+      ]
+    },
+    "e6": {
+      "repo": ".",
+      "path": "AGENTS.md",
+      "sha256": "b607923359261b3cd330ba89dd5bcbbab30a734d7c3d38268b5600b073fab5aa",
+      "lines": [
+        1,
+        18
+      ]
+    },
+    "e7": {
+      "repo": ".",
+      "path": "flow.config.json",
+      "sha256": "7ae8d5f718bf7de1e5443b700bd2ba260c3464c759ea0ee853e25c4d9c6f2f42",
+      "lines": [
+        1,
+        1
+      ]
+    }
+  }
+}

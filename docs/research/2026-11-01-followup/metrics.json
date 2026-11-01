@@ -1,0 +1,123 @@
+{
+  "source": "Actual completed session counters, excluding parent evaluator work; validity set after trace review. P1 comparison is non-contemporaneous.",
+  "runs": [
+    {
+      "group": "p1",
+      "name": "case1",
+      "cwd": "/Users/luisfarfan/Developer/labs/agents/rein/.rein/p0-live-evaluation/new/case1",
+      "session": "rollout-2026-11-01T02-40-05-01a1960d-2070-7683-9609-794d477370e3.jsonl",
+      "terminal": "term_da76867b-8c98-4e96-b589-6fae1a1c84f8",
+      "contexts": [
+        {
+          "cwd": "/Users/luisfarfan/Developer/labs/agents/rein/.rein/p0-live-evaluation/new/case1",
+          "model": "gpt-6.1-sol",
+          "effort": "medium"
+        }
+      ],
+      "duration_ms": 71186,
+      "tool_calls": {
+        "exec_command": 4
+      },
+      "usage": {
+        "input_tokens": 101908,
+        "cached_input_tokens": 93312,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 2451,
+        "reasoning_output_tokens": 171,
+        "total_tokens": 104359,
+        "uncached_input_tokens": 8596
+      },
+      "validity": "VALID_WITH_STATED_LIMITS",
+      "investigation_calls": 3
+    },
+    {
+      "group": "p1",
+      "name": "case2",
+      "cwd": "/Users/luisfarfan/Developer/labs/agents/rein/.rein/p0-live-evaluation/new/case2",
+      "session": "rollout-2026-11-01T02-40-08-01a1960d-2c9d-7030-97c7-eaa85e0b9013.jsonl",
+      "terminal": "term_3d637be4-f4f9-4ce5-a980-5845b7fe163c",
+      "contexts": [
+        {
+          "cwd": "/Users/luisfarfan/Developer/labs/agents/rein/.rein/p0-live-evaluation/new/case2",
+          "model": "gpt-6.1-sol",
+          "effort": "medium"
+        }
+      ],
+      "duration_ms": 69832,
+      "tool_calls": {
+        "exec_command": 4
+      },
+      "usage": {
+        "input_tokens": 101166,
+        "cached_input_tokens": 93056,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 2548,
+        "reasoning_output_tokens": 392,
+        "total_tokens": 103714,
+        "uncached_input_tokens": 8110
+      },
+      "validity": "VALID_WITH_STATED_LIMITS",
+      "investigation_calls": 3
+    },
+    {
+      "group": "p2",
+      "name": "rein",
+      "cwd": "/Users/luisfarfan/Developer/labs/agents/rein/.rein/followup/p2-rein",
+      "session": "rollout-2026-11-01T02-41-40-01a1960e-9540-75e2-b5af-11f142c345cc.jsonl",
+      "terminal": "term_4fac755f-79c0-4572-ad54-16c367ca9176",
+      "contexts": [
+        {
+          "cwd": "/Users/luisfarfan/Developer/labs/agents/rein/.rein/followup/p2-rein",
+          "model": "gpt-6.1-sol",
+          "effort": "medium"
+        }
+      ],
+      "duration_ms": 57370,
+      "tool_calls": {
+        "exec_command": 5,
+        "apply_patch": 1
+      },
+      "usage": {
+        "input_tokens": 156951,
+        "cached_input_tokens": 132608,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 3084,
+        "reasoning_output_tokens": 179,
+        "total_tokens": 160035,
+        "uncached_input_tokens": 24343
+      },
+      "validity": "VALID_WITH_STATED_LIMITS",
+      "investigation_calls": null
+    },
+    {
+      "group": "p2",
+      "name": "native",
+      "cwd": "/Users/luisfarfan/Developer/labs/agents/rein/.rein/followup/p2-native",
+      "session": "rollout-2026-11-01T02-41-40-01a1960e-93e5-7c52-b4d3-4b3638ef7449.jsonl",
+      "terminal": "term_0dc76f76-02ec-4465-a2f0-8f979439d4f9",
+      "contexts": [
+        {
+          "cwd": "/Users/luisfarfan/Developer/labs/agents/rein/.rein/followup/p2-native",
+          "model": "gpt-6.1-sol",
+          "effort": "medium"
+        }
+      ],
+      "duration_ms": 20753,
+      "tool_calls": {
+        "exec_command": 3,
+        "apply_patch": 1
+      },
+      "usage": {
+        "input_tokens": 74567,
+        "cached_input_tokens": 53376,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 817,
+        "reasoning_output_tokens": 45,
+        "total_tokens": 75384,
+        "uncached_input_tokens": 21191
+      },
+      "validity": "VALID_WITH_STATED_LIMITS",
+      "investigation_calls": null
+    }
+  ]
+}

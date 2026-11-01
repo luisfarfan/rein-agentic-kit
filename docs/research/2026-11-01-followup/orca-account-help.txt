@@ -1,0 +1,28 @@
+orca account
+
+Usage: orca account <command> [options]
+
+Commands:
+  add                Add a managed agent account by signing in on this Orca host
+  list               List managed agent accounts on this Orca host
+  select             Select an OpenCode or Devin profile for new agent launches
+  rm                 Remove a managed OpenCode or Devin profile and its private data
+
+Run `orca account <command> --help` for command-specific usage.
+
+orca account list
+
+Usage: orca account list [--agent opencode|devin] [--json]
+
+List managed agent accounts on this Orca host
+
+Options:
+  --help                 Show this help message
+  --json                 Emit machine-readable JSON
+  --agent <id>           Account provider: opencode or devin
+
+Notes:
+  Lists the accounts on this machine. `--environment` / `--pairing-code` are rejected rather than ignored; run it on the host whose accounts you want to see.
+
+Examples:
+  $ orca account list

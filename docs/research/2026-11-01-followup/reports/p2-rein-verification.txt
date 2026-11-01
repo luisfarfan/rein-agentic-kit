@@ -1,0 +1,5 @@
+python3 -B -m unittest test_panel -q
+Ran 4 tests; OK (exit 0).
+API policy and approvals unchanged by SHA-256 comparison with original discovery evidence.
+Native execution in the same session; no independent review performed or required by observed route.
+Original pre-implementation report/check/route preserved; post-change report and route stored separately.

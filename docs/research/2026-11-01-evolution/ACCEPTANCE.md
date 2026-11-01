@@ -70,3 +70,29 @@ missing Claude-origin and cross-provider checks.
 P3 remains PARTIALLY IMPLEMENTED/VALIDATED. Main suite: 1997 tests, OK, skipped=2;
 separate temporary-environment packaging suite: seven passed. No push, merge,
 release, product edits, global changes or recurring experiments.
+
+
+## Corrected laboratory and matched native control
+
+The [follow-up](../2026-11-01-followup/RESULTS.md) supersedes the lack of a valid
+new-arm comparison, without erasing the earlier failed isolation checks. Exactly
+two corrected Sol Medium P1 cells and two matched Sol Medium P2 arms ran.
+
+| Check | Kind | Result | Evidence / limit |
+| --- | --- | --- | --- |
+| Corrected P1 startup root | Actual Orca shell preflight + model traces | PASS | Correct cwd/context, same prompts/resources/fixtures; no outside-context read observed |
+| P1 critical-risk coverage | Frozen independent rubric | PASS | Both old and corrected new cover 5/5 dangerous-risk facts; no additional critical fact found by new version |
+| P1 superiority | Comparative inference | NOT TESTED at population level | Valid non-contemporaneous observations; lower measured tokens/time, no causal or broad superiority claim |
+| P2 matched final behavior | Independent frozen evaluator | PASS | Both native and REIN pass 19/19; identical functional tuple change and unchanged mutation authority |
+| P2 advice followed | Actual execution order | PASS | REIN route preceded edit; native advice followed. Native control independently chose the same strategy |
+| P2 net improvement for this task | Paired local outcome | FAIL | No superior final behavior/strategy; 14.9% more uncached input, 57.370 vs 20.753 s, 6 vs 4 tool calls; richer trace/mixed-batch test acknowledged |
+| P3 cached data / retry / recovery / pause | Driver and state-machine regression | PASS | Re-read can remain stale; retry does not bypass; usable new data permits dispatch; pause preserves pending work |
+| P3 immediate supported forced refresh | Installed CLI / live query | NOT TESTED | CLI exposes no documented force-refresh; immediate mechanism not verified; eventual observed update is not a guarantee |
+| P3 freshness and percentage brakes | Policy preservation | PASS | 900 s / clock skew / 90% defaults unchanged; only diagnostics/runbook changed |
+
+P0 remains PARTIALLY ACCEPTED, Claude-origin and cross-provider work blocked at
+91% weekly. No automatic routing, global skill activation or new runtime added.
+
+Follow-up final regression: **2000 tests, OK (skipped=2)**; seven separate wheel
+checks passed. Two initial message-contract failures were corrected and retained
+in the [validation history](../2026-11-01-followup/validation.json).
