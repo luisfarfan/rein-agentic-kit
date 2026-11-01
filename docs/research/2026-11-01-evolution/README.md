@@ -126,3 +126,16 @@ of available quota. The advisory route refuses delegated readiness without known
 capacity. Full mid-task recovery remains the separate unpublished branch's work.
 No daemon, private endpoint, credential extraction, global setting, API spending
 or scheduled lab was added. Orca remains the quota and execution integration.
+
+## P4/P5 decisions and actual architecture
+
+[Loop and laboratory study](LOOPS-LAB.md): retain native Goals / existing bounded
+Ship triage; no extra loop runtime. Harness² adds candidate optimization but does
+not yet justify an integration or PoC on REIN's available evidence.
+[Evaluation ledger](EVALUATION.md): prior A/B limitations, executed policy checks,
+and a proposed held-out protocol. No new agent benchmark ran.
+
+Implemented flow: shared SKILL.md → current-session reconnaissance → optional
+`impact.assess` / `rein route` advice → native work or existing Quick/Ship → existing
+gates/review. Orca still owns workers and terminals. Provider manifests and repo
+symlinks are adapters; there is one Python core and no new runtime dependency.
