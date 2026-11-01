@@ -105,6 +105,18 @@ class DiscoveryV2Test(unittest.TestCase):
         self.assertEqual(impact.assess(self.report, self.roots)['discovery'], 'deeper')
         self.assertEqual(impact.assess(self.report, dict(self.roots, api=self.root))['discovery'], 'sufficient')
 
+    def test_two_distinct_repositories_check_each_contract_side(self):
+        api, web = Path(self.tmp.name) / 'api', Path(self.tmp.name) / 'web'
+        api.mkdir()
+        web.mkdir()
+        for filename in ('api.py', 'schema.sql'):
+            shutil.copyfile(FIXTURES / 'complex' / filename, api / filename)
+        shutil.copyfile(FIXTURES / 'complex/client.ts', web / 'client.ts')
+        report = case('complex')
+        report['evidence']['client.ts']['repo'] = 'web'
+        self.assertEqual(impact.assess(report, {'.': api, 'web': web})['discovery'], 'sufficient')
+        self.assertEqual(impact.assess(report, {'.': api, 'web': api})['discovery'], 'deeper')
+
     def test_outside_and_symlink_escape_are_not_read(self):
         outside = Path(self.tmp.name) / 'outside.py'
         outside.write_text('secret = 1\n')

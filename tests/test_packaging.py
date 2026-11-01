@@ -84,6 +84,7 @@ class TestTheWheelInstallsAndRuns(unittest.TestCase):
                        "rein_kit/skills/rein-discover/PROVIDERS.md",
                        "rein_kit/skills/rein-discover/IMPACT.md",
                        "rein_kit/lib/impact.py", "rein_kit/lib/routing.py",
+                       "rein_kit/lib/evidence.py",
                        "rein_kit/.codex-plugin/plugin.json"):
             self.assertIn(needed, names, f"the wheel is missing {needed}")
 
@@ -136,6 +137,18 @@ print(json.dumps(checked))
         self.assertEqual(decision["status"], "investigate")
         self.assertEqual(decision["execution"], "native")
         self.assertEqual(decision["quota_snapshot"]["codex"]["status"], "unknown")
+
+    def test_packaged_discovery_checks_real_file_evidence(self):
+        from tests.test_discovery_v2 import case, FIXTURES
+        path = os.path.join(self.tmp, 'discovery.json')
+        with open(path, 'w') as fh:
+            json.dump(case('easy'), fh)
+        proc = subprocess.run([os.path.join(self.bin, 'rein'), 'discover-check', path,
+                               '--root', str(FIXTURES / 'easy')], capture_output=True, text=True)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        report = json.loads(proc.stdout)
+        self.assertEqual(report['discovery'], 'sufficient')
+        self.assertEqual(report['classification']['risk']['level'], 'low')
 
     def test_it_declares_no_runtime_dependencies(self):
         """A tool that runs inside other people's projects must not fight
