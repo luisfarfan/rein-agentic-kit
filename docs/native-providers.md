@@ -139,3 +139,7 @@ The [entry-policy validation](research/2026-11-01-entry/RESULTS.md) uses the act
 installed wheel and unchanged adoption template. It demonstrates native execution
 and selective deepening in bounded Codex cases; it does not establish universal
 compliance, token savings or Claude behavioral acceptance.
+
+Project governance owns adoption: select a kit revision, enable its entry guidance
+through the project's existing instructions, and expose the desired skills. REIN
+does not own the consumer catalog, installation lifecycle, or organization policy.
