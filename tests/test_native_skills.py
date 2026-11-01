@@ -25,8 +25,8 @@ class NativeSkillsTest(unittest.TestCase):
             # Hosts may normalize a Markdown reference before following symlinks.
             literal_target = Path(os.path.normpath(str(link / relative)))
             self.assertEqual(literal_target.read_text(), (PLUGIN / 'PROVIDERS.md').read_text())
-            guide = (link / 'PROVIDERS.md').resolve(strict=True)
-            proc = subprocess.run([sys.executable, str(guide.parent / 'bin/rein'),
+            plugin = next(parent for parent in resolved.parents if (parent / 'bin/rein').is_file())
+            proc = subprocess.run([sys.executable, str(plugin / 'bin/rein'),
                                    'role', 'reviewer'], capture_output=True, text=True)
             self.assertEqual(proc.returncode, 0, proc.stderr)
             self.assertIn('never review your own implementation', proc.stdout)

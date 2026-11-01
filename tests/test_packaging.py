@@ -100,6 +100,31 @@ class TestTheWheelInstallsAndRuns(unittest.TestCase):
         self.assertEqual(packaged.returncode, 0, packaged.stderr)
         self.assertEqual(json.loads(packaged.stdout), json.loads(plugin.stdout))
 
+    def test_installed_skills_resolve_resources_and_cli_without_source_tree(self):
+        # Follow actual Markdown links from the installed wheel, not source symlinks.
+        script = '''
+import json, pathlib, re, subprocess, sys
+import rein_kit
+root = pathlib.Path(rein_kit.__file__).parent
+checked = []
+for skill in sorted((root / 'skills').glob('*/SKILL.md')):
+    link = re.search(r'\\[provider setup\\]\\(([^)]+)\\)', skill.read_text()).group(1)
+    provider = skill.parent / link
+    assert provider.read_text() == (root / 'PROVIDERS.md').read_text()
+    impact_link = re.search(r'\\[impact routing\\]\\(([^)]+)\\)', provider.read_text()).group(1)
+    assert (provider.parent / impact_link).read_text() == (root / 'IMPACT.md').read_text()
+    plugin = next(p for p in skill.resolve().parents if (p / 'bin/rein').is_file())
+    run = subprocess.run([sys.executable, str(plugin / 'bin/rein'), 'role', 'reviewer'], capture_output=True, text=True)
+    assert run.returncode == 0 and 'never review your own implementation' in run.stdout
+    checked.append(skill.parent.name)
+assert len(checked) == 7
+print(json.dumps(checked))
+'''
+        proc = subprocess.run([os.path.join(self.bin, 'python'), '-I', '-c', script],
+                              cwd=self.tmp, capture_output=True, text=True)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(len(json.loads(proc.stdout)), 7)
+
     def test_packaged_router_runs_with_unknown_evidence(self):
         path = os.path.join(self.tmp, "assessment.json")
         with open(path, "w", encoding="utf-8") as fh:
