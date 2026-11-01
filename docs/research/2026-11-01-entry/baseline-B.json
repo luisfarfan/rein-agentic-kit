@@ -1,0 +1,7 @@
+{
+  "case": "B",
+  "fixture": "/Users/luisfarfan/Developer/labs/agents/rein/tests/fixtures/discovery/hidden",
+  "exit": 1,
+  "stdout": "{\"requested\": \"EUR\", \"recorded\": \"USD\", \"silent_mislabel\": true}\n",
+  "stderr": ""
+}
