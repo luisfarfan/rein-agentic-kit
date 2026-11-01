@@ -1,8 +1,10 @@
 ---
 name: quick
-description: "Hand a small change to a cheap agent in its own tab, no plan needed. Use when the user says: tarea rápida, arréglalo rápido, cambio rápido, quick task, /quick."
+description: "Codex: $rein:quick. Hand a small change to a cheap agent in its own tab, no plan needed. Use when the user says: tarea rápida, arréglalo rápido, cambio rápido, quick task, /quick."
 license: MIT
 ---
+
+Read [provider setup](../../PROVIDERS.md) once when using REIN in this session.
 
 # /quick
 

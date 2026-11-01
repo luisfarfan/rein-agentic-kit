@@ -1,8 +1,10 @@
 ---
 name: ship
-description: "Implement a planned change: opens a detached Orca tab that runs `rein ship <change>` (workers, task gates, an audit). Use only when orchestration pays (parallel tasks, several repos, dependencies to recover, a long run needing saved state), not for a sequential plan one session can do; when the user says ship, lánzalo, implementa el plan, or /ship."
+description: "Codex: $rein:ship. Implement a planned change: opens a detached Orca tab that runs `rein ship <change>` (workers, task gates, an audit). Use only when orchestration pays (parallel tasks, several repos, dependencies to recover, a long run needing saved state), not for a sequential plan one session can do; when the user says ship, lánzalo, implementa el plan, or /ship."
 license: MIT
 ---
+
+Read [provider setup](../../PROVIDERS.md) once when using REIN in this session.
 
 # /ship
 

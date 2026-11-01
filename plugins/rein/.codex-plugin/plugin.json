@@ -1,0 +1,20 @@
+{
+  "name": "rein",
+  "description": "Shared engineering workflows for Claude Code and Codex, with deterministic gates and Orca execution.",
+  "version": "2.1.0",
+  "author": {
+    "name": "Luis Farfan"
+  },
+  "homepage": "https://github.com/luisfarfan/rein-agentic-kit",
+  "license": "MIT",
+  "keywords": [
+    "workflow",
+    "tokens",
+    "cost",
+    "agents",
+    "review",
+    "planning",
+    "stack-detection"
+  ],
+  "skills": "./skills/"
+}

@@ -30,6 +30,7 @@ class TestEveryVersionStringAgrees(unittest.TestCase):
     def _versions(self) -> dict:
         marketplace = json.loads(_read(".claude-plugin", "marketplace.json"))
         return {
+            "codex plugin": json.loads(_read("plugins", "rein", ".codex-plugin", "plugin.json"))["version"],
             "pyproject.toml": re.search(r'^version\s*=\s*"([^"]+)"', _read("pyproject.toml"), re.M).group(1),
             "plugin.json": json.loads(_read("plugins", "rein", ".claude-plugin", "plugin.json"))["version"],
             "marketplace.json (plugin entry)": marketplace["plugins"][0]["version"],

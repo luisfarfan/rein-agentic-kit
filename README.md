@@ -813,3 +813,11 @@ MIT — see [LICENSE](LICENSE).
 <div align="center">
 <sub>Built with Claude Code, reviewed by an agent that wrote none of it.</sub>
 </div>
+
+### Native Claude Code and Codex entry points
+
+The same seven skills are exposed to Codex through `.agents/skills` and the
+Codex plugin manifest, alongside the existing Claude plugin. See
+[local installation, invocation and validation](docs/native-providers.md).
+The [evolution evidence record](docs/research/2026-11-01-evolution/README.md)
+distinguishes automated checks from live-session acceptance still pending.

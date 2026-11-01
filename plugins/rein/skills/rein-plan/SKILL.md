@@ -1,8 +1,10 @@
 ---
 name: rein-plan
-description: "Plan a change into verifiable tasks with acceptance criteria, a Repo, dependencies and a runnable verification each — confirmed before anything is written. Never implements. Use for uncertain or multi-requirement work, when asked to plan or break it down, or on /rein:rein-plan."
+description: "Codex: $rein:rein-plan. Plan a change into verifiable tasks with acceptance criteria, a Repo, dependencies and a runnable verification each — confirmed before anything is written. Never implements. Use for uncertain or multi-requirement work, when asked to plan or break it down, or on /rein:rein-plan."
 license: MIT
 ---
+
+Read [provider setup](../../PROVIDERS.md) once when using REIN in this session.
 
 # /rein:rein-plan
 

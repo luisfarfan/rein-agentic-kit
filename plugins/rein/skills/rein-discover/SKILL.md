@@ -1,7 +1,9 @@
 ---
 name: rein-discover
-description: "Think a problem through before committing to a shape. Investigate, read, ask — produce understanding, never a plan. Use only when the user invokes /rein:rein-discover or asks to think a problem through before planning."
+description: "Codex: $rein:rein-discover. Think a problem through before committing to a shape. Investigate, read, ask — produce understanding, never a plan. Use only when the user invokes /rein:rein-discover or asks to think a problem through before planning."
 ---
+
+Read [provider setup](../../PROVIDERS.md) once when using REIN in this session.
 
 # /rein:rein-discover
 

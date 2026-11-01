@@ -1,8 +1,10 @@
 ---
 name: answer
-description: "Show and answer the questions a running `rein ship` is waiting on (Orca decision gates). Use when the user says: qué me pregunta rein, rein pregunta, responde a rein, responde al gate, answer the gate, pending questions."
+description: "Codex: $rein:answer. Show and answer the questions a running `rein ship` is waiting on (Orca decision gates). Use when the user says: qué me pregunta rein, rein pregunta, responde a rein, responde al gate, answer the gate, pending questions."
 license: MIT
 ---
+
+Read [provider setup](../../PROVIDERS.md) once when using REIN in this session.
 
 # /answer
 

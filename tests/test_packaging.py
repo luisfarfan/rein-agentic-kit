@@ -79,7 +79,8 @@ class TestTheWheelInstallsAndRuns(unittest.TestCase):
                        # agent that cannot invoke a skill. A wheel without it installs
                        # cleanly and then has no roles at all -- the whole point of the
                        # command is that it works where Claude Code is not.
-                       "rein_kit/skills/rein-role/SKILL.md"):
+                       "rein_kit/skills/rein-role/SKILL.md",
+                       "rein_kit/PROVIDERS.md", "rein_kit/.codex-plugin/plugin.json"):
             self.assertIn(needed, names, f"the wheel is missing {needed}")
 
     def test_the_packaged_cli_is_the_same_code_as_the_plugins(self):

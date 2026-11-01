@@ -75,3 +75,17 @@ Orca terminal management. No model-name migration based on guessed aliases.
 Baseline executed: `python3 -m unittest discover -s tests -q`: **1944 tests,
 186.345 seconds, OK, skipped=2**. Existing ResourceWarnings occur in round6 tests.
 Pre-change Codex `skills/list` returned no REIN skill from this checkout.
+
+## P0 validation
+
+20 focused tests passed. Wheel built/installed in a temporary venv: 4 packaging
+checks passed (the system interpreter lacks `build`; no global install was made).
+Codex app-server `skills/list` actually returned all seven canonical paths, with
+`rein:` namespacing and no errors. Claude plugin validation succeeded; its only
+catalog advice was a missing icon. Skill Creator validation succeeded for Discover.
+See `tests/probe_native_skills.py` for the repeatable no-model discovery probe.
+
+Live initiating-session/worker acceptance remains pending. Read-only Orca query
+reported Claude weekly 91%, Codex weekly 13%, session windows absent. Claude is
+above the existing 90% brake. No worker or model benchmark was started. This is
+packaging/discovery validation, not a claim that both live workflows completed.

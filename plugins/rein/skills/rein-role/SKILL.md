@@ -1,8 +1,10 @@
 ---
 name: rein-role
-description: "Assign this session's working role — planner, implementer or reviewer — and load its operating profile. Use only when the user runs /rein:rein-role or says which role a session should play."
+description: "Codex: $rein:rein-role. Assign this session's working role — planner, implementer or reviewer — and load its operating profile. Use only when the user runs /rein:rein-role or says which role a session should play."
 license: MIT
 ---
+
+Read [provider setup](../../PROVIDERS.md) once when using REIN in this session.
 
 # /rein:rein-role
 
