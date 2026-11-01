@@ -171,3 +171,48 @@ Orca's recorded fixture uses milliseconds. No adapter was added: Orca already
 supplies REIN's supported source. A future adapter must preserve bucket identity
 and window duration instead of assuming primary/secondary always mean session/week.
 The installed schema was inspected; an authenticated quota RPC was not executed.
+
+## Remaining acceptance and limitations
+
+- P0 is not fully accepted until both initiating sessions complete the live Orca
+  checklist in `docs/native-providers.md`, including cross-provider delegation,
+  watcher delivery and independent review. Repository discovery and packaged CLI
+  execution were automated; desktop plugin installation/UI behavior was not.
+- Impact evidence is supplied by the agent. References are not automatically
+  authenticated against source, and no model behavior benchmark was run.
+- Routing is advisory, opt-in and produces JSON; it is not a hook intercepting all
+  natural-language tasks. Native runs do not gain automatic token telemetry.
+- Existing model defaults remain unchanged. This patch does not discover a dynamic
+  capability/model catalog or choose a new model based on a subscription label.
+- The legacy unknown-quota implementer fallback remains bounded to one worker.
+  A missing window is still missing. Saved quota files must be refreshed before
+  dispatch; the advisory command cannot establish their freshness on its own.
+- The separate recovery branch still needs reconciliation with current guard and
+  triage behavior. Its unpublished experiments were inspected, not overwritten.
+- macOS and the installed CLI versions were exercised. Linux/Windows and the
+  project's Python 3.9/3.12 CI matrix were not run in this local session.
+
+## Final validation record
+
+- Baseline: `python3 -m unittest discover -s tests -q` — 1944 tests,
+  186.345 s, OK, skipped=2.
+- Full regression sweep (started before the final Quick override hardening):
+  1966 tests, 308.317 s, OK, skipped=2.
+- Final affected-path regression after that hardening: 455 tests, 26.668 s, OK:
+  `python3 -m unittest tests.test_quick_driver tests.test_quick_cli tests.test_ship
+  tests.test_ship_decide tests.test_quota tests.test_quota_evolution tests.test_routing
+  tests.test_impact tests.test_native_skills tests.test_readme_is_current
+  tests.test_reserved_names tests.test_skill_budget tests.test_version_lock -q`.
+- Final wheel build, scratch installation and execution: 5 packaging tests,
+  4.731 s, OK, using the temporary developer venv with `build` installed. Includes
+  executing the packaged `rein route` and checking bundled impact/provider files.
+- Final actual Codex discovery: seven skills, zero errors. Claude manifest
+  validation: success, exit 0 (non-blocking catalog icon advice only).
+- All seven skill bodies passed Skill Creator's validator. The existing Ship
+  description's angle brackets were removed to meet that validator's schema.
+- `git diff c3a03cc --check`: passed. No push, merge, release or deployment.
+
+Commits by phase: `c3beef4` baseline; `57609c4` native distribution; `38f9fd4`
+discovery; `af8d847` routing; `05d29a1` quotas; `cd3cccf` loops/lab decisions;
+`8e84968` routing corrections; `7190474` explicit Quick brakes and final packaging
+coverage. Validation is recorded separately from live acceptance above.
