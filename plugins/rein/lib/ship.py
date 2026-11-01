@@ -932,7 +932,7 @@ class _Driver:
 
     def note_quota_before(self, limits):
         """Persist the run's first usable quota snapshot; deltas are measured from it, across resumes."""
-        known = any(v is not None for window in limits.values() for v in window.values())
+        known = any(window.get(w) is not None for window in limits.values() for w in quota.WINDOWS)
         if known and not self.state.quota_before:
             self.state.quota_before = {p: dict(w) for p, w in limits.items()}
             self.save()

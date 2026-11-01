@@ -288,25 +288,33 @@ def start_quick(
             % (here_path, quick.RECORD, record_path))
         return 2
 
-    # 3. Implementer
+    # 3. Implementer. An explicit provider selects the model, not a quota bypass.
+    explicit_agent = bool(agent)
     if agent:
         model = model or DEFAULT_MODELS.get(agent, "")
         if not model:
             say("--agent %s needs --model" % agent)
             return 2
-    else:
-        try:
-            limits = quota.parse_rate_limits({"result": client.account_list()})
-        except OrcaError:
-            limits = quota.parse_rate_limits({})  # unknown usage never brakes
-        cfg = ship_decide.ShipConfig.from_flow_config(_detect.resolve(repo_path))
+    try:
+        limits = quota.parse_rate_limits({"result": client.account_list()})
+    except OrcaError:
+        limits = quota.parse_rate_limits({})
+    cfg = ship_decide.ShipConfig.from_flow_config(_detect.resolve(repo_path))
+    if not agent:
         agent, model = quota.choose_implementer(
             limits, cfg.claude_weekly_threshold, max_pct=cfg.brake_percent)
-        if quota.brake_reason(limits, agent, cfg.brake_percent):
+    reason = quota.brake_reason(limits, agent, cfg.brake_percent)
+    if reason:
+        if explicit_agent:
+            say(reason)
+            say("selected provider is braked: nothing was launched")
+        else:
             for line in _braked_lines(limits, cfg.claude_weekly_threshold, cfg.brake_percent):
                 say(line)
             say("every provider is braked: nothing was launched")
-            return 1
+        return 1
+    if quota.availability(limits, agent, cfg.brake_percent) == "unknown":
+        say("%s quota is unknown: this explicit Quick request starts only one worker" % agent)
 
     # gate.env: the literal values when the workspace is known (--here), else a `rein env` the agent
     # evaluates in the worktree Orca is about to create (its name is not known yet).

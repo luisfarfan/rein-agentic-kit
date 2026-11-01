@@ -516,14 +516,18 @@ class AgentTests(DriverCase):
         argv = orca.launches()[0]
         self.assertEqual(argv[argv.index("--agent") + 1], "codex")
 
-    def test_override_skips_quota(self):
+    def test_override_selects_provider_but_respects_quota(self):
         orca = _Orca(self.repos, _limits(99, 99), self.worktree)
         code, orca, _ = self.run_quick(orca=orca, agent="codex", model="gpt-x")
+        self.assertEqual(code, 1)
+        self.assertTrue(orca.called("account", "list"))
+        self.assertFalse(orca.launches())
+        self.assertFalse(os.path.exists(os.path.join(self.worktree, ".rein", "quick.json")))
+
+    def test_override_keeps_explicit_model_when_capacity_is_known(self):
+        orca = _Orca(self.repos, _limits(20, 20), self.worktree)
+        code, orca, _ = self.run_quick(orca=orca, agent="codex", model="gpt-x")
         self.assertEqual(code, 0)
-        self.assertFalse(orca.called("account", "list"))
-        argv = orca.launches()[0]
-        self.assertEqual((argv[argv.index("--agent") + 1], argv[argv.index("--model") + 1]),
-                         ("codex", "gpt-x"))
         rec = self.record(self.worktree)
         self.assertEqual((rec["agent"], rec["model"]), ("codex", "gpt-x"))
 

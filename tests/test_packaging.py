@@ -80,7 +80,9 @@ class TestTheWheelInstallsAndRuns(unittest.TestCase):
                        # cleanly and then has no roles at all -- the whole point of the
                        # command is that it works where Claude Code is not.
                        "rein_kit/skills/rein-role/SKILL.md",
-                       "rein_kit/PROVIDERS.md", "rein_kit/.codex-plugin/plugin.json"):
+                       "rein_kit/PROVIDERS.md", "rein_kit/IMPACT.md",
+                       "rein_kit/lib/impact.py", "rein_kit/lib/routing.py",
+                       "rein_kit/.codex-plugin/plugin.json"):
             self.assertIn(needed, names, f"the wheel is missing {needed}")
 
     def test_the_packaged_cli_is_the_same_code_as_the_plugins(self):
@@ -95,6 +97,18 @@ class TestTheWheelInstallsAndRuns(unittest.TestCase):
         )
         self.assertEqual(packaged.returncode, 0, packaged.stderr)
         self.assertEqual(json.loads(packaged.stdout), json.loads(plugin.stdout))
+
+    def test_packaged_router_runs_with_unknown_evidence(self):
+        path = os.path.join(self.tmp, "assessment.json")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({}, fh)
+        proc = subprocess.run([os.path.join(self.bin, "rein"), "route", path,
+                               "--agent", "codex"], capture_output=True, text=True)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        decision = json.loads(proc.stdout)
+        self.assertEqual(decision["status"], "investigate")
+        self.assertEqual(decision["execution"], "native")
+        self.assertEqual(decision["quota_snapshot"]["codex"]["status"], "unknown")
 
     def test_it_declares_no_runtime_dependencies(self):
         """A tool that runs inside other people's projects must not fight

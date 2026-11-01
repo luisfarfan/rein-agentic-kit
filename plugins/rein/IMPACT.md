@@ -83,3 +83,8 @@ change), not negative consumption. Shared subscription activity means even a
 positive delta cannot be attributed solely to this task. No dollars or token
 balances are derived from percentages. The default brake leaves 10 percentage
 points; it is a configurable dispatch reserve, not a guarantee an audit will fit.
+
+An explicit Quick `--agent` selects a provider/model but now also queries quotas
+and respects the configured brake. Unlike earlier versions, it does not bypass
+that check. On a limited provider it returns exit 1 before creating a worktree or
+worker. Unknown-source fallback remains one worker and is reported explicitly.

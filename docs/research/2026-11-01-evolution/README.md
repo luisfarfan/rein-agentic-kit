@@ -154,3 +154,20 @@ Quick's description now distinguishes an explicit delegated workflow from an
 ordinary request for a small native change. `_number` remains a general numeric
 helper so the unpublished recovery branch's reset timestamps remain compatible;
 percentage validation is separate.
+
+A further reviewed compatibility change: Quick's explicit `--agent` previously
+skipped account lookup entirely (`test_override_skips_quota` captured that old
+behavior). It now preserves the chosen provider/model but checks its quota before
+launching, just as Ship does. A limited explicit provider returns exit 1 with no
+worktree, worker or record created. Unknown remains an explicitly reported
+single-worker fallback. The regression now checks both refusal and the preserved
+model when capacity is available. This is an intentional safety change, not an
+unchanged legacy behavior.
+
+The current [App Server reference](https://learn.chatgpt.com/docs/app-server)
+exposes `account/rateLimits/read` and updates, including primary/secondary windows,
+optional planType and multi-bucket views. Its reset timestamps are seconds;
+Orca's recorded fixture uses milliseconds. No adapter was added: Orca already
+supplies REIN's supported source. A future adapter must preserve bucket identity
+and window duration instead of assuming primary/secondary always mean session/week.
+The installed schema was inspected; an authenticated quota RPC was not executed.
