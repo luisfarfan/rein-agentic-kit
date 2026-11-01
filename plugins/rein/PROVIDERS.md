@@ -22,3 +22,8 @@ scope, gates, guard checks, review independence, or authorization.
 - Audit requires a session independent of the implementer. The fallback to
   reviewing the five axes yourself applies to that independent reviewer session.
   No missing Claude reviewer plugin permits self-approval.
+
+Before implementation, inspect relevant code and impact in this session. For
+uncertain routing, use [impact routing](IMPACT.md) and `rein route` to explain the
+choice. Keep ordinary work native; an explicit Quick/Ship request selects its
+existing delegated contract. Reconsider when evidence changes.

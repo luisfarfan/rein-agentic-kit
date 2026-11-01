@@ -98,3 +98,14 @@ read-only. `impact.py` normalizes an optional report with independent dimensions
 it does not claim to inspect code or prove a citation. Three assessment regression
 cases plus skill/provider checks passed (21 tests total). These are policy tests,
 not evidence that a real agent correctly discovers every hidden dependency.
+
+## P2 implemented
+
+`rein route` accepts the investigating agent's evidence and emits deterministic
+advice. Planning, execution, audit, unknowns, capacity and reconsideration triggers
+are separate. It never dispatches, queries accounts or starts a loop. Existing
+Quick/Ship keep their explicit contracts; the shared provider guide links routing.
+Seven routing tests (including real CLI invocation) plus impact/surface checks
+passed. Unknown impact is not ready; missing measured capacity blocks a delegated
+recommendation. This is advisory integration, not automatic interception of every
+natural-language task or a proof of model behavior.

@@ -2,6 +2,8 @@
 """rein -- CLI for the Rein agentic kit.
 
 Subcommands:
+  rein route <assessment.json> --agent <id> [--model <m>] [--limits <orca.json>]
+                      evidence-backed advice; no dispatch or account query
   rein doctor         environment probe (plugin wiring, CLIs, config, stack);
                       --json returns {"version", "pluginRoot", "project", "plan",
                       "verifyState", "ledger"}
@@ -1470,7 +1472,39 @@ def cmd_migrate_config(argv: list[str]) -> int:
     return 0
 
 
+
+def cmd_route(argv: list[str]) -> int:
+    """Read evidence, return advice; never launches a worker or queries an account."""
+    import routing
+    import argparse
+    parser = argparse.ArgumentParser(prog="rein route")
+    parser.add_argument("assessment")
+    parser.add_argument("--agent", required=True)
+    parser.add_argument("--model", default="")
+    parser.add_argument("--limits", help="saved Orca account-list JSON; absent means unknown")
+    parser.add_argument("--execution", choices=("native", "quick", "ship"))
+    parser.add_argument("--plan", action="store_true")
+    parser.add_argument("--audit", action="store_true")
+    args = parser.parse_args(argv)
+    try:
+        with open(args.assessment, encoding="utf-8") as fh:
+            report = json.load(fh)
+        limits = {}
+        if args.limits:
+            import quota
+            with open(args.limits, encoding="utf-8") as fh:
+                limits = quota.parse_rate_limits(json.load(fh))
+        override = {k: v for k, v in {"execution": args.execution,
+                    "plan": args.plan, "audit": args.audit}.items() if v}
+        decision = routing.recommend(report, args.agent, args.model, limits, override)
+    except (OSError, ValueError, TypeError) as exc:
+        print("rein route: %s" % exc, file=sys.stderr)
+        return 2
+    print(json.dumps(decision, indent=2))
+    return 0
+
 COMMANDS = {
+    "route": cmd_route,
     "accept-outside": cmd_accept_outside,
     "doctor": cmd_doctor,
     "detect": cmd_detect,

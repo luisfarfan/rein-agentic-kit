@@ -31,7 +31,7 @@ class TestV2Surface(unittest.TestCase):
             "detect", "verify", "gate", "role", "tasks", "plan-check", "context", "close",
             "next", "review", "token-report", "ledger", "baseline", "serve-probe", "doctor", "ship",
             "answer", "watch", "done", "quick", "migrate-config", "env", "gate-log", "accept-outside",
-            "benchmark"]))
+            "benchmark", "route"]))
 
     def test_removed_modules_are_gone(self):
         for name in ("dashboard", "events", "product_state", "backlog", "workspace", "setup",
