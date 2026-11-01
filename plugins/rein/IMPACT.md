@@ -147,8 +147,9 @@ providers; Quick refuses an audit when no reviewer has measured capacity.
 Quick/Ship execution events and `route --limits` now require a usable Orca
 observation: numeric usage, valid millisecond `updatedAt`, and age at most fifteen
 minutes (up to sixty seconds of clock skew). Unknown, missing, invalid or stale
-observations block dispatch even with an explicit provider/model override. Refresh
-through Orca; no private endpoint or background refresh is added. Raw legacy
+observations block dispatch even with an explicit provider/model override. Re-read
+through Orca; a read does not force its cached observations to refresh. No private
+endpoint or background refresh is added. Raw legacy
 `parse_rate_limits` callers remain compatible, but drivers use `checked_limits`.
 Existing percentage brakes still apply. A single observed window does not prove
 that an absent second window has spare capacity.
@@ -168,3 +169,33 @@ that check. On a limited provider it returns exit 1 before creating a worktree o
 worker. Unknown-source fallback is no longer authorized by the public drivers.
 The unchanged default brake's ten percentage-point reserve is not an estimate that
 an audit or correction will fit; there is no per-task token-capacity prediction.
+
+### When quota observability blocks new work
+
+1. Read `orca account list --json` on the execution host. Inspect provider status,
+   numeric windows and `updatedAt` (milliseconds), not just command success. A fresh
+   weekly observation can qualify with session still absent; missing is not zero.
+2. Distinguish a reported limit/percentage brake from unverified capacity caused by
+   stale, missing or UNKNOWN data. Both block new workers; only the first establishes
+   an observed limit. Actual provider availability cannot be inferred from UNKNOWN.
+3. Re-read at the next relevant execution event and compare `updatedAt`. The installed
+   Orca account CLI has no documented force-refresh option. If the timestamp remains
+   old, repeated reads/retries are not a recovery mechanism. Pause Quick/Ship
+   dispatch and diagnose the provider/account observation in Orca using its supported
+   interface. Do not edit timestamps, raise brakes, switch accounts or start a worker
+   merely to test capacity. Do not promise an immediate supported refresh exists.
+4. A Ship brake offers pause; it preserves pending work and supervises already
+   running workers until they settle. Resume/retry after usable evidence returns;
+   retry itself does not waive the brake. Quick refusal creates no worker. Local
+   inspection, tests and planning need no new delegated worker; required independent
+   review still remains required, and pending review must never become approval.
+5. If the source cannot provide fresh usage, dispatch remains blocked by observability,
+   potentially indefinitely. Report that prerequisite explicitly to the user rather
+   than claiming the provider is exhausted or endlessly retrying. REIN cannot both
+   guarantee verified capacity and guarantee launch without evidence. A future
+   recovery mechanism needs a supported source, not a silent fallback.
+
+A fresh plan/reset observation can restore eligible capacity, but unlike windows
+do not yield a consumption delta. A reset forecast alone authorizes nothing. The
+900-second policy and percentage brakes are unchanged; the threshold is a
+conservative freshness boundary, not proof that capacity will last a whole task.

@@ -170,7 +170,10 @@ def brake_reason(limits: dict, agent: str, max_pct: float = 90.0) -> str:
             return "%s %s usage is at %g%% (limit %g%%)" % (provider, window, used, max_pct)
     unusable = _unusable(limits, provider)
     if unusable:
-        return '%s quota %s; refresh Orca before dispatch' % (provider, unusable)
+        return ('%s capacity is unverified: %s. Re-read `orca account list --json` and compare '
+                'updatedAt; listing does not force a refresh. If unchanged or still unknown, '
+                'pause new workers until Orca reports fresh numeric usage; do not alter '
+                'timestamps or brakes.' % (provider, unusable))
     return ""
 
 

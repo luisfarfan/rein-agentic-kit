@@ -24,6 +24,47 @@ def account(age=0, value=20, status='ok', plan='Plus', reset=1_800_600_000_000):
         'planType': plan, 'weekly': {'usedPercent': value, 'windowMinutes': 10080, 'resetsAt': reset}}}}}
 
 class FreshnessTest(unittest.TestCase):
+    def test_cached_response_can_expire_without_a_transport_error(self):
+        raw = account()
+        obj = object.__new__(driver._Driver)
+        obj.client = SimpleNamespace(account_list=lambda: raw['result'])
+        with patch('quota.time.time', return_value=NOW):
+            self.assertEqual(quota.availability(obj.limits(), 'codex'), 'available')
+        with patch('quota.time.time', return_value=NOW + 901):
+            limits = obj.limits()
+        self.assertEqual(raw['result']['rateLimits']['codex']['updatedAt'], NOW * 1000)
+        self.assertEqual(quota.availability(limits, 'codex'), 'unknown')
+        self.assertIn('stale', quota.brake_reason(limits, 'codex'))
+
+    def test_retry_requires_new_evidence_and_pause_finishes_without_dispatch(self):
+        cfg = sd.ShipConfig(override=quota.CODEX)
+        stale = quota.checked_limits(account(age=901), now=NOW)
+        state, _ = tick(ship(task('1')), stale, cfg=cfg)
+        # The driver persists OpenGate; resolving it does not manufacture capacity.
+        def resolve(state, answer):
+            state.pending_gates = []
+            state.gates['quota-gate'] = {'task_id': None, 'kind': 'brake', 'message_id': ''}
+            return sd.decide(state, sd.GateResolved('quota-gate', answer), cfg)
+        retry, _ = resolve(copy.deepcopy(state), 'retry')
+        blocked, actions = tick(retry, stale, cfg=cfg)
+        self.assertEqual(blocked.phase, 'braked')
+        self.assertFalse(any(isinstance(a, sd.Dispatch) for a in actions))
+        retry, _ = resolve(blocked, 'retry')
+        resumed, actions = tick(retry, quota.checked_limits(account(), now=NOW), cfg=cfg)
+        self.assertEqual(sum(isinstance(a, sd.Dispatch) for a in actions), 1)
+        self.assertEqual(resumed.tasks['1'].status, 'running')
+        paused, actions = resolve(state, 'pause')
+        self.assertTrue(any(isinstance(a, sd.Finish) for a in actions))
+        self.assertEqual(paused.tasks['1'].status, 'pending')
+        self.assertFalse(any(isinstance(a, sd.Dispatch) for a in actions))
+
+    def test_recent_weekly_without_session_can_dispatch_but_unknown_cannot(self):
+        for value, expected in [(20, 1), (None, 0)]:
+            limits = quota.checked_limits(account(value=value), now=NOW)
+            _, actions = tick(ship(task('1')), limits, cfg=sd.ShipConfig(override=quota.CODEX))
+            self.assertIsNone(limits['codex']['session'])
+            self.assertEqual(sum(isinstance(a, sd.Dispatch) for a in actions), expected)
+
     def test_old_missing_future_and_error_observations_cannot_authorize(self):
         cases = [account(age=901), account(age=-61), account(status='error'), account(value=None), {}]
         missing = account(); del missing['result']['rateLimits']['codex']['updatedAt']; cases.append(missing)

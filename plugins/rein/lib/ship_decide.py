@@ -1245,8 +1245,8 @@ def _on_changes_computed(state: ShipState, event: ChangesComputed, cfg: ShipConf
     braked = quota.brake_reason(event.limits, agent, cfg.brake_percent)
     if braked:
         _open(state, actions, None,
-              "Every reviewer is over the quota brake (%s), so the audit cannot start. Retry once quota "
-              "frees up, or skip the audit (the change stays unapproved)?" % braked,
+              "The quota brake prevents this audit: no eligible reviewer has verified capacity (%s). Retry once "
+              "usable capacity is reported, or skip the audit (the change stays unapproved)?" % braked,
               ["retry", "skip"], "setup")
         return
     actions.append(StartAudit(agent, model))

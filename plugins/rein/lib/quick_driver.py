@@ -619,6 +619,10 @@ def _audit(workspace: str, record: dict, changed: list, limits: dict, client: Or
     rounds = int(record.get("audit_rounds") or 0)
     pick = quick.reviewer(limits, brake_percent)
     if pick is None:
+        for provider in ('claude', 'codex'):
+            reason = quota.brake_reason(limits, provider, brake_percent)
+            if reason:
+                say(reason)
         say("reviewer quota is unknown or limited: the audit cannot run; try again later "
             "or ask the owner to review the diff")
         return 126
