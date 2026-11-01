@@ -1,0 +1,134 @@
+{
+  "schema_version": 2,
+  "request": "Agregar soporte para euros",
+  "classification": {
+    "implementation": {
+      "level": "low",
+      "reason": "EUR y el mecanismo de habilitación ya existen; el comportamiento local depende de una tupla.",
+      "evidence": [
+        "a_settings"
+      ]
+    },
+    "risk": {
+      "level": "low",
+      "reason": "El recorrido leído sólo consulta constantes, sin importes ni escrituras; conservar USD es la regresión relevante.",
+      "evidence": [
+        "a_settings",
+        "a_tests"
+      ]
+    },
+    "uncertainty": {
+      "level": "low",
+      "reason": "Dentro de A se leyó el recorrido completo disponible; no se acredita un sistema de pagos externo.",
+      "evidence": [
+        "a_settings",
+        "a_tests"
+      ]
+    },
+    "repo_scope": {
+      "level": "low",
+      "reason": "Una raíz independiente: productor ENABLED_CURRENCIES y consumidor enabled, con pruebas locales; no hay dependencia con B.",
+      "evidence": [
+        "a_settings",
+        "a_tests"
+      ]
+    },
+    "planning": {
+      "level": "low",
+      "reason": "La habilitación local es acotada y el contrato booleano ya está definido.",
+      "evidence": [
+        "a_settings"
+      ]
+    },
+    "independent_verification": {
+      "level": "low",
+      "reason": "Consulta sin efectos secundarios; una verificación focalizada de EUR, USD y moneda deshabilitada es proporcionada.",
+      "evidence": [
+        "a_settings",
+        "a_tests"
+      ]
+    }
+  },
+  "findings": {
+    "existing": [
+      {
+        "claim": "EUR pertenece a SUPPORTED_CURRENCIES y enabled consulta ENABLED_CURRENCIES.",
+        "kind": "observed",
+        "evidence": [
+          "a_settings"
+        ]
+      }
+    ],
+    "missing": [
+      {
+        "claim": "EUR aún no está habilitado: enabled(EUR) resulta falso por pertenencia; falta cobertura que compruebe su habilitación.",
+        "kind": "inference",
+        "evidence": [
+          "a_settings",
+          "a_tests"
+        ]
+      }
+    ],
+    "dependencies": [
+      {
+        "claim": "Productor ENABLED_CURRENCIES -> consumidor enabled -> consumidor test_usd. El límite local revisado comprende settings.py y test_currency.py; no se atribuyen dependencias externas.",
+        "kind": "observed",
+        "evidence": [
+          "a_settings",
+          "a_tests"
+        ]
+      }
+    ],
+    "risks": [
+      {
+        "claim": "Las dos tuplas son independientes: no se valida que lo habilitado pertenezca al catálogo; conservar USD requiere comprobación.",
+        "kind": "inference",
+        "evidence": [
+          "a_settings",
+          "a_tests"
+        ]
+      },
+      {
+        "claim": "Las pruebas fueron leídas, no ejecutadas. test_supported_eur sólo verifica el catálogo, no habilitación.",
+        "kind": "observed",
+        "evidence": [
+          "a_tests"
+        ]
+      }
+    ]
+  },
+  "questions": [],
+  "evidence": {
+    "a_settings": {
+      "repo": ".",
+      "path": "settings.py",
+      "sha256": "7143a35c7e3798bbf27701f38329410daf89264f5bd472496dc3d5a3ab6d4f3b",
+      "lines": [
+        1,
+        5
+      ],
+      "symbol": "enabled"
+    },
+    "a_tests": {
+      "repo": ".",
+      "path": "test_currency.py",
+      "sha256": "7fc5358326e726f3edf7db8700b86be1b2166ed30c906613676098005c884b2a",
+      "lines": [
+        1,
+        7
+      ],
+      "symbol": "test_supported_eur"
+    }
+  },
+  "investigation": {
+    "steps": null,
+    "seconds": null,
+    "limit_steps": 4,
+    "limit_seconds": 180
+  },
+  "limitations": [
+    "Se reutiliza Discover previo; sólo se releyeron los archivos citados al capturar hashes, sin repetir inventarios ni búsquedas.",
+    "No se ejecutaron tests de producto. La baja incertidumbre corresponde exclusivamente a A.",
+    "Los hashes acreditan frescura de archivos, no suficiencia semántica ni ausencia de dependencias externas."
+  ]
+}

@@ -9,10 +9,16 @@ an agent discovers those facts. Quota tests exercise unavailable sources, malfor
 numbers, limited status, changing plan labels and reset deltas. These are unit and
 CLI integration tests, not agent benchmarks.
 
-P0 additionally exercises actual Codex discovery and a real installed wheel. No
+In the initial implementation, P0 exercised actual Codex discovery and an installed wheel. No
 model turn, Quick worker, Ship run or agent A/B benchmark was launched here.
 The live Claude weekly usage was 91%, above the default brake. No token savings,
 quality advantage or statistical significance is claimed.
+
+Subsequent evidence is separate: [real P0 run](P0-LIVE.md) and
+[P1/P2 comparison](P1-P2-RESULTS.md). The latter contains actual Codex model turns,
+including an inefficient first revision and its bounded retest, plus token/cache
+counts and elapsed time. It is a small descriptive comparison, not the proposed
+held-out multi-arm benchmark below.
 
 ## Existing agent evidence
 

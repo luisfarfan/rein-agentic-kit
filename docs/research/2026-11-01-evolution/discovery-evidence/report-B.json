@@ -1,0 +1,211 @@
+{
+  "schema_version": 2,
+  "request": "Agregar soporte para euros",
+  "classification": {
+    "implementation": {
+      "level": "unknown",
+      "reason": "No está decidido si EUR se liquida como EUR o se convierte a USD; esa decisión cambia la solución.",
+      "evidence": [
+        "b_checkout",
+        "b_ledger"
+      ]
+    },
+    "risk": {
+      "level": "high",
+      "reason": "Habilitar EUR permitiría registrar el mismo importe con etiqueta USD, alterando su identidad monetaria.",
+      "evidence": [
+        "b_settings",
+        "b_checkout",
+        "b_ledger"
+      ]
+    },
+    "uncertainty": {
+      "level": "high",
+      "reason": "Se documenta liquidación exclusivamente USD, pero no aparecen reglas EUR ni destino de liquidación en los módulos leídos.",
+      "evidence": [
+        "b_ledger",
+        "b_checkout"
+      ]
+    },
+    "repo_scope": {
+      "level": "low",
+      "reason": "Sólo B: configuración -> checkout -> ledger; no hay evidencia de otro repositorio ni relación con A. Alcance externo pendiente.",
+      "evidence": [
+        "b_settings",
+        "b_checkout",
+        "b_ledger"
+      ]
+    },
+    "planning": {
+      "level": "high",
+      "reason": "Hace falta resolver el contrato monetario antes de elegir una solución y su recuperación operativa.",
+      "evidence": [
+        "b_checkout",
+        "b_ledger"
+      ]
+    },
+    "independent_verification": {
+      "level": "high",
+      "reason": "La modificación afectaría significado monetario y asientos; requiere revisión independiente del contrato y sus negativos.",
+      "evidence": [
+        "b_ledger",
+        "b_checkout"
+      ]
+    }
+  },
+  "findings": {
+    "existing": [
+      {
+        "claim": "EUR está en el catálogo, aunque sólo USD está habilitado; checkout recibe y transmite importe y moneda.",
+        "kind": "observed",
+        "evidence": [
+          "b_settings",
+          "b_checkout"
+        ]
+      }
+    ],
+    "missing": [
+      {
+        "claim": "Falta un contrato de EUR coherente en ledger: record construye siempre una entrada USD, sin conversión.",
+        "kind": "observed",
+        "evidence": [
+          "b_ledger"
+        ]
+      },
+      {
+        "claim": "En los tres módulos leídos no hay política de tipo de cambio, precisión ni redondeo; no puede elegirse una conversión segura con esta evidencia.",
+        "kind": "inference",
+        "evidence": [
+          "b_settings",
+          "b_checkout",
+          "b_ledger"
+        ]
+      }
+    ],
+    "dependencies": [
+      {
+        "claim": "Productor ENABLED_CURRENCIES -> consumidor checkout; checkout produce amount/currency -> consumidor record; record produce entrada -> lista ENTRIES y retorno. El límite local son estos módulos; el comentario menciona liquidación USD pero no identifica un servicio externo.",
+        "kind": "observed",
+        "evidence": [
+          "b_settings",
+          "b_checkout",
+          "b_ledger"
+        ]
+      }
+    ],
+    "risks": [
+      {
+        "claim": "Si se habilita EUR, checkout(10, EUR) añadiría una entrada por 10 USD sin conversión.",
+        "kind": "inference",
+        "evidence": [
+          "b_settings",
+          "b_checkout",
+          "b_ledger"
+        ]
+      },
+      {
+        "claim": "record admite llamadas directas sin filtro de moneda; ENTRIES es una lista global con append y no hay clave de idempotencia en este recorrido.",
+        "kind": "observed",
+        "evidence": [
+          "b_ledger"
+        ]
+      },
+      {
+        "claim": "Revertir habilitación no repararía asientos ya etiquetados incorrectamente. No se observa persistencia durable ni procedimiento de recuperación en estos módulos.",
+        "kind": "inference",
+        "evidence": [
+          "b_settings",
+          "b_ledger"
+        ]
+      },
+      {
+        "claim": "No se ejecutaron pruebas de producto. El inventario previo no mostró tests; no se repitió inventario en esta prueba.",
+        "kind": "inference",
+        "evidence": [
+          "b_settings",
+          "b_checkout",
+          "b_ledger"
+        ]
+      }
+    ]
+  },
+  "risk_facets": {
+    "money": {
+      "level": "high",
+      "reason": "Posible cambio de identidad monetaria conservando el importe.",
+      "evidence": [
+        "b_ledger",
+        "b_checkout"
+      ]
+    },
+    "contracts": {
+      "level": "high",
+      "reason": "Checkout transmite currency y ledger la sustituye por USD.",
+      "evidence": [
+        "b_checkout",
+        "b_ledger"
+      ]
+    },
+    "side_effects": {
+      "level": "high",
+      "reason": "El asiento se añade a ENTRIES antes de retornarlo.",
+      "evidence": [
+        "b_ledger"
+      ]
+    }
+  },
+  "questions": [
+    {
+      "question": "¿Los euros deben registrarse y liquidarse como EUR o convertirse a USD?",
+      "next_check": "Solicitar la decisión de negocio y el contrato del destino de liquidación; el comentario USD-only no resuelve la semántica deseada."
+    },
+    {
+      "question": "Si hay conversión, ¿qué reglas de tipo de cambio, precisión y redondeo rigen?",
+      "next_check": "Obtener la política monetaria autorizada antes de elegir solución; conservar UNKNOWN mientras no exista."
+    }
+  ],
+  "evidence": {
+    "b_settings": {
+      "repo": ".",
+      "path": "settings.py",
+      "sha256": "20a098e6e37b8650102a0434dc6ca6121aa56fe339f2dcd223ef9f7bc76ae293",
+      "lines": [
+        1,
+        2
+      ],
+      "symbol": "ENABLED_CURRENCIES"
+    },
+    "b_checkout": {
+      "repo": ".",
+      "path": "checkout.py",
+      "sha256": "c85ccac7c7b10c19340c880dc6e57bbf344678364081e518067ad6e08254269e",
+      "lines": [
+        1,
+        7
+      ],
+      "symbol": "checkout"
+    },
+    "b_ledger": {
+      "repo": ".",
+      "path": "ledger.py",
+      "sha256": "c2e31713dbea13c932dbdf2bcc8aa0c2da974b247ec72a8a90d6013533a9073b",
+      "lines": [
+        1,
+        7
+      ],
+      "symbol": "record"
+    }
+  },
+  "investigation": {
+    "steps": null,
+    "seconds": null,
+    "limit_steps": 4,
+    "limit_seconds": 180
+  },
+  "limitations": [
+    "Se reutiliza Discover previo; sólo se releyeron los archivos citados al capturar hashes, sin repetir inventarios ni búsquedas.",
+    "No se ejecutaron tests de producto; no se acredita integración, almacenamiento durable ni destino externo.",
+    "La ausencia de otros archivos proviene del inventario anterior, no de la comprobación de hashes.",
+    "No se consultaron cuotas ni Orca; no hay delegación autorizada."
+  ]
+}

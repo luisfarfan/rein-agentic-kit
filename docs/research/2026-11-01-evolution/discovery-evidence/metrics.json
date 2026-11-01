@@ -1,0 +1,144 @@
+{
+  "source": "Local Codex JSONL task_complete and token_count records; actual nested tool calls counted from tool inputs.",
+  "limitations": [
+    "One sample per version on two tiny synthetic repos; not a benchmark.",
+    "Token totals include cached input; cache differences prevent cost attribution.",
+    "Caller implementation/testing consumption is not included.",
+    "All probe attempts are retained, including the inefficient first revision."
+  ],
+  "runs": [
+    {
+      "session_file": "rollout-2026-11-01T01-41-11-01a195d7-3713-7560-a288-b0d5036a7640.jsonl",
+      "turn": 0,
+      "started_at": 1793515272,
+      "completed_at": 1793515316,
+      "duration_ms": 43929,
+      "tool_calls": {
+        "exec_command": 14
+      },
+      "usage": {
+        "input_tokens": 244153,
+        "cached_input_tokens": 204672,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 1781,
+        "reasoning_output_tokens": 122,
+        "total_tokens": 245934,
+        "uncached_input_tokens": 39481
+      },
+      "model": "gpt-6.1-sol",
+      "effort": "medium",
+      "purpose": "P0 Repo generation",
+      "workers_started_by_session": 0
+    },
+    {
+      "session_file": "rollout-2026-11-01T01-45-41-01a195db-54be-77d2-b80a-c2a8206edc50.jsonl",
+      "turn": 0,
+      "started_at": 1793515541,
+      "completed_at": 1793515614,
+      "duration_ms": 72363,
+      "tool_calls": {
+        "exec_command": 7
+      },
+      "usage": {
+        "input_tokens": 176172,
+        "cached_input_tokens": 165248,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 2769,
+        "reasoning_output_tokens": 146,
+        "total_tokens": 178941,
+        "uncached_input_tokens": 10924
+      },
+      "model": "gpt-6.1-sol",
+      "effort": "medium",
+      "purpose": "Discover before",
+      "workers_started_by_session": 0,
+      "investigation_tool_calls": 6,
+      "output_write_calls": 1
+    },
+    {
+      "session_file": "rollout-2026-11-01T01-46-43-01a195dc-46e2-7642-8254-5411d7104b82.jsonl",
+      "turn": 0,
+      "started_at": 1793515603,
+      "completed_at": 1793515699,
+      "duration_ms": 95547,
+      "tool_calls": {
+        "exec_command": 8,
+        "clock__curr_time": 1
+      },
+      "usage": {
+        "input_tokens": 208916,
+        "cached_input_tokens": 184704,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 3564,
+        "reasoning_output_tokens": 457,
+        "total_tokens": 212480,
+        "uncached_input_tokens": 24212
+      },
+      "model": "gpt-6.1-sol",
+      "effort": "medium",
+      "purpose": "Discover first revision",
+      "workers_started_by_session": 0,
+      "investigation_tool_calls": 8,
+      "output_write_calls": 1
+    },
+    {
+      "session_file": "rollout-2026-11-01T01-49-24-01a195de-bc89-79e0-8df7-4c13fd639581.jsonl",
+      "turn": 0,
+      "started_at": 1793515765,
+      "completed_at": 1793515849,
+      "duration_ms": 84547,
+      "tool_calls": {
+        "exec_command": 7
+      },
+      "usage": {
+        "input_tokens": 170744,
+        "cached_input_tokens": 151296,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 2993,
+        "reasoning_output_tokens": 220,
+        "total_tokens": 173737,
+        "uncached_input_tokens": 19448
+      },
+      "model": "gpt-6.1-sol",
+      "effort": "medium",
+      "purpose": "Discover bounded revision",
+      "workers_started_by_session": 0,
+      "investigation_tool_calls": 6,
+      "output_write_calls": 1
+    },
+    {
+      "session_file": "rollout-2026-11-01T01-49-24-01a195de-bc89-79e0-8df7-4c13fd639581.jsonl",
+      "turn": 1,
+      "started_at": 1793515906,
+      "completed_at": 1793515957,
+      "duration_ms": 51570,
+      "tool_calls": {
+        "exec_command": 4
+      },
+      "usage": {
+        "input_tokens": 152631,
+        "cached_input_tokens": 138112,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 2863,
+        "reasoning_output_tokens": 90,
+        "total_tokens": 155494,
+        "uncached_input_tokens": 14519
+      },
+      "model": "gpt-6.1-sol",
+      "effort": "medium",
+      "purpose": "v2 report and router integration",
+      "workers_started_by_session": 0
+    }
+  ],
+  "fixture_sha256": {
+    "ambiguous/payments.py": "e6d3d6a7149d5c26cc408d2bc7b28952516ee47d5d24f272f0413757fd5447ac",
+    "complex/api.py": "03b2e81bb9f294fbb2a32b9a542603e99951ea22680f07a44a76cdeaf5845550",
+    "complex/client.ts": "7dc5ed18a9177ca52b23b27260e006beb176f0951a6af593e029f4168ac53337",
+    "complex/schema.sql": "820f00124b4907f6014304aa8374bf87f47e2a32fa1589b9f0e3431d07ab5231",
+    "easy/settings.py": "7143a35c7e3798bbf27701f38329410daf89264f5bd472496dc3d5a3ab6d4f3b",
+    "easy/test_currency.py": "7fc5358326e726f3edf7db8700b86be1b2166ed30c906613676098005c884b2a",
+    "hidden/checkout.py": "c85ccac7c7b10c19340c880dc6e57bbf344678364081e518067ad6e08254269e",
+    "hidden/ledger.py": "c2e31713dbea13c932dbdf2bcc8aa0c2da974b247ec72a8a90d6013533a9073b",
+    "hidden/settings.py": "20a098e6e37b8650102a0434dc6ca6121aa56fe339f2dcd223ef9f7bc76ae293"
+  }
+}

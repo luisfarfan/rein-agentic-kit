@@ -66,3 +66,11 @@ auditor approved the result, and editing a reviewed file invalidated that verdic
 Claude remained above the quota brake, so Claude initiation and explicit
 Claude↔Codex Quick are still pending. See the
 [live evidence and fixes](research/2026-11-01-evolution/P0-LIVE.md).
+
+The follow-up [acceptance matrix](research/2026-11-01-evolution/ACCEPTANCE.md)
+records fresh Codex-generated `Repo:` and installed resource checks as PASS, while
+keeping P0 **PARTIALLY ACCEPTED**. Discover now supports bounded natural-language
+investigation and optional v2 evidence reports; `discover-check` checks cited file
+freshness, and `route` produces combined advice without starting execution. See
+the [P1/P2 results](research/2026-11-01-evolution/P1-P2-RESULTS.md) for live examples,
+automated contracts and consumption limitations.

@@ -1,5 +1,10 @@
 # Evolution — evidence and acceptance (2026-11-01)
 
+Latest follow-up: [P1/P2 implementation, real behavior and measured comparison](P1-P2-RESULTS.md),
+with the [acceptance matrix](ACCEPTANCE.md). P0 remains **PARTIALLY ACCEPTED**;
+fresh Codex Repo generation and installed resources now pass. Claude and cross-provider
+live checks remain blocked. The sections below retain the initial implementation record.
+
 ## Phase 0: observed architecture
 
 Baseline checkout: `c3a03cc`, clean `main`, equal to `origin/main` after fetch.
