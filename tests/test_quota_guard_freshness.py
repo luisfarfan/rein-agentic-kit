@@ -91,7 +91,9 @@ class FreshnessTest(unittest.TestCase):
         root=Path(__file__).resolve().parents[1]
         with tempfile.TemporaryDirectory() as tmp:
             evidence=Path(tmp)/'report.json'; evidence.write_text(json.dumps(report()))
-            limits=Path(tmp)/'limits.json'; limits.write_text(json.dumps(account(age=86400)))
+            raw=account()
+            raw['result']['rateLimits']['codex']['updatedAt']=(time.time()-86400)*1000
+            limits=Path(tmp)/'limits.json'; limits.write_text(json.dumps(raw))
             p=subprocess.run([sys.executable,str(root/'plugins/rein/bin/rein'),'route',str(evidence),
                 '--agent','codex','--execution','quick','--limits',str(limits)],capture_output=True,text=True)
             self.assertEqual(p.returncode,0,p.stderr)
