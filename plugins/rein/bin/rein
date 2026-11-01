@@ -1515,9 +1515,15 @@ def cmd_route(argv: list[str]) -> int:
     parser.add_argument("--model", default="")
     parser.add_argument("--limits", help="saved Orca account-list JSON; absent means unknown")
     parser.add_argument("--plans", help="JSON provider-to-plan mapping; metadata only")
+    parser.add_argument("--root", default=".", help="root for v2 file evidence")
+    parser.add_argument("--repo", action="append", default=[])
     parser.add_argument("--execution", choices=("native", "quick", "ship"))
-    parser.add_argument("--plan", action="store_true")
-    parser.add_argument("--audit", action="store_true")
+    plan_flags = parser.add_mutually_exclusive_group()
+    plan_flags.add_argument("--plan", dest="plan", action="store_true", default=None)
+    plan_flags.add_argument("--no-plan", dest="plan", action="store_false")
+    audit_flags = parser.add_mutually_exclusive_group()
+    audit_flags.add_argument("--audit", dest="audit", action="store_true", default=None)
+    audit_flags.add_argument("--no-audit", dest="audit", action="store_false")
     args = parser.parse_args(argv)
     try:
         with open(args.assessment, encoding="utf-8") as fh:
@@ -1536,8 +1542,9 @@ def cmd_route(argv: list[str]) -> int:
                 account = json.load(fh)
                 limits = quota.parse_rate_limits(account)
         override = {k: v for k, v in {"execution": args.execution,
-                    "plan": args.plan, "audit": args.audit}.items() if v}
-        decision = routing.recommend(report, args.agent, args.model, limits, override)
+                    "plan": args.plan, "audit": args.audit}.items() if v is not None}
+        decision = routing.recommend(report, args.agent, args.model, limits, override,
+                                     _evidence_roots(args.root, args.repo))
         import quota
         decision["quota_snapshot"] = quota.snapshot(account, plans)
     except (OSError, ValueError, TypeError) as exc:

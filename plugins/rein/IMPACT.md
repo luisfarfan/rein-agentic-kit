@@ -76,6 +76,32 @@ repeat full reconnaissance simply because implementation started.
 
 ## Explain and reconsider a route
 
+For v2, `rein route report.json --root /repo --agent codex` calls the same freshness
+checker; additional roots use `--repo name=/path`. No saved normalized output is
+trusted as a substitute for rechecking the original cited hashes. Output includes
+six evidence-bearing `decisions`, combined `strategies`, and all readiness
+`blockers`. High complexity or explicit planning need adds Plan; high modification
+risk or independent-verification need adds Audit. Native remains the default even
+for multiple repositories. Delegation evidence uses current reference IDs, not
+free-form strings. The old v1 declaration contract remains compatible and is not
+upgraded into verified evidence by this command.
+
+`--no-plan` and `--no-audit` express explicit overrides alongside the positive
+flags. A risk-required audit cannot be waived, and an override cannot clear
+UNKNOWN/stale evidence or capacity blockers. Re-run the original report with new
+investigated evidence to reconsider; no background watcher or persistent routing
+state is installed.
+
+Optional iteration advice requires an explicit user request represented by:
+`"iteration": {"requested": true, "mode": "goal", "max_attempts": 2,
+"max_seconds": 120, "success_check": "python3 -m unittest test_currency"}`.
+Mode can be `goal` or `loop`. Missing finite limits/success criteria block readiness;
+`failure_kind` other than `code`, or `repeated_without_progress: true`, requires
+classification/intervention before repeating. It starts no loop, goal, command or
+worker. Use the host mechanism only when authorized and available; declared
+limits are advice, not enforcement over arbitrary host sessions. A checked
+success command still must be appropriate to the actual acceptance criteria.
+
 Run `rein route assessment.json --agent codex --model <current-model>` (or
 `--agent claude`). It prints JSON advice and never launches anything. No quota
 file means unknown capacity; `--limits saved-orca-account-list.json` accepts the
