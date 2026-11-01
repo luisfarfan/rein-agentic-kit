@@ -89,3 +89,12 @@ Live initiating-session/worker acceptance remains pending. Read-only Orca query
 reported Claude weekly 91%, Codex weekly 13%, session windows absent. Claude is
 above the existing 90% brake. No worker or model benchmark was started. This is
 packaging/discovery validation, not a claim that both live workflows completed.
+
+## P1 implemented
+
+Discover now uses bounded reconnaissance in the current session, traces relevant
+boundaries and treats absence of evidence as UNKNOWN. Explicit Discover remains
+read-only. `impact.py` normalizes an optional report with independent dimensions;
+it does not claim to inspect code or prove a citation. Three assessment regression
+cases plus skill/provider checks passed (21 tests total). These are policy tests,
+not evidence that a real agent correctly discovers every hidden dependency.

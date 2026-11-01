@@ -1,72 +1,41 @@
 ---
 name: rein-discover
-description: "Codex: $rein:rein-discover. Think a problem through before committing to a shape. Investigate, read, ask — produce understanding, never a plan. Use only when the user invokes /rein:rein-discover or asks to think a problem through before planning."
+description: "Codex: $rein:rein-discover. Investigate technical impact before choosing a solution. Read-only exploration, no implementation or plan. Use explicitly for Discover or when asked to think a problem through before planning."
 ---
 
 Read [provider setup](../../PROVIDERS.md) once when using REIN in this session.
 
-# /rein:rein-discover
+# Discover
 
-**A stance, not a workflow.** No fixed steps and no artifact; the only output is a closing
-understanding note.
-You may read, search, run read-only commands and ask questions. You may not
-implement, and you may not write a plan — that is `/rein:rein-plan`, and it
-starts only once the unknowns that matter are closed.
+Investigate in this session. Start with `rein context .` for resolved commands and
+plan state. Use targeted `rg` searches, bounded reads, and existing tests/config;
+use symbol/caller tools when available and useful. File count alone is no reason
+to create workers. Neither graphs nor a second model are prerequisites.
 
-## Steps
+Follow the capability from its entry point to the relevant consumer, storage,
+permissions and tests. Read only enough to settle the decision. A request such
+as “enable EUR” could be an existing configuration switch or a change to money,
+orders, payments, refunds and reporting: inspect the code before deciding.
 
-1. **Orient in one round-trip**, not by exploring:
-   ```bash
-   rein context .
-   ```
-   That is the stack, the resolved commands with the source of each, and the
-   plan's state. Do not rediscover any of it by hand.
+Assess separately: functional scope, implementation complexity, operational
+risk, uncertainty, persistence/migrations, security/tenant permissions,
+concurrency/idempotency, service contracts, test coverage, side effects and money.
+For each material conclusion cite a file/symbol, contract or executed check.
+Distinguish observed support from an inference; “no match in one search” does not
+prove absence. A low or not-applicable finding also needs a reason and reference.
 
-2. **Investigate with the cheap tools first.** This is the phase most likely to
-   burn context, because exploring IS the point here — so the retrieval
-   discipline matters MORE, not less. Cost is turns × context re-read every
-   turn.
-   - `codegraph query "<concept>" -p .` — symbols matching a concept, with
-     file:line. Then `callers` / `callees` / `impact <symbol>`.
-   - Read with offset/limit, only what the question needs. Never whole files
-     by default, and never "to get a feel".
-   - `rein verify .` when a claim about the project's commands matters — an
-     inference is not a fact.
-   - **Large scope** (several repos, or more than a handful of files): delegate
-     the bulk reading to read-only workers — cheap models that report back
-     findings with file:line and edit nothing — and keep this session for
-     judgement.
+Use progressive depth: stop a light investigation once the affected path and
+verification are understood. Trace another boundary when missing evidence could
+change scope, risk or acceptance. Escalate research or model capability only for
+a named unresolved question; say UNKNOWN if evidence remains insufficient.
+No fixed minimum file count, mandatory exhaustive scan, or model call.
 
-3. **Say what you do not know.** The output of discovery is not a document; it
-   is a shared understanding, and the useful half of it is the unknowns. Name
-   them plainly: what is still ambiguous, what has more than one reasonable
-   answer, what depends on a decision only the user can make.
+Close with what exists, likely changes, impact evidence, verification available,
+and unresolved questions. Ask only for decisions the code cannot answer. If a
+machine-readable recommendation is useful, use the assessment contract in
+[impact routing](../../IMPACT.md); an artifact is optional for small changes.
 
-4. **Ask.** A question now costs a sentence. The same ambiguity surviving into
-   a plan costs a run: in a measured case, a criterion read
-   "the description closes with the SAME CTA as the closing segment" and never
-   said for which format — the implementer built it against the wrong one, and
-   it took a review round and a fix agent to find out.
-
-5. **End with an understanding note, never a plan.** Say what became clear,
-   what is still open, and which repos and files are in play; then suggest
-   `/rein:rein-plan`. Do not write the plan, do not draft tasks, do not start.
-
-## What this exists to prevent
-
-A plan whose criteria describe **the shape of an artifact** instead of
-something reachable. Measured: a task read "a closed catalogue exists and the
-policy lives in configuration". It was satisfied to the letter — the file
-existed, it parsed, it had tests — and nothing in it said a real run reads
-that file. The parameter was wired half way and nobody noticed until review.
-
-Criteria like that are written when the shape is decided before the problem is
-understood. No check catches them afterwards, because each one is individually
-true. This is the phase where that is avoided instead.
-
-## Boundaries
-
-- Implement nothing. Not "one small fix while I am here".
-- Write no plan and no task list.
-- Change no file. If you find something that must change, say so and let the
-  user decide when.
+This explicit Discover invocation is read-only: do not implement, write a plan,
+or start workers. Suggest the appropriate next step, which may be native work,
+selective planning or independent audit. Discovery within an already-authorized
+implementation can be brief and does not require invoking this read-only skill.
