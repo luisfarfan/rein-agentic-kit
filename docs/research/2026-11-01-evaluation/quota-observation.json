@@ -1,0 +1,47 @@
+{
+  "checked_at": "2026-11-01T07:23:29.440852+00:00",
+  "providers": {
+    "claude": {
+      "status": "limited",
+      "windows": {
+        "session": {
+          "usedPercent": null,
+          "resetsAt": null,
+          "windowMinutes": null
+        },
+        "weekly": {
+          "usedPercent": 91,
+          "resetsAt": 1793642400393,
+          "windowMinutes": 10080
+        }
+      },
+      "plan": null,
+      "plan_source": "unknown",
+      "updatedAt": 1793517667486,
+      "source": "orca account list",
+      "observation_age_seconds": 141.95476579666138,
+      "unusable_reason": ""
+    },
+    "codex": {
+      "status": "available",
+      "windows": {
+        "session": {
+          "usedPercent": null,
+          "resetsAt": null,
+          "windowMinutes": null
+        },
+        "weekly": {
+          "usedPercent": 35,
+          "resetsAt": 1794108224000,
+          "windowMinutes": 10080
+        }
+      },
+      "plan": null,
+      "plan_source": "unknown",
+      "updatedAt": 1793517667860,
+      "source": "orca account list",
+      "observation_age_seconds": 141.5807659626007,
+      "unusable_reason": ""
+    }
+  }
+}

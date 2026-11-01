@@ -1,0 +1,367 @@
+{
+  "schema_version": 2,
+  "status": "ready",
+  "assessment": {
+    "schema_version": 2,
+    "classification": {
+      "implementation": {
+        "level": "low",
+        "evidence": [
+          "menu",
+          "view",
+          "tests"
+        ],
+        "reason": "Extend one menu tuple; add focused regression coverage."
+      },
+      "risk": {
+        "level": "low",
+        "evidence": [
+          "policy",
+          "approvals",
+          "view",
+          "scope"
+        ],
+        "reason": "Visibility only; approval still checks business, area permission and grant key for every proposal."
+      },
+      "uncertainty": {
+        "level": "low",
+        "evidence": [
+          "menu",
+          "view",
+          "policy",
+          "approvals",
+          "help"
+        ],
+        "reason": "All local consumer, producer and authorization boundaries inspected."
+      },
+      "repo_scope": {
+        "level": "low",
+        "evidence": [
+          "scope",
+          "view",
+          "approvals"
+        ],
+        "reason": "Single isolated in-process fixture; no HTTP server implementation or external repository change."
+      },
+      "planning": {
+        "level": "low",
+        "evidence": [
+          "menu",
+          "tests",
+          "scope"
+        ],
+        "reason": "Small direct change with local unittest verification."
+      },
+      "independent_verification": {
+        "level": "low",
+        "evidence": [
+          "menu",
+          "policy",
+          "approvals",
+          "tests"
+        ],
+        "reason": "No mutation-authority change; focused visibility and unchanged authorization regression tests suffice."
+      }
+    },
+    "risk_facets": {},
+    "findings": {
+      "existing": [
+        {
+          "claim": "show_approvals intersects user permissions with VISIBLE_WITH; batch approval validates every proposal before returning approved statuses.",
+          "kind": "observed",
+          "evidence": [
+            "menu",
+            "view",
+            "policy",
+            "approvals"
+          ],
+          "evidence_current": true
+        },
+        {
+          "claim": "Existing tests cover catalog visibility and inventory business/permission/grant authorization. These tests have been inspected, not yet executed.",
+          "kind": "observed",
+          "evidence": [
+            "tests"
+          ],
+          "evidence_current": true
+        }
+      ],
+      "missing": [],
+      "dependencies": [
+        {
+          "claim": "admin/menu.py produces VISIBLE_WITH consumed by admin/view.py. api/policy.py produces allowed consumed by api/approvals.py. All are in-process in this fixture; view only constructs a request dictionary.",
+          "kind": "observed",
+          "evidence": [
+            "menu",
+            "view",
+            "policy",
+            "approvals",
+            "scope"
+          ],
+          "evidence_current": true
+        }
+      ],
+      "risks": []
+    },
+    "questions": [],
+    "evidence": {
+      "menu": {
+        "status": "current",
+        "reference": {
+          "repo": ".",
+          "path": "admin/menu.py",
+          "sha256": "2698d34e73266d745215febf0123e8b98e5dffffc3d6246ffd7ba26a793dffe2",
+          "lines": [
+            1,
+            1
+          ]
+        },
+        "reason": "content and location checked; interpretation not verified"
+      },
+      "view": {
+        "status": "current",
+        "reference": {
+          "repo": ".",
+          "path": "admin/view.py",
+          "sha256": "c39bedbe4383cc1f8fdabbfa4267b31729a2a278c978ed0655e7017b0004598a",
+          "lines": [
+            1,
+            9
+          ]
+        },
+        "reason": "content and location checked; interpretation not verified"
+      },
+      "help": {
+        "status": "current",
+        "reference": {
+          "repo": ".",
+          "path": "admin/help.md",
+          "sha256": "068f7317642f5235b0510a5539ef0a75ac8076b69138fa1d8e9be6a23e586924",
+          "lines": [
+            1,
+            3
+          ]
+        },
+        "reason": "content and location checked; interpretation not verified"
+      },
+      "policy": {
+        "status": "current",
+        "reference": {
+          "repo": ".",
+          "path": "api/policy.py",
+          "sha256": "1db15f6aa761ea6a51f43f3cc7fd386473aac1fa36f85b8311d6925b35f88ded",
+          "lines": [
+            1,
+            6
+          ]
+        },
+        "reason": "content and location checked; interpretation not verified"
+      },
+      "approvals": {
+        "status": "current",
+        "reference": {
+          "repo": ".",
+          "path": "api/approvals.py",
+          "sha256": "c6f0fab783ef0ec4f364dae54c19dbe36ee119b937d69ff36f425de833671c52",
+          "lines": [
+            1,
+            6
+          ]
+        },
+        "reason": "content and location checked; interpretation not verified"
+      },
+      "tests": {
+        "status": "current",
+        "reference": {
+          "repo": ".",
+          "path": "test_panel.py",
+          "sha256": "5ac260ce3819db3956ecc4079a86a7fa0153a2d7ec6f5055c4013c0a06a63bc7",
+          "lines": [
+            1,
+            16
+          ]
+        },
+        "reason": "content and location checked; interpretation not verified"
+      },
+      "scope": {
+        "status": "current",
+        "reference": {
+          "repo": ".",
+          "path": "AGENTS.md",
+          "sha256": "28de65eeffab7d9bafc6a168927b9a3546d1e73a4078cdbbfeb68d828424b7b6",
+          "lines": [
+            1,
+            13
+          ]
+        },
+        "reason": "content and location checked; interpretation not verified"
+      }
+    },
+    "unknowns": [],
+    "risks": [],
+    "discovery": "sufficient",
+    "next_action": "stop",
+    "investigation": {
+      "exhausted": false
+    },
+    "evidence_semantics": "File freshness checked where roots supplied; claims and test results remain agent observations."
+  },
+  "current_agent": {
+    "provider": "codex",
+    "model": ""
+  },
+  "plan": false,
+  "execution": "native",
+  "audit": false,
+  "iterations": {
+    "mode": "native",
+    "new_loop": false,
+    "requested": false,
+    "blockers": [],
+    "stop": [
+      "success criteria met",
+      "repeated failure without progress",
+      "environment or flaky failure needs classification",
+      "budget exhausted"
+    ]
+  },
+  "strategies": [
+    "native"
+  ],
+  "blockers": [],
+  "decisions": [
+    {
+      "axis": "implementation",
+      "level": "low",
+      "evidence": [
+        "menu",
+        "view",
+        "tests"
+      ],
+      "reason": "Extend one menu tuple; add focused regression coverage."
+    },
+    {
+      "axis": "risk",
+      "level": "low",
+      "evidence": [
+        "policy",
+        "approvals",
+        "view",
+        "scope"
+      ],
+      "reason": "Visibility only; approval still checks business, area permission and grant key for every proposal."
+    },
+    {
+      "axis": "uncertainty",
+      "level": "low",
+      "evidence": [
+        "menu",
+        "view",
+        "policy",
+        "approvals",
+        "help"
+      ],
+      "reason": "All local consumer, producer and authorization boundaries inspected."
+    },
+    {
+      "axis": "repo_scope",
+      "level": "low",
+      "evidence": [
+        "scope",
+        "view",
+        "approvals"
+      ],
+      "reason": "Single isolated in-process fixture; no HTTP server implementation or external repository change."
+    },
+    {
+      "axis": "planning",
+      "level": "low",
+      "evidence": [
+        "menu",
+        "tests",
+        "scope"
+      ],
+      "reason": "Small direct change with local unittest verification."
+    },
+    {
+      "axis": "independent_verification",
+      "level": "low",
+      "evidence": [
+        "menu",
+        "policy",
+        "approvals",
+        "tests"
+      ],
+      "reason": "No mutation-authority change; focused visibility and unchanged authorization regression tests suffice."
+    }
+  ],
+  "providers": [
+    {
+      "provider": "claude",
+      "quota": "unknown"
+    },
+    {
+      "provider": "codex",
+      "quota": "unknown"
+    }
+  ],
+  "eligible_providers": [],
+  "verification": [
+    "targeted acceptance checks",
+    "relevant regression checks"
+  ],
+  "reasons": [
+    "Continue in the current session unless delegation has an evidenced benefit.",
+    "Planning: not currently required; evidence: menu, tests, scope, menu, view, tests.",
+    "Independent audit: not currently required; risk evidence: policy, approvals, view, scope, menu, policy, approvals, tests."
+  ],
+  "override": {},
+  "reconsider_on": [
+    "new dependency",
+    "new risk evidence",
+    "contract or scope change",
+    "verification failure",
+    "quota change",
+    "cited file changed"
+  ],
+  "quota_snapshot": {
+    "claude": {
+      "status": "unknown",
+      "windows": {
+        "session": {
+          "usedPercent": null,
+          "resetsAt": null,
+          "windowMinutes": null
+        },
+        "weekly": {
+          "usedPercent": null,
+          "resetsAt": null,
+          "windowMinutes": null
+        }
+      },
+      "plan": null,
+      "plan_source": "unknown",
+      "updatedAt": null,
+      "source": "orca account list"
+    },
+    "codex": {
+      "status": "unknown",
+      "windows": {
+        "session": {
+          "usedPercent": null,
+          "resetsAt": null,
+          "windowMinutes": null
+        },
+        "weekly": {
+          "usedPercent": null,
+          "resetsAt": null,
+          "windowMinutes": null
+        }
+      },
+      "plan": null,
+      "plan_source": "unknown",
+      "updatedAt": null,
+      "source": "orca account list"
+    }
+  }
+}

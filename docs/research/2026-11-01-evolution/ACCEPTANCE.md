@@ -34,14 +34,39 @@ again reported no specification files; that was reported, not counted as PASS.
 | Progressive natural-language Discover | Real Codex, two synthetic repos | PASS | Existing EUR capability and USD-only ledger risk identified; six calls in final version, no workers |
 | First revision consumption discipline | Real measured comparison | FAIL | Extra search and clock call: eight investigation calls; retained in evidence and corrected |
 | Final revision tool-call non-regression | Real measured comparison | PASS | Six investigation calls, same as baseline; this is not a token/cost savings result |
-| Broad consumption/quality improvement | Statistical / held-out evaluation | NOT TESTED | One run/version on development examples; final elapsed time and uncached tokens exceeded baseline |
+| Broad consumption/quality improvement | Statistical / held-out evaluation | NOT TESTED | New paired comparison is ineligible: both new arms violated context-root isolation; superiority and savings remain unestablished |
 | Model-authored v2 reports → checker → router | Real Codex + local CLI | PASS | A ready/native; B investigate with UNKNOWN, plan/native/audit; no manual report repair |
-| Complex and external-adapter ambiguous live fixtures | Real model investigation | NOT TESTED | Covered by automatic contracts only; B separately exercised an unresolved monetary contract |
+| Historical fiscal/concurrency and approval cases | Real model investigation | PASS for old arms only | Old Discover found five frozen dangerous-risk facts across two reductions; new arms invalid, not comparative success |
 | Native default, justified delegation, overrides | Policy contracts | PASS | Multi-repo alone stays native; risk review and unresolved evidence cannot be waived |
 | Loop / Goal constraints | Policy contracts | PASS | Explicit request, finite attempts/time, success check, failure classification; nothing launched |
 | Loop / Goal host execution | Real integration | NOT TESTED | Advice only; no new execution engine introduced |
-| P3 recovery / Harness² | Later-phase integration | NOT TESTED | No new quota policy, watcher or lab in this iteration |
+| P3 full mid-task recovery / Harness² | Later-phase integration | NOT TESTED | Separate recovery branch remains untouched; no recurring lab |
 
 See [results, comparison and validation](P1-P2-RESULTS.md) and its retained raw
 reports/metrics. P1 is implemented for this bounded scope; P2 is a first
 conservative advisory implementation, not an automatic orchestration system.
+
+
+## Latest held-out evaluation and P3 follow-up
+
+See [full results and limitations](../2026-11-01-evaluation/RESULTS.md).
+P0 is still PARTIALLY ACCEPTED; Claude weekly remained 91%, Codex was 35% at the
+recorded observation. Session windows were absent. Passed Codex P0 tests were not
+repeated. [Resume procedure](../2026-11-01-evaluation/P0-RESUME.md) covers only the
+missing Claude-origin and cross-provider checks.
+
+| Check | Kind | Result | Evidence / limit |
+| --- | --- | --- | --- |
+| New Discover held-out isolation | Actual model tool inputs | FAIL | Both new arms used coordinator cwd for context; INVALID_CONTEXT_ROOT; retained without retry |
+| Independent historical counterexamples | Executable oracle | PASS | Frozen before model runs; duplicates, external-effect gap, existing batch and tenant/permission/grant denials |
+| Natural request → inspect → route → native edit → tests | Actual Astra in Orca | PASS | One isolated opt-in local policy, five tests; not automatic installation behavior or savings evidence |
+| Stale evidence / risk override / multi-repo / delegation capacity / loop limits | Controlled CLI replays | PASS | Label perturbations are policy checks, not independent model discoveries or host-stop observations |
+| Claude/Opus natural routing behavior | Real integration | BLOCKED | Existing quota brake; not forced |
+| P3 fresh/unknown/limited quota enforcement | Driver/state/CLI contracts | PASS | Explicit overrides cannot authorize unusable observations; both limited dispatches nothing |
+| P3 changed plan/window usage comparison | Automated contracts | PASS | Incomparable or unusable observations produce unknown delta |
+| P3 live source observation | Read-only Orca query | PASS | Actual timestamps and numeric windows; not a live exhaustion/recovery experiment |
+| Dynamic audit/correction capacity reservation | Implementation / live integration | NOT TESTED | Not implemented; default ten percentage-point reserve is not a fit prediction |
+
+P3 remains PARTIALLY IMPLEMENTED/VALIDATED. Main suite: 1997 tests, OK, skipped=2;
+separate temporary-environment packaging suite: seven passed. No push, merge,
+release, product edits, global changes or recurring experiments.

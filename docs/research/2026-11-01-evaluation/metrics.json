@@ -1,0 +1,124 @@
+{
+  "source": "Actual Codex task_complete/token_count and nested tool inputs; includes all five model turns. Excludes parent coding work. Invalid cells retained; not eligible for an efficiency comparison.",
+  "runs": [
+    {
+      "arm": "new",
+      "case": "case1",
+      "validity": "INVALID_CONTEXT_ROOT",
+      "model": "gpt-6.1-sol",
+      "effort": "medium",
+      "session": "rollout-2026-11-01T02-09-06-01a195f0-c36d-7f61-a94b-863ab513f82a.jsonl",
+      "duration_ms": 87685,
+      "tool_calls": {
+        "exec_command": 4,
+        "clock__curr_time": 1,
+        "apply_patch": 1
+      },
+      "investigation_calls": 5,
+      "usage": {
+        "input_tokens": 107337,
+        "cached_input_tokens": 85888,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 3024,
+        "reasoning_output_tokens": 222,
+        "total_tokens": 110361,
+        "uncached_input_tokens": 21449
+      },
+      "workers": 0
+    },
+    {
+      "arm": "old",
+      "case": "case1",
+      "validity": "VALID",
+      "model": "gpt-6.1-sol",
+      "effort": "medium",
+      "session": "rollout-2026-11-01T02-09-04-01a195f0-bbfc-76d3-a6bb-9430768e3019.jsonl",
+      "duration_ms": 78346,
+      "tool_calls": {
+        "exec_command": 4
+      },
+      "investigation_calls": 3,
+      "usage": {
+        "input_tokens": 108320,
+        "cached_input_tokens": 97664,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 2775,
+        "reasoning_output_tokens": 139,
+        "total_tokens": 111095,
+        "uncached_input_tokens": 10656
+      },
+      "workers": 0
+    },
+    {
+      "arm": "new",
+      "case": "case2",
+      "validity": "INVALID_CONTEXT_ROOT",
+      "model": "gpt-6.1-sol",
+      "effort": "medium",
+      "session": "rollout-2026-11-01T02-10-36-01a195f2-2274-7440-b4c9-0dab26017f91.jsonl",
+      "duration_ms": 79289,
+      "tool_calls": {
+        "exec_command": 3,
+        "apply_patch": 1
+      },
+      "investigation_calls": 3,
+      "usage": {
+        "input_tokens": 105541,
+        "cached_input_tokens": 96512,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 2699,
+        "reasoning_output_tokens": 227,
+        "total_tokens": 108240,
+        "uncached_input_tokens": 9029
+      },
+      "workers": 0
+    },
+    {
+      "arm": "old",
+      "case": "case2",
+      "validity": "VALID",
+      "model": "gpt-6.1-sol",
+      "effort": "medium",
+      "session": "rollout-2026-11-01T02-10-37-01a195f2-2765-7610-8c6c-33a1b39e24c0.jsonl",
+      "duration_ms": 72321,
+      "tool_calls": {
+        "exec_command": 6
+      },
+      "investigation_calls": 5,
+      "usage": {
+        "input_tokens": 129696,
+        "cached_input_tokens": 119552,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 2637,
+        "reasoning_output_tokens": 252,
+        "total_tokens": 132333,
+        "uncached_input_tokens": 10144
+      },
+      "workers": 0
+    },
+    {
+      "arm": "astra",
+      "case": "workflow",
+      "validity": "VALID",
+      "model": "gpt-6-astra",
+      "effort": "high",
+      "session": "rollout-2026-11-01T02-12-00-01a195f3-6cee-7b70-8d09-f62f3aeff258.jsonl",
+      "duration_ms": 49528,
+      "tool_calls": {
+        "exec_command": 6,
+        "apply_patch": 1
+      },
+      "investigation_calls": null,
+      "usage": {
+        "input_tokens": 141163,
+        "cached_input_tokens": 108544,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 2505,
+        "reasoning_output_tokens": 279,
+        "total_tokens": 143668,
+        "uncached_input_tokens": 32619
+      },
+      "workers": 0
+    }
+  ]
+}

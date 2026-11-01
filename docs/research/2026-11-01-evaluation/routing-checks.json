@@ -1,0 +1,86 @@
+{
+  "source": "Observed Astra CLI report, reconstructed without changing classifications; subsequent risk/scope/iteration edits are controlled policy perturbations, not new model discoveries.",
+  "checks": {
+    "before_actual_edit": {
+      "status": "ready",
+      "strategies": [
+        "native"
+      ],
+      "audit": false,
+      "blockers": [],
+      "override": {}
+    },
+    "after_actual_edit_old_evidence": {
+      "status": "investigate",
+      "strategies": [
+        "native"
+      ],
+      "audit": false,
+      "blockers": [
+        "impact investigation incomplete"
+      ],
+      "override": {}
+    },
+    "two_repos_without_delegation_benefit": {
+      "status": "ready",
+      "strategies": [
+        "native"
+      ],
+      "audit": false,
+      "blockers": [],
+      "override": {}
+    },
+    "critical_risk_even_with_override": {
+      "status": "ready",
+      "strategies": [
+        "native",
+        "audit"
+      ],
+      "audit": true,
+      "blockers": [],
+      "override": {
+        "audit": false
+      }
+    },
+    "explicit_quick_unknown_capacity": {
+      "status": "capacity_required",
+      "strategies": [
+        "quick"
+      ],
+      "audit": false,
+      "blockers": [
+        "provider capacity required"
+      ],
+      "override": {
+        "execution": "quick"
+      }
+    },
+    "explicit_ship_unknown_capacity": {
+      "status": "capacity_required",
+      "strategies": [
+        "plan",
+        "ship"
+      ],
+      "audit": false,
+      "blockers": [
+        "provider capacity required"
+      ],
+      "override": {
+        "execution": "ship"
+      }
+    },
+    "loop_without_limits": {
+      "status": "iteration_constraints_required",
+      "strategies": [
+        "native"
+      ],
+      "audit": false,
+      "blockers": [
+        "iteration requires positive integer max_attempts",
+        "iteration requires positive integer max_seconds",
+        "iteration requires a concrete success check"
+      ],
+      "override": {}
+    }
+  }
+}
