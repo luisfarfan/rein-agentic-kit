@@ -772,7 +772,9 @@ class DryRunRunner:
         elif a[:2] == ["repo", "list"]:
             result = {"repos": [{"id": "repo-%s" % n, "displayName": n} for n in self.repo_names]}
         elif a[:1] == ["account"]:
-            result = {"rateLimits": {"claude": {"status": "ok", "session": {"usedPercent": 0}, "weekly": {"usedPercent": 0}}}}
+            # Synthetic capacity belongs only to this non-executing dry-run runner.
+            result = {"rateLimits": {"claude": {"status": "ok", "updatedAt": time.time() * 1000,
+                       "session": {"usedPercent": 0}, "weekly": {"usedPercent": 0}}}}
         elif a[1:2] == ["run-create"]:
             result = {"run": {"id": "run_dry"}}
         elif a[1:2] == ["task-create"]:
@@ -925,14 +927,15 @@ class _Driver:
 
     def limits(self):
         try:
-            return quota.parse_rate_limits({"result": self.client.account_list()})
+            return quota.checked_limits({"result": self.client.account_list()})
         except OrcaError as exc:
             self.say("could not read rate limits (%s); treating usage as unknown" % exc)
-            return quota.parse_rate_limits({})
+            return quota.checked_limits({})
 
     def note_quota_before(self, limits):
         """Persist the run's first usable quota snapshot; deltas are measured from it, across resumes."""
-        known = any(window.get(w) is not None for window in limits.values() for w in quota.WINDOWS)
+        known = any(not window.get('_quota_unusable') and window.get(w) is not None
+                    for window in limits.values() for w in quota.WINDOWS)
         if known and not self.state.quota_before:
             self.state.quota_before = {p: dict(w) for p, w in limits.items()}
             self.save()

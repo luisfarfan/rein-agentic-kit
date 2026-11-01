@@ -12,6 +12,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from contextlib import redirect_stdout
 
@@ -53,7 +54,14 @@ Ship the demo.
 
 def _fixture(name):
     with open(os.path.join(FIXTURES, name + ".json"), encoding="utf-8") as fh:
-        return json.load(fh)["result"]
+        result = json.load(fh)["result"]
+    if name == 'account_list':
+        # This transport fake represents a live refresh, not the archived capture.
+        # Stale captures have dedicated refusal tests and are never refreshed there.
+        for block in result['rateLimits'].values():
+            if isinstance(block, dict) and 'status' in block:
+                block['updatedAt'] = time.time() * 1000
+    return result
 
 
 def _flag(argv, name):
@@ -1664,13 +1672,15 @@ class TestQuotaMeasurement(ShipCase):
             result = real(a)
             if a[0] == "account":
                 calls["n"] += 1
-                result["rateLimits"]["claude"] = {"status": "ok", "session": {"usedPercent": 1.0},
+                result["rateLimits"]["claude"] = {"status": "ok", "updatedAt": time.time() * 1000, "session": {"usedPercent": 1.0},
                                                   "weekly": {"usedPercent": 10.0 + calls["n"]}}
             return result
         fake._answer = answer
         self.assertEqual(self.run_ship(fake, scripted_gate()), 0, self.out)
         state = ship_state.load(self.state_file)
-        self.assertEqual(state.quota_before["claude"], {"session": 1.0, "weekly": 11.0})
+        self.assertEqual({w: state.quota_before["claude"][w] for w in ('session', 'weekly')},
+                         {"session": 1.0, "weekly": 11.0})
+        self.assertIn('_quota_epoch', state.quota_before['claude'])
         rows = token_report.read_ledger(self.ledger)
         row = next(r for r in rows if r["wf_id"].endswith("proxima-api"))
         self.assertGreater(row["quota"]["claude"]["weekly"], 0)
@@ -1689,6 +1699,8 @@ class TestQuotaMeasurement(ShipCase):
                 limits["claude"] = {"status": "ok", "session": {"usedPercent": 1.0}, "weekly": {"usedPercent": 97.0}}
                 limits["codex"] = {"status": "ok", "session": {"usedPercent": 92.0}, "weekly": {"usedPercent": 18.0}}
                 limits["antigravity"] = {"status": "ok", "session": {"usedPercent": 0.0}, "weekly": {"usedPercent": 2.0}}
+                for provider in ('claude', 'codex', 'antigravity'):
+                    limits[provider]['updatedAt'] = time.time() * 1000
             return result
         fake._answer = answer
         fake.auto_resolve = "skip"

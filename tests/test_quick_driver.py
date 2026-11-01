@@ -14,6 +14,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -37,7 +38,7 @@ def _fixture(name):
 
 def _limits(claude_weekly, codex_weekly, claude_session=5):
     def block(provider, session, weekly):
-        return {"provider": provider, "status": "ok",
+        return {"provider": provider, "status": "ok", "updatedAt": time.time() * 1000,
                 "session": {"usedPercent": session}, "weekly": {"usedPercent": weekly}}
     return {"rateLimits": {"claude": block("claude", claude_session, claude_weekly),
                            "codex": block("codex", 5, codex_weekly)}}

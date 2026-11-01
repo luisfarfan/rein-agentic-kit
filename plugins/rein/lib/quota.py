@@ -2,12 +2,14 @@
 
 Pure functions over the JSON of `orca account list --json`; nothing here
 shells out. Unknown usage (provider down, block missing, no number) is
-`None`, and `None` never brakes and never routes work onto Claude.
+`None`. Legacy normalized inputs remain compatible; execution events use
+checked_limits so unknown or stale observations cannot authorize dispatch.
 """
 
 from __future__ import annotations
 
 import math
+import time
 
 CODEX = ("codex", "gpt-6.1-sol")
 SONNET = ("claude", "sonnet")
@@ -25,6 +27,7 @@ def default_model(agent: str) -> str:
 
 WINDOWS = ("session", "weekly")
 _ALWAYS = ("claude", "codex")
+MAX_OBSERVATION_AGE_SECONDS = 15 * 60
 
 
 def _number(value):
@@ -65,6 +68,59 @@ def parse_rate_limits(account_list: dict) -> dict:
         if limited or any(isinstance(block.get(w), dict) and block[w].get("limited") is True for w in WINDOWS):
             out[provider]["_limited"] = True
     return out
+
+
+def checked_limits(account_list: dict, now=None, max_age_seconds=MAX_OBSERVATION_AGE_SECONDS) -> dict:
+    """Execution-event view of Orca observations. No query, cache, or daemon.
+
+    Orca updatedAt is milliseconds. Missing/invalid/future/old timestamps and
+    unknown numeric windows require a new usable observation, never an override.
+    Keep known limited signals even if the observation is unusable.
+    """
+    now = time.time() if now is None else now
+    if _number(now) is None or _number(max_age_seconds) is None or max_age_seconds <= 0:
+        raise ValueError('quota time and positive max age must be finite numbers')
+    out = parse_rate_limits(account_list)
+    result = account_list.get('result', {}) if isinstance(account_list, dict) else {}
+    raw = result.get('rateLimits', {}) if isinstance(result, dict) else {}
+    raw = raw if isinstance(raw, dict) else {}
+    for provider, usage in out.items():
+        block = raw.get(provider)
+        block = block if isinstance(block, dict) else {}
+        stamp = _number(block.get('updatedAt'))
+        try:
+            age = now - stamp / 1000 if stamp is not None else None
+        except OverflowError:
+            age = None
+        reason = ''
+        if age is None:
+            reason = 'observation timestamp is missing or invalid'
+        elif age < -60:
+            reason = 'observation timestamp is in the future'
+        elif age > max_age_seconds:
+            reason = 'observation is stale (older than %g seconds)' % max_age_seconds
+        elif not any(usage.get(w) is not None for w in WINDOWS):
+            reason = 'usage is unknown'
+        usage['_quota_checked'] = True
+        usage['_observation_age_seconds'] = age
+        if reason:
+            usage['_quota_unusable'] = reason
+        epoch = {'plan': block.get('planType')}
+        for w in WINDOWS:
+            win = block.get(w)
+            win = win if isinstance(win, dict) else {}
+            epoch[w] = [win.get('windowMinutes'), win.get('resetsAt')]
+        usage['_quota_epoch'] = epoch
+    return out
+
+
+def _unusable(limits, provider):
+    block = limits.get(provider) or {}
+    if block.get('_quota_unusable'):
+        return block['_quota_unusable']
+    if not block and any(isinstance(v, dict) and v.get('_quota_checked') for v in limits.values()):
+        return 'provider observation is missing'
+    return ''
 
 
 def choose_implementer(limits: dict, threshold: float, override=None, max_pct: float = 90.0) -> tuple:
@@ -112,6 +168,9 @@ def brake_reason(limits: dict, agent: str, max_pct: float = 90.0) -> str:
         used = block.get(window)
         if used is not None and used >= max_pct:
             return "%s %s usage is at %g%% (limit %g%%)" % (provider, window, used, max_pct)
+    unusable = _unusable(limits, provider)
+    if unusable:
+        return '%s quota %s; refresh Orca before dispatch' % (provider, unusable)
     return ""
 
 
@@ -121,8 +180,10 @@ def usage_delta(before: dict, after: dict) -> dict:
     for provider in sorted(set(before) | set(after)):
         b = before.get(provider) or {}
         a = after.get(provider) or {}
+        same_epoch = a.get('_quota_epoch') == b.get('_quota_epoch')
+        usable = not a.get('_quota_unusable') and not b.get('_quota_unusable')
         out[provider] = {
-            w: (a[w] - b[w] if a.get(w) is not None and b.get(w) is not None and a[w] >= b[w] else None)
+            w: (a[w] - b[w] if same_epoch and usable and a.get(w) is not None and b.get(w) is not None and a[w] >= b[w] else None)
             for w in WINDOWS
         }
     return out
@@ -130,9 +191,11 @@ def usage_delta(before: dict, after: dict) -> dict:
 
 def availability(limits: dict, provider: str, max_pct: float = 90.0) -> str:
     """One known window can establish available usage; absent windows stay unknown."""
-    if brake_reason(limits, provider, max_pct):
-        return "limited"
     block = limits.get(provider) or {}
+    if block.get('_limited') or any(block.get(w) is not None and block[w] >= max_pct for w in WINDOWS):
+        return 'limited'
+    if _unusable(limits, provider):
+        return 'unknown'
     return "available" if any(_percent(block.get(w)) is not None for w in WINDOWS) else "unknown"
 
 
@@ -142,7 +205,7 @@ def snapshot(account_list: dict, plans=None) -> dict:
     No account IDs, auth, prices, inferred token balances, or private endpoints.
     Re-read each event; this function holds no plan cache across runs.
     """
-    limits = parse_rate_limits(account_list)
+    limits = checked_limits(account_list)
     result = account_list.get("result", {}) if isinstance(account_list, dict) else {}
     raw = result.get("rateLimits", {}) if isinstance(result, dict) else {}
     raw = raw if isinstance(raw, dict) else {}
@@ -161,4 +224,6 @@ def snapshot(account_list: dict, plans=None) -> dict:
                          "plan": block.get("planType") or plans.get(provider),
                          "plan_source": "provider" if block.get("planType") else "configured" if plans.get(provider) else "unknown",
                          "updatedAt": block.get("updatedAt"), "source": "orca account list"}
+        out[provider]['observation_age_seconds'] = usage.get('_observation_age_seconds')
+        out[provider]['unusable_reason'] = usage.get('_quota_unusable', '')
     return out

@@ -144,16 +144,20 @@ Window percentages, duration and reset timestamps are preserved when present.
 An Orca limited status brakes even without numeric windows. Unknown capacity is
 reported as unknown, never zero. The selector prefers measured available
 providers; Quick refuses an audit when no reviewer has measured capacity.
-For backwards compatibility an explicitly invoked Quick/Ship implementer can
-still fall back to an unknown provider, but Ship limits that fallback to one
-active worker rather than its configured parallel burst. The advisory router is
-stricter and returns `capacity_required` for delegated work with no measured
-capacity. Existing execution brakes still apply. A single observed window does
-not prove that an absent second window has spare capacity.
+Quick/Ship execution events and `route --limits` now require a usable Orca
+observation: numeric usage, valid millisecond `updatedAt`, and age at most fifteen
+minutes (up to sixty seconds of clock skew). Unknown, missing, invalid or stale
+observations block dispatch even with an explicit provider/model override. Refresh
+through Orca; no private endpoint or background refresh is added. Raw legacy
+`parse_rate_limits` callers remain compatible, but drivers use `checked_limits`.
+Existing percentage brakes still apply. A single observed window does not prove
+that an absent second window has spare capacity.
 
 The existing driver reads Orca at execution events and records before/after
-percentages. A decreasing percentage now produces unknown delta (a reset or plan
-change), not negative consumption. Shared subscription activity means even a
+percentages. A decreasing percentage or changed reported plan/window/reset identity
+produces unknown delta, not negative consumption or a comparison of unlike windows.
+Unusable snapshots and older state without matching window metadata also produce
+unknown deltas. Shared subscription activity means even a
 positive delta cannot be attributed solely to this task. No dollars or token
 balances are derived from percentages. The default brake leaves 10 percentage
 points; it is a configurable dispatch reserve, not a guarantee an audit will fit.
@@ -161,4 +165,6 @@ points; it is a configurable dispatch reserve, not a guarantee an audit will fit
 An explicit Quick `--agent` selects a provider/model but now also queries quotas
 and respects the configured brake. Unlike earlier versions, it does not bypass
 that check. On a limited provider it returns exit 1 before creating a worktree or
-worker. Unknown-source fallback remains one worker and is reported explicitly.
+worker. Unknown-source fallback is no longer authorized by the public drivers.
+The unchanged default brake's ten percentage-point reserve is not an estimate that
+an audit or correction will fit; there is no per-task token-capacity prediction.

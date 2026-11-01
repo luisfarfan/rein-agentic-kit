@@ -296,9 +296,9 @@ def start_quick(
             say("--agent %s needs --model" % agent)
             return 2
     try:
-        limits = quota.parse_rate_limits({"result": client.account_list()})
+        limits = quota.checked_limits({"result": client.account_list()})
     except OrcaError:
-        limits = quota.parse_rate_limits({})
+        limits = quota.checked_limits({})
     cfg = ship_decide.ShipConfig.from_flow_config(_detect.resolve(repo_path))
     if not agent:
         agent, model = quota.choose_implementer(
@@ -924,9 +924,9 @@ def done_quick(*, cwd: str = ".", client: OrcaClient, run=verify.run_one,
             "run `rein quick done` from the agent's terminal, not an Orca chat")
         return 126
     try:
-        limits = quota.parse_rate_limits({"result": client.account_list()})
+        limits = quota.checked_limits({"result": client.account_list()})
     except OrcaError:
-        limits = quota.parse_rate_limits({})  # unknown usage never brakes
+        limits = quota.checked_limits({})  # unusable observations cannot authorize an audit
     try:
         return _audit(workspace, record, changed, limits, client, clock, say, accept_outside,
                       brake_percent=cfg.brake_percent)

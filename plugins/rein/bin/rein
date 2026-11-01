@@ -1540,7 +1540,7 @@ def cmd_route(argv: list[str]) -> int:
             import quota
             with open(args.limits, encoding="utf-8") as fh:
                 account = json.load(fh)
-                limits = quota.parse_rate_limits(account)
+                limits = quota.checked_limits(account)
         override = {k: v for k, v in {"execution": args.execution,
                     "plan": args.plan, "audit": args.audit}.items() if v is not None}
         decision = routing.recommend(report, args.agent, args.model, limits, override,
