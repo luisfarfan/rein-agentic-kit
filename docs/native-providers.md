@@ -59,3 +59,10 @@ Manual acceptance still required for both real initiating sessions in Orca:
 Static validation and discovery do not establish behavioral correctness of a
 model session or live Orca delegation. Record each separately. Do not override
 quota brakes just to finish this checklist.
+
+On 2026-11-01, the real Codex initiating session completed Discover, Plan, Ship,
+Answer and watcher delivery in an isolated Orca fixture. A separate Antigravity
+auditor approved the result, and editing a reviewed file invalidated that verdict.
+Claude remained above the quota brake, so Claude initiation and explicit
+Claude↔Codex Quick are still pending. See the
+[live evidence and fixes](research/2026-11-01-evolution/P0-LIVE.md).

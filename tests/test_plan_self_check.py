@@ -441,3 +441,20 @@ class TestThePlansShapeIsReported(unittest.TestCase):
         done = "".join(self._task(f"T00{i}").replace("- [ ]", "- [x]") for i in range(1, 9))
         tasks = done + self._task("T009")
         self.assertEqual([f for f in self._find(tasks, "plan shape") if "tasks in one change" in f["text"]], [])
+
+
+class TestGateFlagBeforeDraft(unittest.TestCase):
+    def test_documented_skill_command_accepts_both_flag_orders(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "draft.md")
+            with open(path, "w") as fh:
+                fh.write("# Change: empty-draft\n")
+            results = []
+            for args in (["--gate", path], [path, "--gate"]):
+                proc = subprocess.run([sys.executable, REIN_BIN, "plan-check", *args],
+                                      capture_output=True, text=True)
+                result = json.loads(proc.stdout)
+                self.assertFalse(result.get("error"), proc.stdout)
+                results.append((proc.returncode, result))
+            self.assertEqual(results[0], results[1])

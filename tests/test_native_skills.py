@@ -1,5 +1,7 @@
 """Shared provider wiring; live discovery has a separate opt-in smoke probe."""
 import json
+import os
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -18,7 +20,12 @@ class NativeSkillsTest(unittest.TestCase):
             self.assertTrue(link.is_symlink())
             resolved = (link / 'SKILL.md').resolve(strict=True)
             self.assertEqual(resolved, skill)
-            guide = (resolved.parent / '../../PROVIDERS.md').resolve(strict=True)
+            self.assertEqual((link / 'IMPACT.md').read_text(), (PLUGIN / 'IMPACT.md').read_text())
+            relative = re.search(r'\[provider setup\]\(([^)]+)\)', (link / 'SKILL.md').read_text()).group(1)
+            # Hosts may normalize a Markdown reference before following symlinks.
+            literal_target = Path(os.path.normpath(str(link / relative)))
+            self.assertEqual(literal_target.read_text(), (PLUGIN / 'PROVIDERS.md').read_text())
+            guide = (link / 'PROVIDERS.md').resolve(strict=True)
             proc = subprocess.run([sys.executable, str(guide.parent / 'bin/rein'),
                                    'role', 'reviewer'], capture_output=True, text=True)
             self.assertEqual(proc.returncode, 0, proc.stderr)

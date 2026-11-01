@@ -30,3 +30,6 @@ graphify-out/
 # Generated packaging metadata: two copies of it disagreed during a rename,
 # and one still embedded the retired command names. Regenerated on every build.
 *.egg-info/
+
+# Disposable native-provider acceptance fixtures and local Orca receipts
+.rein/p0-live-*

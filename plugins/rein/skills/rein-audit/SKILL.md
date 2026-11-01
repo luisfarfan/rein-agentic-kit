@@ -4,7 +4,7 @@ description: "Codex: $rein:rein-audit. Independent review of a completed change 
 license: MIT
 ---
 
-Read [provider setup](../../PROVIDERS.md) once when using REIN in this session.
+Read [provider setup](PROVIDERS.md) once when using REIN in this session.
 
 # /rein:rein-audit
 

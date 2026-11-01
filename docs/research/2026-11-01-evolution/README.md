@@ -85,10 +85,17 @@ Codex app-server `skills/list` actually returned all seven canonical paths, with
 catalog advice was a missing icon. Skill Creator validation succeeded for Discover.
 See `tests/probe_native_skills.py` for the repeatable no-model discovery probe.
 
-Live initiating-session/worker acceptance remains pending. Read-only Orca query
+At the end of the initial implementation, live acceptance was pending. Orca query
 reported Claude weekly 91%, Codex weekly 13%, session windows absent. Claude is
 above the existing 90% brake. No worker or model benchmark was started. This is
 packaging/discovery validation, not a claim that both live workflows completed.
+
+Follow-up: the [real P0 run](P0-LIVE.md) completed Codex-origin Discover, Plan,
+Ship, Answer and watcher delivery, with a separate Antigravity audit and a verified
+stale-verdict rejection. It exposed and fixed skill-resource resolution through
+symlinks, `plan-check --gate <draft>` parsing and unclear `Repo:` naming guidance.
+Claude remained at 91% weekly usage; Claude initiation and explicit cross-provider
+Quick remain pending. The live report separates observed success from those gaps.
 
 ## P1 implemented
 

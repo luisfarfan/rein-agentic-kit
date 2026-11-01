@@ -4,7 +4,7 @@ description: "Codex: $rein:rein-plan. Plan a change into verifiable tasks with a
 license: MIT
 ---
 
-Read [provider setup](../../PROVIDERS.md) once when using REIN in this session.
+Read [provider setup](PROVIDERS.md) once when using REIN in this session.
 
 # /rein:rein-plan
 
@@ -18,8 +18,8 @@ Usage: `/rein:rein-plan <change-name> [description]`
 1. Resolve the project: `rein context .` — note `plan.source`, `plan.path`, `config.commands`.
 2. Understand the request with bounded searches and offset reads. If scope, an interface or a
    trade-off is ambiguous, **ask now**: a wrong assumption is paid for by every worker after it.
-3. **Decide `Repo:` per task.** One repo: write to `<repo>/openspec/changes/<c>/`. Several:
-   write to `proxima-engineering/openspec/changes/<c>/`. A task edits exactly one repo.
+3. **`Repo:` is the registered Orca name, never an absolute path.** One repo: write to `<repo>/openspec/changes/<c>/`. Several:
+   write to `proxima-engineering/openspec/changes/<c>/`. One repo per task.
 4. Draft: a short header, then tasks.
 
    ```markdown

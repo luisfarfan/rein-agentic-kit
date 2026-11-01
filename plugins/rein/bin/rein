@@ -592,7 +592,8 @@ def cmd_plan_check(argv: list[str]) -> int:
     problem named in `error` -- this command always exits 0, so a caller can
     never be blocked by the check itself, only by what it finds.
     """
-    path = _positional(argv)
+    # --gate is boolean: it must not consume a following draft path.
+    path = _positional([arg for arg in argv if arg != "--gate"])
     error = ""
     findings: list[dict] = []
     if not path:

@@ -4,7 +4,7 @@ description: "Codex: $rein:answer. Show and answer the questions a running `rein
 license: MIT
 ---
 
-Read [provider setup](../../PROVIDERS.md) once when using REIN in this session.
+Read [provider setup](PROVIDERS.md) once when using REIN in this session.
 
 # /answer
 

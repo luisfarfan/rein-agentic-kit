@@ -4,7 +4,7 @@ description: "Codex: $rein:rein-role. Assign this session's working role — pla
 license: MIT
 ---
 
-Read [provider setup](../../PROVIDERS.md) once when using REIN in this session.
+Read [provider setup](PROVIDERS.md) once when using REIN in this session.
 
 # /rein:rein-role
 

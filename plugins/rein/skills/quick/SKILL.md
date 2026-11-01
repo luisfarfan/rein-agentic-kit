@@ -4,7 +4,7 @@ description: "Codex: $rein:quick. Delegate a small change through Orca when the 
 license: MIT
 ---
 
-Read [provider setup](../../PROVIDERS.md) once when using REIN in this session.
+Read [provider setup](PROVIDERS.md) once when using REIN in this session.
 
 # /quick
 

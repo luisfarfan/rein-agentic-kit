@@ -81,6 +81,8 @@ class TestTheWheelInstallsAndRuns(unittest.TestCase):
                        # command is that it works where Claude Code is not.
                        "rein_kit/skills/rein-role/SKILL.md",
                        "rein_kit/PROVIDERS.md", "rein_kit/IMPACT.md",
+                       "rein_kit/skills/rein-discover/PROVIDERS.md",
+                       "rein_kit/skills/rein-discover/IMPACT.md",
                        "rein_kit/lib/impact.py", "rein_kit/lib/routing.py",
                        "rein_kit/.codex-plugin/plugin.json"):
             self.assertIn(needed, names, f"the wheel is missing {needed}")

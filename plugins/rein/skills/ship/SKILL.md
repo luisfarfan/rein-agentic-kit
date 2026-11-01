@@ -4,7 +4,7 @@ description: "Codex: $rein:ship. Implement a planned change: opens a detached Or
 license: MIT
 ---
 
-Read [provider setup](../../PROVIDERS.md) once when using REIN in this session.
+Read [provider setup](PROVIDERS.md) once when using REIN in this session.
 
 # /ship
 

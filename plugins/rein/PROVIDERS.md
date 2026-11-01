@@ -6,7 +6,8 @@ scope, gates, guard checks, review independence, or authorization.
 - Claude plugin invocation: `/rein:<name>`. Codex plugin: `$rein:<name>`; standalone skill: `$<name>` (select the REIN
   skill if another plugin uses the same name). Cross-references using Claude
   slash notation mean the skill with that name on Codex, not a shell command.
-- Resolve the real path of this file. Its directory is the plugin root. Use
+- The plugin root is the first ancestor of the real SKILL.md path containing
+  `bin/rein`. This also works when a wheel materializes resource symlinks. Use
   `python3 <plugin-root>/bin/rein` for every `rein` command below if the shell's
   `rein --version` or `rein doctor . --json` identifies a different installation.
   No global installation or Claude-specific environment variable is required.

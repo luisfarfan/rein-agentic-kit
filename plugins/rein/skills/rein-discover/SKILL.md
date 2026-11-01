@@ -3,7 +3,7 @@ name: rein-discover
 description: "Codex: $rein:rein-discover. Investigate technical impact before choosing a solution. Read-only exploration, no implementation or plan. Use explicitly for Discover or when asked to think a problem through before planning."
 ---
 
-Read [provider setup](../../PROVIDERS.md) once when using REIN in this session.
+Read [provider setup](PROVIDERS.md) once when using REIN in this session.
 
 # Discover
 
@@ -33,7 +33,7 @@ No fixed minimum file count, mandatory exhaustive scan, or model call.
 Close with what exists, likely changes, impact evidence, verification available,
 and unresolved questions. Ask only for decisions the code cannot answer. If a
 machine-readable recommendation is useful, use the assessment contract in
-[impact routing](../../IMPACT.md); an artifact is optional for small changes.
+[impact routing](IMPACT.md); an artifact is optional for small changes.
 
 This explicit Discover invocation is read-only: do not implement, write a plan,
 or start workers. Suggest the appropriate next step, which may be native work,
