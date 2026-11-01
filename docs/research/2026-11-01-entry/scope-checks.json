@@ -1,0 +1,22 @@
+{
+  "A-native": {
+    "instructions_unchanged": true,
+    "git_status": " M settings.py\n",
+    "no_remote": true
+  },
+  "A-entry": {
+    "instructions_unchanged": true,
+    "git_status": " M settings.py\n M test_currency.py\n",
+    "no_remote": true
+  },
+  "B-entry": {
+    "instructions_unchanged": true,
+    "git_status": " M README.md\n M ledger.py\n?? test_checkout.py\n",
+    "no_remote": true
+  },
+  "C-entry": {
+    "instructions_unchanged": true,
+    "git_status": "",
+    "no_remote": true
+  }
+}

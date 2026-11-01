@@ -1,0 +1,37 @@
+[
+  {
+    "path": "plugins/rein/ENTRY.md",
+    "before_words": 0,
+    "after_words": 257,
+    "before_bytes": 0,
+    "after_bytes": 1921
+  },
+  {
+    "path": "plugins/rein/skills/rein-discover/SKILL.md",
+    "before_words": 496,
+    "after_words": 418,
+    "before_bytes": 3643,
+    "after_bytes": 3119
+  },
+  {
+    "path": "AGENTS.md",
+    "before_words": 57,
+    "after_words": 320,
+    "before_bytes": 393,
+    "after_bytes": 2365
+  },
+  {
+    "path": "CLAUDE.md",
+    "before_words": 1,
+    "after_words": 1,
+    "before_bytes": 11,
+    "after_bytes": 11
+  },
+  {
+    "path": "plugins/rein/PROVIDERS.md",
+    "before_words": 286,
+    "after_words": 329,
+    "before_bytes": 2036,
+    "after_bytes": 2320
+  }
+]

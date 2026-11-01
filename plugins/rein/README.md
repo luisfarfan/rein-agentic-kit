@@ -25,6 +25,7 @@ plugins/rein/
 ├── lib/serve.py                  dev-server lifecycle for rendered verification
 ├── bin/rein                      the CLI (see the repository README for every subcommand)
 ├── settings.json                 empty by default (see note)
+├── ENTRY.md                      small project-adoption template; not auto-injected by the plugin
 └── flow.config.example.json      every option, annotated
 ```
 

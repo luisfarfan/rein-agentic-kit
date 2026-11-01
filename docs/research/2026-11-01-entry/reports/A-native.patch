@@ -1,0 +1,11 @@
+diff --git a/settings.py b/settings.py
+index cb9a314..0af7d64 100644
+--- a/settings.py
++++ b/settings.py
+@@ -1,5 +1,5 @@
+ SUPPORTED_CURRENCIES = ('USD', 'EUR')
+-ENABLED_CURRENCIES = ('USD',)
++ENABLED_CURRENCIES = ('USD', 'EUR')
+ 
+ def enabled(currency):
+     return currency in ENABLED_CURRENCIES

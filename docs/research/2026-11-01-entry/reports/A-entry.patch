@@ -1,0 +1,22 @@
+diff --git a/settings.py b/settings.py
+index cb9a314..0af7d64 100644
+--- a/settings.py
++++ b/settings.py
+@@ -1,5 +1,5 @@
+ SUPPORTED_CURRENCIES = ('USD', 'EUR')
+-ENABLED_CURRENCIES = ('USD',)
++ENABLED_CURRENCIES = ('USD', 'EUR')
+ 
+ def enabled(currency):
+     return currency in ENABLED_CURRENCIES
+diff --git a/test_currency.py b/test_currency.py
+index e14c5f9..8926def 100644
+--- a/test_currency.py
++++ b/test_currency.py
+@@ -5,3 +5,6 @@ def test_usd():
+ 
+ def test_supported_eur():
+     assert 'EUR' in settings.SUPPORTED_CURRENCIES
++
++def test_enabled_eur():
++    assert settings.enabled('EUR')

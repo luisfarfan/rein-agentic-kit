@@ -1,0 +1,141 @@
+{
+  "source": "Actual completed Codex sessions, excluding parent evaluation/coding work. Static instruction sizes are separate; reused development fixtures, not held-out evaluation.",
+  "runs": [
+    {
+      "case": "C",
+      "arm": "entry",
+      "session": "rollout-2026-11-01T03-15-58-01a1962d-fa53-7813-888b-296a2b0ecd3c.jsonl",
+      "terminal": "term_1e8ecae2-aef2-4173-ac55-64d1b1c22ea9",
+      "contexts": [
+        {
+          "cwd": "/Users/luisfarfan/Developer/labs/agents/rein/.rein/p0-live-entry/project4",
+          "model": "gpt-6-astra",
+          "effort": "high"
+        }
+      ],
+      "startup": {
+        "exact_entry_in_user_instruction_messages": 1,
+        "entry_header_occurrences": 1,
+        "entry_sha256": "a9a8ecf2f895f8ccce01ac8c3bee59d0152682f811593e541156c5c754c42190",
+        "agents_on_disk": true
+      },
+      "duration_ms": 42298,
+      "tool_calls": {
+        "exec_command": 5
+      },
+      "usage": {
+        "input_tokens": 120910,
+        "cached_input_tokens": 111744,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 1246,
+        "reasoning_output_tokens": 288,
+        "total_tokens": 122156,
+        "uncached_input_tokens": 9166
+      },
+      "validity": "VALID_DEVELOPMENT_FIXTURE"
+    },
+    {
+      "case": "B",
+      "arm": "entry",
+      "session": "rollout-2026-11-01T03-15-56-01a1962d-f4db-7c33-bc17-93a3cbe46bcf.jsonl",
+      "terminal": "term_7b183bd3-8f86-4410-96ae-acaa10b178e2",
+      "contexts": [
+        {
+          "cwd": "/Users/luisfarfan/Developer/labs/agents/rein/.rein/p0-live-entry/project3",
+          "model": "gpt-6-astra",
+          "effort": "high"
+        }
+      ],
+      "startup": {
+        "exact_entry_in_user_instruction_messages": 1,
+        "entry_header_occurrences": 1,
+        "entry_sha256": "a9a8ecf2f895f8ccce01ac8c3bee59d0152682f811593e541156c5c754c42190",
+        "agents_on_disk": true
+      },
+      "duration_ms": 82106,
+      "tool_calls": {
+        "exec_command": 7,
+        "clock__curr_time": 2,
+        "apply_patch": 1
+      },
+      "usage": {
+        "input_tokens": 178527,
+        "cached_input_tokens": 167040,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 2679,
+        "reasoning_output_tokens": 934,
+        "total_tokens": 181206,
+        "uncached_input_tokens": 11487
+      },
+      "validity": "VALID_DEVELOPMENT_FIXTURE"
+    },
+    {
+      "case": "A",
+      "arm": "native",
+      "session": "rollout-2026-11-01T03-15-09-01a1962d-3d5f-77a0-a27c-a927363b9be1.jsonl",
+      "terminal": "term_4c42d55a-2fd3-4399-baff-c4cd9c67cf8c",
+      "contexts": [
+        {
+          "cwd": "/Users/luisfarfan/Developer/labs/agents/rein/.rein/p0-live-entry/project1",
+          "model": "gpt-6.1-sol",
+          "effort": "medium"
+        }
+      ],
+      "startup": {
+        "exact_entry_in_user_instruction_messages": 0,
+        "entry_header_occurrences": 0,
+        "entry_sha256": "a9a8ecf2f895f8ccce01ac8c3bee59d0152682f811593e541156c5c754c42190",
+        "agents_on_disk": false
+      },
+      "duration_ms": 26327,
+      "tool_calls": {
+        "exec_command": 5,
+        "apply_patch": 1
+      },
+      "usage": {
+        "input_tokens": 115482,
+        "cached_input_tokens": 108160,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 751,
+        "reasoning_output_tokens": 50,
+        "total_tokens": 116233,
+        "uncached_input_tokens": 7322
+      },
+      "validity": "VALID_DEVELOPMENT_FIXTURE"
+    },
+    {
+      "case": "A",
+      "arm": "entry",
+      "session": "rollout-2026-11-01T03-15-11-01a1962d-44d9-75d1-b339-abc0a761860e.jsonl",
+      "terminal": "term_de86bb0f-874b-4f05-b813-7bd753c71098",
+      "contexts": [
+        {
+          "cwd": "/Users/luisfarfan/Developer/labs/agents/rein/.rein/p0-live-entry/project2",
+          "model": "gpt-6.1-sol",
+          "effort": "medium"
+        }
+      ],
+      "startup": {
+        "exact_entry_in_user_instruction_messages": 1,
+        "entry_header_occurrences": 1,
+        "entry_sha256": "a9a8ecf2f895f8ccce01ac8c3bee59d0152682f811593e541156c5c754c42190",
+        "agents_on_disk": true
+      },
+      "duration_ms": 25251,
+      "tool_calls": {
+        "exec_command": 4,
+        "apply_patch": 1
+      },
+      "usage": {
+        "input_tokens": 99735,
+        "cached_input_tokens": 83968,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 838,
+        "reasoning_output_tokens": 82,
+        "total_tokens": 100573,
+        "uncached_input_tokens": 15767
+      },
+      "validity": "VALID_DEVELOPMENT_FIXTURE"
+    }
+  ]
+}

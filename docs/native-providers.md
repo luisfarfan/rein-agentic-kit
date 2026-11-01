@@ -65,7 +65,8 @@ behavior and explicit skills; automatic REIN entry is **not** claimed for them.
 
 ## Local checkout
 
-Launch Codex in the REIN checkout. In a new session, select `$rein:rein-discover`,
+Launch Codex in the REIN checkout and describe the task. Explicit commands remain
+available when wanted: `$rein:rein-discover`,
 `$rein:rein-plan`, `$rein:quick`, `$rein:ship`, `$rein:rein-audit`, `$rein:answer`,
 or `$rein:rein-role`. Codex 0.166.0 reports the plugin-qualified names even through
 repository symlinks. Standalone installation without plugin metadata can expose
@@ -133,3 +134,8 @@ investigation and optional v2 evidence reports; `discover-check` checks cited fi
 freshness, and `route` produces combined advice without starting execution. See
 the [P1/P2 results](research/2026-11-01-evolution/P1-P2-RESULTS.md) for live examples,
 automated contracts and consumption limitations.
+
+The [entry-policy validation](research/2026-11-01-entry/RESULTS.md) uses the actual
+installed wheel and unchanged adoption template. It demonstrates native execution
+and selective deepening in bounded Codex cases; it does not establish universal
+compliance, token savings or Claude behavioral acceptance.

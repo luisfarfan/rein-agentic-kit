@@ -1,0 +1,37 @@
+{
+  "implementation_commit": "fde29c3",
+  "protocol_commit": "71df0cd",
+  "full_suite": {
+    "tests": 2001,
+    "seconds": 214.152,
+    "result": "OK",
+    "skipped": 2
+  },
+  "focused": {
+    "tests": 57,
+    "seconds": 1.495,
+    "result": "OK"
+  },
+  "wheel_suite": {
+    "tests": 7,
+    "seconds": 4.264,
+    "result": "OK"
+  },
+  "codex_version": "0.166.0",
+  "claude_version": "2.1.316",
+  "claude_manifest": "PASS; existing non-blocking missing-icon advice",
+  "claude_behavior": "BLOCKED; weekly 91% at last dispatch observation; no model launch",
+  "packaged_skills": "seven found in all four cwd roots via installed app-server",
+  "preflight_correction": "Comparator initially failed because macOS resolves /tmp to /private/tmp; both sides normalized before any model launch. No product change or model retry.",
+  "diff_check": "PASS for source/docs, excluding archived *.patch files whose blank context lines carry the required diff prefix space",
+  "runtime_core_changes": [],
+  "artifact_json_parse": {
+    "files": 19,
+    "result": "PASS"
+  },
+  "local_markdown_targets": {
+    "checked": 37,
+    "result": "PASS",
+    "note": "Line suffixes stripped for local-file checks; archived raw answers link temporary fixtures."
+  }
+}

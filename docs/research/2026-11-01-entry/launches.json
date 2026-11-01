@@ -1,0 +1,330 @@
+[
+  {
+    "case": "A",
+    "arm": "native",
+    "path": "/Users/luisfarfan/Developer/labs/agents/rein/.rein/p0-live-entry/project1",
+    "model": "gpt-6.1-sol",
+    "effort": "medium",
+    "prompt": "Quiero agregar soporte para euros. Trabaja sólo en este checkout local; puedes leer las skills instaladas si las necesitas. No consultes otras carpetas/casos, informes anteriores ni evaluadores. Sin red, instalaciones, workers, commits o push. Máximo 12 llamadas a herramientas y 180 segundos. Conserva las limitaciones que no puedas resolver y reporta verificaciones reales.",
+    "started": "2026-11-01T08:15:08.371321+00:00",
+    "quota": {
+      "claude": {
+        "status": "limited",
+        "windows": {
+          "session": {
+            "usedPercent": null,
+            "resetsAt": null,
+            "windowMinutes": null
+          },
+          "weekly": {
+            "usedPercent": 91,
+            "resetsAt": 1793642400022,
+            "windowMinutes": 10080
+          }
+        },
+        "plan": null,
+        "plan_source": "unknown",
+        "updatedAt": 1793520359142,
+        "source": "orca account list",
+        "observation_age_seconds": 549.2295231819153,
+        "unusable_reason": ""
+      },
+      "codex": {
+        "status": "available",
+        "windows": {
+          "session": {
+            "usedPercent": null,
+            "resetsAt": null,
+            "windowMinutes": null
+          },
+          "weekly": {
+            "usedPercent": 43,
+            "resetsAt": 1794108224000,
+            "windowMinutes": 10080
+          }
+        },
+        "plan": null,
+        "plan_source": "unknown",
+        "updatedAt": 1793520359923,
+        "source": "orca account list",
+        "observation_age_seconds": 548.4485230445862,
+        "unusable_reason": ""
+      }
+    },
+    "receipt": {
+      "id": "409c82d1-7e66-4ac8-ac3a-b0dd21209237",
+      "ok": true,
+      "result": {
+        "outcome": {
+          "kind": "terminal",
+          "handle": "term_4c42d55a-2fd3-4399-baff-c4cd9c67cf8c",
+          "paneKey": "dd8fdba0-ba82-4bdd-bfb7-4a28cc2c8a72:7f6d1b2c-f602-4bae-8f7d-36198f4308e1"
+        },
+        "worktreeId": "db512737-1c01-4c82-addf-3de6d79f6d1c::/Users/luisfarfan/Developer/labs/agents/rein/.rein/p0-live-entry/project1",
+        "receipt": {
+          "mode": "terminal",
+          "preferred": "terminal",
+          "reason": "user_default",
+          "detail": "Started a terminal agent, the default for new agent tabs in your settings."
+        },
+        "prompt": {
+          "delivery": "submit",
+          "outcome": "handed-to-terminal"
+        },
+        "placement": {
+          "groupId": "99174ea3-6427-4659-9683-ca9894b58c32"
+        },
+        "operationId": "1793520908571-346a12ccea5e48f29e65ba0de246660b"
+      },
+      "_meta": {
+        "runtimeId": "82107419-a38d-44f6-9fd3-7ebb22945e23"
+      }
+    }
+  },
+  {
+    "case": "A",
+    "arm": "entry",
+    "path": "/Users/luisfarfan/Developer/labs/agents/rein/.rein/p0-live-entry/project2",
+    "model": "gpt-6.1-sol",
+    "effort": "medium",
+    "prompt": "Quiero agregar soporte para euros. Trabaja sólo en este checkout local; puedes leer las skills instaladas si las necesitas. No consultes otras carpetas/casos, informes anteriores ni evaluadores. Sin red, instalaciones, workers, commits o push. Máximo 12 llamadas a herramientas y 180 segundos. Conserva las limitaciones que no puedas resolver y reporta verificaciones reales.",
+    "started": "2026-11-01T08:15:10.323902+00:00",
+    "quota": {
+      "claude": {
+        "status": "limited",
+        "windows": {
+          "session": {
+            "usedPercent": null,
+            "resetsAt": null,
+            "windowMinutes": null
+          },
+          "weekly": {
+            "usedPercent": 91,
+            "resetsAt": 1793642400022,
+            "windowMinutes": 10080
+          }
+        },
+        "plan": null,
+        "plan_source": "unknown",
+        "updatedAt": 1793520359142,
+        "source": "orca account list",
+        "observation_age_seconds": 551.1822800636292,
+        "unusable_reason": ""
+      },
+      "codex": {
+        "status": "available",
+        "windows": {
+          "session": {
+            "usedPercent": null,
+            "resetsAt": null,
+            "windowMinutes": null
+          },
+          "weekly": {
+            "usedPercent": 43,
+            "resetsAt": 1794108224000,
+            "windowMinutes": 10080
+          }
+        },
+        "plan": null,
+        "plan_source": "unknown",
+        "updatedAt": 1793520359923,
+        "source": "orca account list",
+        "observation_age_seconds": 550.4012799263,
+        "unusable_reason": ""
+      }
+    },
+    "receipt": {
+      "id": "c4b30893-2019-43ac-9ef4-f65058883acb",
+      "ok": true,
+      "result": {
+        "outcome": {
+          "kind": "terminal",
+          "handle": "term_de86bb0f-874b-4f05-b813-7bd753c71098",
+          "paneKey": "ead85603-f3aa-466e-8a43-0ac09a6806ee:a6d9f7fe-f7b0-4676-a25d-66f88831a724"
+        },
+        "worktreeId": "c5c1d248-30d0-4798-a074-2a954c43bde3::/Users/luisfarfan/Developer/labs/agents/rein/.rein/p0-live-entry/project2",
+        "receipt": {
+          "mode": "terminal",
+          "preferred": "terminal",
+          "reason": "user_default",
+          "detail": "Started a terminal agent, the default for new agent tabs in your settings."
+        },
+        "prompt": {
+          "delivery": "submit",
+          "outcome": "handed-to-terminal"
+        },
+        "placement": {
+          "groupId": "4cdd4d1e-f43c-49bc-9045-a7e5267a1fbe"
+        },
+        "operationId": "1793520910640-a8998ff54f5348eaa365189f5224c7dd"
+      },
+      "_meta": {
+        "runtimeId": "82107419-a38d-44f6-9fd3-7ebb22945e23"
+      }
+    }
+  },
+  {
+    "case": "B",
+    "arm": "entry",
+    "path": "/Users/luisfarfan/Developer/labs/agents/rein/.rein/p0-live-entry/project3",
+    "model": "gpt-6-astra",
+    "effort": "high",
+    "prompt": "Quiero agregar soporte para euros. Trabaja sólo en este checkout local; puedes leer las skills instaladas si las necesitas. No consultes otras carpetas/casos, informes anteriores ni evaluadores. Sin red, instalaciones, workers, commits o push. Máximo 12 llamadas a herramientas y 180 segundos. Conserva las limitaciones que no puedas resolver y reporta verificaciones reales.",
+    "started": "2026-11-01T08:15:55.828708+00:00",
+    "quota": {
+      "claude": {
+        "status": "limited",
+        "windows": {
+          "session": {
+            "usedPercent": null,
+            "resetsAt": null,
+            "windowMinutes": null
+          },
+          "weekly": {
+            "usedPercent": 91,
+            "resetsAt": 1793642400022,
+            "windowMinutes": 10080
+          }
+        },
+        "plan": null,
+        "plan_source": "unknown",
+        "updatedAt": 1793520359142,
+        "source": "orca account list",
+        "observation_age_seconds": 596.6869971752167,
+        "unusable_reason": ""
+      },
+      "codex": {
+        "status": "available",
+        "windows": {
+          "session": {
+            "usedPercent": null,
+            "resetsAt": null,
+            "windowMinutes": null
+          },
+          "weekly": {
+            "usedPercent": 43,
+            "resetsAt": 1794108224000,
+            "windowMinutes": 10080
+          }
+        },
+        "plan": null,
+        "plan_source": "unknown",
+        "updatedAt": 1793520359923,
+        "source": "orca account list",
+        "observation_age_seconds": 595.9059970378876,
+        "unusable_reason": ""
+      }
+    },
+    "receipt": {
+      "id": "bdd719a0-5fb9-41f4-b0aa-6ac9e0bb5642",
+      "ok": true,
+      "result": {
+        "outcome": {
+          "kind": "terminal",
+          "handle": "term_7b183bd3-8f86-4410-96ae-acaa10b178e2",
+          "paneKey": "578fb842-153a-4996-bf6a-252563b93290:9d8de1da-9600-4f6d-b727-9b5c46184d36"
+        },
+        "worktreeId": "068ceb44-1d1c-4918-bb9d-ae213a7ea88c::/Users/luisfarfan/Developer/labs/agents/rein/.rein/p0-live-entry/project3",
+        "receipt": {
+          "mode": "terminal",
+          "preferred": "terminal",
+          "reason": "user_default",
+          "detail": "Started a terminal agent, the default for new agent tabs in your settings."
+        },
+        "prompt": {
+          "delivery": "submit",
+          "outcome": "handed-to-terminal"
+        },
+        "placement": {
+          "groupId": "87e56558-f365-4a44-b32c-7e5885956e1d"
+        },
+        "operationId": "1793520955948-503d30ec16354d4399ae22ce096b600f"
+      },
+      "_meta": {
+        "runtimeId": "82107419-a38d-44f6-9fd3-7ebb22945e23"
+      }
+    }
+  },
+  {
+    "case": "C",
+    "arm": "entry",
+    "path": "/Users/luisfarfan/Developer/labs/agents/rein/.rein/p0-live-entry/project4",
+    "model": "gpt-6-astra",
+    "effort": "high",
+    "prompt": "Quiero agregar soporte para euros. Trabaja sólo en este checkout local; puedes leer las skills instaladas si las necesitas. No consultes otras carpetas/casos, informes anteriores ni evaluadores. Sin red, instalaciones, workers, commits o push. Máximo 12 llamadas a herramientas y 180 segundos. Conserva las limitaciones que no puedas resolver y reporta verificaciones reales.",
+    "started": "2026-11-01T08:15:56.955821+00:00",
+    "quota": {
+      "claude": {
+        "status": "limited",
+        "windows": {
+          "session": {
+            "usedPercent": null,
+            "resetsAt": null,
+            "windowMinutes": null
+          },
+          "weekly": {
+            "usedPercent": 91,
+            "resetsAt": 1793642400022,
+            "windowMinutes": 10080
+          }
+        },
+        "plan": null,
+        "plan_source": "unknown",
+        "updatedAt": 1793520359142,
+        "source": "orca account list",
+        "observation_age_seconds": 597.8140692710876,
+        "unusable_reason": ""
+      },
+      "codex": {
+        "status": "available",
+        "windows": {
+          "session": {
+            "usedPercent": null,
+            "resetsAt": null,
+            "windowMinutes": null
+          },
+          "weekly": {
+            "usedPercent": 43,
+            "resetsAt": 1794108224000,
+            "windowMinutes": 10080
+          }
+        },
+        "plan": null,
+        "plan_source": "unknown",
+        "updatedAt": 1793520359923,
+        "source": "orca account list",
+        "observation_age_seconds": 597.0330691337585,
+        "unusable_reason": ""
+      }
+    },
+    "receipt": {
+      "id": "b9e21696-033d-45b3-9bb5-8df57e107e2e",
+      "ok": true,
+      "result": {
+        "outcome": {
+          "kind": "terminal",
+          "handle": "term_1e8ecae2-aef2-4173-ac55-64d1b1c22ea9",
+          "paneKey": "9d81c6bf-171a-432c-a993-0050104b401c:372dc8e8-a80b-486a-ba4b-08565c553f57"
+        },
+        "worktreeId": "db4c7635-e59c-4f32-801e-66f000ecbd29::/Users/luisfarfan/Developer/labs/agents/rein/.rein/p0-live-entry/project4",
+        "receipt": {
+          "mode": "terminal",
+          "preferred": "terminal",
+          "reason": "user_default",
+          "detail": "Started a terminal agent, the default for new agent tabs in your settings."
+        },
+        "prompt": {
+          "delivery": "submit",
+          "outcome": "handed-to-terminal"
+        },
+        "placement": {
+          "groupId": "3aed104f-ff8c-4ed2-9801-f37c900e972e"
+        },
+        "operationId": "1793520957105-1a2a590a6547459a89a0358d093bcb69"
+      },
+      "_meta": {
+        "runtimeId": "82107419-a38d-44f6-9fd3-7ebb22945e23"
+      }
+    }
+  }
+]

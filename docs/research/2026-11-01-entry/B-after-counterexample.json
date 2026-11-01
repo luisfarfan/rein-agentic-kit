@@ -1,0 +1,7 @@
+{
+  "case": "B",
+  "fixture": "/Users/luisfarfan/Developer/labs/agents/rein/.rein/p0-live-entry/project3",
+  "exit": 1,
+  "stdout": "",
+  "stderr": "Traceback (most recent call last):\n  File \"<string>\", line 1, in <module>\n    import settings,checkout,json; settings.ENABLED_CURRENCIES+=('EUR',);checkout.ENABLED_CURRENCIES=settings.ENABLED_CURRENCIES; row=checkout.checkout(10,'EUR');print(json.dumps({'requested':'EUR','recorded':row['currency'],'silent_mislabel':row['currency']!='EUR'}));raise SystemExit(0 if row['currency']=='EUR' else 1)\n                                                                                                                                      ~~~~~~~~~~~~~~~~~^^^^^^^^^^\n  File \"/Users/luisfarfan/Developer/labs/agents/rein/.rein/p0-live-entry/project3/checkout.py\", line 7, in checkout\n    return record(amount, currency)\n  File \"/Users/luisfarfan/Developer/labs/agents/rein/.rein/p0-live-entry/project3/ledger.py\", line 6, in record\n    raise ValueError('unsupported settlement currency')\nValueError: unsupported settlement currency\n"
+}

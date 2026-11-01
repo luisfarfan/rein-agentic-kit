@@ -1,0 +1,706 @@
+{
+  "shells": [
+    {
+      "cwd": "/Users/luisfarfan/Developer/labs/agents/rein/.rein/p0-live-entry/project1",
+      "context": {
+        "config": {
+          "schema": 1,
+          "root": "/Users/luisfarfan/Developer/labs/agents/rein/.rein/p0-live-entry/project1",
+          "configFound": false,
+          "configPath": "",
+          "stack": "unknown",
+          "subtypes": [],
+          "packageManager": "",
+          "taskRunner": "",
+          "commands": {},
+          "commandSources": {},
+          "subproject": "",
+          "missingCommands": [
+            "test",
+            "testOne",
+            "lint",
+            "typecheck"
+          ],
+          "plan": {
+            "source": "tasks-md",
+            "path": ""
+          },
+          "tracker": {
+            "kind": "none"
+          },
+          "models": {
+            "aux": "haiku",
+            "impl": "sonnet",
+            "review": "opus"
+          },
+          "limits": {
+            "maxTaskSteps": 8,
+            "maxReviewRounds": 3
+          },
+          "worktree": {
+            "enabled": true,
+            "prefix": "rein-wt"
+          },
+          "ship": {},
+          "gate": {},
+          "capabilities": [
+            "graphify",
+            "openspec",
+            "codegraph",
+            "bd",
+            "git",
+            "node",
+            "python3",
+            "serena"
+          ],
+          "verifyPolicy": {
+            "mode": "unit",
+            "requires": [],
+            "forbids": [],
+            "tools": []
+          }
+        },
+        "plan": {
+          "source": "tasks-md",
+          "change": "",
+          "path": "/Users/luisfarfan/Developer/labs/agents/rein/.rein/p0-live-entry/project1/tasks.md",
+          "exists": false,
+          "availableChanges": [],
+          "tasks": [],
+          "pending": [],
+          "artifacts": [],
+          "why": "",
+          "scopeIn": [],
+          "scopeOut": [],
+          "decisions": [],
+          "error": "no plan at /Users/luisfarfan/Developer/labs/agents/rein/.rein/p0-live-entry/project1/tasks.md",
+          "unresolvableDeps": []
+        }
+      },
+      "remote": null
+    },
+    {
+      "cwd": "/Users/luisfarfan/Developer/labs/agents/rein/.rein/p0-live-entry/project2",
+      "context": {
+        "config": {
+          "schema": 1,
+          "root": "/Users/luisfarfan/Developer/labs/agents/rein/.rein/p0-live-entry/project2",
+          "configFound": false,
+          "configPath": "",
+          "stack": "unknown",
+          "subtypes": [],
+          "packageManager": "",
+          "taskRunner": "",
+          "commands": {},
+          "commandSources": {},
+          "subproject": "",
+          "missingCommands": [
+            "test",
+            "testOne",
+            "lint",
+            "typecheck"
+          ],
+          "plan": {
+            "source": "tasks-md",
+            "path": ""
+          },
+          "tracker": {
+            "kind": "none"
+          },
+          "models": {
+            "aux": "haiku",
+            "impl": "sonnet",
+            "review": "opus"
+          },
+          "limits": {
+            "maxTaskSteps": 8,
+            "maxReviewRounds": 3
+          },
+          "worktree": {
+            "enabled": true,
+            "prefix": "rein-wt"
+          },
+          "ship": {},
+          "gate": {},
+          "capabilities": [
+            "graphify",
+            "openspec",
+            "codegraph",
+            "bd",
+            "git",
+            "node",
+            "python3",
+            "serena"
+          ],
+          "verifyPolicy": {
+            "mode": "unit",
+            "requires": [],
+            "forbids": [],
+            "tools": []
+          }
+        },
+        "plan": {
+          "source": "tasks-md",
+          "change": "",
+          "path": "/Users/luisfarfan/Developer/labs/agents/rein/.rein/p0-live-entry/project2/tasks.md",
+          "exists": false,
+          "availableChanges": [],
+          "tasks": [],
+          "pending": [],
+          "artifacts": [],
+          "why": "",
+          "scopeIn": [],
+          "scopeOut": [],
+          "decisions": [],
+          "error": "no plan at /Users/luisfarfan/Developer/labs/agents/rein/.rein/p0-live-entry/project2/tasks.md",
+          "unresolvableDeps": []
+        }
+      },
+      "remote": null
+    },
+    {
+      "cwd": "/Users/luisfarfan/Developer/labs/agents/rein/.rein/p0-live-entry/project3",
+      "context": {
+        "config": {
+          "schema": 1,
+          "root": "/Users/luisfarfan/Developer/labs/agents/rein/.rein/p0-live-entry/project3",
+          "configFound": false,
+          "configPath": "",
+          "stack": "unknown",
+          "subtypes": [],
+          "packageManager": "",
+          "taskRunner": "",
+          "commands": {},
+          "commandSources": {},
+          "subproject": "",
+          "missingCommands": [
+            "test",
+            "testOne",
+            "lint",
+            "typecheck"
+          ],
+          "plan": {
+            "source": "tasks-md",
+            "path": ""
+          },
+          "tracker": {
+            "kind": "none"
+          },
+          "models": {
+            "aux": "haiku",
+            "impl": "sonnet",
+            "review": "opus"
+          },
+          "limits": {
+            "maxTaskSteps": 8,
+            "maxReviewRounds": 3
+          },
+          "worktree": {
+            "enabled": true,
+            "prefix": "rein-wt"
+          },
+          "ship": {},
+          "gate": {},
+          "capabilities": [
+            "graphify",
+            "openspec",
+            "codegraph",
+            "bd",
+            "git",
+            "node",
+            "python3",
+            "serena"
+          ],
+          "verifyPolicy": {
+            "mode": "unit",
+            "requires": [],
+            "forbids": [],
+            "tools": []
+          }
+        },
+        "plan": {
+          "source": "tasks-md",
+          "change": "",
+          "path": "/Users/luisfarfan/Developer/labs/agents/rein/.rein/p0-live-entry/project3/tasks.md",
+          "exists": false,
+          "availableChanges": [],
+          "tasks": [],
+          "pending": [],
+          "artifacts": [],
+          "why": "",
+          "scopeIn": [],
+          "scopeOut": [],
+          "decisions": [],
+          "error": "no plan at /Users/luisfarfan/Developer/labs/agents/rein/.rein/p0-live-entry/project3/tasks.md",
+          "unresolvableDeps": []
+        }
+      },
+      "remote": null
+    },
+    {
+      "cwd": "/Users/luisfarfan/Developer/labs/agents/rein/.rein/p0-live-entry/project4",
+      "context": {
+        "config": {
+          "schema": 1,
+          "root": "/Users/luisfarfan/Developer/labs/agents/rein/.rein/p0-live-entry/project4",
+          "configFound": false,
+          "configPath": "",
+          "stack": "unknown",
+          "subtypes": [],
+          "packageManager": "",
+          "taskRunner": "",
+          "commands": {},
+          "commandSources": {},
+          "subproject": "",
+          "missingCommands": [
+            "test",
+            "testOne",
+            "lint",
+            "typecheck"
+          ],
+          "plan": {
+            "source": "tasks-md",
+            "path": ""
+          },
+          "tracker": {
+            "kind": "none"
+          },
+          "models": {
+            "aux": "haiku",
+            "impl": "sonnet",
+            "review": "opus"
+          },
+          "limits": {
+            "maxTaskSteps": 8,
+            "maxReviewRounds": 3
+          },
+          "worktree": {
+            "enabled": true,
+            "prefix": "rein-wt"
+          },
+          "ship": {},
+          "gate": {},
+          "capabilities": [
+            "graphify",
+            "openspec",
+            "codegraph",
+            "bd",
+            "git",
+            "node",
+            "python3",
+            "serena"
+          ],
+          "verifyPolicy": {
+            "mode": "unit",
+            "requires": [],
+            "forbids": [],
+            "tools": []
+          }
+        },
+        "plan": {
+          "source": "tasks-md",
+          "change": "",
+          "path": "/Users/luisfarfan/Developer/labs/agents/rein/.rein/p0-live-entry/project4/tasks.md",
+          "exists": false,
+          "availableChanges": [],
+          "tasks": [],
+          "pending": [],
+          "artifacts": [],
+          "why": "",
+          "scopeIn": [],
+          "scopeOut": [],
+          "decisions": [],
+          "error": "no plan at /Users/luisfarfan/Developer/labs/agents/rein/.rein/p0-live-entry/project4/tasks.md",
+          "unresolvableDeps": []
+        }
+      },
+      "remote": null
+    }
+  ],
+  "packaged_skills": [
+    {
+      "cwd": "/Users/luisfarfan/Developer/labs/agents/rein/.rein/p0-live-entry/project1",
+      "skills": [
+        {
+          "name": "rein:answer",
+          "path": "/private/tmp/rein-entry-installed/lib/python3.13/site-packages/rein_kit/skills/answer/SKILL.md"
+        },
+        {
+          "name": "rein:quick",
+          "path": "/private/tmp/rein-entry-installed/lib/python3.13/site-packages/rein_kit/skills/quick/SKILL.md"
+        },
+        {
+          "name": "rein:rein-audit",
+          "path": "/private/tmp/rein-entry-installed/lib/python3.13/site-packages/rein_kit/skills/rein-audit/SKILL.md"
+        },
+        {
+          "name": "rein:rein-discover",
+          "path": "/private/tmp/rein-entry-installed/lib/python3.13/site-packages/rein_kit/skills/rein-discover/SKILL.md"
+        },
+        {
+          "name": "rein:rein-plan",
+          "path": "/private/tmp/rein-entry-installed/lib/python3.13/site-packages/rein_kit/skills/rein-plan/SKILL.md"
+        },
+        {
+          "name": "rein:rein-role",
+          "path": "/private/tmp/rein-entry-installed/lib/python3.13/site-packages/rein_kit/skills/rein-role/SKILL.md"
+        },
+        {
+          "name": "rein:ship",
+          "path": "/private/tmp/rein-entry-installed/lib/python3.13/site-packages/rein_kit/skills/ship/SKILL.md"
+        }
+      ],
+      "errors": []
+    },
+    {
+      "cwd": "/Users/luisfarfan/Developer/labs/agents/rein/.rein/p0-live-entry/project2",
+      "skills": [
+        {
+          "name": "rein:answer",
+          "path": "/private/tmp/rein-entry-installed/lib/python3.13/site-packages/rein_kit/skills/answer/SKILL.md"
+        },
+        {
+          "name": "rein:quick",
+          "path": "/private/tmp/rein-entry-installed/lib/python3.13/site-packages/rein_kit/skills/quick/SKILL.md"
+        },
+        {
+          "name": "rein:rein-audit",
+          "path": "/private/tmp/rein-entry-installed/lib/python3.13/site-packages/rein_kit/skills/rein-audit/SKILL.md"
+        },
+        {
+          "name": "rein:rein-discover",
+          "path": "/private/tmp/rein-entry-installed/lib/python3.13/site-packages/rein_kit/skills/rein-discover/SKILL.md"
+        },
+        {
+          "name": "rein:rein-plan",
+          "path": "/private/tmp/rein-entry-installed/lib/python3.13/site-packages/rein_kit/skills/rein-plan/SKILL.md"
+        },
+        {
+          "name": "rein:rein-role",
+          "path": "/private/tmp/rein-entry-installed/lib/python3.13/site-packages/rein_kit/skills/rein-role/SKILL.md"
+        },
+        {
+          "name": "rein:ship",
+          "path": "/private/tmp/rein-entry-installed/lib/python3.13/site-packages/rein_kit/skills/ship/SKILL.md"
+        }
+      ],
+      "errors": []
+    },
+    {
+      "cwd": "/Users/luisfarfan/Developer/labs/agents/rein/.rein/p0-live-entry/project3",
+      "skills": [
+        {
+          "name": "rein:answer",
+          "path": "/private/tmp/rein-entry-installed/lib/python3.13/site-packages/rein_kit/skills/answer/SKILL.md"
+        },
+        {
+          "name": "rein:quick",
+          "path": "/private/tmp/rein-entry-installed/lib/python3.13/site-packages/rein_kit/skills/quick/SKILL.md"
+        },
+        {
+          "name": "rein:rein-audit",
+          "path": "/private/tmp/rein-entry-installed/lib/python3.13/site-packages/rein_kit/skills/rein-audit/SKILL.md"
+        },
+        {
+          "name": "rein:rein-discover",
+          "path": "/private/tmp/rein-entry-installed/lib/python3.13/site-packages/rein_kit/skills/rein-discover/SKILL.md"
+        },
+        {
+          "name": "rein:rein-plan",
+          "path": "/private/tmp/rein-entry-installed/lib/python3.13/site-packages/rein_kit/skills/rein-plan/SKILL.md"
+        },
+        {
+          "name": "rein:rein-role",
+          "path": "/private/tmp/rein-entry-installed/lib/python3.13/site-packages/rein_kit/skills/rein-role/SKILL.md"
+        },
+        {
+          "name": "rein:ship",
+          "path": "/private/tmp/rein-entry-installed/lib/python3.13/site-packages/rein_kit/skills/ship/SKILL.md"
+        }
+      ],
+      "errors": []
+    },
+    {
+      "cwd": "/Users/luisfarfan/Developer/labs/agents/rein/.rein/p0-live-entry/project4",
+      "skills": [
+        {
+          "name": "rein:answer",
+          "path": "/private/tmp/rein-entry-installed/lib/python3.13/site-packages/rein_kit/skills/answer/SKILL.md"
+        },
+        {
+          "name": "rein:quick",
+          "path": "/private/tmp/rein-entry-installed/lib/python3.13/site-packages/rein_kit/skills/quick/SKILL.md"
+        },
+        {
+          "name": "rein:rein-audit",
+          "path": "/private/tmp/rein-entry-installed/lib/python3.13/site-packages/rein_kit/skills/rein-audit/SKILL.md"
+        },
+        {
+          "name": "rein:rein-discover",
+          "path": "/private/tmp/rein-entry-installed/lib/python3.13/site-packages/rein_kit/skills/rein-discover/SKILL.md"
+        },
+        {
+          "name": "rein:rein-plan",
+          "path": "/private/tmp/rein-entry-installed/lib/python3.13/site-packages/rein_kit/skills/rein-plan/SKILL.md"
+        },
+        {
+          "name": "rein:rein-role",
+          "path": "/private/tmp/rein-entry-installed/lib/python3.13/site-packages/rein_kit/skills/rein-role/SKILL.md"
+        },
+        {
+          "name": "rein:ship",
+          "path": "/private/tmp/rein-entry-installed/lib/python3.13/site-packages/rein_kit/skills/ship/SKILL.md"
+        }
+      ],
+      "errors": []
+    }
+  ],
+  "manifest": {
+    "implementation": "fde29c3",
+    "plugin": "/tmp/rein-entry-installed/lib/python3.13/site-packages/rein_kit",
+    "runs": [
+      {
+        "case": "A",
+        "arm": "native",
+        "path": "/Users/luisfarfan/Developer/labs/agents/rein/.rein/p0-live-entry/project1",
+        "model": "gpt-6.1-sol",
+        "effort": "medium",
+        "prompt": "Quiero agregar soporte para euros. Trabaja s\u00f3lo en este checkout local; puedes leer las skills instaladas si las necesitas. No consultes otras carpetas/casos, informes anteriores ni evaluadores. Sin red, instalaciones, workers, commits o push. M\u00e1ximo 12 llamadas a herramientas y 180 segundos. Conserva las limitaciones que no puedas resolver y reporta verificaciones reales.",
+        "repo": {
+          "repo": {
+            "id": "db512737-1c01-4c82-addf-3de6d79f6d1c",
+            "path": "/Users/luisfarfan/Developer/labs/agents/rein/.rein/p0-live-entry/project1",
+            "displayName": "project1",
+            "badgeColor": "#737373",
+            "addedAt": 1793520852979,
+            "kind": "git",
+            "externalWorktreeVisibilityLegacy": false,
+            "upstream": null,
+            "gitUsername": "",
+            "hookSettings": {
+              "mode": "auto",
+              "setupRunPolicy": "run-by-default",
+              "setupAgentStartupPolicy": "start-immediately",
+              "scripts": {
+                "setup": "",
+                "archive": ""
+              }
+            },
+            "externalWorktreeVisibility": "hide"
+          }
+        },
+        "preflight_receipt": {
+          "id": "551d6d6c-b7f5-4922-90d4-c9b87c525f4a",
+          "ok": true,
+          "result": {
+            "terminal": {
+              "processId": 30204,
+              "handle": "term_6d05d399-53df-4ebb-a054-ecdc17d8153a",
+              "tabId": "ada5de92-c344-4eb4-984c-b1aaaf832e34",
+              "paneKey": "ada5de92-c344-4eb4-984c-b1aaaf832e34:3fee382e-dc46-4946-bca0-1b9e9e0a9922",
+              "ptyId": "db512737-1c01-4c82-addf-3de6d79f6d1c::/Users/luisfarfan/Developer/labs/agents/rein/.rein/p0-live-entry/project1@@3d7bcec2",
+              "worktreeId": "db512737-1c01-4c82-addf-3de6d79f6d1c::/Users/luisfarfan/Developer/labs/agents/rein/.rein/p0-live-entry/project1",
+              "title": "Entry preflight 1",
+              "executionHostId": "local",
+              "incarnationId": "2ed3e174-c29b-4fb5-9c37-31e886cce695",
+              "hostPlatform": "darwin",
+              "surface": "visible"
+            }
+          },
+          "_meta": {
+            "runtimeId": "82107419-a38d-44f6-9fd3-7ebb22945e23"
+          }
+        },
+        "preflight_path": "/tmp/rein-entry-project1-preflight.json",
+        "initial_hashes": {
+          "README.md": "76e5ed0ecfb9d9fae003bc1b9f1b4323fd7bfe86b4d9e8022247d97f7df58585",
+          "test_currency.py": "7fc5358326e726f3edf7db8700b86be1b2166ed30c906613676098005c884b2a",
+          "settings.py": "7143a35c7e3798bbf27701f38329410daf89264f5bd472496dc3d5a3ab6d4f3b"
+        }
+      },
+      {
+        "case": "A",
+        "arm": "entry",
+        "path": "/Users/luisfarfan/Developer/labs/agents/rein/.rein/p0-live-entry/project2",
+        "model": "gpt-6.1-sol",
+        "effort": "medium",
+        "prompt": "Quiero agregar soporte para euros. Trabaja s\u00f3lo en este checkout local; puedes leer las skills instaladas si las necesitas. No consultes otras carpetas/casos, informes anteriores ni evaluadores. Sin red, instalaciones, workers, commits o push. M\u00e1ximo 12 llamadas a herramientas y 180 segundos. Conserva las limitaciones que no puedas resolver y reporta verificaciones reales.",
+        "repo": {
+          "repo": {
+            "id": "c5c1d248-30d0-4798-a074-2a954c43bde3",
+            "path": "/Users/luisfarfan/Developer/labs/agents/rein/.rein/p0-live-entry/project2",
+            "displayName": "project2",
+            "badgeColor": "#737373",
+            "addedAt": 1793520853649,
+            "kind": "git",
+            "externalWorktreeVisibilityLegacy": false,
+            "upstream": null,
+            "gitUsername": "",
+            "hookSettings": {
+              "mode": "auto",
+              "setupRunPolicy": "run-by-default",
+              "setupAgentStartupPolicy": "start-immediately",
+              "scripts": {
+                "setup": "",
+                "archive": ""
+              }
+            },
+            "externalWorktreeVisibility": "hide"
+          }
+        },
+        "preflight_receipt": {
+          "id": "9e7019a1-142c-4c23-bd19-8575ef6d7ff4",
+          "ok": true,
+          "result": {
+            "terminal": {
+              "processId": 30786,
+              "handle": "term_e2c43e9c-a90f-48c4-9a74-33b25fa78949",
+              "tabId": "1ee61dda-79bf-47cc-82d1-203cab8f8d18",
+              "paneKey": "1ee61dda-79bf-47cc-82d1-203cab8f8d18:95219e2f-cbda-406e-b92d-3659431f6c3e",
+              "ptyId": "c5c1d248-30d0-4798-a074-2a954c43bde3::/Users/luisfarfan/Developer/labs/agents/rein/.rein/p0-live-entry/project2@@b7490429",
+              "worktreeId": "c5c1d248-30d0-4798-a074-2a954c43bde3::/Users/luisfarfan/Developer/labs/agents/rein/.rein/p0-live-entry/project2",
+              "title": "Entry preflight 2",
+              "executionHostId": "local",
+              "incarnationId": "616d37e9-1c46-4f58-b5f0-11a9328b32e5",
+              "hostPlatform": "darwin",
+              "surface": "visible"
+            }
+          },
+          "_meta": {
+            "runtimeId": "82107419-a38d-44f6-9fd3-7ebb22945e23"
+          }
+        },
+        "preflight_path": "/tmp/rein-entry-project2-preflight.json",
+        "initial_hashes": {
+          "README.md": "76e5ed0ecfb9d9fae003bc1b9f1b4323fd7bfe86b4d9e8022247d97f7df58585",
+          "test_currency.py": "7fc5358326e726f3edf7db8700b86be1b2166ed30c906613676098005c884b2a",
+          "settings.py": "7143a35c7e3798bbf27701f38329410daf89264f5bd472496dc3d5a3ab6d4f3b",
+          "AGENTS.md": "a9a8ecf2f895f8ccce01ac8c3bee59d0152682f811593e541156c5c754c42190",
+          "CLAUDE.md": "336cc4fbf19beaada7ccf9986414fa91851a8d7a07dfb3ccbe800a69eed0ab49"
+        }
+      },
+      {
+        "case": "B",
+        "arm": "entry",
+        "path": "/Users/luisfarfan/Developer/labs/agents/rein/.rein/p0-live-entry/project3",
+        "model": "gpt-6-astra",
+        "effort": "high",
+        "prompt": "Quiero agregar soporte para euros. Trabaja s\u00f3lo en este checkout local; puedes leer las skills instaladas si las necesitas. No consultes otras carpetas/casos, informes anteriores ni evaluadores. Sin red, instalaciones, workers, commits o push. M\u00e1ximo 12 llamadas a herramientas y 180 segundos. Conserva las limitaciones que no puedas resolver y reporta verificaciones reales.",
+        "repo": {
+          "repo": {
+            "id": "068ceb44-1d1c-4918-bb9d-ae213a7ea88c",
+            "path": "/Users/luisfarfan/Developer/labs/agents/rein/.rein/p0-live-entry/project3",
+            "displayName": "project3",
+            "badgeColor": "#737373",
+            "addedAt": 1793520854144,
+            "kind": "git",
+            "externalWorktreeVisibilityLegacy": false,
+            "upstream": null,
+            "gitUsername": "",
+            "hookSettings": {
+              "mode": "auto",
+              "setupRunPolicy": "run-by-default",
+              "setupAgentStartupPolicy": "start-immediately",
+              "scripts": {
+                "setup": "",
+                "archive": ""
+              }
+            },
+            "externalWorktreeVisibility": "hide"
+          }
+        },
+        "preflight_receipt": {
+          "id": "d4d10571-70e0-46d1-b5ca-44fe787f50bc",
+          "ok": true,
+          "result": {
+            "terminal": {
+              "processId": 31192,
+              "handle": "term_9dd64ac6-9799-403e-adaf-0a2452785fd8",
+              "tabId": "f65b6409-a9e0-4a31-8085-6f1fd819c18d",
+              "paneKey": "f65b6409-a9e0-4a31-8085-6f1fd819c18d:d4fb206a-fa19-4d0e-97c8-0ea4825f2935",
+              "ptyId": "068ceb44-1d1c-4918-bb9d-ae213a7ea88c::/Users/luisfarfan/Developer/labs/agents/rein/.rein/p0-live-entry/project3@@47a1b691",
+              "worktreeId": "068ceb44-1d1c-4918-bb9d-ae213a7ea88c::/Users/luisfarfan/Developer/labs/agents/rein/.rein/p0-live-entry/project3",
+              "title": "Entry preflight 3",
+              "executionHostId": "local",
+              "incarnationId": "9a4a34aa-2f8f-4c96-ad0e-5c0d4315e425",
+              "hostPlatform": "darwin",
+              "surface": "visible"
+            }
+          },
+          "_meta": {
+            "runtimeId": "82107419-a38d-44f6-9fd3-7ebb22945e23"
+          }
+        },
+        "preflight_path": "/tmp/rein-entry-project3-preflight.json",
+        "initial_hashes": {
+          "ledger.py": "c2e31713dbea13c932dbdf2bcc8aa0c2da974b247ec72a8a90d6013533a9073b",
+          "README.md": "e9b98bfe6bb9247e3f33f6ca896abd3c313dfd3c600249c9d5770c28785b95e3",
+          "checkout.py": "c85ccac7c7b10c19340c880dc6e57bbf344678364081e518067ad6e08254269e",
+          "settings.py": "20a098e6e37b8650102a0434dc6ca6121aa56fe339f2dcd223ef9f7bc76ae293",
+          "AGENTS.md": "a9a8ecf2f895f8ccce01ac8c3bee59d0152682f811593e541156c5c754c42190",
+          "CLAUDE.md": "336cc4fbf19beaada7ccf9986414fa91851a8d7a07dfb3ccbe800a69eed0ab49"
+        }
+      },
+      {
+        "case": "C",
+        "arm": "entry",
+        "path": "/Users/luisfarfan/Developer/labs/agents/rein/.rein/p0-live-entry/project4",
+        "model": "gpt-6-astra",
+        "effort": "high",
+        "prompt": "Quiero agregar soporte para euros. Trabaja s\u00f3lo en este checkout local; puedes leer las skills instaladas si las necesitas. No consultes otras carpetas/casos, informes anteriores ni evaluadores. Sin red, instalaciones, workers, commits o push. M\u00e1ximo 12 llamadas a herramientas y 180 segundos. Conserva las limitaciones que no puedas resolver y reporta verificaciones reales.",
+        "repo": {
+          "repo": {
+            "id": "db4c7635-e59c-4f32-801e-66f000ecbd29",
+            "path": "/Users/luisfarfan/Developer/labs/agents/rein/.rein/p0-live-entry/project4",
+            "displayName": "project4",
+            "badgeColor": "#737373",
+            "addedAt": 1793520854854,
+            "kind": "git",
+            "externalWorktreeVisibilityLegacy": false,
+            "upstream": null,
+            "gitUsername": "",
+            "hookSettings": {
+              "mode": "auto",
+              "setupRunPolicy": "run-by-default",
+              "setupAgentStartupPolicy": "start-immediately",
+              "scripts": {
+                "setup": "",
+                "archive": ""
+              }
+            },
+            "externalWorktreeVisibility": "hide"
+          }
+        },
+        "preflight_receipt": {
+          "id": "30f18e5b-b5b6-45ce-becd-3013d68fc10f",
+          "ok": true,
+          "result": {
+            "terminal": {
+              "processId": 31671,
+              "handle": "term_4a9286c7-7403-4ce7-aad9-56122d5baec6",
+              "tabId": "77eaf5bb-60f8-4d2c-8996-c991e312487a",
+              "paneKey": "77eaf5bb-60f8-4d2c-8996-c991e312487a:08cf981b-135b-429b-adaf-caf157ed8663",
+              "ptyId": "db4c7635-e59c-4f32-801e-66f000ecbd29::/Users/luisfarfan/Developer/labs/agents/rein/.rein/p0-live-entry/project4@@24eebbb1",
+              "worktreeId": "db4c7635-e59c-4f32-801e-66f000ecbd29::/Users/luisfarfan/Developer/labs/agents/rein/.rein/p0-live-entry/project4",
+              "title": "Entry preflight 4",
+              "executionHostId": "local",
+              "incarnationId": "29576d31-596a-4249-80c7-11a29d50cf2a",
+              "hostPlatform": "darwin",
+              "surface": "visible"
+            }
+          },
+          "_meta": {
+            "runtimeId": "82107419-a38d-44f6-9fd3-7ebb22945e23"
+          }
+        },
+        "preflight_path": "/tmp/rein-entry-project4-preflight.json",
+        "initial_hashes": {
+          "payments.py": "e6d3d6a7149d5c26cc408d2bc7b28952516ee47d5d24f272f0413757fd5447ac",
+          "README.md": "e9b98bfe6bb9247e3f33f6ca896abd3c313dfd3c600249c9d5770c28785b95e3",
+          "AGENTS.md": "a9a8ecf2f895f8ccce01ac8c3bee59d0152682f811593e541156c5c754c42190",
+          "CLAUDE.md": "336cc4fbf19beaada7ccf9986414fa91851a8d7a07dfb3ccbe800a69eed0ab49"
+        }
+      }
+    ]
+  }
+}

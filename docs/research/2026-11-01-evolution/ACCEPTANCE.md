@@ -96,3 +96,26 @@ P0 remains PARTIALLY ACCEPTED, Claude-origin and cross-provider work blocked at
 Follow-up final regression: **2000 tests, OK (skipped=2)**; seven separate wheel
 checks passed. Two initial message-contract failures were corrected and retained
 in the [validation history](../2026-11-01-followup/validation.json).
+
+
+## Minimal shared entry architecture
+
+See [implementation and actual traces](../2026-11-01-entry/RESULTS.md). No
+rein-impact skill or automatic workflow chain was added. Project adoption is
+required; installing a plugin alone is not claimed to load its entry policy.
+
+| Check | Kind | Result | Evidence / boundary |
+| --- | --- | --- | --- |
+| Shared project policy | Distribution contract | PASS | 257-word packaged template; one checked AGENTS block, existing CLAUDE import |
+| Normal packaged Codex capability discovery | Actual host protocol | PASS | Seven wheel skills in all four independent cwd roots |
+| Policy loaded at startup | Actual Codex transcript | PASS | Exact template once in each entry arm's initial instruction messages, absent in control |
+| A: simple task | Paired Sol Medium behavior | PASS | Native in both arms; no skill/context/router/JSON; independent EUR/USD/unsupported checks pass |
+| B: hidden monetary risk | Actual Astra High behavior | PASS for detection/control | Reproduced wrong currency, EUR stays disabled, local guard/tests and independent review pending; not completed EUR support |
+| C: architectural uncertainty | Actual Astra High behavior | PASS | Selective Discover after code read, targeted mock probes, no implementation; real provider contract remains unknown |
+| Prose simplification / structured compatibility | Guidance + regression | PASS | Six labels no longer required for prose; optional v2 contracts and risk/freshness guards unchanged |
+| Lower observed consumption | Paired observation | NOT DEMONSTRATED | One fewer tool and slightly less time, but A entry used 115.3% more uncached input; cache variation and one pair preclude causal claims |
+| Claude entry behavior | Real integration | BLOCKED | 91% weekly at last observation; documented import/manifest are not live behavior |
+| Universal automatic activation | Host/runtime enforcement | NOT IMPLEMENTED | Explicit one-time project adoption; no hook, daemon or universal interception |
+
+Full regression: **2001 tests, OK (skipped=2)**; **7** wheel tests passed. P0
+remains PARTIALLY ACCEPTED. No production/global changes or push.

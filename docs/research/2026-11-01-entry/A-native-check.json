@@ -1,0 +1,7 @@
+{
+  "case": "A",
+  "fixture": "/Users/luisfarfan/Developer/labs/agents/rein/.rein/p0-live-entry/project1",
+  "exit": 0,
+  "stdout": "{\"eur_enabled\": true, \"usd_preserved\": true, \"unsupported_rejected\": true}\n",
+  "stderr": ""
+}

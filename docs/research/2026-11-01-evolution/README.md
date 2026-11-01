@@ -1,6 +1,8 @@
 # Evolution — evidence and acceptance (2026-11-01)
 
-Latest evidence: [valid P1 comparison, paired native control and quota observability](../2026-11-01-followup/RESULTS.md). The corrected P1 cells found no additional critical risks; P2 produced the same functional result with more measured overhead. Recommendation: simplify prose classifications, keep routing optional, preserve evidence and required controls. P3 freshness/brakes are unchanged; diagnostics now distinguish unavailable observations from exhaustion.
+Latest implementation: [minimal shared entry policy and simplified Discover](../2026-11-01-entry/RESULTS.md). The plugin ships an optional project-adoption template; this checkout uses it in AGENTS.md with one CLAUDE.md import. Real packaged Codex sessions stayed native for the easy case and deepened hidden-risk/uncertain cases. No new skill or mandatory routing; no net token savings or Claude behavioral acceptance claimed.
+
+Previous evidence: [valid P1 comparison, paired native control and quota observability](../2026-11-01-followup/RESULTS.md). The corrected P1 cells found no additional critical risks; P2 produced the same functional result with more measured overhead. Recommendation: simplify prose classifications, keep routing optional, preserve evidence and required controls. P3 freshness/brakes are unchanged; diagnostics now distinguish unavailable observations from exhaustion.
 
 Previous follow-up: [decision-quality evaluation and P3 correction](../2026-11-01-evaluation/RESULTS.md). It records two invalid new benchmark cells, one actual opt-in Astra workflow, and stricter stale/unknown quota dispatch checks. The initial implementation record below is historical; its unknown-capacity fallback and unverified-reference limitations were superseded by the later evidence contracts and P3 correction. P0 remains PARTIALLY ACCEPTED.
 

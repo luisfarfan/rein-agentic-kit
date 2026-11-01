@@ -1,0 +1,36 @@
+diff --git a/README.md b/README.md
+index 67c9180..06775ed 100644
+--- a/README.md
++++ b/README.md
+@@ -1,2 +1,17 @@
+ Local Python example. No dependency installation is needed.
+-No test runner is configured in this checkout.
++Run the local regression tests with the Python standard library:
++
++```sh
++PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -v
++```
++
++EUR is recognized in `SUPPORTED_CURRENCIES`, but remains disabled in
++`ENABLED_CURRENCIES`. The ledger's existing settlement contract accepts USD only.
++It now rejects other currencies before adding an entry, including calls that
++bypass checkout or accidentally enable EUR in checkout configuration.
++
++Euro settlement is not implemented. Enabling EUR requires a verified settlement
++contract that preserves EUR amounts and currency through its consumers, plus
++independent review of the monetary change. This checkout does not contain that
++settlement integration or its contract tests; changing the stored currency label
++alone does not verify euro settlement. No currency conversion is performed.
+diff --git a/ledger.py b/ledger.py
+index 31b4379..53cb763 100644
+--- a/ledger.py
++++ b/ledger.py
+@@ -2,6 +2,8 @@ ENTRIES = []
+ 
+ def record(amount, currency):
+     # Existing settlement contract is USD-only; other amounts would be mislabeled.
++    if currency != 'USD':
++        raise ValueError('unsupported settlement currency')
+     entry = {'amount': amount, 'currency': 'USD'}
+     ENTRIES.append(entry)
+     return entry
