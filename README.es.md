@@ -2,146 +2,120 @@
 
 [English](README.md) | **Español**
 
-**Criterio, verificación y control para desarrollar con agentes.**
+**De una petición de código a un cambio que puedes verificar.**
 
-REIN es un conjunto de skills y una CLI para trabajar con **Claude Code y Codex**:
-entender el impacto de un cambio, convertir requisitos en trabajo verificable,
-implementar con el nivel de coordinación adecuado y obtener una revisión
-independiente cuando el riesgo lo exige.
-
-La sesión actual es el punto de partida. REIN aporta una guía compartida para
-investigar, decidir, ejecutar y comprobar; cuando conviene delegar, utiliza
-**Orca** para gestionar workers, worktrees y decisiones del usuario.
+REIN ofrece a **Claude Code y Codex** un método compartido para inspeccionar un
+cambio, planificar cuando hace falta, comprobar el resultado y obtener una
+revisión independiente. El trabajo permanece en tu sesión actual por defecto;
+**Orca** ejecuta workers delegados cuando la coordinación aporta valor.
 
 [![CI](https://github.com/luisfarfan/rein-agentic-kit/actions/workflows/ci.yml/badge.svg)](https://github.com/luisfarfan/rein-agentic-kit/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.9%2B-blue.svg)](pyproject.toml)
 [![Runtime dependencies](https://img.shields.io/badge/runtime%20deps-none-success.svg)](pyproject.toml)
 
-## Qué aporta a tu trabajo
+[Ver un ejemplo](#una-petición-tres-decisiones-de-ingeniería-distintas) ·
+[Probar una comprobación](#prueba-tres-controles-sin-iniciar-un-agente) ·
+[Empezar](#empezar) · [Referencia](docs/reference.md)
 
-### Entender qué hace falta cambiar
+```mermaid
+flowchart TB
+    task["Tu petición"] --> inspect["Inspeccionar código<br/>y pruebas"]
+    inspect --> native["Sesión actual<br/>por defecto"]
+    inspect -->|"conviene delegar"| workers["Workers en Orca<br/>Quick / Ship"]
+    native --> verify["Pruebas + evidencia<br/>revisión cuando se requiere"]
+    workers --> verify
+    classDef entry fill:#e0e7ff,stroke:#6366f1,color:#1e1b4b
+    classDef local fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef delegated fill:#fef3c7,stroke:#d97706,color:#78350f
+    class task,inspect entry
+    class native,verify local
+    class workers delegated
+```
 
-Antes de implementar, REIN orienta al agente a leer código y pruebas, distinguir
-capacidades existentes de comportamiento faltante y seguir los consumidores del
-cambio. Una petición de interfaz puede depender de una capacidad que el backend ya
-tiene; un ajuste pequeño puede afectar permisos, dinero o persistencia.
+**Empieza por el código. Añade el proceso que el cambio necesita.** Discover
+resuelve preguntas que pueden cambiar la solución. Plan organiza requisitos y
+dependencias. Audit incorpora un revisor independiente para cambios sensibles.
+Quick y Ship permiten delegar explícitamente mediante Orca.
 
-Si falta una respuesta que puede cambiar la solución, Discover profundiza en esa
-pregunta, reutiliza lo ya encontrado y deja explícita la incertidumbre. Una
-investigación solicitada como tal conserva su alcance de solo lectura.
-Si necesitas conservar un informe estructurado, `discover-check` comprueba la
-vigencia de sus referencias a archivos antes de reutilizar esa evidencia.
+## Qué cambia en la práctica
 
-**Te ayuda a delimitar la solución y a detectar las preguntas que deben resolverse
-antes de tocar el código.**
-
-### Convertir requisitos en trabajo que se puede comprobar
-
-Plan descompone el cambio en tareas con criterios de aceptación, repositorio,
-dependencias y una verificación ejecutable. Puede usar un `tasks.md` sencillo o una
-estructura OpenSpec. El borrador se revisa contigo antes de escribir el plan.
-
-La CLI comprueba aspectos mecánicos del plan, como dependencias inválidas y
-problemas en sus verificaciones; el agente evalúa si los criterios realmente
-cubren lo pedido.
-
-**Te da una definición concreta de terminado y una forma de comprobar cada parte.**
-
-### Elegir el proceso según el trabajo
-
-Una corrección localizada puede resolverse en la sesión actual. Un cambio con
-requisitos y dependencias puede necesitar un plan. Un cambio en autorización o
-estado persistente necesita revisión independiente. Las tareas que se benefician
-de ejecución paralela o recuperación pueden justificar Ship.
-
-La política de entrada permite tomar esas decisiones desde una petición normal,
-una vez adoptada por el proyecto. `rein route` ofrece recomendaciones basadas en
-un informe cuando necesitas un registro estructurado; su uso es opcional y no
-inicia workers.
-
-**Puedes usar las capacidades por separado y añadir coordinación cuando aporta
-algo concreto.**
-
-### Verificar resultados con señales observables
-
-`rein gate` ejecuta las comprobaciones del proyecto y distingue un resultado
-correcto, una comprobación fallida y un entorno que no pudo ejecutarla. Una
-herramienta ausente o una suite que no llegó a correr conserva su propio diagnóstico.
-
-Los comandos se resuelven desde la configuración del proyecto, sus task runners
-o la detección del stack. En ejecución delegada hay verificaciones por tarea y
-comprobaciones completas por repositorio; los resultados correctos pueden
-reutilizarse mientras coincidan el estado del código, el comando y el entorno.
-La política de frontend contempla evidencia del renderizado, que debe obtenerse
-y aportarse por separado.
-
-**Puedes saber qué se comprobó, qué falló y qué sigue sin demostrarse.**
-
-### Separar implementación y revisión
-
-La auditoría combina comprobaciones mecánicas con el juicio de una sesión
-independiente del implementador. Es parte del método para cambios en seguridad,
-permisos, dinero, persistencia, concurrencia o contratos entre servicios.
-
-Los hallazgos bloqueantes requieren un defecto confirmado y evidencia concreta.
-La aprobación queda vinculada al estado revisado mediante hashes: al cambiar los
-archivos revisados, esa aprobación deja de ser vigente.
-
-**Una revisión tiene un alcance verificable y debe actualizarse cuando cambia el
-código que aprobó.**
-
-### Coordinar trabajo delegado sin perder las decisiones
-
-Quick permite encargar explícitamente un cambio pequeño a otro agente. Ship
-coordina un plan mediante Orca: respeta dependencias, lanza workers con contexto
-nuevo por tarea, ejecuta gates, gestiona reintentos y solicita auditoría.
-
-Ship guarda su estado para poder reanudarlo. Las preguntas, los bloqueos y las
-decisiones pendientes llegan mediante watchers y gates de Orca; puedes
-consultarlos y responderlos desde la sesión que inició el trabajo. También admite
-tareas de revisión humana con una ficha de criterios y evidencia.
-
-**Puedes seguir un trabajo largo, intervenir donde hace falta y recuperar su
-estado sin reconstruir toda la conversación.**
-
-### Mantener límites al delegar
-
-REIN comprueba cambios en configuración protegida, vuelve a ejecutar determinados
-hooks y detecta actividad fuera del worktree en los checkouts vigilados. Permite
-configurar variables por worktree para separar recursos de pruebas, como bases de
-datos, y conserva registros de los gates.
-
-La selección de workers usa las observaciones de cuota de Orca y sus límites
-configurados. Una cuota desconocida o desactualizada impide autorizar nuevos
-workers; seleccionar un proveedor explícitamente conserva esos controles.
-
-**La delegación tiene límites de alcance, capacidad y escalamiento que puedes
-inspeccionar.** Estos controles detectan determinadas infracciones al finalizar;
-REIN no proporciona un sandbox.
-
-## Cómo usarlo según tu caso
-
-| Situación | Capacidad útil | Resultado esperado |
+| Problema a resolver | Qué aporta REIN | Qué puedes inspeccionar |
 | --- | --- | --- |
-| El alcance está claro y el cambio es localizado | Sesión actual con la guía de entrada | Implementación y verificación pertinentes |
-| No sabes si falta una capacidad o dónde está el problema | Discover | Evidencia, incertidumbres y siguiente comprobación |
-| Hay requisitos o dependencias que organizar | Plan | Tareas con criterios y verificaciones |
-| El cambio toca límites sensibles | Audit, desde otra sesión | Hallazgos y veredicto sobre el estado revisado |
-| Quieres encargar un cambio pequeño a otro agente | Quick | Worker en Orca, normalmente en su propio worktree |
-| Hay trabajo paralelo o una ejecución que necesita estado recuperable | Ship | Coordinación del plan, gates y auditoría |
-| Un trabajo delegado necesita tu decisión | Answer y Watch | Preguntas visibles y respuestas registradas |
+| Una petición oculta comportamiento existente o impacto en consumidores | Inspeccionar código, pruebas, productores y consumidores antes de elegir la solución | Hallazgos, incertidumbres y un cambio delimitado |
+| Es difícil definir cuándo está terminado | Tareas con criterios de aceptación, dependencias, repositorio y comando de verificación | Un plan con una comprobación para cada tarea |
+| Una comprobación falló o nunca llegó a ejecutarse | Gates deterministas que distinguen éxito, fallo y problemas de entorno | Códigos de salida, salida de comandos y registros de los gates |
+| Una aprobación es anterior a las últimas ediciones | Veredictos vinculados a hashes de los archivos revisados | La aprobación pierde vigencia al cambiar esos archivos |
+| El trabajo delegado necesita coordinación | Dependencias, estado guardado, reintentos acotados y decisiones del usuario | Ejecuciones recuperables en Orca y preguntas pendientes visibles |
 
-Por ejemplo:
+## Una petición, tres decisiones de ingeniería distintas
 
-- **«El menú no muestra una acción que el usuario puede realizar».** Inspeccionar
-  interfaz, permisos y contrato existente; resolver en la sesión actual si la
-  evidencia permite una corrección localizada.
-- **«Quiero evitar emisiones duplicadas al reintentar un cobro».** Investigar
-  concurrencia, persistencia y efectos externos; preparar un plan verificable y
-  obtener una auditoría independiente.
-- **«Implementa estas tareas independientes y avísame si algo se bloquea».**
-  Usar Ship cuando la coordinación de workers aporte una ventaja concreta.
+> **«Agrega soporte para EUR».**
+
+La misma petición necesita trabajo distinto según el código. En la
+[evaluación de la política de entrada](docs/research/2026-11-01-entry/RESULTS.md)
+registrada en este repositorio, sesiones con la guía de REIN inspeccionaron tres
+fixtures de desarrollo:
+
+| Qué encontró la inspección | Qué hizo la sesión | Por qué importa |
+| --- | --- | --- |
+| EUR ya funcionaba; la configuración lo deshabilitaba | Cambió la configuración y añadió una prueba de regresión persistente | Reutilizó una capacidad existente |
+| El checkout llegaba a un ledger que solo almacenaba USD | Conservó EUR deshabilitado y añadió una protección; el soporte completo y la revisión independiente quedaron pendientes | Expuso una invariante monetaria antes de afirmar que existía soporte |
+| Faltaba el contrato del proveedor real | Probó el límite conocido y dejó el soporte real de EUR como UNKNOWN | Identificó la evidencia necesaria para continuar |
+
+El informe incluye las comprobaciones de los fixtures y el trabajo pendiente.
+El control nativo sencillo también completó su cambio; estos casos acotados
+muestran comportamiento observado, sin establecer superioridad general frente
+a una sesión sin esa guía.
+
+## Prueba tres controles sin iniciar un agente
+
+Desde este checkout, con Python 3.9 o superior, ejecuta:
+
+```sh
+python3 -m unittest -v \
+  tests.test_gate_decision.DecideGateTestCase.test_nothing_ran_is_never_green \
+  tests.test_gate_decision.DecideGateTestCase.test_uninvocable_test_is_setup_not_red \
+  tests.test_gate.TestCheckReview.test_editing_a_reviewed_file_makes_the_approval_stale
+```
+
+**Resultado esperado: tres pruebas correctas.** Demuestran que un gate vacío no
+puede pasar, que la ausencia de una herramienta se informa como problema de
+entorno y que una edición invalida la aprobación del estado anterior. Usan
+fixtures temporales y no requieren una llamada al modelo ni un worker de Orca.
+
+## Cómo se mantiene vigente una revisión
+
+```mermaid
+flowchart TB
+    reviewed["Un revisor independiente<br/>aprueba un estado del código"] --> current["Aprobación vigente"]
+    current -->|"cambia un archivo revisado"| stale["Aprobación desactualizada"]
+    stale -->|"revisar el nuevo estado"| reviewed
+    classDef approved fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef changed fill:#fef3c7,stroke:#d97706,color:#78350f
+    class reviewed,current approved
+    class stale changed
+```
+
+El método requiere revisión para cambios en seguridad, permisos, dinero,
+persistencia, concurrencia o contratos entre servicios. Un hallazgo bloqueante
+necesita un defecto confirmado y evidencia. El revisor debe ser independiente
+del implementador. La auditoría puede omitir defectos; la aprobación se limita
+al estado y al alcance revisados.
+
+## Qué ejecuta cada parte
+
+| Parte | Responsabilidad |
+| --- | --- |
+| **Tu sesión de Claude Code o Codex** | Inspeccionar la tarea, razonar sobre el impacto, elegir las skills útiles y normalmente implementar en la sesión actual |
+| **Skills de REIN** | Guiar investigación, planificación, límites de implementación, revisión y delegación |
+| **CLI de REIN** | Resolver comandos, comprobar planes, ejecutar gates, validar vigencia de evidencia, registrar revisiones y coordinar trabajo delegado |
+| **Orca, al delegar** | Ejecutar workers y gestionar sus worktrees, terminales, observaciones de cuentas y gates de decisión |
+
+Discover explícito solo investiga. Plan muestra el borrador antes de escribir.
+Quick delega un cambio pequeño cuando lo solicitas. Ship coordina un plan cuando
+el paralelismo o la recuperación lo justifican. Answer y Watch devuelven las
+decisiones a la sesión que inició el trabajo. [Detalle operativo](docs/reference.md).
 
 ## Empezar
 
@@ -291,6 +265,8 @@ están enlazados en la documentación de investigación.
 - [Estructura del núcleo compartido](plugins/rein/README.md).
 - [Decisiones del proyecto](docs/decisions.md).
 - [Evolución y registro de evidencia](docs/research/2026-11-01-evolution/README.md).
+
+Preguntas o errores: [issues de GitHub](https://github.com/luisfarfan/rein-agentic-kit/issues).
 
 Para ejecutar la regresión desde la raíz del repositorio:
 

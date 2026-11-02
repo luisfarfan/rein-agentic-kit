@@ -2,143 +2,117 @@
 
 **English** | [Español](README.es.md)
 
-**Evidence, verification, and control for development with coding agents.**
+**From a coding request to a change you can verify.**
 
-REIN is a set of skills and a CLI for **Claude Code and Codex**: understand the
-impact of a change, turn requirements into verifiable tasks, implement with the
-right level of coordination, and get an independent review when the risk calls
-for one.
-
-Your current session is the starting point. REIN provides shared guidance for
-investigating, deciding, implementing, and checking the result. When delegation
-helps, it uses **Orca** to manage workers, worktrees, and owner decisions.
+REIN gives **Claude Code and Codex** a shared method for inspecting a change,
+planning when needed, checking the result, and getting independent review.
+Work stays in your current session by default; **Orca** runs delegated workers
+when coordination helps.
 
 [![CI](https://github.com/luisfarfan/rein-agentic-kit/actions/workflows/ci.yml/badge.svg)](https://github.com/luisfarfan/rein-agentic-kit/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.9%2B-blue.svg)](pyproject.toml)
 [![Runtime dependencies](https://img.shields.io/badge/runtime%20deps-none-success.svg)](pyproject.toml)
 
-## What it helps you do
+[See an example](#one-request-three-different-engineering-decisions) ·
+[Try a check](#try-three-controls-without-starting-an-agent) ·
+[Get started](#getting-started) · [Reference](docs/reference.md)
 
-### Understand what actually needs to change
+```mermaid
+flowchart TB
+    task["Your task"] --> inspect["Inspect code<br/>and tests"]
+    inspect --> native["Current session<br/>default"]
+    inspect -->|"delegation helps"| workers["Orca workers<br/>Quick / Ship"]
+    native --> verify["Checks + evidence<br/>review when required"]
+    workers --> verify
+    classDef entry fill:#e0e7ff,stroke:#6366f1,color:#1e1b4b
+    classDef local fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef delegated fill:#fef3c7,stroke:#d97706,color:#78350f
+    class task,inspect entry
+    class native,verify local
+    class workers delegated
+```
 
-Before implementation, REIN guides the agent to inspect code and tests,
-distinguish existing capabilities from missing behavior, and trace the consumers
-of a change. A UI request may depend on something the backend already supports;
-a small edit may affect permissions, money, or persistence.
+**Start with the code. Add only the process the change needs.** Discover resolves
+questions that could change the solution. Plan organizes requirements and
+dependencies. Audit adds an independent reviewer for sensitive changes. Quick
+and Ship provide explicit delegation through Orca.
 
-When an unanswered question could change the solution, Discover investigates that
-question, reuses existing findings, and makes uncertainty explicit. An explicit
-investigation-only request stays read-only. If you need a structured report,
-`discover-check` checks whether its cited file evidence is still current before
-you reuse it.
+## What changes in practice
 
-**You get a clearer scope and a concrete account of the questions to resolve
-before changing code.**
-
-### Turn requirements into work you can verify
-
-Plan breaks a change into tasks with acceptance criteria, a repository,
-dependencies, and an executable verification. It supports a plain `tasks.md` or
-an OpenSpec structure. You review the draft before the plan is written.
-
-The CLI checks mechanical aspects of the plan, such as invalid dependencies and
-problems with its verifications. The agent judges whether the criteria actually
-cover the request.
-
-**You get a concrete definition of done and a way to check each part.**
-
-### Choose a process that fits the work
-
-A localized fix can stay in the current session. A change with requirements and
-dependencies may need a plan. A change to authorization or persistent state needs
-independent review. Work that benefits from parallel execution or recovery may
-justify Ship.
-
-Once adopted by a project, the entry policy guides those decisions from an
-ordinary request. When you need a structured decision record, `rein route` offers
-recommendations based on a report. It is optional and starts no workers.
-
-**You can use the capabilities separately and add coordination when it has a
-concrete purpose.**
-
-### Verify results with observable evidence
-
-`rein gate` runs the project's checks and distinguishes a pass, a failed check,
-and an environment that could not run the check. A missing tool or a suite that
-never ran gets its own diagnosis.
-
-Commands come from project configuration, task runners, or stack detection.
-Delegated execution uses checks per task and full checks per repository. Passing
-results can be reused while the code state, command, and environment match.
-Frontend verification policy accounts for evidence of a rendered UI, which must
-be obtained and supplied separately.
-
-**You can see what was checked, what failed, and what remains unproven.**
-
-### Keep implementation and review independent
-
-Auditing combines mechanical checks with the judgment of a session independent
-of the implementer. It is part of the method for changes involving security,
-permissions, money, persistence, concurrency, or contracts between services.
-
-Blocking findings require a confirmed defect and concrete evidence. Approval is
-bound to the reviewed state through hashes: changing reviewed files makes that
-approval stale.
-
-**A review has a verifiable scope and must be refreshed when the code it approved
-changes.**
-
-### Coordinate delegated work without losing decisions
-
-Quick lets you explicitly delegate a small change to another agent. Ship
-coordinates a plan through Orca: it respects dependencies, launches workers with
-fresh context per task, runs gates, manages retries, and requests an audit.
-
-Ship saves its state so it can resume. Watchers and Orca decision gates surface
-questions, blockers, and pending decisions. You can inspect and answer them from
-the initiating session. Human-review tasks can also produce a review sheet with
-criteria and evidence.
-
-**You can follow a long run, intervene where needed, and recover its state without
-reconstructing the entire conversation.**
-
-### Keep delegation within explicit limits
-
-REIN checks for changes to protected configuration, reruns selected hooks, and
-detects activity outside the worktree in watched checkouts. Per-worktree
-environment variables can separate test resources, such as databases, and gate
-logs preserve a record of the checks.
-
-Worker selection uses Orca's quota observations and configured limits. Unknown or
-stale capacity cannot authorize new workers. Explicitly selecting a provider
-preserves those controls.
-
-**Delegation has inspectable limits on scope, capacity, and escalation.** These
-checks detect certain violations after the work; REIN does not provide a sandbox.
-
-## Choose the capability for your situation
-
-| Situation | Useful capability | Expected result |
+| Problem to solve | What REIN adds | What you can inspect |
 | --- | --- | --- |
-| The scope is clear and the change is localized | Current session with the entry guidance | Implementation and relevant verification |
-| You need to determine whether a capability is missing or where a problem lies | Discover | Evidence, uncertainty, and the next check |
-| Requirements or dependencies need organizing | Plan | Tasks with criteria and verifications |
-| The change crosses sensitive boundaries | Audit, from another session | Findings and a verdict on the reviewed state |
-| You want another agent to handle a small change | Quick | An Orca worker, normally in its own worktree |
-| Parallel work or a recoverable run justifies coordination | Ship | Plan coordination, gates, and audit |
-| Delegated work needs your decision | Answer and Watch | Visible questions and recorded answers |
+| A request hides existing behavior or downstream impact | Inspect code, tests, producers, and consumers before choosing a solution | Findings, remaining unknowns, and a scoped change |
+| “Done” is hard to define | Tasks with acceptance criteria, dependencies, a repository, and a verification command | A plan with a check for each task |
+| A check failed, or never ran | Deterministic gates separate passed checks, failed checks, and setup problems | Exit codes, command output, and gate logs |
+| An approval predates the latest edits | Review verdicts are bound to hashes of reviewed files | Approval becomes stale when those files change |
+| Delegated work needs coordination | Dependencies, saved run state, bounded retries, and owner decision gates | Recoverable Orca runs and visible pending questions |
 
-For example:
+## One request, three different engineering decisions
 
-- **“The menu doesn't show an action the user is allowed to perform.”** Inspect
-  the UI, permissions, and existing contract; resolve it in the current session
-  when the evidence supports a localized fix.
-- **“Prevent duplicate charges when a payment is retried.”** Investigate
-  concurrency, persistence, and external effects; prepare a verifiable plan and
-  get an independent audit.
-- **“Implement these independent tasks and tell me if something gets blocked.”**
-  Use Ship when coordinating workers offers a concrete advantage.
+> **“Add EUR support.”**
+
+The same request needs different work depending on the code. In the repository's
+[recorded entry-policy evaluation](docs/research/2026-11-01-entry/RESULTS.md), REIN-guided
+sessions inspected three development fixtures:
+
+| What inspection found | What the session did | Why it matters |
+| --- | --- | --- |
+| EUR already worked; configuration disabled it | Changed the configuration and added a persistent regression test | Reused an existing capability |
+| Checkout reached a ledger that only stored USD | Kept EUR disabled and added a guard; full support and independent review remained pending | Exposed a monetary invariant before claiming support |
+| The actual provider contract was absent | Probed the known boundary and left real EUR support UNKNOWN | Identified the missing evidence needed to proceed |
+
+The report includes the fixture checks and remaining work. The simple native
+control also completed its change; these bounded cases demonstrate observed
+behavior, without establishing general superiority over an unassisted session.
+
+## Try three controls without starting an agent
+
+From this checkout, with Python 3.9+, run:
+
+```sh
+python3 -m unittest -v \
+  tests.test_gate_decision.DecideGateTestCase.test_nothing_ran_is_never_green \
+  tests.test_gate_decision.DecideGateTestCase.test_uninvocable_test_is_setup_not_red \
+  tests.test_gate.TestCheckReview.test_editing_a_reviewed_file_makes_the_approval_stale
+```
+
+**Expected: three passing tests.** They demonstrate that an empty gate cannot pass,
+a missing test tool is reported as a setup problem, and an edit invalidates an
+approval of the previous state. They run in temporary fixtures and require no
+model turn or Orca worker.
+
+## How review stays attached to the work
+
+```mermaid
+flowchart TB
+    reviewed["Independent reviewer<br/>approves a code state"] --> current["Approval is current"]
+    current -->|"a reviewed file changes"| stale["Approval is stale"]
+    stale -->|"review the new state"| reviewed
+    classDef approved fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef changed fill:#fef3c7,stroke:#d97706,color:#78350f
+    class reviewed,current approved
+    class stale changed
+```
+
+Review is required by the method for changes to security, permissions, money,
+persistence, concurrency, or service contracts. A blocking finding needs a
+confirmed defect and evidence. The reviewer must be independent of the implementer.
+Audits can still miss defects; approval applies to the reviewed state and scope.
+
+## What runs where
+
+| Part | Responsibility |
+| --- | --- |
+| **Your Claude Code or Codex session** | Inspect the task, reason about impact, select useful skills, and normally implement locally |
+| **REIN skills** | Guide investigation, planning, implementation boundaries, review, and delegation |
+| **REIN CLI** | Resolve project commands, check plans, run gates, validate evidence freshness, record review state, and coordinate delegated runs |
+| **Orca, when delegating** | Run workers and manage their worktrees, terminals, account observations, and decision gates |
+
+Explicit Discover is investigation-only. Plan previews the draft before writing.
+Quick delegates a small change when requested. Ship coordinates a plan when
+parallel work or recovery justifies it. Answer and Watch surface decisions back
+to the initiating session. [Operational details](docs/reference.md).
 
 ## Getting started
 
@@ -285,6 +259,8 @@ documentation.
 - [Shared core structure](plugins/rein/README.md).
 - [Project decisions](docs/decisions.md).
 - [Evolution and evidence record](docs/research/2026-11-01-evolution/README.md).
+
+Questions or bug reports: [GitHub issues](https://github.com/luisfarfan/rein-agentic-kit/issues).
 
 Run the regression suite from the repository root:
 
