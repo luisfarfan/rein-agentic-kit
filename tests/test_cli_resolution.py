@@ -19,11 +19,12 @@ class TestTheHumanEntryPointsAreSlashCommands(unittest.TestCase):
     on PATH, because in a plain terminal it is not."""
 
     def test_the_readme_does_not_tell_people_to_run_rein_in_a_terminal(self):
-        with open(os.path.join(REPO, "README.md"), encoding="utf-8") as fh:
-            readme = fh.read()
-        quickstart = readme[readme.index("## 🚀 Quickstart"):]
-        quickstart = quickstart[:quickstart.index("\n---")]
-        for line in quickstart.splitlines():
-            stripped = line.strip()
-            if stripped.startswith("rein ") or stripped == "rein":
-                self.fail(f"Quickstart tells the reader to run `rein` in a shell: {stripped!r}")
+        for filename, heading in (("README.md", "Getting started"), ("README.es.md", "Empezar")):
+            with self.subTest(readme=filename):
+                with open(os.path.join(REPO, filename), encoding="utf-8") as fh:
+                    readme = fh.read()
+                quickstart = readme.split(f"## {heading}\n", 1)[1].split("\n## ", 1)[0]
+                for line in quickstart.splitlines():
+                    stripped = line.strip()
+                    if stripped.startswith("rein ") or stripped == "rein":
+                        self.fail(f"Quickstart tells the reader to run `rein` in a shell: {stripped!r}")

@@ -2,6 +2,9 @@
 
 Plugin internals. For what this is and why, see the [repository README](../../README.md).
 
+The [operational reference](../../docs/reference.md) documents command syntax,
+configuration and delegated execution.
+
 ## Layout
 
 ```
@@ -23,7 +26,7 @@ plugins/rein/
 ├── lib/migrate_config.py         v1 -> v2 flow.config.json rewrite
 ├── lib/token_report.py           per-model token accounting, ledger, baseline
 ├── lib/serve.py                  dev-server lifecycle for rendered verification
-├── bin/rein                      the CLI (see the repository README for every subcommand)
+├── bin/rein                      the CLI (see docs/reference.md for every subcommand)
 ├── settings.json                 empty by default (see note)
 ├── ENTRY.md                      small project-adoption template; not auto-injected by the plugin
 └── flow.config.example.json      every option, annotated

@@ -4,7 +4,8 @@ It told readers to run `rein doctor` in a terminal where `rein` does not
 exist, and it printed `claude plugin update rein`, which answers
 `Plugin "rein" not found`. Both were reported by someone following it.
 
-Documentation goes stale silently because nothing executes it. These
+The command list and configuration now live in docs/reference.md, linked from
+the README. Documentation goes stale silently because nothing executes it. These
 assertions are the cheapest part that can be mechanised: that the commands
 it lists are the commands that exist.
 """
@@ -20,6 +21,7 @@ import unittest
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 README = os.path.join(REPO, "README.md")
+REFERENCE = os.path.join(REPO, "docs", "reference.md")
 REIN = os.path.join(REPO, "plugins", "rein", "bin", "rein")
 PLUGINS_LIB = os.path.join(REPO, "plugins", "rein", "lib")
 if PLUGINS_LIB not in sys.path:
@@ -31,20 +33,26 @@ def _readme() -> str:
         return fh.read()
 
 
+def _reference() -> str:
+    with open(REFERENCE, encoding="utf-8") as fh:
+        return fh.read()
+
+
 class TestTheCommandListMatchesTheCli(unittest.TestCase):
     def _sets(self) -> tuple:
-        block = re.search(r"### CLI.*?```bash\n(.*?)```", _readme(), re.S)
-        self.assertIsNotNone(block, "the README no longer has a CLI block to check")
+        self.assertIn("](docs/reference.md#cli)", _readme(), "the command reference must be reachable")
+        block = re.search(r"## CLI\n.*?```bash\n(.*?)```", _reference(), re.S)
+        self.assertIsNotNone(block, "the operational reference no longer has a CLI block to check")
         listed = set(re.findall(r"^rein ([\w-]+)", block.group(1), re.M))
         usage = subprocess.run([sys.executable, REIN, "--help"], capture_output=True, text=True).stdout
         real = set(re.findall(r"^  rein ([\w-]+)", usage, re.M))
         return listed, real
 
-    def test_no_subcommand_is_missing_from_the_readme(self):
+    def test_no_subcommand_is_missing_from_the_reference(self):
         listed, real = self._sets()
         self.assertEqual(sorted(real - listed), [], "shipped but undocumented")
 
-    def test_the_readme_lists_no_command_that_does_not_exist(self):
+    def test_the_reference_lists_no_command_that_does_not_exist(self):
         listed, real = self._sets()
         self.assertEqual(sorted(listed - real), [], "documented but not shipped")
 
@@ -74,7 +82,7 @@ class TestTheInstallInstructionsAreTheOnesThatWork(unittest.TestCase):
 
 class TestThePrecedenceLineListsEveryTaskRunner(unittest.TestCase):
     """T001 added mise to _task_runner()'s recognised runners. If a future
-    change adds another one and forgets the README, this catches it instead
+    change adds another one and forgets the reference, this catches it instead
     of a person finding out the hard way -- same failure mode the module
     docstring warns about, mechanised for this specific line."""
 
@@ -85,8 +93,9 @@ class TestThePrecedenceLineListsEveryTaskRunner(unittest.TestCase):
         prefixes = set(re.findall(r'return\s+"([a-z]+)"', source))
         self.assertGreater(len(prefixes), 0, "guard on the guard: nothing was parsed")
 
-        line = re.search(r"\*\*Precedence:\*\*.*", _readme())
-        self.assertIsNotNone(line, "the README no longer has a Precedence line to check")
+        self.assertIn("](docs/reference.md#configuration)", _readme(), "configuration must be reachable")
+        line = re.search(r"\*\*Precedence:\*\*.*", _reference())
+        self.assertIsNotNone(line, "the operational reference no longer has a Precedence line to check")
         lowered = line.group(0).lower()
         for prefix in prefixes:
             self.assertIn(prefix, lowered, f"{prefix!r} runner is missing from the Precedence line")
