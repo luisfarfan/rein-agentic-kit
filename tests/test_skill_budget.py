@@ -130,6 +130,18 @@ class TestSkillBudget(unittest.TestCase):
         self.assertIn("at most 2 per change", text)
         self.assertIn("never for technical work", text)
 
+    def test_ship_requires_active_collection_instead_of_background_wake_assumption(self):
+        text = _read(os.path.join(SKILLS, "ship", "SKILL.md"))
+        self.assertIn("rein watch <change> --root <root> --timeout 60", text)
+        self.assertIn("Keep this agent turn active", text)
+        self.assertIn("WAITING", text)
+        self.assertIn("repeat step 3 immediately", text)
+        self.assertIn("write_stdin", text)
+        self.assertIn("functions.wait", text)
+        self.assertIn("Never finish", text)
+        self.assertIn("verified", text)
+        self.assertNotIn("as a BACKGROUND command", text)
+
     def test_answer_mentions_the_ship_watcher(self):
         text = _read(os.path.join(SKILLS, "answer", "SKILL.md"))
         self.assertIn("watcher", text.split("\n# /answer", 1)[1][:400])

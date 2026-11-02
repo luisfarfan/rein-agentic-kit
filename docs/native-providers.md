@@ -95,6 +95,11 @@ wheel includes both manifests, the canonical skills and the provider guide.
 
 ## Validation
 
+Ship supervision uses `rein watch <change> --root <root> --timeout 60` and active
+collection of its result. `WAITING` renews the wait within the same agent turn;
+starting a background shell is not a post-turn wake subscription. See
+[Ship supervision](../plugins/rein/SHIP-WATCH.md) for both providers and recovery.
+
 Native tasks, including multirepo work, close with
 `rein done <change> --root <plan repo> --native <manifest.json> --dry-run`, then the
 same command without `--dry-run`. Both providers use the same

@@ -170,7 +170,9 @@ class TestDetach(UxCase):
         listed = fake.commands("terminal", "list")
         self.assertEqual(listed[0][3:5], ["--worktree", "path:" + os.path.abspath(self.root)])
         self.assertIn("term_new", out)
-        self.assertIn("rein ship is running in the Orca tab 'rein ship demo'; its questions come back to the session that runs `rein watch`.", out)
+        self.assertIn("rein ship is running in the Orca tab 'rein ship demo'; keep collecting", out)
+        self.assertIn("--timeout 60", out)
+        self.assertIn("A background process alone does not deliver questions to an ended turn", out)
         self.assertEqual(fake.commands("orchestration"), [], "detach must not run the loop")
 
     def test_paths_with_spaces_are_shell_quoted(self):

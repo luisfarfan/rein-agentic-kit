@@ -74,7 +74,7 @@ Subcommands:
                       list (no text) or resolve the owner gates a running `rein ship`
                       is waiting on; option gates take one of their options. Exit 0 /
                       1 failure / 2 usage (ambiguous change or gate, invalid option)
-  rein watch <change> [--root <plan repo>] [--once] [--skip <id,id>]
+  rein watch <change> [--root <plan repo>] [--once | --timeout <seconds>] [--skip <id,id>]
                       block until `rein ship <change>` needs the owner (a new question,
                       the run finished, or the driver died), print it, exit 0. --once
                       polls a single time and exits 1 when nothing is pending (126 when
@@ -1136,8 +1136,22 @@ def cmd_answer(argv: list[str]) -> int:
 
 
 def cmd_watch(argv: list[str]) -> int:
-    """`rein watch <change>`: wake the planning session when Rein needs the owner."""
-    usage = "usage: rein watch <change> [--root <plan repo>] [--once] [--skip <id,id>]"
+    """`rein watch <change>`: return owner decisions to an actively waiting caller."""
+    usage = "usage: rein watch <change> [--root <plan repo>] [--once | --timeout <seconds>] [--skip <id,id>]"
+    timeouts, argv, bad_timeout = _take_values(argv, "--timeout")
+    if bad_timeout or len(timeouts) > 1:
+        print(usage)
+        return 2
+    timeout = None
+    if timeouts:
+        try:
+            timeout = float(timeouts[0])
+        except ValueError:
+            print(usage)
+            return 2
+        if not 0 < timeout <= 300 or "--once" in argv:
+            print(usage)
+            return 2
     words, skip, once = [], False, False
     for a in argv:
         if skip:
@@ -1160,7 +1174,9 @@ def cmd_watch(argv: list[str]) -> int:
     if ("--skip" in argv or any(a.startswith("--skip=") for a in argv)) and not skipped:
         print(usage)
         return 2
-    return _watch.run_watch(_opt(argv, "root", "."), words[0], _ship.OrcaClient(), once=once, skip=skipped)
+    options = {"timeout": timeout} if timeout is not None else {}
+    return _watch.run_watch(_opt(argv, "root", "."), words[0], _ship.OrcaClient(), once=once,
+                            skip=skipped, **options)
 
 
 def cmd_done(argv: list[str]) -> int:

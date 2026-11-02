@@ -2378,7 +2378,9 @@ def detach_ship(root: str, change: str, client: OrcaClient, *, override: tuple |
         print("ship: could not open the Orca tab (%s)" % exc)
         return 1
     print("terminal: %s" % (handle or "(no handle reported)"))
-    print("rein ship is running in the Orca tab '%s'; its questions come back to the session that runs `rein watch`." % title)
+    print("rein ship is running in the Orca tab '%s'; keep collecting `rein watch %s --root %s --timeout 60` "
+          "in the supervising agent turn. A background process alone does not deliver questions to an ended turn."
+          % (title, change, shlex.quote(root)))
     return 0
 
 

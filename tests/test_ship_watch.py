@@ -6,6 +6,8 @@ import io
 import os
 import sys
 import unittest
+from functools import partial
+from unittest.mock import patch
 from contextlib import redirect_stdout
 from importlib.machinery import SourceFileLoader
 import importlib.util
@@ -303,6 +305,221 @@ class TestWatchCli(unittest.TestCase):
             with redirect_stdout(buf):
                 self.assertEqual(self.cli.main(["watch", *argv]), 2, argv)
             self.assertIn("usage: rein watch", buf.getvalue())
+
+    def test_timeout_is_parsed_and_existing_once_contract_is_preserved(self):
+        self.assertEqual(self.cli.cmd_watch(["demo", "--timeout", "60"]), 0)
+        self.assertEqual(self.seen[-1][1]["timeout"], 60)
+        self.assertEqual(self.cli.cmd_watch(["demo", "--timeout=0.5", "--root=/r"]), 0)
+        self.assertEqual(self.seen[-1][1]["timeout"], 0.5)
+        self.assertEqual(self.cli.cmd_watch(["demo", "--once"]), 0)
+        self.assertNotIn("timeout", self.seen[-1][1])
+
+    def test_invalid_timeout_never_calls_the_watcher(self):
+        for value in ("0", "-1", "301", "nan", "inf", "bad", ""):
+            with self.subTest(value=value):
+                with redirect_stdout(io.StringIO()):
+                    self.assertEqual(self.cli.cmd_watch(["demo", "--timeout=" + value]), 2)
+        for args in (["demo", "--timeout"], ["demo", "--timeout=2", "--once"],
+                     ["demo", "--timeout=1", "--timeout=2"]):
+            with redirect_stdout(io.StringIO()):
+                self.assertEqual(self.cli.cmd_watch(args), 2)
+        self.assertEqual(self.seen, [])
+
+
+class Clock:
+    def __init__(self):
+        self.now = 0.0
+        self.sleeps = []
+        self.on_sleep = lambda: None
+
+    def __call__(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.sleeps.append(seconds)
+        self.now += seconds
+        self.on_sleep()
+
+
+class TestWatchWindows(WatchCase):
+    """Real watcher/state/CLI with virtual time and Orca simulated; no live runs are inspected."""
+
+    def setUp(self):
+        super().setUp()
+        self.write_state("demo", {"g1": "question", "g2": "question"})
+        self.clock = Clock()
+        self.fake = FakeOrca(gates=[])
+
+    def window(self, timeout=60, alive=True, **kw):
+        return self.capture(ship_watch.run_watch, self.root, "demo", self.client(self.fake),
+                            sleep=self.clock.sleep, clock=self.clock, timeout=timeout,
+                            driver_alive=alive if callable(alive) else lambda c: alive, **kw)
+
+    def test_empty_window_returns_waiting_and_does_not_claim_a_wake_subscription(self):
+        state = ship_state.state_path(self.root, "demo")
+        with open(state, "rb") as fh:
+            before = fh.read()
+        code, out = self.window()
+        self.assertEqual(code, 0, out)
+        self.assertTrue(out.startswith("WAITING demo:"), out)
+        self.assertIn("continue waiting in this agent turn", out)
+        self.assertNotIn("FINISHED", out)
+        self.assertEqual(self.clock.now, 60)
+        self.assertEqual(self.clock.sleeps, [15, 15, 15, 15])
+        with open(state, "rb") as fh:
+            self.assertEqual(fh.read(), before)
+        self.assertEqual(os.listdir(os.path.dirname(state)), ["demo.json"])
+
+    def test_poll_sleep_does_not_overshoot_a_short_window(self):
+        code, out = self.window(16)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.clock.sleeps, [15, 1])
+        self.assertEqual(self.clock.now, 16)
+
+    def test_dead_driver_grace_is_not_reset_forever_by_short_windows(self):
+        for _ in range(4):
+            code, out = self.window(alive=False)
+            self.assertEqual(code, 0, out)
+            if out.startswith("STOPPED"):
+                break
+        else:
+            self.fail("renewing windows hid a dead driver indefinitely")
+        self.assertEqual(self.clock.now, (ship_watch.STARTUP_GRACE_POLLS - 1) * 15)
+        self.assertNotIn("WAITING", out)
+        self.assertTrue(all(seconds == 15 for seconds in self.clock.sleeps))
+
+    def test_driver_dies_between_windows_and_is_still_reported_stopped(self):
+        code, first = self.window()
+        self.assertEqual(code, 0, first)
+        self.assertTrue(first.startswith("WAITING"))
+        code, second = self.window(alive=False)
+        self.assertEqual(code, 0, second)
+        self.assertTrue(second.startswith("STOPPED"), second)
+        self.assertEqual(self.clock.now, 60 + (ship_watch.STARTUP_GRACE_POLLS - 1) * 15)
+
+    def test_a_seen_driver_dying_at_deadline_gets_its_two_miss_confirmation(self):
+        code, out = self.window(alive=lambda c: self.clock.now < 60)
+        self.assertEqual(code, 0, out)
+        self.assertIn("STOPPED", out)
+        self.assertNotIn("WAITING", out)
+        self.assertEqual(self.clock.now, 75)
+
+    def test_slow_start_after_window_but_before_grace_does_not_falsely_stop(self):
+        code, out = self.window(alive=lambda c: self.clock.now >= 75)
+        self.assertEqual(code, 0, out)
+        self.assertTrue(out.startswith("WAITING"))
+        self.assertNotIn("STOPPED", out)
+        self.assertEqual(self.clock.now, 75)
+
+    def test_transient_driver_miss_at_deadline_then_recovery(self):
+        code, out = self.window(alive=lambda c: self.clock.now != 60)
+        self.assertEqual(code, 0, out)
+        self.assertTrue(out.startswith("WAITING"))
+        self.assertNotIn("STOPPED", out)
+        self.assertEqual(self.clock.now, 75)
+
+    def test_question_at_deadline_wins_over_waiting(self):
+        self.clock.on_sleep = lambda: self.fake.gates.append(_gate("g1")) if self.clock.now == 60 else None
+        code, out = self.window()
+        self.assertEqual(code, 0, out)
+        self.assertIn("QUESTION g1", out)
+        self.assertNotIn("WAITING", out)
+
+    def test_completion_at_deadline_wins_and_preserves_unapproved_audit(self):
+        def finish():
+            if self.clock.now == 30:
+                self.set_phase("demo", "done", audit_result="unapproved")
+        self.clock.on_sleep = finish
+        code, out = self.window(30)
+        self.assertEqual(code, 0, out)
+        self.assertIn("FINISHED demo: audit unapproved", out)
+        self.assertNotIn("WAITING", out)
+
+    def test_next_window_collects_question_without_any_user_status_prompt(self):
+        # Regression: returning from the first shell call must not be treated as ending supervision.
+        self.clock.on_sleep = lambda: self.fake.gates.append(_gate("g1")) if self.clock.now == 75 else None
+        first_code, first = self.window()
+        second_code, second = self.window()
+        self.assertEqual((first_code, second_code), (0, 0))
+        self.assertTrue(first.startswith("WAITING"))
+        self.assertIn("QUESTION g1", second)
+        self.assertEqual(self.clock.now, 75)
+        # Watch is observational: never consume/ack the driver's inbox or answer on behalf of the owner.
+        self.assertTrue(all(call[1:3] == ["orchestration", "gate-list"] for call in self.fake.calls))
+
+    def test_restart_replays_the_unanswered_question(self):
+        self.fake.gates = [_gate("g1")]
+        for _ in range(2):
+            code, out = self.window()
+            self.assertEqual(code, 0, out)
+            self.assertIn("PENDING g1", out)
+
+    def test_queued_and_skipped_questions_do_not_hide_a_new_question(self):
+        self.fake.gates = [_gate("g1"), _gate("g2")]
+        ship_state.write_answer(self.root, "demo", "g1", "owner answer", 1)
+        code, out = self.window(skip=frozenset(["g2"]))
+        self.assertEqual(code, 0, out)
+        self.assertTrue(out.startswith("WAITING"))
+        ship_state.drop_answer(self.root, "demo", "g1")
+        code, out = self.window(skip=frozenset(["g2"]))
+        self.assertEqual(code, 0, out)
+        self.assertIn("PENDING g1", out)
+        self.assertNotIn("PENDING g2", out)
+
+    def test_orca_error_is_reported_as_unknown_not_a_clean_run(self):
+        def unavailable(argv):
+            return 1, '{"ok": false, "error": {"code": "down", "message": "unavailable"}}'
+        self.fake = unavailable
+        code, out = self.window()
+        self.assertEqual(code, 0, out)
+        self.assertIn("phase unknown", out)
+        self.assertNotIn("FINISHED", out)
+
+    def test_recovery_after_orca_error_still_collects_pending_question(self):
+        self.fake.gates = [_gate("g1")]
+        original = self.fake
+        calls = []
+        def recovering(argv):
+            calls.append(argv)
+            if len(calls) == 1:
+                return 1, '{"ok": false, "error": {"code": "down", "message": "unavailable"}}'
+            return original(argv)
+        self.fake = recovering
+        code, out = self.window()
+        self.assertEqual(code, 0, out)
+        self.assertIn("PENDING g1", out)
+        self.assertEqual(self.clock.now, 15)
+
+    def test_invalid_library_windows_are_usage_errors(self):
+        for value in (0, -1, 301, True, "60", float("nan"), float("inf")):
+            code, out = self.window(value)
+            self.assertEqual(code, 2, out)
+        self.assertEqual(self.fake.calls, [])
+
+    def test_real_cli_windows_collect_multiple_gates_then_finish_with_no_user_nudge(self):
+        loader = SourceFileLoader("rein_cli_watch_windows", BIN)
+        spec = importlib.util.spec_from_loader(loader.name, loader)
+        cli = importlib.util.module_from_spec(spec)
+        loader.exec_module(cli)
+        runner = partial(ship_watch.run_watch, sleep=self.clock.sleep, clock=self.clock,
+                         driver_alive=lambda c: True)
+        with patch.object(cli._watch, "run_watch", runner), \
+             patch.object(cli._ship, "OrcaClient", return_value=self.client(self.fake)):
+            code, out = self.capture(cli.cmd_watch, ["demo", "--root", self.root, "--timeout=60"])
+            self.assertEqual(code, 0, out)
+            self.assertTrue(out.startswith("WAITING"))
+            self.fake.gates = [_gate("g1"), _gate("g2")]
+            code, out = self.capture(cli.cmd_watch, ["demo", "--root", self.root, "--timeout=60"])
+            self.assertEqual(code, 0, out)
+            self.assertIn("PENDING g1", out)
+            self.assertIn("PENDING g2", out)
+            # The owner/driver resolves both gates; the watcher never does this mutation.
+            for gate in self.fake.gates:
+                gate["status"] = "resolved"
+            self.set_phase("demo", "done", audit_result="approved")
+            code, out = self.capture(cli.cmd_watch, ["demo", "--root", self.root, "--timeout=60"])
+            self.assertEqual(code, 0, out)
+            self.assertIn("FINISHED demo", out)
 
 
 if __name__ == "__main__":

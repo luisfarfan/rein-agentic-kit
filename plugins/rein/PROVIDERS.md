@@ -24,10 +24,14 @@ scope, gates, guard checks, review independence, or authorization.
   `<plugin-root>/NATIVE-CLOSURE.md` for the manifest and recovery.
   Identify each repo ID, worktree, branch and integration target explicitly; never
   fabricate Ship state. An Orca completed card does not mean cleanup completed.
-- Background watchers use the host's asynchronous shell facilities. Retain the
-  process handle, collect its output, and relay owner questions. If unavailable,
-  explain the limitation and use the existing `rein answer` workflow; do not
-  simulate a running watcher or launch a duplicate worker.
+- A background process is not a host wake subscription. For Ship, use
+  `rein watch <change> --root <root> --timeout 60`, retain and collect its process
+  handle, and renew WAITING checkpoints in the same active agent turn. A Codex
+  `session_id` needs `write_stdin`; a yielded exec cell needs `functions.wait`.
+  Claude must collect its Bash task through the available wait/task-output tool.
+  Only a verified host wake mechanism permits ending the supervising turn before
+  completion. Never promise unattended delivery from a process id alone. Recovery
+  and provider details live in `<plugin-root>/SHIP-WATCH.md`.
 - Audit requires a session independent of the implementer. The fallback to
   reviewing the five axes yourself applies to that independent reviewer session.
   No missing Claude reviewer plugin permits self-approval.

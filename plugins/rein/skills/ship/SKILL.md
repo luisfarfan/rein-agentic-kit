@@ -8,38 +8,39 @@ Read [provider setup](PROVIDERS.md) once when using REIN in this session.
 
 # /ship
 
-Hands a planned change to `rein ship` in its own Orca tab (`/rein:ship` when namespaced), then
-keeps the owner here.
+Starts `rein ship` in its own Orca tab (`/rein:ship` when namespaced); keeps supervision here.
 **Never edits code, pushes, merges or opens a PR.**
 
-Usage: `/ship <change> [--root <plan repo>]`
-
-Agent flag: "con codex" → `--agent codex`; "con antigravity" →
-`--agent antigravity`; "con sonnet" / "con claude" → `--agent claude`; `--model` only if named.
+Usage: `/ship <change> [--root <plan repo>]`. "con codex" → `--agent codex`;
+"con antigravity" → `--agent antigravity`; "con sonnet/claude" → `--agent claude`.
+Pass `--model` only if named.
 
 ## Steps
 
-1. Confirm the plan exists: `rein tasks <root> --change <change>` (root `.` or the user's
-   `--root`). None: stop, suggest `/rein:rein-plan`.
-2. Run `rein ship <change> --root <root> --detach` with mapped agent/model flags. If it refuses (a running tab, a preflight
-   error, a temporary plan root), show its output; never retry, and never run the loop in this session. Only the owner
-   may accept the temporary root: then add `--allow-temp-root`.
-3. Immediately run `rein watch <change> --root <root>` as a BACKGROUND command. Tell the owner
-   to stay in this session: Rein's decision gate questions will appear here.
-4. When the watcher wakes, act on its first word:
+1. Check `rein tasks <root> --change <change>` (default root `.`).
+   No plan: stop, suggest `/rein:rein-plan`.
+2. Run `rein ship <change> --root <root> --detach` with the mapped flags. On refusal,
+   show the output; never retry, never run the loop in this session. Only the owner may
+   accept a temporary plan root: then add `--allow-temp-root`.
+3. Immediately run `rein watch <change> --root <root> --timeout 60`. **Keep this agent turn active.**
+   A BACKGROUND process cannot resume an ended turn. Retain and collect its handle until exit:
+   Codex `session_id` → `write_stdin`; yielded exec cell → `functions.wait`.
+   Never duplicate a running watcher. Details: `<plugin-root>/SHIP-WATCH.md`.
+4. Handle the complete output:
+   - **WAITING**: repeat step 3 immediately. Never finish with “monitor active”. Only a verified
+     host wake mechanism permits yielding supervision; a process id or UI event does not.
    - **QUESTION** / **PENDING** (handle ALL listed gates, one by one): read each question in
-     full; look briefly (read-only) at the relevant files or logs. Tell the owner in plain language
-     what is asked, the options, and a recommendation with one-line reasons. Wait for
-     the owner, then run `rein answer <change> "<text>" --gate <id> --root <root>` (option gates: one listed
-     option; never invent an answer). On exit 2, re-show the options, ask again. Start the watcher again once every gate is answered or deferred; for deferred ones use
-     `--skip <ids>` and say they can answer later with "¿qué me pregunta rein?".
+     full; inspect relevant evidence read-only. Explain the decision gate, options and recommendation.
+     Wait for the owner; never invent approval. Run
+     `rein answer <change> "<text>" --gate <id> --root <root>` (listed options only).
+     On exit 2, re-show options; on stale/refused answers, re-read state. Restart the watcher
+     after answering; use `--skip <ids>` for questions awaiting/deferred by the owner.
+     They can return with "¿qué me pregunta rein?". Keep collecting other events.
    - **FINISHED**: summarise tasks, audit result and where the work is. An audit other than
-     `approved` comes first: its blocking findings were not verified. Then offer: push to
-     develop (only with the owner's yes: api first, then admin, respecting the hooks), and after
-     that close it with `rein done <change> --root <root>` (`--dry-run` previews); ask whether to also
-     push the plan-archive commit: on yes, `rein done <change> --root <root> --push` (on main/master/qa
-     it never pushes: show the owner the push it prints). On blockers
-     show them and stop. If it WARNs about gitignored files (.env ...), show the list and add `--yes` only after an explicit yes.
-     Do not restart the watcher.
+     `approved` comes first. Offer pushing to develop only with the owner's yes (API before
+     admin, respecting hooks), then `rein done <change> --root <root>` (`--dry-run` previews).
+     Ask separately about publishing the archive: `rein done <change> --root <root> --push`.
+     It never pushes main/master/qa; show the printed command. Show blockers and stop.
+     Listed gitignored losses need explicit acceptance before `--yes`. Do not restart the watcher.
    - **STOPPED**: tell the owner and offer to resume it in the Orca tab "rein ship <change>";
      restart the watcher after.

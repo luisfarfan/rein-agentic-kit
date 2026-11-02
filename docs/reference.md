@@ -39,12 +39,18 @@ rein answer [<change>] ["<text>"] [--gate <id>] [--root <plan repo>]
                  # .rein/ship/<change>.answers/ and the driver applies it within ~15 s.
                  # Exit: 0 ok (listing with nothing pending prints `no questions pending` and is still 0) ·
                  # 1 Orca error, or text given with no question pending · 2 usage (ambiguous or invalid)
-rein watch <change> [--root <plan repo>] [--once] [--skip <id,id>]
+rein watch <change> [--root <plan repo>] [--once | --timeout <seconds>] [--skip <id,id>]
                  # block until the run needs you: prints PENDING <gate> for every open gate
                  # on its first poll, then QUESTION <gate> (full text, options) for new ones,
                  # FINISHED (audit result, task statuses) or STOPPED (driver not running), then
-                 # exits 0. /ship runs it in the background so questions reach the planning
-                 # session. Nothing is hidden across restarts.
+                 # exits 0. The caller must collect its output; a background process does not
+                 # resume an ended agent turn. Nothing is hidden across restarts.
+                 # --timeout (0 < seconds <= 300): WAITING/exit 0 after that polling window.
+                 # Ship uses 60, then immediately renews the wait within the same agent turn.
+                 # An in-flight Orca/process probe retains its existing subprocess timeout.
+                 # An unresolved driver-liveness grace finishes before WAITING, even beyond
+                 # the window; restarting windows must not postpone STOPPED indefinitely.
+                 # Questions/completion take precedence over WAITING, including at the deadline.
                  # --skip hides deferred gate ids (FINISHED/STOPPED/new gates still wake it).
                  # --once polls once: exit 1 if nothing pending · 126 Orca cannot be asked · 2 usage
 rein accept-outside [--root <plan repo>] (--path <abs path> | --commit <sha> | --hook <sha>)...

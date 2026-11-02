@@ -1,0 +1,27 @@
+{
+  "agent": "independent-codex-reviewer",
+  "change": "ship-watch-attention",
+  "findings": [],
+  "reviewed_files": {
+    "README.es.md": "bd4ba8d341cf755e304e00849bed68a870afc145f6a02a07143f500a33f6d184",
+    "README.md": "0d7deb16dbe5ab483013049b1d33c8ddb20e66aff8460903af36487541e56945",
+    "docs/native-providers.md": "022a71a08e21e2084b7b13db64bdd95c15d375732bdaf551494405a0f778f4dc",
+    "docs/reference.md": "4ac097ccf9783024889582d4cc45825d8e69db651fb935153bbdedfae0c309bd",
+    "plugins/rein/PROVIDERS.md": "a195785e0a6ba7d6ea7ab492cf3258b3447099f4da049469107e0dae765394c0",
+    "plugins/rein/SHIP-WATCH.md": "3c5e9811b8dbb97235ff2f7e153de5f95e7d779cbab6648bb80506c1449305a9",
+    "plugins/rein/bin/rein": "d2a001befa33bc063063a2452b4beb66e463092bdb8f4753870f75f23b382044",
+    "plugins/rein/lib/ship.py": "3b54e05fb5408784cf4a703d321866935e5e5830aad25edd8df60bbffc0081f9",
+    "plugins/rein/lib/ship_watch.py": "a31e256916d658dade400cb2140e1ad09086dd86b3d16a3e8c66e76a2d2c1eba",
+    "plugins/rein/skills/ship/SKILL.md": "ec7aa98eaaa405dac5b2bec98972d4ea86c7d797e0756b3d27010b0cd1a2f208",
+    "pyproject.toml": "8aa1d4f96c1542ff898c2d7d95eeb8adf2fb179183cb1154feb6ffb987830e34",
+    "tests/test_packaging.py": "66fc6763e742f15061aaaae0471bad9e943d1d72fb95d6bc9b1b459fd3d9b4bc",
+    "tests/test_ship_ux.py": "ea87d12c2530d28d0bd9aa046ff1e00f6d5509a11e35361f0de3955acf049b11",
+    "tests/test_ship_watch.py": "33e89ea0275e425b64ef042dc72a357a6d7d2b1b58df785984d3587860687477",
+    "tests/test_skill_budget.py": "4aa48ff38c6cb5269129131edb8a7b6e8371f16aaf1405321f63b8c807af7445"
+  },
+  "reviewed_state_hash": "7c3bf7718b4c364987d0c2e5eba95265871029b9e295637723dab7614f0edc13",
+  "reviewer_actor": "independent-codex-reviewer",
+  "schema": 1,
+  "timestamp_utc": "2026-11-02T05:28:03Z",
+  "verdict": "APPROVED"
+}

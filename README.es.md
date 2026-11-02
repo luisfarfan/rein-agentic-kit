@@ -216,6 +216,8 @@ rein doctor .                            # Examinar stack, comandos y configurac
 rein gate .                              # Ejecutar comprobaciones y decidir si pasan
 rein plan-check tasks.md --root . --gate  # Validar mecánicamente un plan
 rein review check                        # Consultar si la revisión sigue vigente
+rein watch mi-cambio --root /repo/plan --timeout 60
+                                         # Recoger la salida y renovar WAITING en el mismo turno
 rein done mi-cambio --native cierre.json --root /repo/plan --dry-run
                                          # Cierre nativo/multirrepo: docs/native-closure.md
 ```

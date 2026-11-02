@@ -84,7 +84,7 @@ class TestTheWheelInstallsAndRuns(unittest.TestCase):
                        "rein_kit/skills/rein-discover/PROVIDERS.md",
                        "rein_kit/skills/rein-discover/IMPACT.md",
                        "rein_kit/lib/impact.py", "rein_kit/lib/routing.py",
-                       "rein_kit/lib/evidence.py",
+                       "rein_kit/lib/evidence.py", "rein_kit/SHIP-WATCH.md",
                        "rein_kit/.codex-plugin/plugin.json"):
             self.assertIn(needed, names, f"the wheel is missing {needed}")
 

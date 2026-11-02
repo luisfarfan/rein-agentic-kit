@@ -1,7 +1,7 @@
 """`rein watch`: block until a `rein ship` run needs the owner, print it, exit.
 
-The planning session runs this as a background command right after `/ship`, so
-the harness wakes it when Rein asks something. Gates are listed through
+The planning session must collect this command's result while it remains active;
+a background process alone does not resume an agent that ended its turn. Gates are listed through
 ship_answer (the same logic `rein answer` uses). The first poll prints EVERY open
 gate that has no queued answer as PENDING, so nothing the owner never answered is
 hidden across restarts; afterwards only gates this watcher has not printed yet
@@ -186,14 +186,23 @@ def _poll(root: str, change: str, client: OrcaClient, printed: set, first: bool)
 
 def run_watch(root: str, change: str, client: OrcaClient, once: bool = False,
               sleep: Callable[[float], None] = time.sleep,
-              driver_alive: Optional[Callable[[str], bool]] = None, skip: frozenset = frozenset()) -> int:
+              driver_alive: Optional[Callable[[str], bool]] = None, skip: frozenset = frozenset(),
+              timeout: Optional[float] = None, clock: Callable[[], float] = time.monotonic) -> int:
     """Exit 0 once something was printed; 1 when `once` found nothing pending; 126 when `once`
-    could not ask Orca.
+    could not ask Orca. With `timeout`, print WAITING when the polling window ends;
+    the caller must immediately renew the wait, not finish its turn. An unresolved
+    liveness grace completes before returning WAITING: otherwise each new window
+    would reset it forever. Probes retain their existing subprocess timeouts.
 
     Gate ids in `skip` (deferred by the owner) are never printed by this run. STOPPED needs the
     driver missing for DEAD_POLLS polls in a row once it was seen (STARTUP_GRACE_POLLS before),
     and a state file that is still being written counts as a live driver."""
     root = os.path.abspath(root)
+    if timeout is not None and (isinstance(timeout, bool) or not isinstance(timeout, (int, float))
+                                or not 0 < timeout <= 300 or once):
+        print("rein watch: --timeout must be > 0 and <= 300 seconds, without --once")
+        return 2
+    deadline = clock() + timeout if timeout is not None else None
     alive_here = driver_alive or (lambda c: _find_driver(c, root=root))
     state_file = ss.state_path(root, change)
     dead_polls, seen, last_mtime = 0, False, _mtime(state_file)
@@ -223,4 +232,12 @@ def run_watch(root: str, change: str, client: OrcaClient, once: bool = False,
             print('STOPPED %s: the ship driver is not running (phase %s); resume it in the Orca tab '
                   '"rein ship %s"' % (change, phase, change))
             return 0
-        sleep(WATCH_POLL_SECONDS)
+        if deadline is not None:
+            remaining = deadline - clock()
+            if remaining <= 0 and dead_polls == 0:
+                print("WAITING %s: no unqueued, non-skipped question or completion observed (phase %s); "
+                      "continue waiting in this agent turn" % (change, phase), flush=True)
+                return 0
+            sleep(min(WATCH_POLL_SECONDS, remaining) if remaining > 0 else WATCH_POLL_SECONDS)
+        else:
+            sleep(WATCH_POLL_SECONDS)

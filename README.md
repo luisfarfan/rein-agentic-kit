@@ -193,6 +193,9 @@ or `pipx install rein-agentic-kit`. Your project's test and build tools are
 installed separately.
 
 Quick and Ship require **Orca**, its CLI, and repositories registered there.
+For Ship supervision, collect `rein watch <change> --root <root> --timeout 60`
+and renew `WAITING` checkpoints in the same agent turn; a background process alone
+does not resume a finished conversation. See [provider details](plugins/rein/SHIP-WATCH.md).
 Ship runs inside an Orca terminal; `rein ship <change> --detach` opens that
 terminal. Local checks such as `doctor`, `detect`, and `gate` work without Orca.
 
