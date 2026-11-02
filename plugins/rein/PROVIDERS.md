@@ -19,6 +19,11 @@ scope, gates, guard checks, review independence, or authorization.
 - Ordinary implementation stays in the current session when sufficient.
   Quick and Ship explicitly delegate through Orca; either initiating provider
   can pass `--agent claude` or `--agent codex`, and an explicit `--model`.
+- Close native work with `rein done <change> --root <plan repo> --native <manifest.json>`:
+  preview with `--dry-run`, then execute the same explicit inputs. Read
+  `<plugin-root>/NATIVE-CLOSURE.md` for the manifest and recovery.
+  Identify each repo ID, worktree, branch and integration target explicitly; never
+  fabricate Ship state. An Orca completed card does not mean cleanup completed.
 - Background watchers use the host's asynchronous shell facilities. Retain the
   process handle, collect its output, and relay owner questions. If unavailable,
   explain the limitation and use the existing `rein answer` workflow; do not

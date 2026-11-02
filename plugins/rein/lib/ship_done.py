@@ -10,16 +10,21 @@ fetched -- blocks the WHOLE operation: nothing is removed and the reasons are pr
 from __future__ import annotations
 
 import datetime
+import contextlib
 import filecmp
 import fnmatch
+import hashlib
 import json
 import os
 import shlex
 import shutil
 import subprocess
+import tempfile
 from typing import Callable, Optional
 
 import detect as _detect
+import gate as _gate
+import gate_cache as _cache
 import gate_env as _gate_env
 import gate_log as _gate_log
 import orca_client as oc
@@ -454,7 +459,10 @@ def _push_refusals(root: str, git: Callable[..., tuple]) -> list:
 def run_done(root: str, change: str, client: OrcaClient, *, dry_run: bool = False, yes: bool = False,
              push: bool = False, git: Callable[..., tuple] = qd.run_git, fetch: Callable[[str, str], tuple] = qd.run_fetch,
              driver_alive: Optional[Callable[[str], bool]] = None, today: str = "",
-             say: Callable[[str], None] = print, env: Optional[dict] = None) -> int:
+             say: Callable[[str], None] = print, env: Optional[dict] = None, native: str = "") -> int:
+    if native:
+        return run_native_done(root, change, native, client, dry_run=dry_run, yes=yes, push=push,
+                               git=git, fetch=fetch, say=say, today=today)
     root = os.path.abspath(root)
     env = os.environ if env is None else env
     today = today or datetime.date.today().isoformat()
@@ -462,10 +470,16 @@ def run_done(root: str, change: str, client: OrcaClient, *, dry_run: bool = Fals
     state = _load_state(state_file)
     if state is None:
         say("rein done: no ship state for %s in %s" % (change, root))
+        say("for native work, supply --native <manifest.json>; see the plugin's NATIVE-CLOSURE.md")
         return 1
     phase = str(state.get("phase") or "none")
     if phase != "done":
         say("rein done: %s is in phase %s, not done; nothing removed" % (change, phase))
+        return 1
+    audit = str(state.get("audit_result") or "unknown (legacy state)")
+    say("execution finished; Ship audit: %s; cleanup does not grant approval" % audit)
+    if state.get("audit_result") and audit != "approved":
+        say("rein done: audit is not approved; nothing removed")
         return 1
     if (driver_alive or (lambda c: sw.driver_alive(c, root=root)))(change):
         say("rein done: `rein ship %s` is still running; nothing removed" % change)
@@ -593,6 +607,377 @@ def run_done(root: str, change: str, client: OrcaClient, *, dry_run: bool = Fals
         return 126
     say("done: %s closed" % change)
     return 126 if errors else 0
+
+
+# --- Native closure: explicit inputs, same removal/archival checks ------------
+
+def _digest(path: str) -> str:
+    with open(path, "rb") as fh:
+        return hashlib.sha256(fh.read()).hexdigest()
+
+
+def _write_closure(path: str, data: dict) -> None:
+    """Persist removal intent before asking Orca to delete anything, including new directories."""
+    _cache._write(path, data)
+    with open(path, "rb") as fh:
+        os.fsync(fh.fileno())
+    directory = os.path.dirname(path)
+    for folder in (directory, os.path.dirname(directory), os.path.dirname(os.path.dirname(directory))):
+        fd = os.open(folder, os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+
+
+def _native_manifest(path: str, change: str) -> dict:
+    data = _load_state(path)
+    if not data or data.get("schema") != 1 or data.get("change") != change:
+        raise ValueError("native manifest needs schema=1 and the exact change name")
+    if data.get("execution") != "finished":
+        raise ValueError("native execution is not finished")
+    targets = data.get("worktrees")
+    if not isinstance(targets, list) or not targets:
+        raise ValueError("native manifest needs an explicit, nonempty worktrees list")
+    seen = set()
+    for t in targets:
+        if not isinstance(t, dict):
+            raise ValueError("each worktree must be an object")
+        for key in ("repo", "repo_path", "path", "branch", "integration", "head"):
+            if not isinstance(t.get(key), str) or not t[key].strip():
+                raise ValueError("each worktree needs %s" % key)
+        for key in ("repo_path", "path"):
+            if not os.path.isabs(t[key]) or os.path.realpath(t[key]) != t[key]:
+                raise ValueError("%s must be an absolute, canonical path" % key)
+        if t["path"] in seen:
+            raise ValueError("duplicate worktree path")
+        seen.add(t["path"])
+        if not t["integration"].startswith("origin/") or not t["integration"][7:]:
+            raise ValueError("integration must explicitly name origin/<branch>")
+        if len(t["head"]) not in (40, 64) or any(c not in "0123456789abcdef" for c in t["head"]):
+            raise ValueError("head must be the full validated commit SHA")
+        validation = t.get("validation")
+        if not isinstance(validation, list) or not validation:
+            raise ValueError("each worktree needs existing validation evidence")
+        for ref in validation:
+            if (not isinstance(ref, dict) or not os.path.isabs(str(ref.get("path") or ""))
+                    or not isinstance(ref.get("sha256"), str) or len(ref["sha256"]) != 64
+                    or ref.get("head") != t["head"] or ref.get("result") != "passed"):
+                raise ValueError("validation references need path, sha256, matching head and result=passed")
+        review_root = t.get("review_root", t["path"])
+        if not isinstance(review_root, str) or not os.path.isabs(review_root):
+            raise ValueError("review_root must be absolute")
+        if "gate_repo" in t and (not isinstance(t["gate_repo"], str) or not t["gate_repo"].strip()):
+            raise ValueError("gate_repo must be the nonempty --repo name used by the passing gate")
+    return data
+
+
+@contextlib.contextmanager
+def _native_locks(root: str, targets: list):
+    """Serialize native retries, including different plan roots sharing a repo. Fail closed."""
+    if qd.fcntl is None:
+        raise ValueError("native closure requires filesystem locking on this platform")
+    handles = []
+    try:
+        for path in sorted({root} | {t["repo_path"] for t in targets}):
+            name = hashlib.sha256(path.encode()).hexdigest()
+            fh = open(os.path.join(tempfile.gettempdir(), "rein-done-%s.lock" % name), "a")
+            handles.append(fh)
+            try:
+                qd.fcntl.flock(fh.fileno(), qd.fcntl.LOCK_EX | qd.fcntl.LOCK_NB)
+            except OSError:
+                raise ValueError("another native closure holds the lock for %s" % path)
+        yield
+    finally:
+        for fh in reversed(handles):
+            fh.close()
+
+
+def _native_review(t: dict, change: str, saved: dict, removed: list) -> dict:
+    """Reuse the registered review. After a partial removal, rehash every surviving file."""
+    root = t.get("review_root", t["path"])
+    if not saved:
+        result = _gate.check_review(root, change)
+        if not result.get("ok"):
+            raise ValueError("review is not current/approved: %s" % result.get("reason"))
+        episode = _load_state(result["episode"])
+        if not episode or not episode.get("reviewed_files"):
+            raise ValueError("review has no declared files")
+        if not any(_inside(os.path.join(root, rel), t["path"]) for rel in episode["reviewed_files"]):
+            raise ValueError("review does not cover this worktree")
+        return {"root": root, "episode": result["episode"], "sha256": _digest(result["episode"]),
+                "files": episode["reviewed_files"]}
+    def lost(path):
+        return any(_inside(path, gone) for gone in removed)
+    if not lost(saved["episode"]):
+        if _digest(saved["episode"]) != saved["sha256"]:
+            raise ValueError("the approved review episode changed during closure")
+        latest = _gate.latest_episode(root, change)
+        if not latest or latest["path"] != saved["episode"]:
+            raise ValueError("a different review episode was recorded during closure")
+    for rel, digest in saved["files"].items():
+        path = os.path.abspath(os.path.join(root, rel))
+        if not lost(path) and _digest(path) != digest:
+            raise ValueError("reviewed file changed: %s" % path)
+    return saved
+
+
+def _native_identity(t: dict, rows: list, repos: list, git) -> dict:
+    matches = [r for r in repos if r.get("id") == t["repo"]
+               and os.path.realpath(str(r.get("path") or "")) == t["repo_path"]]
+    worktrees = [r for r in rows if os.path.realpath(str(r.get("path") or "")) == t["path"]]
+    if len(matches) != 1 or len(worktrees) != 1 or worktrees[0].get("repoId") != t["repo"]:
+        raise ValueError("explicit repo id/path and worktree do not match Orca's inventory")
+    row = worktrees[0]
+    if is_main_worktree(t["path"], row, git):
+        raise ValueError("it is a main checkout; Rein never removes those")
+    if _main_checkout(t["path"], git) != t["repo_path"]:
+        raise ValueError("worktree belongs to a different git repository")
+    code, top = git(t["path"], "rev-parse", "--show-toplevel")
+    if code or os.path.realpath(top.strip()) != t["path"]:
+        raise ValueError("path is not the worktree root")
+    code, branch = git(t["path"], "symbolic-ref", "--quiet", "--short", "HEAD")
+    if code or branch.strip() != t["branch"] or _short_branch(str(row.get("branch") or "")) != t["branch"]:
+        raise ValueError("explicit branch does not match git and Orca")
+    code, head = git(t["path"], "rev-parse", "HEAD")
+    if code or head.strip() != t["head"]:
+        raise ValueError("HEAD differs from the validated commit")
+    return row
+
+
+def _native_sessions(t: dict, client: OrcaClient) -> None:
+    # Deliberately conservative: even an idle tab must be closed by its owner first.
+    result = client.terminal_list("path:" + t["path"])
+    if not isinstance(result.get("terminals"), list):
+        raise ValueError("cannot establish that worktree sessions have ended")
+    if result["terminals"]:
+        raise ValueError("worktree still has terminal sessions; finish and close them from outside first")
+    # Native agents may be structured chats, with no terminal at all. PS covers both surfaces.
+    ps = client.call("worktree", "ps", "--limit", "10000")
+    scope = ps.get("hostScope") or {}
+    if (not isinstance(scope, dict) or not isinstance(ps.get("worktrees"), list)
+            or any(not isinstance(r, dict) for r in ps["worktrees"])
+            or ps.get("truncated") is not False or "local" not in (scope.get("hostIds") or [])):
+        raise ValueError("Orca session inventory is incomplete or does not cover the local host")
+    matches = [r for r in ps.get("worktrees", []) if r.get("repoId") == t["repo"]
+               and r.get("path") == t["path"] and r.get("hostId") == "local"]
+    if len(matches) != 1:
+        raise ValueError("cannot establish worktree session liveness")
+    row = matches[0]
+    if (row.get("agents") != [] or row.get("liveTerminalCount") != 0
+            or row.get("hasAttachedPty") is not False or row.get("unverifiableTerminalCount") != 0):
+        raise ValueError("worktree has agent sessions or live/unverifiable processes; close them first")
+
+
+def run_native_done(root: str, change: str, manifest: str, client: OrcaClient, *, dry_run=False,
+                    yes=False, push=False, git=qd.run_git, fetch=qd.run_fetch, say=print, today="") -> int:
+    """A closure journal is not execution state. It records only verified inputs and cleanup progress.
+
+    No QA, merge, push or ownership discovery by name. Deletions go through Orca, without force.
+    A journal is written before the first removal; failed cleanup remains pending even after rm.
+    """
+    try:
+        if not change or change in (".", "..") or any(c not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_." for c in change):
+            raise ValueError("change must be a simple name")
+        if push:
+            raise ValueError("--native does not accept --push; publish any archive commit explicitly")
+        root = os.path.realpath(root)
+        data = _native_manifest(manifest, change)
+        for t in data["worktrees"]:
+            if _inside(manifest, t["path"]):
+                raise ValueError("keep the native manifest outside the worktrees being removed")
+            if any(_inside(ref["path"], other["path"]) for ref in t["validation"]
+                   for other in data["worktrees"]):
+                raise ValueError("keep validation artifacts outside all removal targets for recovery")
+        digest = hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
+        with _native_locks(root, data["worktrees"]):
+            return _close_native(root, change, data, digest, client, dry_run, yes, git, fetch, say, today)
+    except (ValueError, OSError, OrcaError) as exc:
+        say("rein done: %s; closure incomplete, fix and retry the same command" % exc)
+        return 126 if isinstance(exc, (OSError, OrcaError)) else 1
+
+
+def _close_native(root, change, data, digest, client, dry_run, yes, git, fetch, say, today):
+    path = os.path.join(root, ".rein", "done", change + ".json")
+    journal = _load_state(path)
+    if os.path.exists(path) and (not journal or journal.get("schema") != 1
+                                or not isinstance(journal.get("targets"), dict)):
+        raise ValueError("closure journal is unreadable; preserve it for recovery")
+    if journal and journal.get("manifest_sha256") != digest:
+        raise ValueError("native manifest changed since closure began; use the original inputs")
+    if journal and journal.get("complete"):
+        say("done: %s already closed; cleanup completed (native)" % change)
+        return 0
+    if os.path.exists(ss.state_path(root, change)):
+        raise ValueError("Ship state exists for this change; use its supported closure")
+    rows, repos = client.worktree_list().get("worktrees"), client.repo_list().get("repos")
+    if (not isinstance(rows, list) or not isinstance(repos, list)
+            or any(not isinstance(r, dict) for r in rows + repos)):
+        raise ValueError("Orca inventory is unavailable")
+    journal = journal or {"schema": 1, "manifest_sha256": digest, "manifest": data, "targets": {},
+                          "archive": _archive_target(root, change, today or datetime.date.today().isoformat()),
+                          "archived": False, "complete": False}
+    removed = [p for p, s in journal["targets"].items() if s.get("removed") or
+               (s.get("removing") and not os.path.exists(p))]
+    warnings, blockers = [], []
+    regenerable = tuple(regenerable_patterns(root))
+    for t in data["worktrees"]:
+        wt = t["path"]
+        progress = journal["targets"].setdefault(wt, {})
+        try:
+            if _inside(root, wt) or _inside(os.getcwd(), wt):
+                raise ValueError("close from outside the target worktree (including --root)")
+            if progress.get("removed") or (progress.get("removing") and not os.path.exists(wt)):
+                if os.path.exists(wt):
+                    raise ValueError("a removed path was recreated; never delete it on retry")
+                progress["removed"] = True
+                say("already removed: %s; cleanup %s" % (wt, "completed" if progress.get("cleaned") else "pending"))
+                continue
+            if not os.path.isdir(wt):
+                raise ValueError("worktree is missing without a recorded removal; cannot verify its work")
+            _native_identity(t, rows, repos, git)
+            _native_sessions(t, client)
+            for ref in t["validation"]:
+                if _digest(ref["path"]) != ref["sha256"]:
+                    raise ValueError("validation evidence changed: %s" % ref["path"])
+            progress["review"] = _native_review(t, change, progress.get("review", {}), removed)
+            why = check_worktree(wt, t["integration"][7:], git, fetch, branch=t["branch"],
+                                 warnings=warnings, regenerable=regenerable)
+            if why:
+                raise ValueError(why)
+            if "cleanup" not in progress:
+                progress["cleanup"] = _cleanup_of(wt, t.get("gate_repo", ""), git, env_root=root)
+            say("validated %s @ %s (evidence reused); integrated into %s; execution finished: %s" %
+                (t["repo"], t["head"], t["integration"], wt))
+        except (ValueError, OSError, OrcaError) as exc:
+            blockers.append("%s (%s): %s" % (t["repo"], wt, exc))
+    archive = journal["archive"]
+    recover_move = False
+    if archive and not journal["archived"]:
+        intent = journal.get("archive_intent") or {}
+        if intent and not os.path.exists(archive[0]) and os.path.isdir(archive[1]):
+            # Only the exact archive commit we were about to make can satisfy a lost acknowledgement.
+            rel = os.path.relpath(archive[1], root)
+            if (git(root, "rev-parse", "HEAD^")[1].strip() == intent["parent"]
+                    and git(root, "rev-parse", "HEAD:" + rel)[1].strip() == intent["tree"]
+                    and git(root, "log", "-1", "--format=%s")[1].strip() == "docs(openspec): archive %s" % change
+                    and not git(root, "status", "--porcelain", "--", archive[1])[1].strip()):
+                journal["archived"] = True
+                say("recovered the completed local archive commit")
+            elif _native_archive_move(root, archive, intent, git):
+                recover_move = True
+                say("would recover the exact interrupted archive move before retrying its commit")
+            else:
+                blockers.append("archive changed during interruption; cannot confirm our commit or move; "
+                                "preserve journal and both plan paths, inspect `git diff --cached` and "
+                                "`git status --short`, then restore the original plan/index from the "
+                                "journal's archive_intent.parent before retrying (do not reset unrelated files)")
+        else:
+            blockers += _archive_blockers(root, archive[0], archive[1], git)
+    if blockers:
+        say("rein done: NOT ready; nothing removed by this attempt:")
+        for why in blockers:
+            say("  blocker: " + why)
+        return 1
+    if warnings:
+        _warn(warnings, say)
+        if not yes and not dry_run:
+            say("nothing removed; --yes accepts only the listed gitignored file losses")
+            return 1
+    for t in data["worktrees"]:
+        progress = journal["targets"][t["path"]]
+        if not progress.get("removed"):
+            say("would remove %s branch %s (%s)" % (t["repo"], t["branch"], t["path"]))
+        if not progress.get("cleaned"):
+            _run_cleanup(t["path"], progress["cleanup"], say, dry_run=True)
+    if archive and not journal["archived"]:
+        say("would archive plan %s -> %s (local commit, no push)" % tuple(archive))
+    if dry_run:
+        say("dry-run: no removal, cleanup, archive or journal write%s" %
+            ("; execution needs --yes for the listed losses" if warnings and not yes else ""))
+        return 0
+    for t in data["worktrees"]:
+        wt, progress = t["path"], journal["targets"][t["path"]]
+        if not progress.get("removed"):
+            # Recheck after preflight: another session could have edited a previously checked repo.
+            latest_warnings = []
+            why = check_worktree(wt, t["integration"][7:], git, fetch, branch=t["branch"],
+                                 warnings=latest_warnings, regenerable=regenerable)
+            if why:
+                raise ValueError(why)
+            if any(w not in warnings for w in latest_warnings):
+                raise ValueError("new gitignored files appeared since preflight; retry to review them")
+            # Fetch/merge-tree can take time. Rebind HEAD, sessions and approval AFTER that work.
+            _native_identity(t, client.worktree_list().get("worktrees") or [], repos, git)
+            _native_sessions(t, client)
+            for ref in t["validation"]:
+                if _digest(ref["path"]) != ref["sha256"]:
+                    raise ValueError("validation evidence changed before removal: %s" % ref["path"])
+            removed = [p for p, s in journal["targets"].items() if s.get("removed")]
+            _native_review(t, change, progress["review"], removed)
+            progress["removing"] = True
+            _write_closure(path, journal)
+            client.worktree_rm("path:" + wt)
+            if os.path.exists(wt):
+                raise ValueError("Orca reported success but worktree still exists: %s" % wt)
+            progress["removed"] = True
+            _write_closure(path, journal)
+            say("removed: " + wt)
+        if not progress.get("cleaned"):
+            command, cwd, env = progress["cleanup"]
+            if command:
+                code, last = _gate_env.run_cleanup(command, cwd, env)
+                if code:
+                    say("cleanup pending: %s (exit %s): %s; retry the same command" % (wt, code, last))
+                    return 126
+            progress["cleaned"] = True
+            _write_closure(path, journal)
+            say("cleanup completed: " + wt)
+    if archive and not journal["archived"]:
+        if recover_move:
+            if not _native_archive_move(root, archive, journal["archive_intent"], git):
+                raise ValueError("interrupted archive move changed since preflight; preserve it for recovery")
+            if git(root, "mv", archive[1], archive[0])[0]:
+                raise ValueError("could not restore interrupted archive move; preserve journal and retry")
+            say("restored the interrupted archive move; retrying the local archive")
+        blockers = _archive_blockers(root, archive[0], archive[1], git)
+        if blockers:
+            raise ValueError("; ".join(blockers))
+        # A crash after commit but before the journal write is recoverable on the next run.
+        journal["archive_intent"] = {
+            "parent": git(root, "rev-parse", "HEAD")[1].strip(),
+            "tree": git(root, "rev-parse", "HEAD:" + os.path.relpath(archive[0], root))[1].strip()}
+        _write_closure(path, journal)
+        if not _archive_plan(root, change, archive[0], archive[1], git):
+            raise ValueError("could not archive plan; move undone, retry closure")
+        journal["archived"] = True
+        _write_closure(path, journal)
+        say("plan archived with a local commit; no push")
+    journal["complete"] = True
+    _write_closure(path, journal)
+    say("done: %s closed; cleanup completed (native)" % change)
+    return 0
+
+
+def _native_archive_move(root: str, archive: list, intent: dict, git) -> bool:
+    """Only recognize the exact staged move of the recorded tree on its original parent."""
+    src, dst = archive
+    if not intent.get("parent") or not intent.get("tree"):
+        return False
+    if git(root, "rev-parse", "HEAD") != (0, intent["parent"] + "\n"):
+        return False
+    code, branch = git(root, "symbolic-ref", "--quiet", "--short", "HEAD")
+    if code or not branch.strip():
+        return False
+    code, source = git(root, "ls-files", "--", src)
+    if code or source.strip():
+        return False
+    rel = os.path.relpath(dst, root).replace(os.sep, "/")
+    code, tree = git(root, "write-tree", "--prefix=" + rel + "/")
+    if code or tree.strip() != intent["tree"] or git(root, "diff", "--quiet", "--", dst)[0]:
+        return False
+    code, extra = git(root, "ls-files", "--others", "--exclude-standard", "--", dst)
+    return code == 0 and not extra.strip()
 
 
 # --- `rein quick close` -------------------------------------------------------

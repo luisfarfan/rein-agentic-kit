@@ -51,13 +51,17 @@ rein accept-outside [--root <plan repo>] (--path <abs path> | --commit <sha> | -
                  # ship: record, in <plan repo>/.rein/outside-accept.json, that a change in a watched
                  # checkout is another session's work, so no task of that plan is held for it.
                  # Verified when each task is judged, and logged (see "Writes outside the worktree")
-rein done <change> [--root <plan repo>] [--dry-run] [--yes] [--push]
+rein done <change> [--root <plan repo>] [--native <manifest.json>] [--dry-run] [--yes] [--push]
+                 # --native: explicit native/multirepo closure without Ship state. Reuses checks
+                 # and current registered review/evidence; no QA rerun. No --push. See native-closure.md.
                  # close a finished change: remove its Orca worktrees, close the "rein ship" tab,
                  # archive the openspec plan (local commit on the plan repo's current branch; its
                  # folder must be committed), archive the ship state. Removes NOTHING if any
                  # worktree is dirty, a main checkout, or has commits (HEAD or its branch) not in
                  # origin/<base>. Gitignored files that would be lost are listed and need --yes,
                  # except gate.regenerable ones. Each removed worktree then runs gate.cleanup.
+                 # Ship phase=done is execution completion; explicit unapproved/rejected/skipped
+                 # audits block closure. Legacy states without audit_result report approval unknown.
                  # --push (opt-in) pushes ONLY the archive commit, from the plan repo, to the branch
                  # of the same name (hooks run). It is a blocker, found before anything is removed,
                  # when the upstream has another name, there is no remote branch, or other local

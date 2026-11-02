@@ -1,7 +1,7 @@
 {
   "name": "rein",
   "description": "Shared engineering workflows for Claude Code and Codex, with deterministic gates and Orca execution.",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "author": {
     "name": "Luis Farfan"
   },

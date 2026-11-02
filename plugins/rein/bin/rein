@@ -124,7 +124,7 @@ Subcommands:
                       ship: record that a change in a watched checkout is another session's
                       work, so no task of that plan is held for it. Only what really changed
                       there is accepted when a task is judged, and each use is logged
-  rein done <change> [--root <plan repo>] [--dry-run] [--yes] [--push]
+  rein done <change> [--root <plan repo>] [--native <manifest.json>] [--dry-run] [--yes] [--push]
                       close a finished change: remove its worktrees, close its tab,
                       archive the openspec plan (local commit on the plan repo's current
                       branch; its folder must be committed). --push also pushes that one
@@ -169,7 +169,7 @@ import signal
 import sys
 import time
 
-VERSION = "2.1.0"
+VERSION = "2.1.1"
 
 HERE = os.path.dirname(os.path.abspath(os.path.realpath(__file__)))
 PLUGIN_ROOT = os.path.dirname(HERE)
@@ -1165,7 +1165,11 @@ def cmd_watch(argv: list[str]) -> int:
 
 def cmd_done(argv: list[str]) -> int:
     """`rein done <change>`: remove what a finished change left behind, safely."""
-    usage = "usage: rein done <change> [--root <plan repo>] [--dry-run] [--yes] [--push]"
+    usage = "usage: rein done <change> [--root <plan repo>] [--native <manifest.json>] [--dry-run] [--yes] [--push]"
+    native, argv, bad_native = _take_values(argv, "--native")
+    if bad_native or len(native) > 1 or (native and "--push" in argv):
+        print(usage)
+        return 2
     words, skip, dry, yes, push = [], False, False, False, False
     for a in argv:
         if skip:
@@ -1188,8 +1192,9 @@ def cmd_done(argv: list[str]) -> int:
     if skip or len(words) != 1 or not _opt(argv, "root", "."):
         print(usage)
         return 2
+    options = {"native": native[0]} if native else {}
     return _done.run_done(_opt(argv, "root", "."), words[0], _ship.OrcaClient(), dry_run=dry, yes=yes,
-                          push=push)
+                          push=push, **options)
 
 
 _INBOX_USAGE = ('usage: rein quick ask "<question>" [--replaces q1]  |  rein quick resolve [<path or quick-<slug>>] --id q1  |  rein quick answer [<path or quick-<slug>>] "<text>" '

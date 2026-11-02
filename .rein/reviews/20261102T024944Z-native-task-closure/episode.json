@@ -1,0 +1,54 @@
+{
+  "agent": "independent-codex-reviewer",
+  "change": "native-task-closure",
+  "findings": [
+    {
+      "severity": "BLOCKING",
+      "text": "plugins/rein/lib/ship_done.py:875 expected: revalidate current approval and validation-artifact digests immediately before each destructive removal. observed: the second worktree is deleted and closure succeeds even after its review changes to CHANGES_REQUESTED after the first removal. evidence: a temporary NativeDone.setup_native(2) runner records a rejected review for b immediately after rm(a); close exits 0, b disappears, latest_episode(b) is CHANGES_REQUESTED. breaks: current state-bound evidence and the documented newer-rejected-review blocker."
+    },
+    {
+      "severity": "BLOCKING",
+      "text": "plugins/rein/lib/ship_done.py:829 expected: cleanup expands {repo} using the same repository name that native gate.env used. observed: t[repo] is the Orca UUID, so cleanup expands a different resource and can report success while the real test resource remains. evidence: temporary gate.env RESOURCE=<tmp>/resource_{repo}_{worktree}, cleanup=rm -f \"$RESOURCE\"; create resource through gate_env.for_worktree(wt, env_root=plan), run close; exit 0 and cleanup completed but resource_wt0-main_wt0 remains while cleanup targeted resource_repo-id-0_wt0. breaks: cleanup completion must mean the validated worktree resources were cleaned."
+    },
+    {
+      "severity": "BLOCKING",
+      "text": "plugins/rein/lib/ship_done.py:837 expected: recover an exact recorded archive movement interrupted between git mv and git commit, or provide concrete safe recovery. observed: repeat closure always refuses archive changed during interruption while the exact rename remains staged. evidence: temporary patch of _archive_plan performs git mv(src,dst) then raises OSError; first close exits 126, retry exits 1 with the staged rename intact. breaks: idempotent closure and recovery from partial archive failure."
+    },
+    {
+      "severity": "IMPORTANT",
+      "text": "plugins/rein/PROVIDERS.md:26 the relative NATIVE-CLOSURE.md link exists only at plugin root; materialized copies of PROVIDERS.md under skills/<skill>/ have no such sibling. Keep guidance resolvable from installed wheel and consumer snapshots."
+    },
+    {
+      "severity": "IMPORTANT",
+      "text": "plugins/rein/lib/ship_done.py:886 the closure journal uses gate_cache._write, which atomically replaces but does not fsync the file or directory. It handles process interruption but cannot guarantee the claimed durability before deletion under power loss. Synchronize the journal before destructive actions or state the narrower durability guarantee."
+    }
+  ],
+  "reviewed_files": {
+    ".claude-plugin/marketplace.json": "991d9cce5933c7cbfe4ec0716f95b529dcfea94fca8aef32182dbe620947553b",
+    "README.es.md": "31d5cf1a42d1bf96bc41851675543c69219c9cb37470b84bb56985c763727807",
+    "README.md": "76eb68dfd94901b88dc85851c8c65ae8b122111646f7b5f3db212fa98c9ecb3c",
+    "docs/native-closure.md": "489a0b1cd6458a6770db3fbc218b5c1c6d8a41fb130596756e4c97d397f6c00e",
+    "docs/native-providers.md": "d7b6a04e6c41023997cf57e7aa738a148b237a51ff1c7a544c3a6bd7a6e6acb7",
+    "docs/reference.md": "2b397950e34ffd08ebd67f8425b9c8906b2056a97ab3f89e580158a6da69c4f0",
+    "docs/update-proxima-rein.md": "3620475611cf2634bcc048f8994d351ad4bdfe7928c6bfd25c1c46a60fbdd3e2",
+    "plugins/rein/.claude-plugin/plugin.json": "f6965bbb72a3ab836bbb858fe79730bd2df8f4fa30cc2ef6ed9d14c508c19e1e",
+    "plugins/rein/.codex-plugin/plugin.json": "d3613bb82c479abad5b69191ce661dc697cfd9129f9c1cad7a9d2a2c0d9aa04d",
+    "plugins/rein/NATIVE-CLOSURE.md": "489a0b1cd6458a6770db3fbc218b5c1c6d8a41fb130596756e4c97d397f6c00e",
+    "plugins/rein/PROVIDERS.md": "0423b6c81c746f61ee07f5762a6693c6a7306d2fac909d3a6429a74ad28e5500",
+    "plugins/rein/bin/rein": "af4e0207db8abc7a9edc4ed37a32ac2e2ca9850370c710e211a00afc1cc36f7e",
+    "plugins/rein/lib/gate.py": "4fa0ab68b4989bbb89428a7205f28082eec2e2993208fe39e87f63ef5d4a900f",
+    "plugins/rein/lib/gate_cache.py": "3c56f711d164235221c45ff9e9084d6131458226e87672eebb4602eb3cbed99b",
+    "plugins/rein/lib/gate_env.py": "f1d5d010893bd070bd7b08daf833f75f4afc5c600f5555f88a2c853617cc6774",
+    "plugins/rein/lib/quick_driver.py": "8291a409f29b02e6b3e78c5f7a546cc6ac59afc15d1670c7d09fee78a196a38d",
+    "plugins/rein/lib/ship_done.py": "6fabad3df496fce5595a6e3e728eb188ffe363e4d0b60c31fddb175987d58d5c",
+    "pyproject.toml": "40980cf46075e5525b926f1279f6e5bfa9c1685b21243f39b45b4956c7ed530e",
+    "tests/test_native_done.py": "a8040a4e1234e0a486e83bcd55d61bfc4ef27969c8f37382d518e97274cb4735",
+    "tests/test_packaging.py": "7207025b84cdb5edc05e76adf4f5415c6c5a54315ea131ee1574663b4d430c37",
+    "tests/test_ship_done.py": "afb3ab83c77415400ee0fa3ad477be8fd3c07337b9fafb9a00682c14866c36bc"
+  },
+  "reviewed_state_hash": "7f2ead583e8e5b2c4d81a1ddd66fe186361e671b2d71fc947b4fc83ceb1aa499",
+  "reviewer_actor": "independent-codex-reviewer",
+  "schema": 1,
+  "timestamp_utc": "2026-11-02T02:49:44Z",
+  "verdict": "CHANGES_REQUESTED"
+}

@@ -216,6 +216,8 @@ rein doctor .                            # Examinar stack, comandos y configurac
 rein gate .                              # Ejecutar comprobaciones y decidir si pasan
 rein plan-check tasks.md --root . --gate  # Validar mecánicamente un plan
 rein review check                        # Consultar si la revisión sigue vigente
+rein done mi-cambio --native cierre.json --root /repo/plan --dry-run
+                                         # Cierre nativo/multirrepo: docs/native-closure.md
 ```
 
 `rein gate` devuelve `0` si pasa, `1` si falla y `126` si no puede comprobarlo.

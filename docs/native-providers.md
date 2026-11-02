@@ -95,6 +95,12 @@ wheel includes both manifests, the canonical skills and the provider guide.
 
 ## Validation
 
+Native tasks, including multirepo work, close with
+`rein done <change> --root <plan repo> --native <manifest.json> --dry-run`, then the
+same command without `--dry-run`. Both providers use the same
+[explicit manifest and recovery procedure](native-closure.md); Quick/Ship state
+is not required or manufactured.
+
 ```sh
 python3 -m unittest tests.test_native_skills tests.test_skill_budget tests.test_version_lock -q
 python3 tests/probe_native_skills.py

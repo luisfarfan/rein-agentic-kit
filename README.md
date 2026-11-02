@@ -212,6 +212,8 @@ rein doctor .                            # Inspect stack, commands, and configur
 rein gate .                              # Run checks and decide whether they pass
 rein plan-check tasks.md --root . --gate  # Check a plan mechanically
 rein review check                        # Check whether the review is still current
+rein done my-change --native closure.json --root /plan/repo --dry-run
+                                         # Preview native/multirepo closure; see docs/native-closure.md
 ```
 
 `rein gate` returns `0` for a pass, `1` for a failure, and `126` when it cannot
