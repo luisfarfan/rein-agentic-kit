@@ -51,7 +51,7 @@ class ArgvTests(unittest.TestCase):
         self.assertEqual(fake.calls[-1], [
             "ORCA", "orchestration", "worker-start", "--task", "t1",
             "--worktree", "new-top-level", "--agent", "codex", "--model", "gpt-6.1-sol",
-            "--repo", "name:proxima-api", "--name", "c", "--setup", "run", "--json",
+            "--repo", "name:proxima-api", "--name", "c", "--setup", "run", "--json", "--full",
         ])
 
     def test_worker_start_omits_blank_optionals(self):
@@ -59,7 +59,7 @@ class ArgvTests(unittest.TestCase):
         _client(fake).worker_start("t1", worktree="current", agent="claude", model="haiku")
         self.assertEqual(fake.calls[-1], [
             "ORCA", "orchestration", "worker-start", "--task", "t1",
-            "--worktree", "current", "--agent", "claude", "--model", "haiku", "--json",
+            "--worktree", "current", "--agent", "claude", "--model", "haiku", "--json", "--full",
         ])
 
     def test_simple_methods(self):
@@ -81,15 +81,15 @@ class ArgvTests(unittest.TestCase):
             ["ORCA", "status", "--json"],
             ["ORCA", "account", "list", "--json"],
             ["ORCA", "repo", "list", "--json"],
-            ["ORCA", "orchestration", "run-create", "--objective", "obj", "--json"],
-            ["ORCA", "orchestration", "run-use", "--id", "run_1", "--json"],
-            ["ORCA", "orchestration", "worker-show", "--dispatch", "d1", "--json"],
-            ["ORCA", "orchestration", "worker-list", "--json"],
-            ["ORCA", "orchestration", "worker-list", "--run", "run_1", "--json"],
-            ["ORCA", "orchestration", "worker-release", "--dispatch", "d1", "--json"],
-            ["ORCA", "orchestration", "worker-stop", "--dispatch", "d1", "--json"],
-            ["ORCA", "orchestration", "worker-abandon", "--dispatch", "d1", "--json"],
-            ["ORCA", "orchestration", "gate-list", "--json"],
+            ["ORCA", "orchestration", "run-create", "--objective", "obj", "--json", "--full"],
+            ["ORCA", "orchestration", "run-use", "--id", "run_1", "--json", "--full"],
+            ["ORCA", "orchestration", "worker-show", "--dispatch", "d1", "--json", "--full"],
+            ["ORCA", "orchestration", "worker-list", "--json", "--full"],
+            ["ORCA", "orchestration", "worker-list", "--run", "run_1", "--json", "--full"],
+            ["ORCA", "orchestration", "worker-release", "--dispatch", "d1", "--json", "--full"],
+            ["ORCA", "orchestration", "worker-stop", "--dispatch", "d1", "--json", "--full"],
+            ["ORCA", "orchestration", "worker-abandon", "--dispatch", "d1", "--json", "--full"],
+            ["ORCA", "orchestration", "gate-list", "--json", "--full"],
         ])
 
     def test_task_create_gate_create_reply_worktree_set(self):
@@ -104,14 +104,14 @@ class ArgvTests(unittest.TestCase):
         c.worktree_set("id:wt1")
         self.assertEqual(fake.calls, [
             ["ORCA", "orchestration", "task-create", "--task-title", "T001",
-             "--spec", "the spec", "--deps", '["task_a", "task_b"]', "--json"],
+             "--spec", "the spec", "--deps", '["task_a", "task_b"]', "--json", "--full"],
             ["ORCA", "orchestration", "task-create", "--task-title", "T002",
-             "--spec", "s", "--json"],
+             "--spec", "s", "--json", "--full"],
             ["ORCA", "orchestration", "gate-create", "--task", "task_a",
-             "--question", "ok?", "--options", '["yes", "no"]', "--json"],
+             "--question", "ok?", "--options", '["yes", "no"]', "--json", "--full"],
             ["ORCA", "orchestration", "gate-create", "--task", "task_a",
-             "--question", "free text?", "--json"],
-            ["ORCA", "orchestration", "reply", "--id", "msg_1", "--body", "go ahead", "--json"],
+             "--question", "free text?", "--json", "--full"],
+            ["ORCA", "orchestration", "reply", "--id", "msg_1", "--body", "go ahead", "--json", "--full"],
             ["ORCA", "worktree", "set", "--worktree", "id:wt1",
              "--workspace-status", "in-review", "--comment", "auditing", "--json"],
             ["ORCA", "worktree", "set", "--worktree", "id:wt1", "--json"],
@@ -124,11 +124,11 @@ class ArgvTests(unittest.TestCase):
         c.check(wait=False, types="worker_done", timeout_ms=1000, ack="delivery_9")
         self.assertEqual(fake.calls[0], [
             "ORCA", "orchestration", "check", "--wait",
-            "--types", "worker_done,escalation,question", "--timeout-ms", "900000", "--json",
+            "--types", "worker_done,escalation,question", "--timeout-ms", "900000", "--json", "--full",
         ])
         self.assertEqual(fake.calls[1], [
             "ORCA", "orchestration", "check", "--types", "worker_done",
-            "--timeout-ms", "1000", "--ack", "delivery_9", "--json",
+            "--timeout-ms", "1000", "--ack", "delivery_9", "--json", "--full",
         ])
 
     def test_default_executable_honours_env(self):
@@ -214,6 +214,21 @@ class ErrorTests(unittest.TestCase):
 
 
 class AccessorTests(unittest.TestCase):
+    def test_concise_create_results_still_yield_ids(self):
+        # Orca 1.4.247 answers without --full as {"taskId": ...}; an older or partial shape must not lose the id.
+        self.assertEqual(orca_client.task_id_of({"taskId": "task_1", "status": "ready"}), "task_1")
+        self.assertEqual(orca_client.run_id_of({"runId": "run_1", "objective": "o"}), "run_1")
+        self.assertEqual(orca_client.gate_id_of({"gateId": "gate_1"}), "gate_1")
+        self.assertEqual(orca_client.task_id_of({}), "")
+
+    def test_full_is_only_sent_to_orchestration(self):
+        fake = _Fake()
+        c = _client(fake)
+        c.status()
+        c.worker_show("d1")
+        self.assertNotIn("--full", fake.calls[0])
+        self.assertEqual(fake.calls[1][-2:], ["--json", "--full"])
+
     def test_accessors_read_fixtures(self):
         run = _fixture("run_create")
         self.assertEqual(orca_client.run_id_of(run), "run_bc7b9b8da771")

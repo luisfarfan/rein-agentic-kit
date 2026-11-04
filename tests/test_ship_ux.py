@@ -46,6 +46,7 @@ class FakeOrca:
         self.coordinator = coordinator
 
     def __call__(self, argv):
+        argv = [x for x in argv if x != "--full"]  # the output-shape flag is asserted in test_orca_client
         self.calls.append(list(argv))
         a = [x for x in argv[1:] if x != "--json"]
         result = {}

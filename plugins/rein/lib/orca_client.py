@@ -59,7 +59,10 @@ class OrcaClient:
         self._runner = runner or _default_runner
 
     def _call(self, *args: str, timeout: Optional[float] = None) -> dict:
-        argv = [self.executable, *args, "--json"]
+        # Orca 1.4.247 made orchestration answers a concise view by default; the parsers below read
+        # the full record (`task.id`, `run.id`, `gate.id`), which `--full` keeps returning.
+        tail = ["--json", "--full"] if args[:1] == ("orchestration",) else ["--json"]
+        argv = [self.executable, *args, *tail]
         timeout = timeout or DEFAULT_TIMEOUT
         try:
             # Only the built-in runner can be bounded; a custom runner owns its own limits.
@@ -317,11 +320,13 @@ def _decode(value):
 
 
 def run_id_of(run_create_result: dict) -> str:
-    return _str(_dict(_dict(run_create_result).get("run")).get("id"))
+    result = _dict(run_create_result)
+    return _str(_dict(result.get("run")).get("id")) or _str(result.get("runId"))
 
 
 def task_id_of(task_create_result: dict) -> str:
-    return _str(_dict(_dict(task_create_result).get("task")).get("id"))
+    result = _dict(task_create_result)
+    return _str(_dict(result.get("task")).get("id")) or _str(result.get("taskId"))
 
 
 def dispatch_id_of(worker_start_result: dict) -> str:
@@ -404,7 +409,8 @@ def payload_of(message: dict) -> dict:
 
 
 def gate_id_of(gate_create_result: dict) -> str:
-    return _str(_dict(_dict(gate_create_result).get("gate")).get("id"))
+    result = _dict(gate_create_result)
+    return _str(_dict(result.get("gate")).get("id")) or _str(result.get("gateId"))
 
 
 def gates_of(gate_list_result: dict) -> list:

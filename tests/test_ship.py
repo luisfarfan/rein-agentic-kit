@@ -113,6 +113,7 @@ class FakeOrca:
 
     # runner protocol
     def __call__(self, argv):
+        argv = [x for x in argv if x != "--full"]  # the output-shape flag is asserted in test_orca_client
         self.calls.append(argv[1:-1])
         try:
             return 0, json.dumps({"ok": True, "result": self._answer(argv[1:-1])})
